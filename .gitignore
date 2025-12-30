@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad
+*.xcworkspace
+
+# Swift Package Manager (if used later)
+.build/
+
+# C/ObjC build artifacts
+*.o
+*.a
+*.dylib
+*.so
+
+# Logs
+*.log
