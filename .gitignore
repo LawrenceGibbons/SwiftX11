@@ -19,3 +19,7 @@ DerivedData/
 
 # Logs
 *.log
+
+# Xcode per-user settings
+xcuserdata/
+*.xcuserdatad/
