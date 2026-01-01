@@ -34,7 +34,8 @@ typedef void (*x11_present_frame_cb)(
 );
 
 void x11_register_frame_presenter(x11_present_frame_cb on_present);
-  
+
+  void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px);  
 #ifdef __cplusplus
 }
 #endif
