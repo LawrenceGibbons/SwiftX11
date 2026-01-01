@@ -1,6 +1,7 @@
 #include "x11_shim.h"
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 static x11_window_created_cb s_on_create = 0;
 static x11_window_closed_cb  s_on_close  = 0;
@@ -67,5 +68,30 @@ void x11_request_repaint(uint32_t xwin_id, int width_px, int height_px)
     s_present(xwin_id, buf, width_px, height_px, bpr);
 
     free(buf);
+}
+
+void x11_post_pointer_event(uint32_t xwin_id,
+                            x11_ptr_event_type type,
+                            int32_t x_px,
+                            int32_t y_px,
+                            uint32_t buttons,
+                            uint32_t modifiers)
+{
+    fprintf(stderr,"[ptr] xid=0x%X type=%d x=%d y=%d state=0x%X mods=0x%X\n",
+           xwin_id, (int)type, x_px, y_px, buttons, modifiers);
+    fflush(stderr);
+}
+
+void x11_post_key_event(uint32_t xwin_id,
+                        bool is_down,
+                        uint32_t keycode,
+                        uint32_t modifiers,
+                        const char* utf8_text)
+{
+    fprintf(stderr,"[key] xid=0x%X %s keycode=%u mods=0x%X text=%s\n",
+           xwin_id, is_down ? "down" : "up",
+           keycode, modifiers,
+           utf8_text ? utf8_text : "(null)");
+    fflush(stderr);
 }
 

@@ -39,3 +39,23 @@ void x11_register_frame_presenter(x11_present_frame_cb on_present);
 #ifdef __cplusplus
 }
 #endif
+
+typedef enum {
+    X11_PTR_MOVE = 0,
+    X11_PTR_DOWN = 1,
+    X11_PTR_UP   = 2,
+    X11_SCROLL   = 3
+} x11_ptr_event_type;
+
+void x11_post_pointer_event(uint32_t xwin_id,
+                            x11_ptr_event_type type,
+                            int32_t x_px,
+                            int32_t y_px,
+                            uint32_t buttons,
+                            uint32_t modifiers);
+
+void x11_post_key_event(uint32_t xwin_id,
+                        bool is_down,
+                        uint32_t keycode,
+                        uint32_t modifiers,
+                        const char* utf8_text);

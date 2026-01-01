@@ -12,14 +12,13 @@ struct SwiftX11: App {
                 .environmentObject(server)
                 .environmentObject(settings)
         }
+        Settings {
+            PreferencesView() // <-- whatever your prefs root view is called
+                .environmentObject(server)
+                .environmentObject(settings)
+        }
         .commands {
             CommandGroup(replacing: .appInfo) { }
-            CommandGroup(after: .appSettings) {
-                Button("Preferences…") {
-                    PreferencesWindow.open()
-                }
-                .keyboardShortcut(",")
-            }
         }
     }
 }

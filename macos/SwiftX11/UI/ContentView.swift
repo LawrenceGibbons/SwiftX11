@@ -30,8 +30,21 @@ struct ContentView: View {
           }
         }
       }
+      Toggle("Use Metal rendering", isOn: $settings.useMetal)
     }
     .padding(16)
     .frame(minWidth: 560, minHeight: 360)
+    
+    // preferences hooks
+    .onAppear {
+      Task { @MainActor in
+        WindowRegistry.shared.useMetalForNewWindows = settings.useMetal
+      }
+    }
+    .onChange(of: settings.useMetal) { newValue in
+      Task { @MainActor in
+        WindowRegistry.shared.setUseMetalForAllWindows(newValue)
+      }
+    }
   }
 }
