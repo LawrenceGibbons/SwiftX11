@@ -9,7 +9,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
         self.xid = xid
 
         let viewHolder = X11ViewHolder()
-        let host = X11WindowHost { view in
+        let host = X11WindowHost(useMetal: true) { view in
             viewHolder.view = view
         }
         let hosting = NSHostingController(rootView: host)

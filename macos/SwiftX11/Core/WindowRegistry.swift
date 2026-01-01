@@ -28,6 +28,16 @@ final class WindowRegistry {
     let controller = X11WindowController(xid: xid, title: title, width: width, height: height)
     windows[xid] = controller
     controller.showWindow(nil)
+    
+    // IMPORTANT: request an initial repaint at the *actual* pixel size once the window has laid out.
+    DispatchQueue.main.async { [weak controller] in
+        guard let win = controller?.window else { return }
+        let sizePoints = win.contentLayoutRect.size
+        let scale = win.backingScaleFactor
+        let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
+        let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
+        x11_request_repaint(xid, wPx, hPx)
+    }
   }
   
   func closeWindow(xid: UInt32) {
