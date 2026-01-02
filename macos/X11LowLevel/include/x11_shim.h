@@ -89,6 +89,18 @@ void x11_post_key_event(uint32_t xwin_id,
 
 void x11_post_focus_event(uint32_t xid, bool focused);
   
+void x11_post_pointer_enter(uint32_t xid,
+                            int32_t x_px,
+                            int32_t y_px,
+                            uint32_t modifiers);
+
+void x11_post_pointer_leave(uint32_t xid,
+                            int32_t x_px,
+                            int32_t y_px,
+                            uint32_t modifiers);
+  
+bool x11_debug_pop_event(x11_event_t* out_ev);
+  
 #ifdef __cplusplus
 }
 #endif

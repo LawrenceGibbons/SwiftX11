@@ -67,6 +67,14 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     WindowRegistry.shared.flushRepaintNow(xid: xid)
   }
   
+  func windowDidBecomeKey(_ notification: Notification) {
+      x11_post_focus_event(xid, true)
+  }
+
+  func windowDidResignKey(_ notification: Notification) {
+      x11_post_focus_event(xid, false)
+  }
+
   private func installEventMonitors(for win: NSWindow) {
     // Mouse + scroll
     let mouseMask: NSEvent.EventTypeMask = [

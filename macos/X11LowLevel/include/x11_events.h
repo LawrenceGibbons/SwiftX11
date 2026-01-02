@@ -30,19 +30,21 @@ static inline uint32_t x11_button_bit(uint8_t button_number /* 1..31 */) {
 }
 
 // ---- Event types
-typedef enum {
+  typedef enum {
     X11_EV_NONE = 0,
-
+    
     X11_EV_POINTER_MOTION = 1,
     X11_EV_POINTER_BUTTON = 2,
     X11_EV_SCROLL         = 3,
-
+    
     X11_EV_KEY            = 4,
     X11_EV_MODIFIERS      = 5,
     X11_EV_FOCUS          = 6,
     X11_EV_WINDOW_CREATE  = 7,
     X11_EV_WINDOW_DESTROY = 8,
-} x11_event_type_t;
+    X11_EV_POINTER_ENTER  = 9,
+    X11_EV_POINTER_LEAVE  = 10,
+  } x11_event_type_t;
 
 // ---- Scroll “wheels” (X11-ish)
 typedef enum {
@@ -107,12 +109,18 @@ typedef struct {
     uint8_t _pad; // nothing for now, reserved
 } x11_window_destroy_t;
   
-  // ---- Unified event
 typedef struct {
-    uint64_t        timestamp_ns; // monotonic, optional but nice
-    uint32_t        xid;          // target window
-    uint16_t        type;         // x11_event_type_t
-    uint16_t        size;         // sizeof(payload) used (defensive)
+    int32_t x_px;
+    int32_t y_px;
+    uint32_t modifiers;
+} x11_pointer_crossing_t;
+  
+// ---- Unified event
+typedef struct {
+    uint64_t         timestamp_ns; // monotonic, optional but nice
+    uint32_t         xid;          // target window
+    x11_event_type_t type;         // x11_event_type_t
+    uint16_t         size;         // sizeof(payload) used (defensive)
     union {
         x11_pointer_motion_t  motion;
         x11_pointer_button_t  button;
@@ -122,6 +130,7 @@ typedef struct {
         x11_focus_t           focus;
         x11_window_create_t   win_create;
         x11_window_destroy_t  win_destroy;
+        x11_pointer_crossing_t crossing;
     } u;
 } x11_event_t;
 

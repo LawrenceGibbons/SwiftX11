@@ -7,6 +7,7 @@ final class XServerController: ObservableObject {
   @Published var display: Int = 0
   @Published var logLines: [String] = []
   
+  private var drainTimer: DispatchSourceTimer?
   private let queue = DispatchQueue(
     label: "swiftx11.server",
     qos: .userInitiated
@@ -50,6 +51,7 @@ final class XServerController: ObservableObject {
       DispatchQueue.main.async {
         self.isRunning = ok
         self.append(ok ? "Server started" : "Failed to start server")
+        if ok { self.startDrainTimer() }
       }
     }
   }
@@ -63,11 +65,79 @@ final class XServerController: ObservableObject {
       DispatchQueue.main.async { [weak self] in
         self?.isRunning = false
         self?.append("Server stopped")
+        self?.stopDrainTimer()
       }
     }
   }
   
   private func append(_ line: String) {
     logLines.append("[\(Date())] \(line)")
+  }
+  
+  private func startDrainTimer() {
+    stopDrainTimer()
+    
+    let t = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+    t.schedule(deadline: .now(), repeating: .milliseconds(33)) // ~30 Hz
+    t.setEventHandler { [weak self] in
+      self?.drainEvents(max: 200)
+    }
+    t.resume()
+    drainTimer = t
+  }
+  
+  private func stopDrainTimer() {
+    drainTimer?.cancel()
+    drainTimer = nil
+  }
+  
+  private func drainEvents(max: Int) {
+      var n = 0
+      while n < max {
+          var ev = x11_event_t()
+          guard x11_debug_pop_event(&ev) else { break }
+
+          if let line = format(ev) {
+              append(line)
+          }
+          n += 1
+      }
+  }
+  
+  private func format(_ ev: x11_event_t) -> String? {
+      let xid = String(format: "0x%X", ev.xid)
+
+      switch ev.type {
+      case X11_EV_WINDOW_CREATE:
+          return "EV_WINDOW_CREATE xid=\(xid) \(ev.u.win_create.width_px)x\(ev.u.win_create.height_px)"
+
+      case X11_EV_WINDOW_DESTROY:
+          return "EV_WINDOW_DESTROY xid=\(xid)"
+
+      case X11_EV_POINTER_ENTER:
+          return "EV_ENTER xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"
+
+      case X11_EV_POINTER_LEAVE:
+          return "EV_LEAVE xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"
+
+      case X11_EV_POINTER_MOTION:
+          //return "EV_MOTION ..."
+          return ev.u.motion.buttons == 0 ? nil : "EV_MOTION ..."
+
+      case X11_EV_POINTER_BUTTON:
+          return "EV_BUTTON xid=\(xid) btn=\(ev.u.button.button) press=\(ev.u.button.is_press) buttons=\(ev.u.button.buttons)"
+
+      case X11_EV_SCROLL:
+          return "EV_SCROLL xid=\(xid) axis=\(ev.u.scroll.axis) ticks=\(ev.u.scroll.ticks)"
+
+      case X11_EV_KEY:
+          return "EV_KEY xid=\(xid) code=\(ev.u.key.keycode) press=\(ev.u.key.is_press)"
+
+      case X11_EV_FOCUS:
+          return "EV_FOCUS xid=\(xid) focused=\(ev.u.focus.focused)"
+
+      default:
+          return "EV type=\(ev.type.rawValue) xid=\(xid) size=\(ev.size)"
+      }
   }
 }

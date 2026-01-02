@@ -21,6 +21,9 @@ final class X11MTKView: MTKView {
     override func rightMouseDragged(with event: NSEvent) { owner?.rightMouseDragged(with: event) }
     override func otherMouseDragged(with event: NSEvent) { owner?.otherMouseDragged(with: event) }
 
+    override func mouseEntered(with event: NSEvent) { owner?.mouseEntered(with: event) }
+    override func mouseExited(with event: NSEvent) { owner?.mouseExited(with: event) }
+  
     override func scrollWheel(with event: NSEvent) { owner?.scrollWheel(with: event) }
 
     override func keyDown(with event: NSEvent) { owner?.keyDown(with: event) }
@@ -30,7 +33,6 @@ final class X11MTKView: MTKView {
 
 final class X11View: NSView, MTKViewDelegate {
     // MARK: - Mode
-    private var wantMetal: Bool = true
     private var usingMetal: Bool = false
 
     // MARK: - Software path
@@ -39,7 +41,7 @@ final class X11View: NSView, MTKViewDelegate {
     private var trackingArea: NSTrackingArea?
 
     // MARK: - Metal path
-    private var mtkView: MTKView?
+    private var mtkView: X11MTKView?
     private var device: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var frameTexture: MTLTexture?
@@ -74,14 +76,17 @@ final class X11View: NSView, MTKViewDelegate {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        // Ensure the containing window delivers mouse moved events.
-        self.window?.acceptsMouseMovedEvents = true
-      
-      DispatchQueue.main.async { [weak self] in
-          self?.updateTrackingAreas()
-      }
+        window?.acceptsMouseMovedEvents = true
+  
+        // Defer to next runloop turn (avoids “already being laid out” warnings)
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(_refreshTrackingAreas), object: nil)
+        perform(#selector(_refreshTrackingAreas), with: nil, afterDelay: 0.0)
     }
-
+  
+    @objc private func _refreshTrackingAreas() {
+        updateTrackingAreas()
+    }
+  
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
 
@@ -91,6 +96,7 @@ final class X11View: NSView, MTKViewDelegate {
 
         // Track mouse movement within our visible rect while the window is key.
         let options: NSTrackingArea.Options = [
+            .mouseEnteredAndExited,
             .mouseMoved,
             .activeInKeyWindow,
             .inVisibleRect
@@ -111,8 +117,6 @@ final class X11View: NSView, MTKViewDelegate {
   
     // MARK: - Public
     func setUseMetal(_ enabled: Bool) {
-        wantMetal = enabled
-
         if enabled, let dev = MTLCreateSystemDefaultDevice() {
             // Switch to Metal
             if !usingMetal {
@@ -202,6 +206,9 @@ final class X11View: NSView, MTKViewDelegate {
         view.framebufferOnly = false      // allow blit/copy to drawable texture
         view.colorPixelFormat = .bgra8Unorm
 
+        let opts: NSTrackingArea.Options = [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect]
+        view.addTrackingArea(NSTrackingArea(rect: .zero, options: opts, owner: view, userInfo: nil))
+      
         addSubview(view, positioned: .above, relativeTo: nil)
         self.mtkView = view
     }
@@ -321,7 +328,6 @@ extension X11View {
   }
   
   // MARK: Mouse
-  // MARK: Mouse
   private func sendMotion(_ event: NSEvent) {
     let (x, y) = pointInPixels(event)
     x11_post_pointer_event(xid, X11_PTR_MOVE, x, y, buttonMask, mods(event.modifierFlags))
@@ -372,6 +378,17 @@ extension X11View {
   override func rightMouseDragged(with event: NSEvent) { sendMotion(event) }
   override func otherMouseDragged(with event: NSEvent) { sendMotion(event) }
   
+  override func mouseEntered(with event: NSEvent) {
+      let (x, y) = pointInPixels(event)
+      x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
+  }
+
+  override func mouseExited(with event: NSEvent) {
+      let (x, y) = pointInPixels(event)
+      x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+  }
+
+
   override func scrollWheel(with event: NSEvent) {
     let dy = event.scrollingDeltaY
     let dx = event.scrollingDeltaX
@@ -393,18 +410,19 @@ extension X11View {
     while scrollAccumY >= tick { scrollAccumY -= tick; postScroll(axis: X11_SCROLL_VERT, ticks: +1) }
     while scrollAccumY <= -tick { scrollAccumY += tick; postScroll(axis: X11_SCROLL_VERT, ticks: -1) }
 
-    while scrollAccumX >= tick { scrollAccumX -= tick; postScroll(axis: X11_SCROLL_HORZ, ticks: +1) }
-    while scrollAccumX <= -tick { scrollAccumX += tick; postScroll(axis: X11_SCROLL_HORZ, ticks: -1) }  }
+    while scrollAccumX >=  tick { scrollAccumX -= tick; postScroll(axis: X11_SCROLL_HORZ, ticks: +1) }
+    while scrollAccumX <= -tick { scrollAccumX += tick; postScroll(axis: X11_SCROLL_HORZ, ticks: -1) }
+  }
   
   // MARK: Keyboard
   override func keyDown(with event: NSEvent) {
     let text = event.characters ?? ""
     text.withCString { cstr in
-      x11_post_key_event(xid, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
+      x11_post_key_event(0, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
     }
   }
   
   override func keyUp(with event: NSEvent) {
-    x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
+    x11_post_key_event(0, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
   }
 }
