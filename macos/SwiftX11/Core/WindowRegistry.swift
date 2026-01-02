@@ -74,7 +74,10 @@ final class WindowRegistry {
       lastRepaintTimeByXid[xid] = now
       repaintWorkItemByXid[xid]?.cancel()
       repaintWorkItemByXid.removeValue(forKey: xid)
-      x11_request_repaint(xid, w, h)
+      
+      x11_set_window_size(xid, w, h)
+      x11_mark_damage(xid)
+      x11_server_wakeup()
       return
     }
     
@@ -83,8 +86,12 @@ final class WindowRegistry {
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
       guard let sz = self.latestPixelSizeByXid[xid] else { return }
+      
       self.lastRepaintTimeByXid[xid] = CACurrentMediaTime()
-      x11_request_repaint(xid, sz.w, sz.h)
+      
+      x11_set_window_size(xid, sz.w, sz.h)
+      x11_mark_damage(xid)
+      x11_server_wakeup()
     }
     repaintWorkItemByXid[xid] = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
@@ -94,9 +101,11 @@ final class WindowRegistry {
     repaintWorkItemByXid[xid]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: xid)
     
-    if let sz = latestPixelSizeByXid[xid] {
-      x11_request_repaint(xid, sz.w, sz.h)
-    }
+    guard let sz = latestPixelSizeByXid[xid] else { return }
+    // Update backend window state and force immediate repaint via runloop
+    x11_set_window_size(xid, sz.w, sz.h)   // also marks damaged inside C (by our design)
+    x11_mark_damage(xid)                   // harmless even if redundant
+    x11_server_wakeup()                    // ensures the runloop doesn’t wait for timeout
   }
   
   func closeAll() {

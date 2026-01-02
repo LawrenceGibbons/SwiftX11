@@ -12,6 +12,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     
     let viewHolder = X11ViewHolder()
     let host = X11WindowHost(useMetal: useMetal) { view in
+      view.xid = xid
       viewHolder.view = view
     }
     let hosting = NSHostingController(rootView: host)
@@ -69,12 +70,22 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   
   func windowDidBecomeKey(_ notification: Notification) {
       x11_post_focus_event(xid, true)
+      x11_post_window_raise(xid)
   }
 
   func windowDidResignKey(_ notification: Notification) {
       x11_post_focus_event(xid, false)
   }
 
+  func windowWillClose(_ notification: Notification) {
+      // 1) Tell the backend/event-queue that this X11 window is gone
+      x11_post_window_destroy(xid)
+
+      // 2) (Optional but recommended) clear focus + pointer ownership so you don’t “stick”
+      x11_post_focus_event(xid, false)
+      x11_post_pointer_leave(xid, 0, 0, 0)   // only if your shim has it; otherwise omit
+  }  
+  
   private func installEventMonitors(for win: NSWindow) {
     // Mouse + scroll
     let mouseMask: NSEvent.EventTypeMask = [

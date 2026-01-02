@@ -44,6 +44,7 @@ static inline uint32_t x11_button_bit(uint8_t button_number /* 1..31 */) {
     X11_EV_WINDOW_DESTROY = 8,
     X11_EV_POINTER_ENTER  = 9,
     X11_EV_POINTER_LEAVE  = 10,
+    X11_EV_WINDOW_RAISE   = 11,
   } x11_event_type_t;
 
 // ---- Scroll “wheels” (X11-ish)
@@ -115,6 +116,10 @@ typedef struct {
     uint32_t modifiers;
 } x11_pointer_crossing_t;
   
+typedef struct {
+    uint8_t reserved;
+} x11_window_raise_t;
+  
 // ---- Unified event
 typedef struct {
     uint64_t         timestamp_ns; // monotonic, optional but nice
@@ -122,15 +127,16 @@ typedef struct {
     x11_event_type_t type;         // x11_event_type_t
     uint16_t         size;         // sizeof(payload) used (defensive)
     union {
-        x11_pointer_motion_t  motion;
-        x11_pointer_button_t  button;
-        x11_scroll_t          scroll;
-        x11_key_t             key;
-        x11_modifiers_t       mods;
-        x11_focus_t           focus;
-        x11_window_create_t   win_create;
-        x11_window_destroy_t  win_destroy;
+        x11_pointer_motion_t   motion;
+        x11_pointer_button_t   button;
+        x11_scroll_t           scroll;
+        x11_key_t              key;
+        x11_modifiers_t        mods;
+        x11_focus_t            focus;
+        x11_window_create_t    win_create;
+        x11_window_destroy_t   win_destroy;
         x11_pointer_crossing_t crossing;
+        x11_window_raise_t     raise;
     } u;
 } x11_event_t;
 

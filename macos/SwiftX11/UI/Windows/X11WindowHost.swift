@@ -84,32 +84,17 @@ final class X11View: NSView, MTKViewDelegate {
     }
   
     @objc private func _refreshTrackingAreas() {
-        updateTrackingAreas()
+        refreshTrackingArea()
     }
   
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-
-        // Track mouse movement within our visible rect while the window is key.
-        let options: NSTrackingArea.Options = [
-            .mouseEnteredAndExited,
-            .mouseMoved,
-            .activeInKeyWindow,
-            .inVisibleRect
-        ]
-
-        let area = NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil)
-        addTrackingArea(area)
-        trackingArea = area
-    }
+        refreshTrackingArea()
+    }  
   
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // When Metal is active, route input to the MTKView so it can forward to us.
-        if usingMetal, let mv = mtkView {
+      // When Metal is active, route input to the MTKView so it can forward to us.
+      if usingMetal, let mv = mtkView {
             return mv
         }
         return super.hitTest(point)
@@ -131,6 +116,8 @@ final class X11View: NSView, MTKViewDelegate {
             mtkView?.isHidden = true
             imageLayer?.isHidden = false
         }
+      
+        refreshTrackingArea()
     }
 
     /// Present BGRA8888 little-endian framebuffer
@@ -206,13 +193,31 @@ final class X11View: NSView, MTKViewDelegate {
         view.framebufferOnly = false      // allow blit/copy to drawable texture
         view.colorPixelFormat = .bgra8Unorm
 
-        let opts: NSTrackingArea.Options = [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect]
-        view.addTrackingArea(NSTrackingArea(rect: .zero, options: opts, owner: view, userInfo: nil))
-      
         addSubview(view, positioned: .above, relativeTo: nil)
         self.mtkView = view
     }
 
+    private func refreshTrackingArea() {
+        if let trackingArea {
+            self.removeTrackingArea(trackingArea)
+            mtkView?.removeTrackingArea(trackingArea)
+            self.trackingArea = nil
+        }
+  
+        let target: NSView = (usingMetal ? (mtkView ?? self) : self)
+  
+        let opts: NSTrackingArea.Options = [
+            .mouseEnteredAndExited,
+            .mouseMoved,
+            .activeInActiveApp,
+            .inVisibleRect
+        ]
+  
+        let area = NSTrackingArea(rect: .zero, options: opts, owner: self, userInfo: nil)
+        target.addTrackingArea(area)
+        self.trackingArea = area
+    }
+  
     private func ensureTexture(width: Int, height: Int) {
         if let tex = frameTexture, tex.width == width, tex.height == height { return }
         guard let device else { return }

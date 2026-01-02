@@ -21,14 +21,27 @@ struct ContentView: View {
       Divider()
       
       Text("Logs").font(.headline)
-      ScrollView {
-        LazyVStack(alignment: .leading) {
-          ForEach(Array(server.logLines.enumerated()), id: \.offset) { item in
-            Text(item.element)
-              .font(.system(.caption, design: .monospaced))
-              .frame(maxWidth: .infinity, alignment: .leading)
+      ScrollViewReader { proxy in
+          ScrollView {
+              LazyVStack(alignment: .leading) {
+                  ForEach(Array(server.logLines.enumerated()), id: \.offset) { idx, line in
+                      Text(line)
+                          .font(.system(.caption, design: .monospaced))
+                          .frame(maxWidth: .infinity, alignment: .leading)
+                          .id(idx)
+                  }
+              }
           }
-        }
+          .onAppear {
+              if let last = server.logLines.indices.last {
+                  proxy.scrollTo(last, anchor: .bottom)
+              }
+          }
+          .onChange(of: server.logLines.count) { _, _ in
+              if let last = server.logLines.indices.last {
+                  proxy.scrollTo(last, anchor: .bottom)
+              }
+          }
       }
       Toggle("Use Metal rendering", isOn: $settings.useMetal)
     }

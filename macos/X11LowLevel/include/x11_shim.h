@@ -100,6 +100,19 @@ void x11_post_pointer_leave(uint32_t xid,
                             uint32_t modifiers);
   
 bool x11_debug_pop_event(x11_event_t* out_ev);
+
+void x11_post_window_raise(uint32_t xid);
+
+void x11_post_window_destroy(uint32_t xid);
+  
+// ---- Backend runloop + damage (nuts & bolts spine)
+void x11_server_runloop_start(void);
+void x11_server_runloop_stop(void);
+void x11_server_wakeup(void);
+  
+// Window state (used by damage -> repaint)
+void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px);
+void x11_mark_damage(uint32_t xid);
   
 #ifdef __cplusplus
 }

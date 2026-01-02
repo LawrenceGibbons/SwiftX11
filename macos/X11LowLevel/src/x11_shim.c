@@ -3,16 +3,67 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <mach/mach_time.h>
 
 #include "x11_shim.h"
 #include <x11_events.h>   // so we can enqueue x11_event_t
 
+static const uint32_t XID_A = 0x10001;
+static const uint32_t XID_B = 0x10002;
+
 static x11_window_created_cb s_on_create = 0;
 static x11_window_closed_cb  s_on_close  = 0;
 static x11_present_frame_cb    s_present = 0;
+
+// ---- Minimal backend window table + damage
+#define X11_MAX_WINDOWS 64
+
+typedef struct {
+    uint32_t xid;
+    int32_t  w_px;
+    int32_t  h_px;
+    uint8_t  alive;
+    uint8_t  damaged;
+} x11_win_state_t;
+
+static x11_win_state_t g_windows[X11_MAX_WINDOWS];
+
+// ---- Runloop thread + wakeup
+static pthread_t g_thread;
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_cv = PTHREAD_COND_INITIALIZER;
+
+static int g_runloop_running = 0;
+static int g_runloop_stop = 0;
+
+static int find_slot(uint32_t xid) {
+    for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+        if (g_windows[i].alive && g_windows[i].xid == xid) return i;
+    }
+    return -1;
+}
+
+static int alloc_slot(uint32_t xid) {
+    int idx = find_slot(xid);
+    if (idx >= 0) return idx;
+    for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+        if (!g_windows[i].alive) {
+            g_windows[i].alive = 1;
+            g_windows[i].xid = xid;
+            g_windows[i].w_px = 1;
+            g_windows[i].h_px = 1;
+            g_windows[i].damaged = 1;
+            return i;
+        }
+    }
+    return -1;
+}
 static uint32_t g_pointer_xid = 0;
 static uint32_t g_focus_xid = 0;
+static uint32_t g_drag_xid    = 0;
+static uint32_t g_buttons     = 0;   // current button mask
 
 static inline uint64_t x11_now_ns(void)
 {
@@ -26,6 +77,11 @@ static inline uint64_t x11_now_ns(void)
   ns /= (__uint128_t)s_tb.denom;
   return (uint64_t)ns;
 }
+
+static inline bool any_buttons_down(uint32_t buttons) {
+    return buttons != 0;
+}
+
 
 void x11_register_callbacks(
                             x11_window_created_cb on_create,
@@ -41,46 +97,68 @@ bool x11_start_server(int32_t display)
   
   // mouse and keyboard event handling 
   x11_events_init();
-  
-  // Test window
-  const uint32_t xid = 0x10001;
-  const int32_t w = 800;
-  const int32_t h = 600;
-  
-  x11_event_t ev = {0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_CREATE;
-  ev.size = sizeof(ev.u.win_create);
-  ev.u.win_create.width_px = w;
-  ev.u.win_create.height_px = h;
-  x11_events_push(&ev);
-  
+      
   if (s_on_create) {
-    s_on_create(xid, "Test X11 Window", w, h);
+    s_on_create(XID_A, "Test X11 Window A", 800, 600);
+    s_on_create(XID_B, "Test X11 Window B", 520, 360);
   }
   
-  // Initial paint (uses the same path as resize repaint)
-  x11_request_repaint(0x10001, 800, 600);
+  // Enqueue WINDOW_CREATE events (backend truth)
+  x11_event_t evA = {0};
+  evA.timestamp_ns = x11_now_ns();
+  evA.xid = XID_A;
+  evA.type = X11_EV_WINDOW_CREATE;
+  evA.size = sizeof(evA.u.win_create);
+  evA.u.win_create.width_px = 800;
+  evA.u.win_create.height_px = 600;
+  x11_events_push(&evA);
+
+  x11_event_t evB = {0};
+  evB.timestamp_ns = x11_now_ns();
+  evB.xid = XID_B;
+  evB.type = X11_EV_WINDOW_CREATE;
+  evB.size = sizeof(evB.u.win_create);
+  evB.u.win_create.width_px = 520;
+  evB.u.win_create.height_px = 360;
+  x11_events_push(&evB);
+
+  
+  // force the windows to repaint by marking damage
+  x11_set_window_size(XID_A, 800, 600);
+  x11_mark_damage(XID_A);
+  
+  x11_set_window_size(XID_B, 520, 360);
+  x11_mark_damage(XID_B);
+  
+  x11_server_runloop_start();
   
   return true;
 }
 
 void x11_stop_server(void)
 {
-  const uint32_t xid = 0x10001;
+  // Emit destroy events for every window we created.
+  x11_event_t evA = (x11_event_t){0};
+  evA.timestamp_ns = x11_now_ns();
+  evA.xid = XID_A;
+  evA.type = X11_EV_WINDOW_DESTROY;
+  evA.size = sizeof(evA.u.win_destroy);
+  (void)x11_events_push(&evA);
   
-  x11_event_t ev = {0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_DESTROY;
-  ev.size = sizeof(ev.u.win_destroy);
-  x11_events_push(&ev);
+  x11_event_t evB = (x11_event_t){0};
+  evB.timestamp_ns = x11_now_ns();
+  evB.xid = XID_B;
+  evB.type = X11_EV_WINDOW_DESTROY;
+  evB.size = sizeof(evB.u.win_destroy);
+  (void)x11_events_push(&evB);
   
+  // Ask Swift to actually close the NSWindows.
   if (s_on_close) {
-    s_on_close(xid);
+    s_on_close(XID_A);
+    s_on_close(XID_B);
   }
   
+  x11_server_runloop_stop();
   x11_events_shutdown();
 }
 
@@ -103,12 +181,24 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   
   for (int y = 0; y < height_px; y++) {
     for (int x = 0; x < width_px; x++) {
-      uint8_t b = (uint8_t)(x & 0xFF);
-      uint8_t g = (uint8_t)((y * 2) & 0xFF);
-      uint8_t r = (uint8_t)((x ^ y) & 0xFF);
       uint8_t a = 0xFF;
+
+      uint8_t r, g, b;
+      if (xwin_id == XID_A) {
+        // Window A: your existing gradient
+        b = (uint8_t)(x & 0xFF);
+        g = (uint8_t)((y * 2) & 0xFF);
+        r = (uint8_t)((x ^ y) & 0xFF);
+      } else {
+        // Window B: different obvious pattern (vertical bars + red bias)
+        b = (uint8_t)((y * 3) & 0xFF);
+        g = (uint8_t)((x * 2) & 0xFF);
+        r = (uint8_t)(200);
+        if ((x / 20) % 2) { g = 255; } // bright bars
+      }
+
       buf[(size_t)y * (size_t)width_px + (size_t)x] =
-      (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
+        (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
     }
   }
   
@@ -122,12 +212,16 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
                             uint32_t buttons, uint32_t modifiers)
 {
   // Only gate motion to the current pointer window.
+  // and suppress motion unless pointer is "inside"
   if (type == X11_PTR_MOVE) {
     if (g_pointer_xid != 0 && g_pointer_xid != xid) {
       return;
     }
+    if (g_pointer_xid != xid) {
+        return;
+    }
   }
-  
+    
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
@@ -153,6 +247,16 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
     ev.u.button.buttons = buttons;
     ev.u.button.modifiers = modifiers;
     x11_events_push(&ev);
+  } else if (type == X11_PTR_MOVE) {
+    // If a drag is active, force motion to the grabbed window.
+    if (g_drag_xid != 0 && g_drag_xid != xid) {
+        return;
+    }
+
+    // Otherwise, only accept motion from the current pointer window.
+    if (g_drag_xid == 0 && g_pointer_xid != 0 && g_pointer_xid != xid) {
+        return;
+    }
   }
 }
 
@@ -195,6 +299,17 @@ void x11_post_pointer_button(uint32_t xid,
                              uint32_t buttons,
                              uint32_t modifiers)
 {
+  // Track drag ownership: first press grabs, last release clears.
+  if (is_press) {
+      // If no drag grab yet, grab to the window that got the press.
+      if (g_drag_xid == 0) g_drag_xid = xid;
+  } else {
+      // If releasing and buttons becomes 0, clear grab.
+      if (!any_buttons_down(buttons)) g_drag_xid = 0;
+  }
+
+  g_buttons = buttons;
+
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid  = xid;
@@ -276,7 +391,7 @@ void x11_post_pointer_leave(uint32_t xid,
                             int32_t y_px,
                             uint32_t modifiers)
 {
-  if (g_pointer_xid == xid) g_pointer_xid = 0;
+  if (g_drag_xid == 0 && g_pointer_xid == xid) g_pointer_xid = 0;
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
@@ -295,3 +410,135 @@ bool x11_debug_pop_event(x11_event_t* out_ev)
   return x11_events_pop(out_ev);
 }
 
+void x11_post_window_raise(uint32_t xid)
+{
+    x11_event_t ev = {0};
+    ev.timestamp_ns = x11_now_ns();
+    ev.xid = xid;
+    ev.type = X11_EV_WINDOW_RAISE;
+    ev.size = sizeof(ev.u.raise);
+    (void)x11_events_push(&ev);
+}
+
+void x11_post_window_destroy(uint32_t xid)
+{
+    x11_event_t ev = (x11_event_t){0};
+    ev.timestamp_ns = x11_now_ns();
+    ev.xid = xid;
+    ev.type = X11_EV_WINDOW_DESTROY;
+    ev.size = sizeof(ev.u.win_destroy);
+    (void)x11_events_push(&ev);
+}
+
+void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px)
+{
+    if (width_px < 1) width_px = 1;
+    if (height_px < 1) height_px = 1;
+
+    pthread_mutex_lock(&g_mu);
+    int idx = alloc_slot(xid);
+    if (idx >= 0) {
+        g_windows[idx].w_px = width_px;
+        g_windows[idx].h_px = height_px;
+        g_windows[idx].damaged = 1;
+    }
+    pthread_mutex_unlock(&g_mu);
+
+    x11_server_wakeup();
+}
+
+void x11_mark_damage(uint32_t xid)
+{
+    pthread_mutex_lock(&g_mu);
+    int idx = alloc_slot(xid);
+    if (idx >= 0) {
+        g_windows[idx].damaged = 1;
+    }
+    pthread_mutex_unlock(&g_mu);
+
+    x11_server_wakeup();
+}
+
+void x11_server_wakeup(void)
+{
+    pthread_mutex_lock(&g_mu);
+    pthread_cond_signal(&g_cv);
+    pthread_mutex_unlock(&g_mu);
+}
+
+static void* runloop_main(void* _)
+{
+    (void)_;
+    pthread_mutex_lock(&g_mu);
+
+    while (!g_runloop_stop) {
+        // Sleep until woken (or timeout for safety)
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        // ~16ms timeout (60Hz) so we still repaint if a wake is missed
+        ts.tv_nsec += 16 * 1000 * 1000;
+        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+
+        pthread_cond_timedwait(&g_cv, &g_mu, &ts);
+
+        // Snapshot damaged windows under lock
+        uint32_t xids[X11_MAX_WINDOWS];
+        int32_t  ws[X11_MAX_WINDOWS];
+        int32_t  hs[X11_MAX_WINDOWS];
+        int n = 0;
+
+        for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+            if (g_windows[i].alive && g_windows[i].damaged) {
+                g_windows[i].damaged = 0;
+                xids[n] = g_windows[i].xid;
+                ws[n]   = g_windows[i].w_px;
+                hs[n]   = g_windows[i].h_px;
+                n++;
+            }
+        }
+
+        pthread_mutex_unlock(&g_mu);
+
+        // Perform repaints outside lock
+        for (int i = 0; i < n; i++) {
+            x11_request_repaint(xids[i], ws[i], hs[i]);
+        }
+
+        pthread_mutex_lock(&g_mu);
+    }
+
+    pthread_mutex_unlock(&g_mu);
+    return NULL;
+}
+
+void x11_server_runloop_start(void)
+{
+    pthread_mutex_lock(&g_mu);
+    if (g_runloop_running) {
+        pthread_mutex_unlock(&g_mu);
+        return;
+    }
+    g_runloop_stop = 0;
+    g_runloop_running = 1;
+    pthread_mutex_unlock(&g_mu);
+
+    pthread_create(&g_thread, NULL, runloop_main, NULL);
+}
+
+void x11_server_runloop_stop(void)
+{
+    pthread_mutex_lock(&g_mu);
+    if (!g_runloop_running) {
+        pthread_mutex_unlock(&g_mu);
+        return;
+    }
+    g_runloop_stop = 1;
+    pthread_cond_signal(&g_cv);
+    pthread_mutex_unlock(&g_mu);
+
+    pthread_join(g_thread, NULL);
+
+    pthread_mutex_lock(&g_mu);
+    g_runloop_running = 0;
+    pthread_mutex_unlock(&g_mu);
+}
