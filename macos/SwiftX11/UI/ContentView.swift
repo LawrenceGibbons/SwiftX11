@@ -41,7 +41,7 @@ struct ContentView: View {
         WindowRegistry.shared.useMetalForNewWindows = settings.useMetal
       }
     }
-    .onChange(of: settings.useMetal) { newValue in
+    .onChange(of: settings.useMetal) { _, newValue in
       Task { @MainActor in
         WindowRegistry.shared.setUseMetalForAllWindows(newValue)
       }

@@ -321,31 +321,37 @@ extension X11View {
   }
   
   // MARK: Mouse
-  private func sendPointer(_ type: x11_ptr_event_type, _ event: NSEvent) {
+  // MARK: Mouse
+  private func sendMotion(_ event: NSEvent) {
     let (x, y) = pointInPixels(event)
-    x11_post_pointer_event(xid, type, x, y, buttonMask, mods(event.modifierFlags))
+    x11_post_pointer_event(xid, X11_PTR_MOVE, x, y, buttonMask, mods(event.modifierFlags))
+  }
+
+  private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
+    let (x, y) = pointInPixels(event)
+    x11_post_pointer_button(xid, isPress, button, x, y, buttonMask, mods(event.modifierFlags))
   }
   
   override func mouseDown(with event: NSEvent) {
     self.window?.makeFirstResponder(self)
     buttonMask |= bitForButton(1)
-    sendPointer(X11_PTR_DOWN, event)
+    sendButton(true, button: 1, event)
   }
   
   override func mouseUp(with event: NSEvent) {
-    // send UP while the bit is still set (matches common X11 reporting)
-    sendPointer(X11_PTR_UP, event)
+    // report release while still "down", then clear
+    sendButton(false, button: 1, event)
     buttonMask &= ~bitForButton(1)
   }
   
   override func rightMouseDown(with event: NSEvent) {
     self.window?.makeFirstResponder(self)
     buttonMask |= bitForButton(3)
-    sendPointer(X11_PTR_DOWN, event)
+    sendButton(true, button: 3, event)
   }
   
   override func rightMouseUp(with event: NSEvent) {
-    sendPointer(X11_PTR_UP, event)
+    sendButton(false, button: 3, event)
     buttonMask &= ~bitForButton(3)
   }
   
@@ -353,18 +359,18 @@ extension X11View {
     self.window?.makeFirstResponder(self)
     // common mapping: “other” -> button2 (middle)
     buttonMask |= bitForButton(2)
-    sendPointer(X11_PTR_DOWN, event)
+    sendButton(true, button: 2, event)
   }
   
   override func otherMouseUp(with event: NSEvent) {
-    sendPointer(X11_PTR_UP, event)
+    sendButton(false, button: 2, event)
     buttonMask &= ~bitForButton(2)
   }
   
-  override func mouseMoved(with event: NSEvent) { sendPointer(X11_PTR_MOVE, event) }
-  override func mouseDragged(with event: NSEvent) { sendPointer(X11_PTR_MOVE, event) }
-  override func rightMouseDragged(with event: NSEvent) { sendPointer(X11_PTR_MOVE, event) }
-  override func otherMouseDragged(with event: NSEvent) { sendPointer(X11_PTR_MOVE, event) }
+  override func mouseMoved(with event: NSEvent) { sendMotion(event) }
+  override func mouseDragged(with event: NSEvent) { sendMotion(event) }
+  override func rightMouseDragged(with event: NSEvent) { sendMotion(event) }
+  override func otherMouseDragged(with event: NSEvent) { sendMotion(event) }
   
   override func scrollWheel(with event: NSEvent) {
     let dy = event.scrollingDeltaY
@@ -377,20 +383,18 @@ extension X11View {
     scrollAccumY += dy
     scrollAccumX += dx
     
-    func emitTick(button: Int, using event: NSEvent) {
-      // Press+release for the wheel tick without changing persistent buttonMask
-      let saved = buttonMask
-      buttonMask |= bitForButton(button)
-      sendPointer(X11_PTR_DOWN, event)
-      sendPointer(X11_PTR_UP, event)
-      buttonMask = saved
+    let (x, y) = pointInPixels(event)
+    let m = mods(event.modifierFlags)
+
+    func postScroll(axis: x11_scroll_axis_t, ticks: Int16) {
+      x11_post_scroll_ticks(xid, axis, ticks, x, y, buttonMask, m)
     }
-    
-    while scrollAccumY >= tick { scrollAccumY -= tick; emitTick(button: 4, using: event) } // up
-    while scrollAccumY <= -tick { scrollAccumY += tick; emitTick(button: 5, using: event) } // down
-    while scrollAccumX >= tick { scrollAccumX -= tick; emitTick(button: 7, using: event) } // right
-    while scrollAccumX <= -tick { scrollAccumX += tick; emitTick(button: 6, using: event) } // left
-  }
+
+    while scrollAccumY >= tick { scrollAccumY -= tick; postScroll(axis: X11_SCROLL_VERT, ticks: +1) }
+    while scrollAccumY <= -tick { scrollAccumY += tick; postScroll(axis: X11_SCROLL_VERT, ticks: -1) }
+
+    while scrollAccumX >= tick { scrollAccumX -= tick; postScroll(axis: X11_SCROLL_HORZ, ticks: +1) }
+    while scrollAccumX <= -tick { scrollAccumX += tick; postScroll(axis: X11_SCROLL_HORZ, ticks: -1) }  }
   
   // MARK: Keyboard
   override func keyDown(with event: NSEvent) {

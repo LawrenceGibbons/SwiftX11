@@ -44,6 +44,7 @@
 		5225BDE52F05AF2B009E510B /* Exceptions for "X11LowLevel" folder in "X11LowLevel" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			publicHeaders = (
+				include/x11_events.h,
 				include/x11_shim.h,
 				X11LowLevel.h,
 			);
