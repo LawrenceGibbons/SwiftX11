@@ -88,12 +88,19 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   }
 
   func windowWillClose(_ notification: Notification) {
-      // 1) Tell the backend/event-queue that this X11 window is gone
-      x11_post_window_destroy(xid)
+    // make state look clean before arrival of the destroy event
+    x11_post_focus_event(xid, false)
 
-      // 2) (Optional but recommended) clear focus + pointer ownership so you don’t “stick”
-      x11_post_focus_event(xid, false)
-      x11_post_pointer_leave(xid, 0, 0, 0)   // only if your shim has it; otherwise omit
+    // Tell the backend/event-queue that this X11 window is gone
+    x11_post_window_destroy(xid)
+    
+#if DEBUG
+    // warn if somehow it's still alive
+    if x11_debug_get_window_alive(xid) != 0 {
+      print("WARN: xid still alive after destroy: 0x\(String(xid, radix: 16))")
+    }
+#endif
+
   }  
 }
 

@@ -114,38 +114,44 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
 
 static void x11_emit_window_destroy(uint32_t xid)
 {
-    // Clear backend state
-    pthread_mutex_lock(&g_mu);
-    int idx = find_slot(xid);
-    if (idx >= 0) {
-        // Fully clear the slot so stale state can't be observed later.
-        g_windows[idx].alive   = 0;
-        g_windows[idx].damaged = 0;
-        g_windows[idx].xid     = 0;
-        g_windows[idx].w_px    = 0;
-        g_windows[idx].h_px    = 0;
-    }
+  // Clear backend state
+  pthread_mutex_lock(&g_mu);
+  int idx = find_slot(xid);
+  
+  // NEW: idempotent destroy — if it's already gone, do nothing
+  if (idx < 0) {
     pthread_mutex_unlock(&g_mu);
+    return;
+  }
+  
+  // Fully clear the slot so stale state can't be observed later.
+  g_windows[idx].alive   = 0;
+  g_windows[idx].damaged = 0;
+  g_windows[idx].xid     = 0;
+  g_windows[idx].w_px    = 0;
+  g_windows[idx].h_px    = 0;
 
-    // Enqueue event as backend truth
-    x11_event_t ev = (x11_event_t){0};
-    ev.timestamp_ns = x11_now_ns();
-    ev.xid = xid;
-    ev.type = X11_EV_WINDOW_DESTROY;
-    ev.size = sizeof(ev.u.win_destroy);
-    (void)x11_events_push(&ev);
-
-    // Ask Swift to actually close the NSWindow
-    if (s_on_close) {
-        s_on_close(xid);
-    }
-
-    // If pointer/focus/drag were targeting this window, clear them.
-    if (g_pointer_xid == xid) g_pointer_xid = 0;
-    if (g_focus_xid == xid)   g_focus_xid = 0;
-    if (g_drag_xid == xid)    g_drag_xid = 0;
-
-    x11_server_wakeup();
+  pthread_mutex_unlock(&g_mu);
+  
+  // Enqueue event as backend truth
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_DESTROY;
+  ev.size = sizeof(ev.u.win_destroy);
+  (void)x11_events_push(&ev);
+  
+  // Ask Swift to actually close the NSWindow
+  if (s_on_close) {
+    s_on_close(xid);
+  }
+  
+  // If pointer/focus/drag were targeting this window, clear them.
+  if (g_pointer_xid == xid) g_pointer_xid = 0;
+  if (g_focus_xid == xid)   g_focus_xid = 0;
+  if (g_drag_xid == xid)    g_drag_xid = 0;
+  
+  x11_server_wakeup();
 }
 
 // ---- Debug helpers
@@ -231,14 +237,27 @@ bool x11_start_server(int32_t display)
 
 void x11_stop_server(void)
 {
-  // Close the test windows
-  x11_emit_window_destroy(XID_A);
-  x11_emit_window_destroy(XID_B);
-
+  // Snapshot live windows under lock (avoid iterating while mutating)
+  uint32_t live[X11_MAX_WINDOWS];
+  int n = 0;
+  
+  pthread_mutex_lock(&g_mu);
+  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+    if (g_windows[i].alive) {
+      live[n++] = g_windows[i].xid;
+    }
+  }
+  pthread_mutex_unlock(&g_mu);
+  
+  // Close all live windows (idempotent destroy makes this safe)
+  for (int i = 0; i < n; i++) {
+    x11_emit_window_destroy(live[i]);
+  }
+  
 #if 0
   x11_debug_dump_window_table();
 #endif
-
+  
   x11_server_runloop_stop();
   x11_events_shutdown();
 }
