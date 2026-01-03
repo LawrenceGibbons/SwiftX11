@@ -6,11 +6,29 @@
 //
 
 import AppKit
+import QuartzCore
 import X11LowLevel
 
 @MainActor
 final class WindowRegistry {
   static let shared = WindowRegistry()
+  
+  // NEW: injected hooks (set once from SwiftUI/XServerController)
+  private var logAppend: ((String) -> Void)?
+  private var isLogPaused: (() -> Bool)?
+  private var showQueueStats: (() -> Bool)?
+
+  // call this once at startup
+  func attachLogHooks(
+    logAppend: @escaping (String) -> Void,
+    isLogPaused: @escaping () -> Bool,
+    showQueueStats: @escaping () -> Bool
+  ) {
+    self.logAppend = logAppend
+    self.isLogPaused = isLogPaused
+    self.showQueueStats = showQueueStats
+  }
+
   private init() {}
   
   private var windows: [UInt32: X11WindowController] = [:]
@@ -32,9 +50,18 @@ final class WindowRegistry {
                                          width: width, 
                                          height: height,
                                          useMetal: useMetalForNewWindows )
+    // propagate hooks into the window controller
+    controller.logAppend = { [weak self] line in
+      guard let self else { return }
+      guard self.isLogPaused?() != true else { return }
+      self.logAppend?(line)
+    }
+    controller.shouldLogQueueStats = { [weak self] in
+      self?.showQueueStats?() ?? false
+    }
     windows[xid] = controller
     controller.showWindow(nil)
-    controller.x11View?.xid = xid
+    //controller.x11View?.xid = xid
     
     // IMPORTANT: request an initial repaint at the *actual* pixel size once the window has laid out.
     DispatchQueue.main.async { [weak controller] in
@@ -43,7 +70,9 @@ final class WindowRegistry {
       let scale = win.backingScaleFactor
       let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
       let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-      x11_request_repaint(xid, wPx, hPx)
+      x11_set_window_size(xid, wPx, hPx)
+      x11_mark_damage(xid)
+      x11_server_wakeup()
     }
   }
   
@@ -62,7 +91,7 @@ final class WindowRegistry {
     view.presentBGRA(framebuffer: bgra, width: width, height: height, bytesPerRow: bytesPerRow)
   }
   
-  func windowResized(xid: UInt32, sizePoints: CGSize, sizePixels: CGSize, scale: CGFloat) {
+  func windowResized(xid: UInt32, sizePoints _: CGSize, sizePixels: CGSize, scale _: CGFloat) {
     let w = Int32(max(1, Int(sizePixels.width.rounded(.down))))
     let h = Int32(max(1, Int(sizePixels.height.rounded(.down))))
     latestPixelSizeByXid[xid] = (w: w, h: h)
@@ -126,7 +155,9 @@ final class WindowRegistry {
         let scale = win.backingScaleFactor
         let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
         let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-        x11_request_repaint(xid, wPx, hPx)
+        x11_set_window_size(xid, wPx, hPx)
+        x11_mark_damage(xid)
+        x11_server_wakeup()
       }
     }
   }

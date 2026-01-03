@@ -17,4 +17,9 @@ final class SettingsStore: ObservableObject {
 
   @Published var enableClipboard: Bool = true
   @Published var enableTCP: Bool = false
+  
+  @Published var pauseLogAppend: Bool = false     // freeze the log history
+  @Published var showMotionLogs: Bool = false     // suppress the motion logging 
+  @Published var pauseDrain:     Bool = false     // stop draining queue
+  @Published var showQueueStats: Bool = false
 }

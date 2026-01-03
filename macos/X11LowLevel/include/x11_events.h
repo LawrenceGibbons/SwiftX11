@@ -120,6 +120,16 @@ typedef struct {
     uint8_t reserved;
 } x11_window_raise_t;
   
+typedef struct {
+  uint32_t head;
+  uint32_t tail;
+  uint32_t count;
+  uint64_t motion_overwrites;
+  uint64_t push_drops;
+} x11_eventq_stats_t;
+
+x11_eventq_stats_t x11_events_stats(void);
+  
 // ---- Unified event
 typedef struct {
     uint64_t         timestamp_ns; // monotonic, optional but nice
@@ -154,7 +164,14 @@ bool   x11_events_pop(x11_event_t* out_ev);
 uint32_t x11_events_count(void);
 void     x11_events_clear(void);
 
+// ---- Debug counters (optional, but very useful)
+uint64_t x11_debug_motion_overwrites(void); // number of motion events overwritten in-place
+uint64_t x11_debug_push_drops(void);        // number of events dropped because queue was full
+void     x11_debug_reset_counters(void);    // reset both counters to 0
 
+// queue snapshot “table dump” into caller-provided buffer.
+// Returns true if something was written.
+bool x11_debug_dump_queue(char* dst, size_t cap, uint32_t max_items);
 
 #ifdef __cplusplus
 } // extern "C"

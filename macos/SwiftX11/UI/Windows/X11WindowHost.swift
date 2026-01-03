@@ -45,6 +45,7 @@ final class X11View: NSView, MTKViewDelegate {
     private var device: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var frameTexture: MTLTexture?
+    private weak var trackingHost: NSView?
 
     // MARK: -- interface to X11
     private var buttonMask: UInt32 = 0
@@ -72,6 +73,16 @@ final class X11View: NSView, MTKViewDelegate {
         super.layout()
         imageLayer?.frame = bounds
         mtkView?.frame = bounds
+      
+        // Keep Metal drawableSize in sync with view bounds (in pixels).
+        // SwiftUI can transiently layout with a 0-height; guard to avoid warnings.
+        if let mv = mtkView, mv.window != nil {
+          let scale = window?.backingScaleFactor ?? 1.0
+          let wF = bounds.size.width * scale
+          let hF = bounds.size.height * scale
+          guard wF > 0, hF > 0 else { return }
+          mv.drawableSize = CGSize(width: floor(wF), height: floor(hF))
+        }
     }
 
     override func viewDidMoveToWindow() {
@@ -131,7 +142,10 @@ final class X11View: NSView, MTKViewDelegate {
         if usingMetal {
             pendingFrame = (data: data, width: width, height: height, bytesPerRow: bytesPerRow)
             DispatchQueue.main.async { [weak self] in
-                self?.mtkView?.draw()
+              guard let self else { return }
+              guard let mv = self.mtkView else { return }
+              if mv.drawableSize.width <= 0 || mv.drawableSize.height <= 0 { return }
+              mv.draw()
             }
         } else {
             presentSoftware(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
@@ -193,15 +207,26 @@ final class X11View: NSView, MTKViewDelegate {
         view.framebufferOnly = false      // allow blit/copy to drawable texture
         view.colorPixelFormat = .bgra8Unorm
 
+        // initialize drawableSize (in pixels) so the first draw fills the window
+        let scale = window?.backingScaleFactor ?? 1.0
+        let wF = bounds.size.width * scale
+        let hF = bounds.size.height * scale
+        if wF > 0, hF > 0 {
+            view.drawableSize = CGSize(width: floor(wF), height: floor(hF))
+        }
+      
+        //let opts: NSTrackingArea.Options = [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect]
+        //view.addTrackingArea(NSTrackingArea(rect: .zero, options: opts, owner: view, userInfo: nil))
+  
         addSubview(view, positioned: .above, relativeTo: nil)
         self.mtkView = view
     }
 
     private func refreshTrackingArea() {
         if let trackingArea {
-            self.removeTrackingArea(trackingArea)
-            mtkView?.removeTrackingArea(trackingArea)
+            trackingHost?.removeTrackingArea(trackingArea)
             self.trackingArea = nil
+            trackingHost = nil
         }
   
         let target: NSView = (usingMetal ? (mtkView ?? self) : self)
@@ -216,6 +241,7 @@ final class X11View: NSView, MTKViewDelegate {
         let area = NSTrackingArea(rect: .zero, options: opts, owner: self, userInfo: nil)
         target.addTrackingArea(area)
         self.trackingArea = area
+        self.trackingHost = target
     }
   
     private func ensureTexture(width: Int, height: Int) {
@@ -423,11 +449,11 @@ extension X11View {
   override func keyDown(with event: NSEvent) {
     let text = event.characters ?? ""
     text.withCString { cstr in
-      x11_post_key_event(0, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
+      x11_post_key_event(xid, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
     }
   }
   
   override func keyUp(with event: NSEvent) {
-    x11_post_key_event(0, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
+    x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
   }
 }

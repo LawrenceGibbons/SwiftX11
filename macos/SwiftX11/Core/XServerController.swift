@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import X11LowLevel
+import QuartzCore
 
 final class XServerController: ObservableObject {
   @Published var isRunning: Bool = false
@@ -8,6 +9,12 @@ final class XServerController: ObservableObject {
   @Published var logLines: [String] = []
   
   private var drainTimer: DispatchSourceTimer?
+  private var isPaused:    (() -> Bool)?
+  private var showMotion:  (() -> Bool)?
+  private var showStats:   (() -> Bool)?
+  private var drainPaused: (() -> Bool)?
+
+  
   private let queue = DispatchQueue(
     label: "swiftx11.server",
     qos: .userInitiated
@@ -77,7 +84,20 @@ final class XServerController: ObservableObject {
     }
   }
   
-  private func append(_ line: String) {
+  func setLogControls(
+    isPaused:    @escaping () -> Bool,
+    showMotion:  @escaping () -> Bool,
+    showStats:   @escaping () -> Bool,
+    drainPaused: @escaping () -> Bool
+  ) {
+    self.isPaused = isPaused
+    self.showMotion = showMotion
+    self.showStats = showStats
+    self.drainPaused = drainPaused
+  }
+
+  @MainActor
+  func append(_ line: String) {
     logLines.append("[\(Date())] \(line)")
   }
   
@@ -98,20 +118,70 @@ final class XServerController: ObservableObject {
     drainTimer = nil
   }
   
-  private func drainEvents(max: Int) {
-      var n = 0
-      while n < max {
-          var ev = x11_event_t()
-          guard x11_debug_pop_event(&ev) else { break }
+  private var lastStatsPrintTime: CFTimeInterval = 0
 
-          if let line = format(ev) {
-              append(line)
-          }
-          n += 1
+  private func drainEvents(max: Int) {
+    if shouldDrainNow() { return }  // optional: don’t drain at all
+    
+    // sample before
+    let qBefore = Int(x11_events_count())
+    
+    var n = 0
+    while n < max {
+      var ev = x11_event_t()
+      guard x11_debug_pop_event(&ev) else { break }
+      
+      if (!isLogPausedNow()), let line = format(ev, showMotion: (showMotion?() ?? false)) {
+        append(line)
+      }
+      n += 1
+    }
+    
+    maybeAppendQueueStats(qBefore: qBefore, drained: n)
+  }
+  
+  private func shouldShowStats() -> Bool {
+    showStats?() ?? false
+  }
+
+  private func isLogPausedNow() -> Bool {
+    isPaused?() ?? false
+  }
+
+  private func shouldDrainNow() -> Bool {
+    drainPaused?() ?? false
+  }
+  
+  private func maybeAppendQueueStats(qBefore: Int, drained: Int) {
+      guard shouldShowStats() else { return }          // your toggle
+      guard !isLogPausedNow() else { return }          // your “Freeze log output” toggle
+
+      let now = CACurrentMediaTime()
+      guard now - lastStatsPrintTime >= 1.0 else { return }
+      lastStatsPrintTime = now
+
+      let co = x11_debug_motion_overwrites()
+      let drops = x11_debug_push_drops()
+
+      append("EVQ qBefore=\(qBefore) drained=\(drained) coalesce=\(co) drops=\(drops)")
+  }
+  
+  func dumpEventQueue(maxItems: UInt32 = 32) {
+      var buf = [CChar](repeating: 0, count: 8192)
+
+      let ok = buf.withUnsafeMutableBufferPointer { ptr -> Bool in
+          guard let base = ptr.baseAddress else { return false }
+          return x11_debug_dump_queue(base, ptr.count, maxItems)
+      }
+
+      if ok {
+          append(String(cString: buf))
+      } else {
+          append("x11_debug_dump_queue: failed")
       }
   }
   
-  private func format(_ ev: x11_event_t) -> String? {
+  private func format(_ ev: x11_event_t, showMotion: Bool) -> String? {
       let xid = String(format: "0x%X", ev.xid)
 
       switch ev.type {
@@ -128,18 +198,7 @@ final class XServerController: ObservableObject {
           return "EV_LEAVE xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"
 
       case X11_EV_POINTER_MOTION:
-          #if MOTION_LOGS
-          let b = ev.u.motion.buttons
-          return String(
-              format: "EV_MOTION xid=%@ (%d,%d) buttons=0x%X",
-              xid,
-              ev.u.motion.x_px,
-              ev.u.motion.y_px,
-              b
-          )
-          #else
-          return nil
-          #endif
+         return showMotion ? "EV_MOTION xid=\(xid) (\(ev.u.motion.x_px),\(ev.u.motion.y_px)) buttons=\(ev.u.motion.buttons)" : nil
 
       case X11_EV_POINTER_BUTTON:
           return "EV_BUTTON xid=\(xid) btn=\(ev.u.button.button) press=\(ev.u.button.is_press) buttons=\(ev.u.button.buttons)"

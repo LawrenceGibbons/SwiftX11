@@ -18,6 +18,19 @@ struct ContentView: View {
       }
       .padding(.bottom, 8)
       
+      Toggle("Freeze log output", isOn: $settings.pauseLogAppend)
+
+      Toggle("Show queue stats (1/sec)", isOn: $settings.showQueueStats)
+      
+      Toggle("Pause draining (danger: queue can fill)", isOn: $settings.pauseDrain)
+          .toggleStyle(.switch)
+      
+      Toggle("Show Motion events", isOn: $settings.showMotionLogs)
+      
+      Button("Dump Queue") {
+          server.dumpEventQueue(maxItems: 64)
+      }
+      
       Divider()
       
       Text("Logs").font(.headline)
@@ -33,6 +46,19 @@ struct ContentView: View {
               }
           }
           .onAppear {
+              server.setLogControls(
+                isPaused: { settings.pauseLogAppend },
+                showMotion: { settings.showMotionLogs },
+                showStats: { settings.showQueueStats },
+                drainPaused: { settings.pauseDrain }
+              )
+
+              WindowRegistry.shared.attachLogHooks(
+                  logAppend: { line in server.append(line) },
+                  isLogPaused: { settings.pauseLogAppend },
+                  showQueueStats: { settings.showQueueStats }
+              )
+
               if let last = server.logLines.indices.last {
                   proxy.scrollTo(last, anchor: .bottom)
               }

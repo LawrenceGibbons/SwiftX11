@@ -8,6 +8,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include <X11LowLevel/x11_events.h>
 
@@ -99,7 +100,13 @@ void x11_post_pointer_leave(uint32_t xid,
                             int32_t y_px,
                             uint32_t modifiers);
   
+
 bool x11_debug_pop_event(x11_event_t* out_ev);
+
+// ---- Debug helpers (window table validation)
+void x11_debug_dump_window_table(void);
+int  x11_debug_get_window_alive(uint32_t xid);
+int  x11_debug_get_window_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px);
 
 void x11_post_window_raise(uint32_t xid);
 
@@ -113,6 +120,13 @@ void x11_server_wakeup(void);
 // Window state (used by damage -> repaint)
 void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px);
 void x11_mark_damage(uint32_t xid);
+
+// NEW: process one runloop tick (drain damage -> repaint)
+void x11_server_step(void);
+  
+// ---- Optional: dump internal window table for validation
+// Writes a human-readable dump into `out` (NUL-terminated). Returns bytes written (excluding NUL).
+size_t x11_debug_dump_windows(char* out, size_t out_cap);
   
 #ifdef __cplusplus
 }
