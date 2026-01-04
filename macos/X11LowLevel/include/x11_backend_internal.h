@@ -22,9 +22,14 @@ extern "C" {
 #endif
 
 // This header is internal to the X11 backend implementation.
-// It must NOT be included by public headers or external code.
-// It exposes backend-internal state and concurrency details.
-
+/// This header is internal to the X11 backend implementation.
+// It must NOT be included by public headers or external consumers.
+// It MAY be included by backend implementation files such as x11_backend.c and x11_shim.c.
+//
+// Any code including this header is responsible for honoring the backend lock contract:
+// - g_mu protects g_windows and all non-atomic fields.
+// - repaint_inflight is atomic, but lifecycle transitions still require g_mu.
+  
 // Keep this internal to the backend (not exported in x11_shim.h)
 // One slot per window XID.
 // Retired framebuffer list node.
@@ -68,24 +73,6 @@ typedef struct x11_win_state_t {
   // Concurrency / teardown safety
   _Atomic uint32_t repaint_inflight;  // counts active repaints using the framebuffer pointer
 } x11_win_state_t;
-
-// Slot helper APIs are declared in x11_backend.h and implemented in x11_backend.c.
-// This internal header should not expose alternative variants that accept a windows[] parameter.
-  
-// Requires g_mu held; returns list to free outside lock.
-void x11_backend_repaint_finished_locked(uint32_t xid, x11_fb_retired_node_t **out_to_free);
-void x11_backend_free_retired_list(x11_fb_retired_node_t *node);
-  
-  // locked destroy (caller must hold g_mu). Detaches fb + retired list; clears slot.
-// Returns 1 if destroyed, 0 if not found.
-int   x11_backend_window_destroy_locked(uint32_t xid,
-                                       uint32_t **out_fb,
-                                       struct x11_fb_retired_node_t **out_retired);
-
-// ---- Slot helpers (caller must hold g_mu)
-
-int x11_backend_find_slot_locked(uint32_t xid);
-int x11_backend_alloc_slot_locked(uint32_t xid);  
   
 // globals owned by x11_backend.c
 extern pthread_mutex_t g_mu;

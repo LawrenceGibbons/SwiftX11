@@ -25,6 +25,13 @@ static void free_retired_list(x11_fb_retired_node_t *node) {
   }
 }
 
+// Public API: free an opaque retired-fb list returned by destroy.
+void x11_backend_free_retired(void *retired_opaque)
+{
+  if (!retired_opaque) return;
+  free_retired_list((x11_fb_retired_node_t *)retired_opaque);
+}
+
 static void maybe_detach_retired_locked(int idx, x11_fb_retired_node_t **out_list) {
   if (out_list) *out_list = NULL;
   if (idx < 0) return;
@@ -39,7 +46,6 @@ static void maybe_detach_retired_locked(int idx, x11_fb_retired_node_t **out_lis
 // Backend truth + lock live here now.
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 x11_win_state_t g_windows[X11_MAX_WINDOWS];
-
 
 void x11_backend_init(void)
 {
@@ -84,17 +90,46 @@ int x11_backend_alloc_slot_locked(uint32_t xid)
   return -1; // no slots left
 }
 
-void x11_backend_repaint_finished_locked(uint32_t xid, x11_fb_retired_node_t **out_to_free)
+
+// Locked destroy helper used by the public wrapper.
+int x11_backend_window_destroy_locked(uint32_t xid,
+                                     uint32_t **out_fb,
+                                     void **out_retired)
 {
-  if (out_to_free) *out_to_free = NULL;
+  if (out_fb) *out_fb = NULL;
+  if (out_retired) *out_retired = NULL;
+
   int idx = x11_backend_find_slot_locked(xid);
-  if (idx >= 0) {
-    maybe_detach_retired_locked(idx, out_to_free);
+  if (idx < 0) return 0;
+
+  // HARD INVARIANT: never destroy while repaints are in-flight
+  if (atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed) != 0) {
+    return 0;
   }
+  
+  // Detach backing store pointers so caller can free after unlock.
+  uint32_t *old_fb = g_windows[idx].fb;
+  x11_fb_retired_node_t *retired = g_windows[idx].fb_retired;
+
+  g_windows[idx].fb = NULL;
+  g_windows[idx].fb_cap_pixels = 0;
+  g_windows[idx].fb_retired = NULL;
+
+  // Clear the slot.
+  g_windows[idx].alive   = 0;
+  g_windows[idx].mapped  = 0;
+  g_windows[idx].damaged = 0;
+  g_windows[idx].xid     = 0;
+  g_windows[idx].w_px    = 0;
+  g_windows[idx].h_px    = 0;
+  g_windows[idx].closing = 0;   // invariant: dead slots must have closing=0
+
+  if (out_fb) *out_fb = old_fb;
+  if (out_retired) *out_retired = (void *)retired;
+  return 1;
 }
 
-
-// Back-compat names (NO internal locking). Prefer *_locked in new code.
+// Back-compat name (TAKES the lock).
 int x11_backend_find_slot(uint32_t xid)
 {
   int idx;
@@ -104,6 +139,7 @@ int x11_backend_find_slot(uint32_t xid)
   return idx;
 }
 
+// Public API: ensure a slot exists (allocates if needed).
 int x11_backend_alloc_slot(uint32_t xid)
 {
   int idx;
@@ -114,12 +150,12 @@ int x11_backend_alloc_slot(uint32_t xid)
 }
 
 // ---- Lifecycle
-int x11_backend_window_create(uint32_t xid, int32_t w_px, int32_t h_px)
+// Locked variant: caller must hold g_mu
+int x11_backend_set_size_and_damage_locked(uint32_t xid, int32_t w_px, int32_t h_px)
 {
   if (w_px < 1) w_px = 1;
   if (h_px < 1) h_px = 1;
 
-  pthread_mutex_lock(&g_mu);
   int idx = x11_backend_alloc_slot_locked(xid);
   if (idx >= 0) {
     g_windows[idx].alive   = 1;
@@ -129,46 +165,90 @@ int x11_backend_window_create(uint32_t xid, int32_t w_px, int32_t h_px)
     g_windows[idx].h_px    = h_px;
     g_windows[idx].damaged = 1;
   }
+  return idx;
+}
+
+// Public wrapper: takes lock
+int x11_backend_set_size_and_damage(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  pthread_mutex_lock(&g_mu);
+  int idx = x11_backend_set_size_and_damage_locked(xid, w_px, h_px);
   pthread_mutex_unlock(&g_mu);
   return idx;
 }
 
-int x11_backend_window_destroy(uint32_t xid, uint32_t **out_fb)
+int x11_backend_window_destroy(uint32_t xid, uint32_t **out_fb, void **out_retired)
 {
+  
   if (out_fb) *out_fb = NULL;
+  if (out_retired) *out_retired = NULL;
 
   uint32_t *old_fb = NULL;
-  x11_fb_retired_node_t *retired = NULL;
+  void *retired_opaque = NULL;
 
   pthread_mutex_lock(&g_mu);
-  int ok = x11_backend_window_destroy_locked(xid, &old_fb, &retired);
+  int ok = x11_backend_window_destroy_locked(xid, &old_fb, &retired_opaque);
   pthread_mutex_unlock(&g_mu);
 
   if (!ok) return 0;
 
   if (out_fb) *out_fb = old_fb;
-  if (retired) x11_backend_free_retired_list(retired);
+  if (out_retired) *out_retired = retired_opaque;
   return 1;
 }
 
-// ---- Damage
-void x11_backend_mark_damage(uint32_t xid)
+// ---- Damage (locked variants)
+// Contract: caller must hold g_mu.
+void x11_backend_mark_damage_locked(uint32_t xid)
 {
-  pthread_mutex_lock(&g_mu);
   int idx = x11_backend_find_slot_locked(xid);
-  if (idx >= 0 && g_windows[idx].alive) {
+  if (idx >= 0 && g_windows[idx].alive && !g_windows[idx].closing) {
     g_windows[idx].damaged = 1;
   }
+}
+
+void x11_backend_window_set_size_locked(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  int idx = x11_backend_alloc_slot_locked(xid);
+  if (idx >= 0) {
+    g_windows[idx].alive  = 1;
+    g_windows[idx].mapped = 1;
+    // For set_size we do NOT touch damaged, caller decides.
+    // Also: only clear closing if you intend resize to “revive” windows.
+    g_windows[idx].closing = 0;
+    g_windows[idx].w_px   = w_px;
+    g_windows[idx].h_px   = h_px;
+  }
+}
+
+void x11_backend_window_set_size(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  pthread_mutex_lock(&g_mu);
+  x11_backend_window_set_size_locked(xid, w_px, h_px);
   pthread_mutex_unlock(&g_mu);
 }
 
-int x11_backend_take_damaged_snapshot(uint32_t *xids, int32_t *ws, int32_t *hs, int cap)
+
+void x11_backend_mark_all_damage_locked(void)
 {
-  int n = 0;
-  pthread_mutex_lock(&g_mu);
   for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-    if (g_windows[i].alive && g_windows[i].damaged) {
+    if (g_windows[i].alive && !g_windows[i].closing) {
+      g_windows[i].damaged = 1;
+    }
+  }
+}
+
+int x11_backend_take_damaged_snapshot_locked(uint32_t *xids, int32_t *ws, int32_t *hs, int cap)
+{
+  if (!xids || !ws || !hs || cap <= 0) return 0;
+  int n = 0;
+  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+    if (g_windows[i].alive && g_windows[i].damaged && !g_windows[i].closing) {
       if (n >= cap) break;
+      // Clear damage now that we are committing to a repaint.
       g_windows[i].damaged = 0;
       xids[n] = g_windows[i].xid;
       ws[n]   = g_windows[i].w_px;
@@ -176,6 +256,51 @@ int x11_backend_take_damaged_snapshot(uint32_t *xids, int32_t *ws, int32_t *hs, 
       n++;
     }
   }
+  return n;
+}
+
+int x11_backend_snapshot_live_xids_locked(uint32_t *out, int cap)
+{
+  if (!out || cap <= 0) return 0;
+  int n = 0;
+  for (int i = 0; i < X11_MAX_WINDOWS && n < cap; i++) {
+    if (g_windows[i].alive) {
+      out[n++] = g_windows[i].xid;
+    }
+  }
+  return n;
+}
+
+void x11_backend_mark_damage(uint32_t xid)
+{
+  pthread_mutex_lock(&g_mu);
+  x11_backend_mark_damage_locked(xid);
+  pthread_mutex_unlock(&g_mu);
+}
+
+// Mark all live windows as damaged
+void x11_backend_mark_all_damage(void)
+{
+  pthread_mutex_lock(&g_mu);
+  x11_backend_mark_all_damage_locked();
+  pthread_mutex_unlock(&g_mu);
+}
+
+int x11_backend_take_damaged_snapshot(uint32_t *xids, int32_t *ws, int32_t *hs, int cap)
+{
+  int n;
+  pthread_mutex_lock(&g_mu);
+  n = x11_backend_take_damaged_snapshot_locked(xids, ws, hs, cap);
+  pthread_mutex_unlock(&g_mu);
+  return n;
+}
+
+// Snapshot all live xids under backend control
+int x11_backend_snapshot_live_xids(uint32_t *out, int cap)
+{
+  int n;
+  pthread_mutex_lock(&g_mu);
+  n = x11_backend_snapshot_live_xids_locked(out, cap);
   pthread_mutex_unlock(&g_mu);
   return n;
 }
@@ -220,17 +345,16 @@ int x11_backend_ensure_fb(uint32_t xid, size_t need_pixels, uint32_t **out_fb)
   if (idx >= 0 && g_windows[idx].alive && g_windows[idx].xid == xid) {
     old_fb = g_windows[idx].fb;
     g_windows[idx].fb = new_fb;
+    // After swapping in new_fb...
+    // Always detach retired list if inflight is 0 (may free old stuff promptly).
+    maybe_detach_retired_locked(idx, &to_free);
     g_windows[idx].fb_cap_pixels = need_pixels;
     if (out_fb) *out_fb = new_fb;
     kept = 1;
 
     // Retire the old buffer if it exists.
     if (old_fb) {
-      if (atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed) == 0) {
-        // Safe to free immediately (no inflight repaints).
-        // Also detach any previously-retired buffers.
-        maybe_detach_retired_locked(idx, &to_free);
-      } else {
+      if (atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed) != 0) {
         // Not safe: put old_fb on the retired list.
         x11_fb_retired_node_t *node = (x11_fb_retired_node_t*)malloc(sizeof(x11_fb_retired_node_t));
         if (node) {
@@ -238,14 +362,16 @@ int x11_backend_ensure_fb(uint32_t xid, size_t need_pixels, uint32_t **out_fb)
           node->next = g_windows[idx].fb_retired;
           g_windows[idx].fb_retired = node;
           old_fb = NULL; // ownership moved to retired list
+        } else {
+          // leak rather than UAF
+          old_fb = NULL;
         }
-        // If node allocation failed, we intentionally leak old_fb rather than UAF.
       }
     }
-
-    // If inflight is already 0, we can also detach any retired list now.
+    // Detach any retired list if inflight is 0
     maybe_detach_retired_locked(idx, &to_free);
   }
+  
   pthread_mutex_unlock(&g_mu);
 
   if (!kept) {
@@ -259,57 +385,57 @@ int x11_backend_ensure_fb(uint32_t xid, size_t need_pixels, uint32_t **out_fb)
   return 1;
 }
 
-void x11_backend_repaint_finished(uint32_t xid)
+
+// ---- Repaint inflight tracking (locked variants)
+// Contract: caller must hold g_mu.
+int x11_backend_repaint_begin_locked(uint32_t xid)
 {
-  x11_fb_retired_node_t *to_free = NULL;
-
-  pthread_mutex_lock(&g_mu);
-  x11_backend_repaint_finished_locked(xid, &to_free);
-  pthread_mutex_unlock(&g_mu);
-
-  if (to_free) free_retired_list(to_free);
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
+  if (!g_windows[idx].alive) return 0;
+  if (g_windows[idx].closing) return 0;
+  atomic_fetch_add_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed);
+  return 1;
 }
 
-// NEW: non-static wrapper usable from shim (or other backend code)
-void x11_backend_free_retired_list(x11_fb_retired_node_t *node)
+// Decrements inflight (if >0) and detaches any now-safe retired FB list.
+// Returns a list to free outside the lock via *out_to_free.
+void x11_backend_repaint_end_locked(uint32_t xid, void **out_retired)
 {
-  free_retired_list(node);
+  if (out_retired) *out_retired = NULL;
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return;
+
+  uint32_t v = atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed);
+  if (v != 0) {
+    (void)atomic_fetch_sub_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed);
+  }
+
+  x11_fb_retired_node_t *to_free = NULL;
+  maybe_detach_retired_locked(idx, &to_free);
+  if (out_retired) *out_retired = (void *)to_free;
+}
+
+
+// Public: begin a repaint for a window
+int x11_backend_repaint_begin(uint32_t xid)
+{
+  int ok;
+  pthread_mutex_lock(&g_mu);
+  ok = x11_backend_repaint_begin_locked(xid);
+  pthread_mutex_unlock(&g_mu);
+  return ok;
+}
+
+void x11_backend_repaint_end(uint32_t xid)
+{
+  void *retired = NULL;
+
+  pthread_mutex_lock(&g_mu);
+  x11_backend_repaint_end_locked(xid, &retired);
+  pthread_mutex_unlock(&g_mu);
+
+  if (retired) x11_backend_free_retired(retired);
 }
 
 // x11_backend.c
-
-int x11_backend_window_destroy_locked(uint32_t xid,
-                                      uint32_t **out_fb,
-                                      x11_fb_retired_node_t **out_retired)
-{
-  if (out_fb) *out_fb = NULL;
-  if (out_retired) *out_retired = NULL;
-
-  int idx = x11_backend_find_slot_locked(xid);
-  if (idx < 0) return 0;
-
-  // Detach backing store pointers so caller can free after unlock.
-  uint32_t *old_fb = g_windows[idx].fb;
-  x11_fb_retired_node_t *retired = g_windows[idx].fb_retired;
-
-  g_windows[idx].fb = NULL;
-  g_windows[idx].fb_cap_pixels = 0;
-  g_windows[idx].fb_retired = NULL;
-
-  // Clear the slot.
-  g_windows[idx].alive   = 0;
-  g_windows[idx].mapped  = 0;
-  g_windows[idx].damaged = 0;
-  g_windows[idx].xid     = 0;
-  g_windows[idx].w_px    = 0;
-  g_windows[idx].h_px    = 0;
-  g_windows[idx].closing = 0;   // invariant: dead slots must have closing=0
-
-  // IMPORTANT: repaint_inflight must already be 0 at this point,
-  // OR you must have waited in the caller before calling destroy_locked.
-  // (Your shim currently waits — good.)
-
-  if (out_fb) *out_fb = old_fb;
-  if (out_retired) *out_retired = retired;
-  return 1;
-}

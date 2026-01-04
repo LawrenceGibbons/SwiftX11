@@ -149,10 +149,12 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
   g_debug_storm_xid = xid;
 
   // Kick the first repaint immediately if possible.
+  // Decide under lock, apply outside lock.
+  uint32_t kick_xid = 0;
   if (g_debug_storm && g_debug_storm_xid != 0) {
     int idx = x11_backend_find_slot_locked(g_debug_storm_xid);
     if (idx >= 0 && g_windows[idx].alive && !g_windows[idx].closing) {
-      g_windows[idx].damaged = 1;
+      kick_xid = g_debug_storm_xid;
     }
   }
   
@@ -161,6 +163,11 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 #endif
 
   pthread_mutex_unlock(&g_mu);
+  
+  if (kick_xid != 0) {
+    x11_backend_mark_damage(kick_xid);
+  }
+
 #ifndef NDEBUG
   x11_debug_dump_routing_snapshot(enabled ? "debug_set_repaint_storm(on)" : "debug_set_repaint_storm(off)");
 #endif
@@ -202,8 +209,11 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
   int32_t ww = (w < 1) ? 1 : w;
   int32_t hh = (h < 1) ? 1 : h;
 
-  // Ensure backend state exists + mark damaged + wake runloop
-  x11_backend_window_create(xid, ww, hh);
+  // Ensure backend state exists, then set size + mark damage.
+  x11_backend_alloc_slot(xid);
+  x11_backend_window_set_size(xid, ww, hh);
+  x11_backend_mark_damage(xid);
+
   
   // Ask Swift to create the NSWindow
   x11_window_created_cb on_create = NULL;
@@ -233,41 +243,41 @@ static void x11_emit_window_destroy(uint32_t xid)
 {
   x11_window_closed_cb on_close = NULL;
   uint32_t *old_fb = NULL;
-
+  void *retired = NULL;
+  
+  
   pthread_mutex_lock(&g_mu);
   int idx = x11_backend_find_slot_locked(xid);
 
-  // idempotent destroy
+  // Idempotent destroy: if it's already gone, do nothing.
   if (idx < 0) {
     pthread_mutex_unlock(&g_mu);
     return;
   }
 
-  // 0) If we’re doing the repaint-storm test, stop generating new damage now.
-  // This makes the test one-shot and keeps the system calm after the destroy.
+  // If we’re doing the repaint-storm test, stop generating new damage now.
   g_debug_storm = 0;
   g_debug_storm_xid = 0;
-  
-  // 1) Prevent *new* repaints from starting on this window.
+
+  // Prevent *new* repaints from starting on this window.
   g_windows[idx].closing = 1;
   g_windows[idx].damaged = 0;
 
-  // 2) Clear routing ownership while we still know xid
+  // Clear routing ownership while we still know xid.
   if (g_pointer_xid == xid) g_pointer_xid = 0;
   if (g_focus_xid == xid)   g_focus_xid = 0;
   if (g_drag_xid == xid)    g_drag_xid = 0;
 
-  // 3) Snapshot callback
+  // Snapshot callback.
   on_close = s_on_close;
 
-  // 4) Wait for in-flight repaints to finish (we do NOT detach fb yet;
-  //    repaints may still need it until inflight hits 0)
+  // Wait for any in-flight repaints to complete.
   uint32_t inflight = atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed);
   if (inflight != 0) {
     atomic_fetch_add_explicit(&g_debug_destroy_waits, 1, memory_order_relaxed);
-  #ifndef NDEBUG
+#ifndef NDEBUG
     fprintf(stderr, "[SwiftX11] destroy xid=0x%X waiting inflight=%u\n", xid, inflight);
-  #endif
+#endif
   }
   while (atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed) != 0) {
     if (g_inflight_cv_inited) {
@@ -279,26 +289,15 @@ static void x11_emit_window_destroy(uint32_t xid)
     }
   }
 
-  // 5) Now inflight is 0, backend can safely detach fb and clear the slot in one place.
-  uint32_t *old_fb2 = NULL;
-  x11_fb_retired_node_t *retired = NULL;
-
-  int ok = x11_backend_window_destroy_locked(xid, &old_fb2, &retired);
-  (void)ok; // ok should be 1; if 0, someone already destroyed it
-
-  #ifndef NDEBUG
-  // If ok==1, slot is cleared; invariants should hold now
-  // (Optional: if you want, re-run global invariant check here)
-  #endif
-
-  pthread_mutex_unlock(&g_mu);
-
-  // Free outside lock
-  if (old_fb2) free(old_fb2);
-  if (retired) x11_backend_free_retired_list(retired);
+  // Now inflight is 0; detach fb + clear slot via backend (under the same lock).
+  (void)x11_backend_window_destroy_locked(xid, &old_fb, &retired);
   
 #ifndef NDEBUG
-  x11_debug_check_slot_invariants_locked(idx);
+  // Slot invariants should hold after backend clears the slot.
+  // (We can only validate the original index if it is still in-range.)
+  if (idx >= 0 && idx < X11_MAX_WINDOWS) {
+    x11_debug_check_slot_invariants_locked(idx);
+  }
 #endif
 
   pthread_mutex_unlock(&g_mu);
@@ -306,11 +305,12 @@ static void x11_emit_window_destroy(uint32_t xid)
 #ifndef NDEBUG
   x11_debug_dump_routing_snapshot("emit_window_destroy: after slot cleared");
 #endif
-  
-  // Free outside lock
-  if (old_fb) free(old_fb);
 
-  // Enqueue event as backend truth
+  // Free outside lock.
+  if (old_fb) free(old_fb);
+  if (retired) x11_backend_free_retired(retired);
+  
+  // Enqueue event as backend truth.
   x11_event_t ev = (x11_event_t){0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
@@ -318,7 +318,7 @@ static void x11_emit_window_destroy(uint32_t xid)
   ev.size = sizeof(ev.u.win_destroy);
   (void)x11_events_push(&ev);
 
-  // Ask Swift to actually close the NSWindow (NO LOCK held)
+  // Ask Swift to actually close the NSWindow (NO LOCK held).
   if (on_close) {
     on_close(xid);
   }
@@ -511,18 +511,13 @@ void x11_register_frame_presenter(x11_present_frame_cb on_present)
 {
   pthread_mutex_lock(&g_mu);
   s_present = on_present;
+  pthread_mutex_unlock(&g_mu);
 
   // When the presenter becomes available, mark all live windows damaged
   // so their first frame is guaranteed to be produced.
-  if (s_present) {
-    for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-      if (g_windows[i].alive) {
-        g_windows[i].damaged = 1;
-      }
-    }
+  if (on_present) {
+    x11_backend_mark_all_damage();
   }
-
-  pthread_mutex_unlock(&g_mu);
 
   // Wake the runloop so we repaint immediately (rather than waiting for timeout).
   x11_server_wakeup();
@@ -550,8 +545,21 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
     return;
   }
   
-  atomic_fetch_add_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed);
+  // Take inflight via backend API (also checks closing/alive in one place).
+  if (!x11_backend_repaint_begin_locked(xwin_id)) {
+    pthread_mutex_unlock(&g_mu);
+    return;
+  }
   inflight_taken = true;
+  
+  // Re-find slot for consistency with backend begin.
+  idx = x11_backend_find_slot_locked(xwin_id);
+  if (idx < 0) {
+    // extremely defensive; should not happen under g_mu, but keep safe
+    pthread_mutex_unlock(&g_mu);
+    return;
+  }
+  
 #ifndef NDEBUG
   x11_debug_check_slot_invariants_locked(idx);
 #endif
@@ -615,28 +623,28 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   presenter(xwin_id, fb, width_px, height_px, bpr);
   
 done:
-  // 5) Drop inflight + wake destroy waiters if needed
   if (inflight_taken) {
-    x11_fb_retired_node_t *to_free = NULL;
-
+    void *retired = NULL;
+    
     pthread_mutex_lock(&g_mu);
-    if (idx >= 0 && g_windows[idx].xid == xwin_id) {
-      uint32_t v = atomic_fetch_sub_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed) - 1u;
-
-      // Detach retired buffers safely while we still hold g_mu.
-      x11_backend_repaint_finished_locked(xwin_id, &to_free);
-
-      if (g_windows[idx].closing && v == 0 && g_inflight_cv_inited) {
+    x11_backend_repaint_end_locked(xwin_id, &retired);
+    
+    // If destroy is waiting, wake it when we hit zero.
+    // (We need the current slot and inflight count; safest is to re-find.)
+    int didx = x11_backend_find_slot_locked(xwin_id);
+    if (didx >= 0) {
+      uint32_t v = atomic_load_explicit(&g_windows[didx].repaint_inflight, memory_order_relaxed);
+      if (g_windows[didx].closing && v == 0 && g_inflight_cv_inited) {
         pthread_cond_broadcast(&g_inflight_cv);
       }
-    #ifndef NDEBUG
-      x11_debug_check_slot_invariants_locked(idx);
-    #endif
     }
+    
+#ifndef NDEBUG
+    if (didx >= 0) x11_debug_check_slot_invariants_locked(didx);
+#endif
     pthread_mutex_unlock(&g_mu);
-
-    // Free outside lock.
-    if (to_free) x11_backend_free_retired_list(to_free);
+    
+    if (retired) x11_backend_free_retired(retired);
   }
 }
 
@@ -646,11 +654,14 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
 {
     // Motion routing (extra-correct for macOS):
     // - If a drag-grab is active, route motion to the grab window.
-    // - Otherwise, route motion to the focused (key) window when one exists.
-    //   This matches macOS behavior where the key window may receive mouseMoved
-    //   even when the pointer is outside the view.
-    // - If no focused window exists, fall back to pointer enter/leave ownership.
-    if (type == X11_PTR_MOVE) {
+    // Motion routing (deterministic):
+    // - If a drag-grab is active, route motion to the grab window.
+    // - Otherwise, route motion to the current pointer owner (enter/leave ownership).
+    // - If no pointer owner exists, fall back to the focused window (if any).
+    //
+    // NOTE: This is intentionally pointer-owner-first (more X11-ish). If you later want
+    // "key window receives mouseMoved even when pointer is outside", swap focus/pointer.    
+  if (type == X11_PTR_MOVE) {
         atomic_fetch_add_explicit(&g_dbg_move_calls, 1, memory_order_relaxed);
         uint32_t drag = 0;
         uint32_t focus = 0;
@@ -1073,7 +1084,9 @@ void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px)
   if (width_px < 1) width_px = 1;
   if (height_px < 1) height_px = 1;
 
-  x11_backend_window_create(xid, width_px, height_px);
+  x11_backend_alloc_slot(xid);
+  x11_backend_window_set_size(xid, width_px, height_px);
+  x11_backend_mark_damage(xid);
   x11_server_wakeup();
 }
 
