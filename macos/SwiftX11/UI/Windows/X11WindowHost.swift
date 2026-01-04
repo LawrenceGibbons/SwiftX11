@@ -52,6 +52,9 @@ final class X11View: NSView, MTKViewDelegate {
     private var scrollAccumX: CGFloat = 0
     private var scrollAccumY: CGFloat = 0
   
+    // MARK: -- be authoritative for the tracking events 
+    //private var lastInsideForSyntheticCrossing: Bool = false
+  
     // Latest frame (copied) that we upload to texture
     private var pendingFrame: (data: Data, width: Int, height: Int, bytesPerRow: Int)?
 
@@ -341,14 +344,29 @@ extension X11View {
     return m
   }
   
-  private func pointInPixels(_ event: NSEvent) -> (Int32, Int32) {
+  private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
     // Convert to view coords (origin bottom-left in view coords)
     let pInWindow = event.locationInWindow
     let p = convert(pInWindow, from: nil)
-    
+
     let scale = window?.backingScaleFactor ?? 1.0
-    let x = Int32(max(0, Int((p.x * scale).rounded(.down))))
-    let y = Int32(max(0, Int((p.y * scale).rounded(.down))))
+
+    // IMPORTANT:
+    // - For normal hover, it’s fine to clamp to the window.
+    // - For drag/grab semantics, allow negative/outside coords so the backend can see motion outside.
+    var xF = p.x * scale
+    var yF = p.y * scale
+
+    if clampToView {
+      // Clamp in *points* then scale, so bounds logic matches tracking.
+      let clampedX = min(max(p.x, 0), bounds.width)
+      let clampedY = min(max(p.y, 0), bounds.height)
+      xF = clampedX * scale
+      yF = clampedY * scale
+    }
+
+    let x = Int32(floor(xF))
+    let y = Int32(floor(yF))
     return (x, y)
   }
   
@@ -360,12 +378,26 @@ extension X11View {
   
   // MARK: Mouse
   private func sendMotion(_ event: NSEvent) {
-    let (x, y) = pointInPixels(event)
+    // Determine whether the cursor is inside this view in *points*
+    let pInWindow = event.locationInWindow
+    let p = convert(pInWindow, from: nil)
+
+    let inside = bounds.contains(p)
+    let dragging = (buttonMask != 0)
+
+    // Only post motion when inside, or when we’re actively dragging/grabbing.
+    if !inside && !dragging {
+      return
+    }
+
+    // Clamp only for hover motion; during drag allow negative/outside coords.
+    let (x, y) = pointInPixels(event, clampToView: !dragging)
     x11_post_pointer_event(xid, X11_PTR_MOVE, x, y, buttonMask, mods(event.modifierFlags))
   }
-
+  
+  
   private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
-    let (x, y) = pointInPixels(event)
+    let (x, y) = pointInPixels(event, clampToView: false)
     x11_post_pointer_button(xid, isPress, button, x, y, buttonMask, mods(event.modifierFlags))
   }
   
@@ -410,12 +442,12 @@ extension X11View {
   override func otherMouseDragged(with event: NSEvent) { sendMotion(event) }
   
   override func mouseEntered(with event: NSEvent) {
-      let (x, y) = pointInPixels(event)
+      let (x, y) = pointInPixels(event, clampToView: true)
       x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
   }
 
   override func mouseExited(with event: NSEvent) {
-      let (x, y) = pointInPixels(event)
+      let (x, y) = pointInPixels(event, clampToView: true)
       x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
   }
 
@@ -431,7 +463,7 @@ extension X11View {
     scrollAccumY += dy
     scrollAccumX += dx
     
-    let (x, y) = pointInPixels(event)
+    let (x, y) = pointInPixels(event, clampToView: true)
     let m = mods(event.modifierFlags)
 
     func postScroll(axis: x11_scroll_axis_t, ticks: Int16) {

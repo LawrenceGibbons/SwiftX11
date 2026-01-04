@@ -1,4 +1,5 @@
 import SwiftUI
+import X11LowLevel
 
 struct ContentView: View {
   @EnvironmentObject var server: XServerController
@@ -26,9 +27,26 @@ struct ContentView: View {
           .toggleStyle(.switch)
       
       Toggle("Show Motion events", isOn: $settings.showMotionLogs)
+      Toggle("Repaint storm (stress test)", isOn: $settings.repaintStorm)
       
       Button("Dump Queue") {
           server.dumpEventQueue(maxItems: 64)
+      }
+      
+      let XID_A: UInt32 = 0x10001
+      Button("Test destroy-waits (A)") {
+        // Ensure we’re running on the main actor (matches how you do start/stop).
+        Task { @MainActor in
+          // 1) Keep repaints happening so we’ll definitely be in-flight soon.
+          x11_debug_set_repaint_storm(1, XID_A)
+
+          // 2) One-shot: during the next repaint of A, call destroy from inside repaint.
+          x11_debug_destroy_during_next_repaint(1, XID_A)
+        }
+      }
+      
+      Button("Open Inspector") {
+          X11DebugInspectorWindowController.shared.show()
       }
       
       Divider()
@@ -46,19 +64,6 @@ struct ContentView: View {
               }
           }
           .onAppear {
-              server.setLogControls(
-                isPaused: { settings.pauseLogAppend },
-                showMotion: { settings.showMotionLogs },
-                showStats: { settings.showQueueStats },
-                drainPaused: { settings.pauseDrain }
-              )
-
-              WindowRegistry.shared.attachLogHooks(
-                  logAppend: { line in server.append(line) },
-                  isLogPaused: { settings.pauseLogAppend },
-                  showQueueStats: { settings.showQueueStats }
-              )
-
               if let last = server.logLines.indices.last {
                   proxy.scrollTo(last, anchor: .bottom)
               }
@@ -76,14 +81,36 @@ struct ContentView: View {
     
     // preferences hooks
     .onAppear {
+      guard !server.didInstallLogControls else { return }
+      server.didInstallLogControls = true
+
+      server.setLogControls(
+        isPaused: { settings.pauseLogAppend },
+        showMotion: { settings.showMotionLogs },
+        showStats: { settings.showQueueStats },
+        drainPaused: { settings.pauseDrain }
+      )
+
+      WindowRegistry.shared.attachLogHooks(
+          logAppend: { line in server.append(line) },
+          isLogPaused: { settings.pauseLogAppend },
+          showQueueStats: { settings.showQueueStats }
+      )
+
       Task { @MainActor in
         WindowRegistry.shared.useMetalForNewWindows = settings.useMetal
       }
+
+      
     }
     .onChange(of: settings.useMetal) { _, newValue in
       Task { @MainActor in
         WindowRegistry.shared.setUseMetalForAllWindows(newValue)
       }
+    }
+    .onChange(of: settings.repaintStorm) { _, enabled in
+      // 0 means “all windows” for this debug path
+      x11_debug_set_repaint_storm(enabled ? 1 : 0, 0)
     }
   }
 }

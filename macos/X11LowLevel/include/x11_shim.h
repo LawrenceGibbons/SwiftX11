@@ -102,16 +102,57 @@ void x11_post_pointer_leave(uint32_t xid,
   
 
 bool x11_debug_pop_event(x11_event_t* out_ev);
+void x11_post_window_raise(uint32_t xid);
+void x11_post_window_destroy(uint32_t xid);
+void x11_post_window_destroy_async(uint32_t xid);
+  
 
 // ---- Debug helpers (window table validation)
 void x11_debug_dump_window_table(void);
 int  x11_debug_get_window_alive(uint32_t xid);
 int  x11_debug_get_window_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px);
-
-void x11_post_window_raise(uint32_t xid);
-
-void x11_post_window_destroy(uint32_t xid);
+// Enable/disable a repaint storm for stress-testing; xid=0 selects a default window.
+void x11_debug_set_repaint_storm(int enabled, uint32_t xid);
+void x11_debug_destroy_during_next_repaint(int enabled, uint32_t xid);
   
+  
+  // ---- Debug snapshot (for UI inspector)
+  #ifndef X11_DEBUG_MAX_WINDOWS
+  #define X11_DEBUG_MAX_WINDOWS 64
+  #endif
+
+typedef struct {
+    uint32_t xid;
+    int32_t  w_px;
+    int32_t  h_px;
+    uint8_t  alive;
+    uint8_t  damaged;
+    uint16_t _pad;
+} x11_debug_window_row_t;
+
+typedef struct {
+    // Event queue stats
+    uint32_t q_count;
+    uint32_t _pad0;
+    uint64_t q_motion_overwrites;
+    uint64_t q_push_drops;
+    uint64_t destroy_waits;
+  
+    // Routing state
+    uint32_t pointer_xid;
+    uint32_t focus_xid;
+    uint32_t drag_xid;
+    uint32_t buttons;
+
+    // Window table snapshot
+    uint32_t window_count;
+    uint32_t _pad1;
+    x11_debug_window_row_t windows[X11_DEBUG_MAX_WINDOWS];
+} x11_debug_snapshot_t;
+
+// Fills out_snapshot; returns 1 on success.
+int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot);
+
 // ---- Backend runloop + damage (nuts & bolts spine)
 void x11_server_runloop_start(void);
 void x11_server_runloop_stop(void);

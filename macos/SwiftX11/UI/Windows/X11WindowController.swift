@@ -45,8 +45,8 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     guard let win = window else { return }
     
     // Size in points (logical)
-    let sizePoints = win.contentLayoutRect.size
-    
+    let sizePoints = win.contentView?.bounds.size ?? win.contentLayoutRect.size
+
     // Scale factor (1.0 on non-Retina, 2.0 on Retina, etc.)
     let scale = win.backingScaleFactor
     

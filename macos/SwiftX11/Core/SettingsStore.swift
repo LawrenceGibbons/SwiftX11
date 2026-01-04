@@ -22,4 +22,5 @@ final class SettingsStore: ObservableObject {
   @Published var showMotionLogs: Bool = false     // suppress the motion logging 
   @Published var pauseDrain:     Bool = false     // stop draining queue
   @Published var showQueueStats: Bool = false
+  @Published var repaintStorm:   Bool = false
 }

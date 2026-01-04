@@ -3,10 +3,12 @@ import Combine
 import X11LowLevel
 import QuartzCore
 
+@MainActor
 final class XServerController: ObservableObject {
   @Published var isRunning: Bool = false
   @Published var display: Int = 0
   @Published var logLines: [String] = []
+  @Published var didInstallLogControls = false
   
   private var drainTimer: DispatchSourceTimer?
   private var isPaused:    (() -> Bool)?
@@ -14,11 +16,6 @@ final class XServerController: ObservableObject {
   private var showStats:   (() -> Bool)?
   private var drainPaused: (() -> Bool)?
 
-  
-  private let queue = DispatchQueue(
-    label: "swiftx11.server",
-    qos: .userInitiated
-  )
   
   init() {
     // Register Swift callbacks with the C shim
@@ -32,56 +29,56 @@ final class XServerController: ObservableObject {
     append("Registered frame presenter")
     
     NotificationCenter.default.addObserver(
-      forName: .x11StartRequested,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      self?.start()
-    }
-    
+      self,
+      selector: #selector(_handleStartRequested(_:)),
+      name: .x11StartRequested,
+      object: nil
+    )
+
     NotificationCenter.default.addObserver(
-      forName: .x11StopRequested,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      self?.stop()
-    }
+      self,
+      selector: #selector(_handleStopRequested(_:)),
+      name: .x11StopRequested,
+      object: nil
+    )
+  }
+  
+  @objc private func _handleStartRequested(_ note: Notification) {
+    start()
+  }
+
+  @objc private func _handleStopRequested(_ note: Notification) {
+    stop()
   }
   
   func start() {
     guard !isRunning else { return }
+
+    let display = self.display // capture on MainActor
     append("Starting X11 server on :\(display)…")
-    
-    queue.async { [weak self] in
-      guard let self else { return }
-      let ok = x11_start_server(Int32(self.display))
-      DispatchQueue.main.async {
-        self.isRunning = ok
-        self.append(ok ? "Server started" : "Failed to start server")
-        if ok { self.startDrainTimer() }
-      }
-    }
+
+    // x11_start_server spins its own runloop thread; keep the call on MainActor to
+    // avoid Swift 6 Sendable capture warnings from DispatchQueue.async.
+    let ok = x11_start_server(Int32(display))
+
+    isRunning = ok
+    append(ok ? "Server started" : "Failed to start server")
+    if ok { startDrainTimer() }
   }
   
   func stop() {
     guard isRunning else { return }
     append("Stopping X11 server…")
-    
-    queue.async { [weak self] in
-        guard let self else { return }
 
-        x11_stop_server()  // enqueues EV_WINDOW_DESTROY (and others)
+    // Stop is also quick; keep it on MainActor to avoid Swift 6 Sendable capture warnings.
+    x11_stop_server()  // enqueues EV_WINDOW_DESTROY (and others)
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+    // Final drain so destroy events show up in the log UI
+    drainEventsForce(max: 4096)
 
-            // Final drain so destroy events show up in the log UI
-            self.drainEvents(max: 4096)
-
-            self.isRunning = false
-            self.append("Server stopped")
-        }
-    }
+    isRunning = false
+    stopDrainTimer()
+    append("Server stopped")
   }
   
   func setLogControls(
@@ -100,6 +97,7 @@ final class XServerController: ObservableObject {
   func append(_ line: String) {
     logLines.append("[\(Date())] \(line)")
   }
+  
   
   private func startDrainTimer() {
     stopDrainTimer()
@@ -121,7 +119,7 @@ final class XServerController: ObservableObject {
   private var lastStatsPrintTime: CFTimeInterval = 0
 
   private func drainEvents(max: Int) {
-    if shouldDrainNow() { return }  // optional: don’t drain at all
+    if isDrainPausedNow() { return }  // optional: don’t drain at all
     
     // sample before
     let qBefore = Int(x11_events_count())
@@ -140,6 +138,24 @@ final class XServerController: ObservableObject {
     maybeAppendQueueStats(qBefore: qBefore, drained: n)
   }
   
+  private func drainEventsForce(max: Int) {
+    let qBefore = Int(x11_events_count())
+    var n = 0
+    while n < max {
+      var ev = x11_event_t()
+      guard x11_debug_pop_event(&ev) else { break }
+
+      // Force append, but still respect showMotion toggle
+      if let line = format(ev, showMotion: (showMotion?() ?? false)) {
+        append(line)
+      }
+      n += 1
+    }
+
+    // Optional: still show stats if enabled (or always show once on stop)
+    maybeAppendQueueStats(qBefore: qBefore, drained: n)
+  }
+  
   private func shouldShowStats() -> Bool {
     showStats?() ?? false
   }
@@ -148,11 +164,11 @@ final class XServerController: ObservableObject {
     isPaused?() ?? false
   }
 
-  private func shouldDrainNow() -> Bool {
+  private func isDrainPausedNow() -> Bool {
     drainPaused?() ?? false
   }
-  
-  private func maybeAppendQueueStats(qBefore: Int, drained: Int) {
+
+private func maybeAppendQueueStats(qBefore: Int, drained: Int) {
       guard shouldShowStats() else { return }          // your toggle
       guard !isLogPausedNow() else { return }          // your “Freeze log output” toggle
 
@@ -218,5 +234,9 @@ final class XServerController: ObservableObject {
       default:
           return "EV type=\(ev.type.rawValue) xid=\(xid) size=\(ev.size)"
       }
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
   }
 }
