@@ -27,9 +27,14 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     window.isReleasedWhenClosed = false
     
     super.init(window: window)
-    window.setContentSize(NSSize(width: width, height: height))
     
-    self.x11View = viewHolder.view
+    // SwiftUI creates the NSView later (makeNSView). Capture it when it becomes available.
+    viewHolder.onReady = { [weak self] v in
+      self?.x11View = v
+    }
+
+    window.setContentSize(NSSize(width: width, height: height))
+    window.acceptsMouseMovedEvents = true
     window.delegate = self
   }
   
@@ -68,7 +73,39 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     WindowRegistry.shared.flushRepaintNow(xid: xid)
   }
   
+  private func currentMouseLocationInContentPixels() -> (x: Int32, y: Int32) {
+    guard let win = window else { return (0, 0) }
+    guard let content = win.contentView else { return (0, 0) }
+
+    // Mouse location is in screen coordinates with origin at bottom-left.
+    let mouseInScreen = NSEvent.mouseLocation
+
+    // Convert screen -> window -> contentView coords (points)
+    let mouseInWindow = win.convertPoint(fromScreen: mouseInScreen)
+    let p = content.convert(mouseInWindow, from: nil)
+
+    let scale = win.backingScaleFactor
+    let x = Int32(max(0, Int((p.x * scale).rounded(.down))))
+    let y = Int32(max(0, Int((p.y * scale).rounded(.down))))
+    return (x, y)
+  }
+
+  private func postSyntheticEnterForCurrentMouseLocation() {
+    let (x, y) = currentMouseLocationInContentPixels()
+
+    // Force backend pointer ownership to follow the newly-key window.
+    // This is important on macOS because changing key window does not
+    // reliably generate enter/leave transitions.
+    x11_post_pointer_enter(xid, x, y, 0)
+  }
+
+  private func postSyntheticLeaveForCurrentMouseLocation() {
+    let (x, y) = currentMouseLocationInContentPixels()
+    x11_post_pointer_leave(xid, x, y, 0)
+  }
+
   func windowDidBecomeKey(_ notification: Notification) {
+      postSyntheticEnterForCurrentMouseLocation()
       x11_post_focus_event(xid, true)
       x11_post_window_raise(xid)
     
@@ -79,6 +116,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   }
 
   func windowDidResignKey(_ notification: Notification) {
+      postSyntheticLeaveForCurrentMouseLocation()
       x11_post_focus_event(xid, false)
     
       if shouldLogQueueStats?() == true {
@@ -90,6 +128,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   func windowWillClose(_ notification: Notification) {
     // make state look clean before arrival of the destroy event
     x11_post_focus_event(xid, false)
+    postSyntheticLeaveForCurrentMouseLocation()
 
     // Tell the backend/event-queue that this X11 window is gone
     x11_post_window_destroy(xid)
@@ -105,6 +144,25 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
 }
 
 final class X11ViewHolder {
-  var view: X11View?
-}
+  private var _onReady: ((X11View) -> Void)?
 
+  /// Called when the SwiftUI-created X11View becomes available.
+  /// If the view is already set, this delivers immediately.
+  var onReady: ((X11View) -> Void)? {
+    get { _onReady }
+    set {
+      _onReady = newValue
+      if let v = view {
+        _onReady?(v)
+      }
+    }
+  }
+
+  var view: X11View? {
+    didSet {
+      if let v = view {
+        _onReady?(v)
+      }
+    }
+  }
+}

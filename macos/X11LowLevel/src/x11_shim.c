@@ -9,6 +9,7 @@
 #include <time.h>
 #include <assert.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 
 #include "x11_shim.h"
 #include "x11_events.h"   // so we can enqueue x11_event_t
@@ -136,7 +137,30 @@ static uint32_t g_debug_destroy_during_repaint_xid = 0;
 
 // Debug: count how many destroys had to wait for in-flight repaints
 static _Atomic uint64_t g_debug_destroy_waits = 0;
+// Debug: motion routing diagnostics
+static _Atomic uint64_t g_dbg_move_calls = 0;
+static _Atomic uint64_t g_dbg_move_drop_target_mismatch = 0;
+static _Atomic uint64_t g_dbg_move_drop_no_target = 0;
+static _Atomic uint64_t g_dbg_move_target_focus = 0;
+static _Atomic uint64_t g_dbg_move_target_drag  = 0;
+static _Atomic uint64_t g_dbg_move_target_pointer = 0;
+// Debug: routing snapshots (manual + key transitions)
+static _Atomic uint64_t g_dbg_routing_snapshots = 0;
 
+#ifndef NDEBUG
+static uint64_t g_dbg_last_motion_log_ns = 0;
+
+// Rate-limit to ~10 Hz so logs are readable.
+static inline void dbg_motion_log_rl(uint64_t now_ns, const char* fmt, ...) {
+  if (now_ns - g_dbg_last_motion_log_ns < 100000000ULL) return; // 100ms
+  g_dbg_last_motion_log_ns = now_ns;
+
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+}
+#endif
 void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 {
   pthread_mutex_lock(&g_mu);
@@ -156,6 +180,9 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 #endif
 
   pthread_mutex_unlock(&g_mu);
+#ifndef NDEBUG
+  x11_debug_dump_routing_snapshot(enabled ? "debug_set_repaint_storm(on)" : "debug_set_repaint_storm(off)");
+#endif
   x11_server_wakeup();
 }
 
@@ -288,6 +315,10 @@ static void x11_emit_window_destroy(uint32_t xid)
 
   pthread_mutex_unlock(&g_mu);
 
+#ifndef NDEBUG
+  x11_debug_dump_routing_snapshot("emit_window_destroy: after slot cleared");
+#endif
+  
   // Free outside lock
   if (old_fb) free(old_fb);
 
@@ -640,42 +671,88 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
                             int32_t x_px, int32_t y_px,
                             uint32_t buttons, uint32_t modifiers)
 {
-    // Motion gating: only allow motion for the current pointer window unless a drag grab is active.
+    // Motion routing (extra-correct for macOS):
+    // - If a drag-grab is active, route motion to the grab window.
+    // - Otherwise, route motion to the focused (key) window when one exists.
+    //   This matches macOS behavior where the key window may receive mouseMoved
+    //   even when the pointer is outside the view.
+    // - If no focused window exists, fall back to pointer enter/leave ownership.
     if (type == X11_PTR_MOVE) {
+        atomic_fetch_add_explicit(&g_dbg_move_calls, 1, memory_order_relaxed);
         uint32_t drag = 0;
+        uint32_t focus = 0;
         uint32_t pointer = 0;
 
         pthread_mutex_lock(&g_mu);
         drag = g_drag_xid;
+        focus = g_focus_xid;
         pointer = g_pointer_xid;
         pthread_mutex_unlock(&g_mu);
 
-        if (drag != 0) {
-            if (drag != xid) return;
-        } else {
-            // Require pointer to be "inside" a window (set via enter/leave)
-            if (pointer == 0) return;
-            if (pointer != xid) return;
-        }
+      uint32_t target = 0;
+      if (drag != 0) {
+        target = drag;
+        atomic_fetch_add_explicit(&g_dbg_move_target_drag, 1, memory_order_relaxed);
+      } else if (pointer != 0) {
+        target = pointer;
+        atomic_fetch_add_explicit(&g_dbg_move_target_pointer, 1, memory_order_relaxed);
+      } else {
+        target = focus;
+        atomic_fetch_add_explicit(&g_dbg_move_target_focus, 1, memory_order_relaxed);
+      }
+
+      if (target == 0) {
+        atomic_fetch_add_explicit(&g_dbg_move_drop_no_target, 1, memory_order_relaxed);
+      #ifndef NDEBUG
+        dbg_motion_log_rl(x11_now_ns(),
+          "[SwiftX11] MOVE drop: no target (from xid=0x%X drag=0x%X focus=0x%X ptr=0x%X)\n",
+          xid, drag, focus, pointer);
+      #endif
+        return;
+      }
+
+      // Deterministic routing: rewrite to the computed target instead of dropping.
+      if (target != xid) {
+        atomic_fetch_add_explicit(&g_dbg_move_drop_target_mismatch, 1, memory_order_relaxed);
+      #ifndef NDEBUG
+        dbg_motion_log_rl(x11_now_ns(),
+          "[SwiftX11] MOVE reroute: from xid=0x%X -> target=0x%X (drag=0x%X focus=0x%X ptr=0x%X)\n",
+          xid, target, drag, focus, pointer);
+      #endif
+        xid = target;
+      }
+
+      #ifndef NDEBUG
+      dbg_motion_log_rl(x11_now_ns(),
+        "[SwiftX11] MOVE ok: xid=0x%X (drag=0x%X focus=0x%X ptr=0x%X)\n",
+        xid, drag, focus, pointer);
+      #endif
     }
 
     // Keep canonical backend button/drag state correct even for the legacy API.
     // NOTE: Some callers historically passed 0 for motion. Therefore:
     //   - For motion: NEVER trust `buttons`; read g_buttons instead.
     //   - For down/up: treat `buttons` as the AFTER-state mask and commit it to g_buttons.
+    // Drag ownership is derived from the 0->nonzero and nonzero->0 transitions.
     uint32_t buttons_snapshot = 0;
 
     if (type == X11_PTR_DOWN || type == X11_PTR_UP) {
         pthread_mutex_lock(&g_mu);
 
-        // Canonical after-state button mask
-        g_buttons = buttons;
-
-        // Drag grab behavior: first press grabs; releasing last button clears.
+        // A click implies pointer ownership.
         if (type == X11_PTR_DOWN) {
-            if (g_drag_xid == 0) g_drag_xid = xid;
-        } else {
-            if (!any_buttons_down(buttons)) g_drag_xid = 0;
+            g_pointer_xid = xid;
+        }
+
+        const uint32_t old_buttons = g_buttons;
+        const uint32_t new_buttons = buttons; // legacy API supplies AFTER-state mask
+        g_buttons = new_buttons;
+
+        // Drag grab behavior: first transition to nonzero grabs; transition to zero releases.
+        if (old_buttons == 0 && new_buttons != 0) {
+            g_drag_xid = xid;
+        } else if (old_buttons != 0 && new_buttons == 0) {
+            g_drag_xid = 0;
         }
 
         buttons_snapshot = g_buttons;
@@ -764,21 +841,46 @@ void x11_post_pointer_button(uint32_t xid,
                              uint32_t buttons,
                              uint32_t modifiers)
 {
-  // Track drag ownership: first press grabs, last release clears.
   pthread_mutex_lock(&g_mu);
 
-  if (is_press) {
-      // If no drag grab yet, grab to the window that got the press.
-      if (g_drag_xid == 0) g_drag_xid = xid;
-  } else {
-      // If releasing and buttons becomes 0, clear grab.
-      if (!any_buttons_down(buttons)) g_drag_xid = 0;
+  // Maintain canonical button state here instead of trusting the caller.
+  // Some call sites send a release while the local mask still includes the bit,
+  // so we force the bit on press and clear it on release.
+  const uint32_t old_buttons = g_buttons;
+
+  uint32_t mask = buttons;
+  if (button >= 1 && button <= 31) {
+      const uint32_t bit = (1u << (uint32_t)(button - 1u));
+      if (is_press) {
+          mask |= bit;
+      } else {
+          mask &= ~bit;
+      }
   }
 
-  g_buttons = buttons;
+  // EXTRA-CORRECT: a click implies pointer ownership for routing.
+  if (is_press) {
+      g_pointer_xid = xid;
+  }
+
+  // Canonical after-state button mask.
+  g_buttons = mask;
+
+  // Drag ownership is derived from transitions of the canonical mask.
+  if (old_buttons == 0 && g_buttons != 0) {
+      g_drag_xid = xid;
+  } else if (old_buttons != 0 && g_buttons == 0) {
+      g_drag_xid = 0;
+  }
+
+  const uint32_t buttons_snapshot = g_buttons;
 
   pthread_mutex_unlock(&g_mu);
 
+#ifndef NDEBUG
+  x11_debug_dump_routing_snapshot(is_press ? "pointer_button(down)" : "pointer_button(up)");
+#endif
+  
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid  = xid;
@@ -789,7 +891,7 @@ void x11_post_pointer_button(uint32_t xid,
   ev.u.button.y_px = y_px;
   ev.u.button.button = button;
   ev.u.button.is_press = is_press ? 1 : 0;
-  ev.u.button.buttons = buttons;
+  ev.u.button.buttons = buttons_snapshot;
   ev.u.button.modifiers = modifiers;
   
   (void)x11_events_push(&ev);
@@ -803,6 +905,38 @@ void x11_post_scroll_ticks(uint32_t xid,
                            uint32_t buttons,
                            uint32_t modifiers)
 {
+  // Deterministic scroll routing (match MOVE routing): drag > focus > pointer.
+  // Also snapshot canonical button state instead of trusting the caller.
+  uint32_t drag = 0;
+  uint32_t focus = 0;
+  uint32_t pointer = 0;
+  uint32_t buttons_snapshot = 0;
+
+  pthread_mutex_lock(&g_mu);
+  drag = g_drag_xid;
+  focus = g_focus_xid;
+  pointer = g_pointer_xid;
+  buttons_snapshot = g_buttons;
+  pthread_mutex_unlock(&g_mu);
+
+  uint32_t target = 0;
+  if (drag != 0) {
+    target = drag;
+  } else if (pointer != 0) {
+    target = pointer;
+  } else {
+    target = focus;
+  }
+
+  if (target == 0) {
+    return;
+  }
+
+  if (target != xid) {
+    xid = target;
+  }
+  
+  
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid  = xid;
@@ -813,7 +947,7 @@ void x11_post_scroll_ticks(uint32_t xid,
   ev.u.scroll.y_px = y_px;
   ev.u.scroll.axis = (uint8_t)axis; // store as byte in the struct
   ev.u.scroll.ticks = ticks;
-  ev.u.scroll.buttons = buttons;
+  ev.u.scroll.buttons = buttons_snapshot;
   ev.u.scroll.modifiers = modifiers;
   
   (void)x11_events_push(&ev);
@@ -821,13 +955,34 @@ void x11_post_scroll_ticks(uint32_t xid,
 
 void x11_post_focus_event(uint32_t xid, bool focused)
 {
+  uint32_t prev_focus = 0;
+  uint32_t prev_ptr = 0;
+  uint32_t prev_drag = 0;
+
   pthread_mutex_lock(&g_mu);
+  prev_focus = g_focus_xid;
+  prev_ptr   = g_pointer_xid;
+  prev_drag  = g_drag_xid;
+
   if (focused) {
     g_focus_xid = xid;
+    g_pointer_xid = xid;
   } else {
     if (g_focus_xid == xid) g_focus_xid = 0;
+    if (g_pointer_xid == xid && g_drag_xid == 0) g_pointer_xid = 0;
   }
+
+  #ifndef NDEBUG
+  fprintf(stderr,
+          "[SwiftX11] FOCUS xid=0x%X focused=%d (prev_focus=0x%X) ptr=0x%X->0x%X drag=0x%X\n",
+          xid, focused ? 1 : 0, prev_focus, prev_ptr, g_pointer_xid, prev_drag);
+  #endif
+
   pthread_mutex_unlock(&g_mu);
+  
+#ifndef NDEBUG
+  x11_debug_dump_routing_snapshot(focused ? "focus(true)" : "focus(false)");
+#endif
   
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
@@ -843,9 +998,24 @@ void x11_post_pointer_enter(uint32_t xid,
                             int32_t y_px,
                             uint32_t modifiers)
 {
+  uint32_t prev = 0;
+  uint32_t drag = 0;
   pthread_mutex_lock(&g_mu);
-  g_pointer_xid = xid;
+  prev = g_pointer_xid;
+  drag = g_drag_xid;
+  if (drag == 0) {
+    g_pointer_xid = xid;
+  }
+  #ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] ENTER xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
+          xid, prev, g_pointer_xid, drag);
+  #endif
   pthread_mutex_unlock(&g_mu);
+  
+#ifndef NDEBUG
+  x11_debug_dump_routing_snapshot("pointer_enter");
+#endif
+  
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
@@ -864,11 +1034,24 @@ void x11_post_pointer_leave(uint32_t xid,
                             int32_t y_px,
                             uint32_t modifiers)
 {
+  uint32_t prev = 0;
+  uint32_t drag = 0;
   pthread_mutex_lock(&g_mu);
-  if (g_drag_xid == 0 && g_pointer_xid == xid) {
+  prev = g_pointer_xid;
+  drag = g_drag_xid;
+  if (drag == 0 && g_pointer_xid == xid) {
     g_pointer_xid = 0;
   }
+  #ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] LEAVE xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
+          xid, prev, g_pointer_xid, drag);
+  #endif
   pthread_mutex_unlock(&g_mu);
+  
+#ifndef NDEBUG
+  x11_debug_dump_routing_snapshot("pointer_leave");
+#endif
+  
   x11_event_t ev = {0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
@@ -1109,4 +1292,97 @@ void x11_server_runloop_stop(void)
       pthread_cond_destroy(&g_inflight_cv);
       g_inflight_cv_inited = 0;
   }
+}
+
+
+void x11_debug_dump_routing_snapshot(const char* reason)
+{
+#ifndef NDEBUG
+  const char* why = (reason && reason[0]) ? reason : "(no reason)";
+
+  // Motion diagnostics (atomics)
+  uint64_t move_calls    = atomic_load_explicit(&g_dbg_move_calls, memory_order_relaxed);
+  uint64_t move_mismatch = atomic_load_explicit(&g_dbg_move_drop_target_mismatch, memory_order_relaxed);
+  uint64_t move_no_target= atomic_load_explicit(&g_dbg_move_drop_no_target, memory_order_relaxed);
+  uint64_t move_t_focus  = atomic_load_explicit(&g_dbg_move_target_focus, memory_order_relaxed);
+  uint64_t move_t_drag   = atomic_load_explicit(&g_dbg_move_target_drag, memory_order_relaxed);
+  uint64_t move_t_ptr    = atomic_load_explicit(&g_dbg_move_target_pointer, memory_order_relaxed);
+
+  // Count snapshots
+  uint64_t snaps = atomic_fetch_add_explicit(&g_dbg_routing_snapshots, 1, memory_order_relaxed) + 1;
+
+  // Snapshot routing + windows under mutex
+  uint32_t pointer = 0, focus = 0, drag = 0, buttons = 0;
+  uint64_t destroy_waits = 0;
+
+  struct win_line {
+    uint32_t xid;
+    int32_t  w;
+    int32_t  h;
+    uint8_t  damaged;
+    uint8_t  closing;
+    uint32_t inflight;
+  } wins[X11_MAX_WINDOWS];
+  int wn = 0;
+
+  pthread_mutex_lock(&g_mu);
+  pointer = g_pointer_xid;
+  focus   = g_focus_xid;
+  drag    = g_drag_xid;
+  buttons = g_buttons;
+  destroy_waits = atomic_load_explicit(&g_debug_destroy_waits, memory_order_relaxed);
+
+  for (int i = 0; i < X11_MAX_WINDOWS && wn < X11_MAX_WINDOWS; i++) {
+    if (!g_windows[i].alive) continue;
+    wins[wn].xid = g_windows[i].xid;
+    wins[wn].w   = g_windows[i].w_px;
+    wins[wn].h   = g_windows[i].h_px;
+    wins[wn].damaged = g_windows[i].damaged;
+    wins[wn].closing = g_windows[i].closing;
+    wins[wn].inflight =
+      atomic_load_explicit(&g_windows[i].repaint_inflight, memory_order_relaxed);
+    wn++;
+  }
+  pthread_mutex_unlock(&g_mu);
+
+  fprintf(stderr,
+          "[SwiftX11] ROUTING SNAP #%llu reason=%s ptr=0x%X focus=0x%X drag=0x%X buttons=0x%X destroyWaits=%llu\n",
+          (unsigned long long)snaps,
+          why,
+          pointer, focus, drag, buttons,
+          (unsigned long long)destroy_waits);
+
+  fprintf(stderr,
+          "[SwiftX11]   MOVE calls=%llu mismatch=%llu noTarget=%llu targets: focus=%llu drag=%llu ptr=%llu\n",
+          (unsigned long long)move_calls,
+          (unsigned long long)move_mismatch,
+          (unsigned long long)move_no_target,
+          (unsigned long long)move_t_focus,
+          (unsigned long long)move_t_drag,
+          (unsigned long long)move_t_ptr);
+
+  for (int i = 0; i < wn; i++) {
+    fprintf(stderr,
+            "[SwiftX11]   WIN xid=0x%X size=%dx%d damaged=%u closing=%u inflight=%u\n",
+            wins[i].xid,
+            (int)wins[i].w,
+            (int)wins[i].h,
+            (unsigned)wins[i].damaged,
+            (unsigned)wins[i].closing,
+            (unsigned)wins[i].inflight);
+  }
+#else
+  (void)reason;
+#endif
+}
+
+void x11_debug_reset_routing_counters(void)
+{
+  atomic_store_explicit(&g_dbg_move_calls, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dbg_move_drop_target_mismatch, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dbg_move_drop_no_target, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dbg_move_target_focus, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dbg_move_target_drag, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dbg_move_target_pointer, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dbg_routing_snapshots, 0, memory_order_relaxed);
 }

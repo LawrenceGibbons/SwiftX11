@@ -114,6 +114,12 @@ int  x11_debug_get_window_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_p
 // Enable/disable a repaint storm for stress-testing; xid=0 selects a default window.
 void x11_debug_set_repaint_storm(int enabled, uint32_t xid);
 void x11_debug_destroy_during_next_repaint(int enabled, uint32_t xid);
+
+// ---- Debug helpers (routing snapshot)
+// Prints a one-line snapshot of routing state/counters to stderr.
+void x11_debug_dump_routing_snapshot(const char* reason);
+// Resets routing-related debug counters.
+void x11_debug_reset_routing_counters(void);
   
   
   // ---- Debug snapshot (for UI inspector)

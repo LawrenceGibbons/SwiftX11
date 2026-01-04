@@ -53,7 +53,8 @@ final class X11View: NSView, MTKViewDelegate {
     private var scrollAccumY: CGFloat = 0
   
     // MARK: -- be authoritative for the tracking events 
-    //private var lastInsideForSyntheticCrossing: Bool = false
+    private var lastInsideForSyntheticCrossing: Bool = false
+    private var isPointerInside: Bool = false
   
     // Latest frame (copied) that we upload to texture
     private var pendingFrame: (data: Data, width: Int, height: Int, bytesPerRow: Int)?
@@ -91,7 +92,8 @@ final class X11View: NSView, MTKViewDelegate {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
-  
+        isPointerInside = false
+      
         // Defer to next runloop turn (avoids “already being laid out” warnings)
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(_refreshTrackingAreas), object: nil)
         perform(#selector(_refreshTrackingAreas), with: nil, afterDelay: 0.0)
@@ -231,16 +233,22 @@ final class X11View: NSView, MTKViewDelegate {
             self.trackingArea = nil
             trackingHost = nil
         }
-  
+
         let target: NSView = (usingMetal ? (mtkView ?? self) : self)
-  
+
         let opts: NSTrackingArea.Options = [
-            .mouseEnteredAndExited,
-            .mouseMoved,
-            .activeInActiveApp,
-            .inVisibleRect
+          .mouseEnteredAndExited,
+          .mouseMoved,
+          .activeInActiveApp,
+          .inVisibleRect
         ]
-  
+        //let opts: NSTrackingArea.Options = [
+        //    .mouseEnteredAndExited,
+        //    .mouseMoved,
+        //    .activeInActiveApp,
+        //    .inVisibleRect
+        //]
+
         let area = NSTrackingArea(rect: .zero, options: opts, owner: self, userInfo: nil)
         target.addTrackingArea(area)
         self.trackingArea = area
@@ -345,56 +353,62 @@ extension X11View {
   }
   
   private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
-    // Convert to view coords (origin bottom-left in view coords)
+    // Convert to view coords (origin bottom-left)
     let pInWindow = event.locationInWindow
     let p = convert(pInWindow, from: nil)
 
     let scale = window?.backingScaleFactor ?? 1.0
 
-    // IMPORTANT:
-    // - For normal hover, it’s fine to clamp to the window.
-    // - For drag/grab semantics, allow negative/outside coords so the backend can see motion outside.
+    // Allow negative/outside coords when NOT clamping (drag semantics).
     var xF = p.x * scale
     var yF = p.y * scale
 
     if clampToView {
-      // Clamp in *points* then scale, so bounds logic matches tracking.
-      let clampedX = min(max(p.x, 0), bounds.width)
-      let clampedY = min(max(p.y, 0), bounds.height)
-      xF = clampedX * scale
-      yF = clampedY * scale
+      // Clamp in points then scale (matches bounds.contains logic)
+      let clampedXPt = min(max(p.x, 0), bounds.width)
+      let clampedYPt = min(max(p.y, 0), bounds.height)
+      xF = clampedXPt * scale
+      yF = clampedYPt * scale
+
+      // Clamp in pixels to [0 .. sizePx-1]
+      let wPx = max(1, Int(floor(bounds.width * scale)))
+      let hPx = max(1, Int(floor(bounds.height * scale)))
+      xF = min(max(xF, 0), CGFloat(wPx - 1))
+      yF = min(max(yF, 0), CGFloat(hPx - 1))
     }
 
-    let x = Int32(floor(xF))
-    let y = Int32(floor(yF))
-    return (x, y)
+    return (Int32(floor(xF)), Int32(floor(yF)))
   }
-  
-  override func flagsChanged(with event: NSEvent) {
-      // You can later forward this into the backend as “modifier state changed”.
-      // For now we’ll just ensure logs show it if you want.
-      // x11_post_modifiers_changed(xid, mods(event.modifierFlags))  // future API
-  }
+
   
   // MARK: Mouse
   private func sendMotion(_ event: NSEvent) {
-    // Determine whether the cursor is inside this view in *points*
-    let pInWindow = event.locationInWindow
-    let p = convert(pInWindow, from: nil)
-
-    let inside = bounds.contains(p)
+    // Compute inside in *points*
+    let p = convert(event.locationInWindow, from: nil)
+    let insideNow = bounds.contains(p)
     let dragging = (buttonMask != 0)
 
-    // Only post motion when inside, or when we’re actively dragging/grabbing.
-    if !inside && !dragging {
+    // Synthesize enter/leave transitions (robust even if trackingArea misses)
+    if insideNow && !isPointerInside {
+      isPointerInside = true
+      let (x, y) = pointInPixels(event, clampToView: true)
+      x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
+    } else if !insideNow && isPointerInside && !dragging {
+      // Only synth-leave when not dragging (during drag we want “grab” semantics)
+      isPointerInside = false
+      let (x, y) = pointInPixels(event, clampToView: true)
+      x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+    }
+
+    // Deliver motion only when inside OR dragging/grab
+    if !insideNow && !dragging {
       return
     }
 
-    // Clamp only for hover motion; during drag allow negative/outside coords.
+    // During drag allow outside coords; hover clamps.
     let (x, y) = pointInPixels(event, clampToView: !dragging)
     x11_post_pointer_event(xid, X11_PTR_MOVE, x, y, buttonMask, mods(event.modifierFlags))
-  }
-  
+  }  
   
   private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
     let (x, y) = pointInPixels(event, clampToView: false)
@@ -402,6 +416,7 @@ extension X11View {
   }
   
   override func mouseDown(with event: NSEvent) {
+    lastInsideForSyntheticCrossing = true
     self.window?.makeFirstResponder(self)
     buttonMask |= bitForButton(1)
     sendButton(true, button: 1, event)
@@ -414,6 +429,7 @@ extension X11View {
   }
   
   override func rightMouseDown(with event: NSEvent) {
+    lastInsideForSyntheticCrossing = true
     self.window?.makeFirstResponder(self)
     buttonMask |= bitForButton(3)
     sendButton(true, button: 3, event)
@@ -426,15 +442,20 @@ extension X11View {
   
   override func otherMouseDown(with event: NSEvent) {
     self.window?.makeFirstResponder(self)
-    // common mapping: “other” -> button2 (middle)
-    buttonMask |= bitForButton(2)
-    sendButton(true, button: 2, event)
+    lastInsideForSyntheticCrossing = true
+
+    // NSEvent.buttonNumber is 0-based; X11 uses 1-based
+    let btn = UInt8(min(max(event.buttonNumber + 1, 1), 31))
+    buttonMask |= bitForButton(Int(btn))
+    sendButton(true, button: btn, event)
+  }
+
+  override func otherMouseUp(with event: NSEvent) {
+    let btn = UInt8(min(max(event.buttonNumber + 1, 1), 31))
+    sendButton(false, button: btn, event)
+    buttonMask &= ~bitForButton(Int(btn))
   }
   
-  override func otherMouseUp(with event: NSEvent) {
-    sendButton(false, button: 2, event)
-    buttonMask &= ~bitForButton(2)
-  }
   
   override func mouseMoved(with event: NSEvent) { sendMotion(event) }
   override func mouseDragged(with event: NSEvent) { sendMotion(event) }
@@ -442,13 +463,21 @@ extension X11View {
   override func otherMouseDragged(with event: NSEvent) { sendMotion(event) }
   
   override func mouseEntered(with event: NSEvent) {
-      let (x, y) = pointInPixels(event, clampToView: true)
-      x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
+    lastInsideForSyntheticCrossing = true
+    isPointerInside = true
+    let (x, y) = pointInPixels(event, clampToView: true)
+    x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
   }
 
+
   override func mouseExited(with event: NSEvent) {
-      let (x, y) = pointInPixels(event, clampToView: true)
-      x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+    lastInsideForSyntheticCrossing = false
+    // If a drag is in progress, we keep “grab” semantics; don’t force a leave.
+    if buttonMask == 0 {
+      isPointerInside = false
+    }
+    let (x, y) = pointInPixels(event, clampToView: true)
+    x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
   }
 
 
@@ -462,6 +491,12 @@ extension X11View {
     
     scrollAccumY += dy
     scrollAccumX += dx
+
+    // Only deliver scroll when inside, unless dragging/grab is active.
+    let p = convert(event.locationInWindow, from: nil)
+    let insideNow = bounds.contains(p)
+    let dragging = (buttonMask != 0)
+    if !insideNow && !dragging { return }
     
     let (x, y) = pointInPixels(event, clampToView: true)
     let m = mods(event.modifierFlags)

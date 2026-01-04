@@ -49,6 +49,11 @@ struct ContentView: View {
           X11DebugInspectorWindowController.shared.show()
       }
       
+      Button("Snapshot routing") {
+        // Dump a routing + window-table snapshot to stderr (debug builds)
+        x11_debug_dump_routing_snapshot("manual")
+      }
+      
       Divider()
       
       Text("Logs").font(.headline)
