@@ -11,37 +11,19 @@
 #include <stdatomic.h>
 #include <stdarg.h>
 
+#include "x11_parameters.h"
 #include "x11_shim.h"
 #include "x11_events.h"   // so we can enqueue x11_event_t
+#include "x11_backend.h"
+#include "x11_backend_internal.h"
 
 static const uint32_t XID_A = 0x10001;
 static const uint32_t XID_B = 0x10002;
 
 static x11_window_created_cb s_on_create = 0;
 static x11_window_closed_cb  s_on_close  = 0;
-static x11_present_frame_cb    s_present = 0;
+static x11_present_frame_cb s_present = 0;
 
-
-// ---- Minimal backend window table + damage
-#define X11_MAX_WINDOWS 64
-
-typedef struct {
-  uint32_t xid;
-  int32_t  w_px;
-  int32_t  h_px;
-  
-  uint8_t  alive;
-  uint8_t  damaged;
-
-  uint8_t  closing;                  // window is being destroyed
-  _Atomic uint32_t repaint_inflight; // number of active repaints
-
-  uint32_t *fb;                      // framebuffer
-  size_t    fb_cap_pixels;           // capacity in pixels
-} x11_win_state_t;
-
-
-static x11_win_state_t g_windows[X11_MAX_WINDOWS];
 
 #ifndef NDEBUG
 static void x11_debug_check_slot_invariants_locked(int i) {
@@ -84,7 +66,6 @@ static void x11_debug_check_all_invariants_locked(void) {
 
 // ---- Runloop thread + wakeup
 static pthread_t g_thread;
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_cv;
 static int             g_cv_inited = 0;
 
@@ -94,35 +75,35 @@ static int             g_inflight_cv_inited = 0;
 static int g_runloop_running = 0;
 static int g_runloop_stop = 0;
 
-static int find_slot(uint32_t xid) {
-    for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-        if (g_windows[i].alive && g_windows[i].xid == xid) return i;
-    }
-    return -1;
-}
-
-static int alloc_slot(uint32_t xid) {
-  int idx = find_slot(xid);
-  if (idx >= 0) return idx;
-  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-    if (!g_windows[i].alive) {
-      g_windows[i].alive = 1;
-      g_windows[i].xid = xid;
-      g_windows[i].w_px = 1;
-      g_windows[i].h_px = 1;
-      g_windows[i].damaged = 1;
-      g_windows[i].fb = NULL;
-      g_windows[i].fb_cap_pixels = 0;
-      atomic_store_explicit(&g_windows[i].repaint_inflight, 0, memory_order_relaxed);
-      g_windows[i].closing = 0;
-#ifndef NDEBUG
-      x11_debug_check_slot_invariants_locked(i);
-#endif
-      return i;
-    }
-  }
-  return -1;
-}
+//static int find_slot(uint32_t xid) {
+//    for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+//        if (g_windows[i].alive && g_windows[i].xid == xid) return i;
+//    }
+//    return -1;
+//}
+//
+//static int alloc_slot(uint32_t xid) {
+//  int idx = find_slot(xid);
+//  if (idx >= 0) return idx;
+//  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+//    if (!g_windows[i].alive) {
+//      g_windows[i].alive = 1;
+//      g_windows[i].xid = xid;
+//      g_windows[i].w_px = 1;
+//      g_windows[i].h_px = 1;
+//      g_windows[i].damaged = 1;
+//      g_windows[i].fb = NULL;
+//      g_windows[i].fb_cap_pixels = 0;
+//      atomic_store_explicit(&g_windows[i].repaint_inflight, 0, memory_order_relaxed);
+//      g_windows[i].closing = 0;
+//#ifndef NDEBUG
+//      x11_debug_check_slot_invariants_locked(i);
+//#endif
+//      return i;
+//    }
+//  }
+//  return -1;
+//}
 
 static uint32_t g_pointer_xid = 0;
 static uint32_t g_focus_xid = 0;
@@ -169,7 +150,7 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 
   // Kick the first repaint immediately if possible.
   if (g_debug_storm && g_debug_storm_xid != 0) {
-    int idx = find_slot(g_debug_storm_xid);
+    int idx = x11_backend_find_slot_locked(g_debug_storm_xid);
     if (idx >= 0 && g_windows[idx].alive && !g_windows[idx].closing) {
       g_windows[idx].damaged = 1;
     }
@@ -222,7 +203,7 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
   int32_t hh = (h < 1) ? 1 : h;
 
   // Ensure backend state exists + mark damaged + wake runloop
-  x11_set_window_size(xid, ww, hh);
+  x11_backend_window_create(xid, ww, hh);
   
   // Ask Swift to create the NSWindow
   x11_window_created_cb on_create = NULL;
@@ -244,6 +225,7 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
   ev.u.win_create.height_px = hh;
   (void)x11_events_push(&ev);
 
+  x11_server_wakeup();
 }
 
 
@@ -253,7 +235,7 @@ static void x11_emit_window_destroy(uint32_t xid)
   uint32_t *old_fb = NULL;
 
   pthread_mutex_lock(&g_mu);
-  int idx = find_slot(xid);
+  int idx = x11_backend_find_slot_locked(xid);
 
   // idempotent destroy
   if (idx < 0) {
@@ -278,12 +260,8 @@ static void x11_emit_window_destroy(uint32_t xid)
   // 3) Snapshot callback
   on_close = s_on_close;
 
-  // 4) Detach framebuffer pointer, but DO NOT FREE YET.
-  old_fb = g_windows[idx].fb;
-  g_windows[idx].fb = NULL;
-  g_windows[idx].fb_cap_pixels = 0;
-
-  // 5) Wait for in-flight repaints to finish
+  // 4) Wait for in-flight repaints to finish (we do NOT detach fb yet;
+  //    repaints may still need it until inflight hits 0)
   uint32_t inflight = atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed);
   if (inflight != 0) {
     atomic_fetch_add_explicit(&g_debug_destroy_waits, 1, memory_order_relaxed);
@@ -295,20 +273,30 @@ static void x11_emit_window_destroy(uint32_t xid)
     if (g_inflight_cv_inited) {
       pthread_cond_wait(&g_inflight_cv, &g_mu);
     } else {
-      // Fallback if the CV isn't initialized for some reason.
       pthread_mutex_unlock(&g_mu);
       usleep(1000);
       pthread_mutex_lock(&g_mu);
     }
   }
-  
-  // 6) Now it is safe to fully clear the slot (no repaint can touch it anymore)
-  g_windows[idx].xid = 0;
-  g_windows[idx].w_px = 0;
-  g_windows[idx].h_px = 0;
-  g_windows[idx].closing = 0;
-  g_windows[idx].alive = 0;
 
+  // 5) Now inflight is 0, backend can safely detach fb and clear the slot in one place.
+  uint32_t *old_fb2 = NULL;
+  x11_fb_retired_node_t *retired = NULL;
+
+  int ok = x11_backend_window_destroy_locked(xid, &old_fb2, &retired);
+  (void)ok; // ok should be 1; if 0, someone already destroyed it
+
+  #ifndef NDEBUG
+  // If ok==1, slot is cleared; invariants should hold now
+  // (Optional: if you want, re-run global invariant check here)
+  #endif
+
+  pthread_mutex_unlock(&g_mu);
+
+  // Free outside lock
+  if (old_fb2) free(old_fb2);
+  if (retired) x11_backend_free_retired_list(retired);
+  
 #ifndef NDEBUG
   x11_debug_check_slot_invariants_locked(idx);
 #endif
@@ -394,7 +382,7 @@ void x11_debug_dump_window_table(void)
 int x11_debug_get_window_alive(uint32_t xid)
 {
     pthread_mutex_lock(&g_mu);
-    int idx = find_slot(xid);
+    int idx = x11_backend_find_slot_locked(xid);
     int alive = (idx >= 0) ? 1 : 0;
     pthread_mutex_unlock(&g_mu);
     return alive;
@@ -405,7 +393,7 @@ int x11_debug_get_window_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px
     if (!out_w_px || !out_h_px) return 0;
 
     pthread_mutex_lock(&g_mu);
-    int idx = find_slot(xid);
+    int idx = x11_backend_find_slot_locked(xid);
     if (idx < 0) {
         pthread_mutex_unlock(&g_mu);
         return 0;
@@ -471,6 +459,9 @@ bool x11_start_server(int32_t display)
   // mouse and keyboard event handling
   x11_events_init();
 
+  // reset backend window table + state
+  x11_backend_init();
+
   // Create two test windows (backend alloc + Swift callback + event + damage)
   x11_emit_window_create(XID_A, "Test X11 Window A", 800, 600);
   x11_emit_window_create(XID_B, "Test X11 Window B", 520, 360);
@@ -490,7 +481,7 @@ void x11_stop_server(void)
   // Snapshot live windows under lock (avoid iterating while mutating)
   uint32_t live[X11_MAX_WINDOWS];
   int n = 0;
-  
+
   pthread_mutex_lock(&g_mu);
   for (int i = 0; i < X11_MAX_WINDOWS; i++) {
     if (g_windows[i].alive && n < X11_MAX_WINDOWS) {
@@ -498,20 +489,23 @@ void x11_stop_server(void)
     }
   }
   pthread_mutex_unlock(&g_mu);
-  
+
   // Close all live windows (idempotent destroy makes this safe)
   for (int i = 0; i < n; i++) {
     x11_emit_window_destroy(live[i]);
   }
-  
+
 #if 0
   x11_debug_dump_window_table();
 #endif
-  
+
   x11_server_runloop_stop();
+
+  // NEW: clear backend state so second start is always clean
+  x11_backend_init();
+
   x11_events_shutdown();
 }
-
 
 void x11_register_frame_presenter(x11_present_frame_cb on_present)
 {
@@ -537,39 +531,37 @@ void x11_register_frame_presenter(x11_present_frame_cb on_present)
 
 void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
 {
-    if (width_px <= 0 || height_px <= 0) return;
-
-    x11_present_frame_cb presenter = NULL;
-    int idx = -1;
-    uint32_t *fb = NULL;
-    size_t cap = 0;
-
-    // We must decrement inflight on every exit if we increment it.
-    bool inflight_taken = false;
-
-    // 1) Snapshot presenter + find window + block if closing, then take inflight
-    pthread_mutex_lock(&g_mu);
-    presenter = s_present;
-    idx = find_slot(xwin_id);
-
-    if (!presenter || idx < 0 || !g_windows[idx].alive || g_windows[idx].xid != xwin_id || g_windows[idx].closing) {
-        pthread_mutex_unlock(&g_mu);
-        return;
-    }
-
-    atomic_fetch_add_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed);
-    inflight_taken = true;
-#ifndef NDEBUG
-    x11_debug_check_slot_invariants_locked(idx);
-#endif
-
-    fb  = g_windows[idx].fb;
-    cap = g_windows[idx].fb_cap_pixels;
-    pthread_mutex_unlock(&g_mu);
+  if (width_px <= 0 || height_px <= 0) return;
   
-    // debugging -- slow down the repaint
-    if (g_debug_storm) { usleep(20 * 1000); }  // 20ms, tune 1–20ms
-
+  x11_present_frame_cb presenter = NULL;
+  int idx = -1;
+  uint32_t *fb = NULL;
+  
+  // We must decrement inflight on every exit if we increment it.
+  bool inflight_taken = false;
+  
+  // 1) Snapshot presenter + find window + block if closing, then take inflight
+  pthread_mutex_lock(&g_mu);
+  presenter = s_present;
+  idx = x11_backend_find_slot_locked(xwin_id);
+  
+  if (!presenter || idx < 0 || !g_windows[idx].alive || g_windows[idx].xid != xwin_id || g_windows[idx].closing) {
+    pthread_mutex_unlock(&g_mu);
+    return;
+  }
+  
+  atomic_fetch_add_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed);
+  inflight_taken = true;
+#ifndef NDEBUG
+  x11_debug_check_slot_invariants_locked(idx);
+#endif
+  
+  fb  = g_windows[idx].fb;
+  pthread_mutex_unlock(&g_mu);
+  
+  // debugging -- slow down the repaint
+  if (g_debug_storm) { usleep(20 * 1000); }  // 20ms, tune 1–20ms
+  
   // Deterministic destroy-while-inflight test (one-shot)
   int do_destroy = 0;
   uint32_t dxid = 0;
@@ -582,89 +574,70 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
     g_debug_destroy_during_repaint = 0; // one-shot
   }
   pthread_mutex_unlock(&g_mu);
-
+  
   if (do_destroy) {
     // IMPORTANT: never call synchronous destroy from inside repaint
     // (we hold repaint_inflight and would deadlock waiting for it to hit 0).
     x11_post_window_destroy_async(dxid);
   }
-
-    // 2) Ensure capacity (grow outside lock, then swap under lock if still valid)
-    const size_t need_pixels = (size_t)width_px * (size_t)height_px;
-    const int bpr = width_px * 4;
-
-    if (cap < need_pixels) {
-        uint32_t *new_fb = (uint32_t*)malloc(need_pixels * sizeof(uint32_t));
-        if (!new_fb) goto done;
-
-        uint32_t *old_fb = NULL;
-        bool swapped = false;
-
-        pthread_mutex_lock(&g_mu);
-        // Revalidate: still same window, alive, not closing
-        if (idx >= 0 &&
-            g_windows[idx].alive &&
-            g_windows[idx].xid == xwin_id &&
-            !g_windows[idx].closing)
-        {
-            old_fb = g_windows[idx].fb;
-            g_windows[idx].fb = new_fb;
-            g_windows[idx].fb_cap_pixels = need_pixels;
-            fb = new_fb;
-            cap = need_pixels;
-            new_fb = NULL;     // ownership transferred
-            swapped = true;
-        }
-        pthread_mutex_unlock(&g_mu);
-
-        if (new_fb) free(new_fb);  // window died/closed before swap
-        if (old_fb) free(old_fb);  // replaced old buffer
-
-        if (!swapped || !fb) goto done; // window no longer valid
+  
+  // 2) Ensure backing store exists (backend may grow and returns a stable fb pointer)
+  const size_t need_pixels = (size_t)width_px * (size_t)height_px;
+  const int bpr = width_px * 4;
+  
+  if (!x11_backend_ensure_fb(xwin_id, need_pixels, &fb) || !fb) {
+    goto done;
+  }
+  
+  // 3) Render into fb (no lock held)
+  for (int y = 0; y < height_px; y++) {
+    for (int x = 0; x < width_px; x++) {
+      uint8_t a = 0xFF;
+      uint8_t r, g, b;
+      
+      if (xwin_id == XID_A) {
+        b = (uint8_t)(x & 0xFF);
+        g = (uint8_t)((y * 2) & 0xFF);
+        r = (uint8_t)((x ^ y) & 0xFF);
+      } else {
+        b = (uint8_t)((y * 3) & 0xFF);
+        g = (uint8_t)((x * 2) & 0xFF);
+        r = (uint8_t)(200);
+        if ((x / 20) % 2) { g = 255; }
+      }
+      
+      fb[(size_t)y * (size_t)width_px + (size_t)x] =
+      (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
     }
-
-    // 3) Render into fb (no lock held)
-    for (int y = 0; y < height_px; y++) {
-        for (int x = 0; x < width_px; x++) {
-            uint8_t a = 0xFF;
-            uint8_t r, g, b;
-
-            if (xwin_id == XID_A) {
-                b = (uint8_t)(x & 0xFF);
-                g = (uint8_t)((y * 2) & 0xFF);
-                r = (uint8_t)((x ^ y) & 0xFF);
-            } else {
-                b = (uint8_t)((y * 3) & 0xFF);
-                g = (uint8_t)((x * 2) & 0xFF);
-                r = (uint8_t)(200);
-                if ((x / 20) % 2) { g = 255; }
-            }
-
-            fb[(size_t)y * (size_t)width_px + (size_t)x] =
-                (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
-        }
-    }
-
-    // 4) Present (no lock held)
-    presenter(xwin_id, fb, width_px, height_px, bpr);
-
+  }
+  
+  // 4) Present (no lock held)
+  presenter(xwin_id, fb, width_px, height_px, bpr);
+  
 done:
-    // 5) Drop inflight + wake destroy waiters if needed
-    if (inflight_taken) {
-        pthread_mutex_lock(&g_mu);
-        // Only touch counter if slot is still this xid and alive/closing state is meaningful
-        if (idx >= 0 && g_windows[idx].xid == xwin_id) {
-            uint32_t v = atomic_fetch_sub_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed) - 1u;
-            // If destroy is waiting, wake it when we hit zero.
-            if (g_windows[idx].closing && v == 0 && g_inflight_cv_inited) {
-                pthread_cond_broadcast(&g_inflight_cv);
-            }
-#ifndef NDEBUG
-            x11_debug_check_slot_invariants_locked(idx);
-#endif
-        }
-        pthread_mutex_unlock(&g_mu);
+  // 5) Drop inflight + wake destroy waiters if needed
+  if (inflight_taken) {
+    x11_fb_retired_node_t *to_free = NULL;
+
+    pthread_mutex_lock(&g_mu);
+    if (idx >= 0 && g_windows[idx].xid == xwin_id) {
+      uint32_t v = atomic_fetch_sub_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed) - 1u;
+
+      // Detach retired buffers safely while we still hold g_mu.
+      x11_backend_repaint_finished_locked(xwin_id, &to_free);
+
+      if (g_windows[idx].closing && v == 0 && g_inflight_cv_inited) {
+        pthread_cond_broadcast(&g_inflight_cv);
+      }
+    #ifndef NDEBUG
+      x11_debug_check_slot_invariants_locked(idx);
+    #endif
     }
+    pthread_mutex_unlock(&g_mu);
+
+    // Free outside lock.
+    if (to_free) x11_backend_free_retired_list(to_free);
+  }
 }
 
 void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
@@ -1099,32 +1072,14 @@ void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px)
 {
   if (width_px < 1) width_px = 1;
   if (height_px < 1) height_px = 1;
-  
-  pthread_mutex_lock(&g_mu);
-  int idx = find_slot(xid);
-  if (idx < 0) idx = alloc_slot(xid);
-  
-  if (idx >= 0 && !g_windows[idx].closing) {
-    g_windows[idx].w_px = width_px;
-    g_windows[idx].h_px = height_px;
-    g_windows[idx].damaged = 1;
-  }
-  pthread_mutex_unlock(&g_mu);
-  
+
+  x11_backend_window_create(xid, width_px, height_px);
   x11_server_wakeup();
 }
 
 void x11_mark_damage(uint32_t xid)
 {
-  pthread_mutex_lock(&g_mu);
-  int idx = find_slot(xid);
-  if (idx < 0) idx = alloc_slot(xid);
-  
-  if (idx >= 0 && !g_windows[idx].closing) {
-    g_windows[idx].damaged = 1;
-  }
-  pthread_mutex_unlock(&g_mu);
-  
+  x11_backend_mark_damage(xid);
   x11_server_wakeup();
 }
 
@@ -1146,32 +1101,21 @@ void x11_server_step(void)
   int32_t  hs[X11_MAX_WINDOWS];
   int n = 0;
 
-  pthread_mutex_lock(&g_mu);
-  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-    if (g_windows[i].alive && g_windows[i].damaged && !g_windows[i].closing) {
-      if (n >= X11_MAX_WINDOWS) break;
+  // Ask backend for the list of damaged windows (also clears damage internally)
+  n = x11_backend_take_damaged_snapshot(xids, ws, hs, X11_MAX_WINDOWS);
 
-      g_windows[i].damaged = 0;
-
-      xids[n] = g_windows[i].xid;
-      ws[n]   = g_windows[i].w_px;
-      hs[n]   = g_windows[i].h_px;
-      n++;
-    }
-  }
-  // Debug storm: keep one window continuously damaged so the runloop repaints every tick.
-  // This is intentionally simple and is meant for stress-testing stop/destroy while repaints are active.
+  // Debug storm: continuously re-damage one window so the runloop repaints every tick.
   if (g_debug_storm && g_debug_storm_xid != 0) {
-    int si = find_slot(g_debug_storm_xid);
-    if (si >= 0 && g_windows[si].alive && !g_windows[si].closing) {
-      g_windows[si].damaged = 1;
-    }
+    x11_backend_mark_damage(g_debug_storm_xid);
   }
-#ifndef NDEBUG
-  x11_debug_check_all_invariants_locked();
-#endif
-  pthread_mutex_unlock(&g_mu);
 
+  #ifndef NDEBUG
+  // Backend owns invariants; this check still validates the shared window table.
+  pthread_mutex_lock(&g_mu);
+  x11_debug_check_all_invariants_locked();
+  pthread_mutex_unlock(&g_mu);
+  #endif
+  
   // Perform repaints outside lock
   for (int i = 0; i < n; i++) {
     x11_request_repaint(xids[i], ws[i], hs[i]);
