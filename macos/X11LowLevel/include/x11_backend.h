@@ -126,6 +126,9 @@ void  x11_backend_free_retired(void *retired);
 void  x11_backend_window_set_size(uint32_t xid, int32_t w_px, int32_t h_px);
 void  x11_backend_window_set_size_locked(uint32_t xid, int32_t w_px, int32_t h_px);
 
+void x11_backend_shutdown(void);
+void x11_backend_clear_windows(void);
+  
 // -----------------------------------------------------------------------------
 // Damage
 // -----------------------------------------------------------------------------
@@ -154,13 +157,9 @@ void  x11_backend_repaint_end(uint32_t xid);
 
 int   x11_backend_repaint_begin_locked(uint32_t xid);
 void  x11_backend_repaint_end_locked(uint32_t xid,
-                                     pthread_cond_t *inflight_cv,
-                                     int inflight_cv_inited,
                                      void **out_retired);
   
-int   x11_backend_wait_inflight_zero_locked(uint32_t xid,
-                                            pthread_cond_t *inflight_cv,
-                                            int inflight_cv_inited);
+int   x11_backend_wait_inflight_zero_locked(uint32_t xid);
 #ifdef __cplusplus
 }
 #endif

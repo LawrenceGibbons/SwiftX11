@@ -34,10 +34,6 @@ typedef struct x11_server_ctx_t {
   pthread_cond_t cv;
   int            runloop_cv_inited;
 
-  // ---- Destroy/inflight coordination
-  pthread_cond_t inflight_cv;
-  int            destroy_cv_inited;
-
   int runloop_running;
   int runloop_stop;
 
@@ -73,60 +69,6 @@ typedef struct x11_server_ctx_t {
 } x11_server_ctx_t;
 
 static x11_server_ctx_t g_srv; // zero-initialized
-
-static void x11_srv_init_cvs_locked(void)
-{
-  // init g_srv.cv (runloop)
-  if (!g_srv.runloop_cv_inited) {
-    pthread_condattr_t attr;
-    int rc = pthread_condattr_init(&attr);
-#ifndef NDEBUG
-    assert(rc == 0);
-#else
-    (void)rc;
-#endif
-    rc = pthread_cond_init(&g_srv.cv, &attr);
-#ifndef NDEBUG
-    assert(rc == 0);
-#else
-    (void)rc;
-#endif
-    pthread_condattr_destroy(&attr);
-    g_srv.runloop_cv_inited = 1;
-  }
-
-  // init g_srv.inflight_cv (destroy/inflight)
-  if (!g_srv.destroy_cv_inited) {
-    pthread_condattr_t attr2;
-    int rc2 = pthread_condattr_init(&attr2);
-#ifndef NDEBUG
-    assert(rc2 == 0);
-#else
-    (void)rc2;
-#endif
-    rc2 = pthread_cond_init(&g_srv.inflight_cv, &attr2);
-#ifndef NDEBUG
-    assert(rc2 == 0);
-#else
-    (void)rc2;
-#endif
-    pthread_condattr_destroy(&attr2);
-    g_srv.destroy_cv_inited = 1;
-  }
-}
-
-static void x11_srv_destroy_cvs_locked(void)
-{
-  if (g_srv.runloop_cv_inited) {
-    pthread_cond_destroy(&g_srv.cv);
-    g_srv.runloop_cv_inited = 0;
-  }
-
-  if (g_srv.destroy_cv_inited) {
-    pthread_cond_destroy(&g_srv.inflight_cv);
-    g_srv.destroy_cv_inited = 0;
-  }
-}
 
 #ifndef NDEBUG
 // Rate-limit to ~10 Hz so logs are readable.
@@ -269,7 +211,7 @@ static void x11_emit_window_destroy(uint32_t xid)
     #ifndef NDEBUG
     fprintf(stderr, "[SwiftX11] destroy xid=0x%X waiting inflight=%u\n", xid, inflight);
     #endif
-    (void)x11_backend_wait_inflight_zero_locked(xid, &g_srv.inflight_cv, g_srv.destroy_cv_inited);
+    (void)x11_backend_wait_inflight_zero_locked(xid);
   }  
   
   // Now inflight is 0; detach fb + clear slot via backend (under the same lock).
@@ -332,6 +274,37 @@ static void x11_emit_window_destroy_async(uint32_t xid)
     free(arg);
   }
 }
+
+static void x11_srv_init_runloop_cv_locked(void)
+{
+  if (g_srv.runloop_cv_inited) return;
+
+  pthread_condattr_t attr;
+  int rc = pthread_condattr_init(&attr);
+#ifndef NDEBUG
+  assert(rc == 0);
+#else
+  (void)rc;
+#endif
+
+  rc = pthread_cond_init(&g_srv.cv, &attr);
+#ifndef NDEBUG
+  assert(rc == 0);
+#else
+  (void)rc;
+#endif
+
+  pthread_condattr_destroy(&attr);
+  g_srv.runloop_cv_inited = 1;
+}
+
+static void x11_srv_destroy_runloop_cv_locked(void)
+{
+  if (!g_srv.runloop_cv_inited) return;
+  pthread_cond_destroy(&g_srv.cv);
+  g_srv.runloop_cv_inited = 0;
+}
+
 
 // ---- Debug helpers
 void x11_debug_dump_window_table(void)
@@ -458,9 +431,12 @@ bool x11_start_server(int32_t display)
   // mouse and keyboard event handling
   x11_events_init();
 
-  // reset backend window table + state
+  // Ensure backend process-lifetime primitives exist
   x11_backend_init();
 
+  // Reset window table for a clean start
+  x11_backend_clear_windows();
+  
   // Create two test windows (backend alloc + Swift callback + event + damage)
   x11_emit_window_create(XID_A, "Test X11 Window A", 800, 600);
   x11_emit_window_create(XID_B, "Test X11 Window B", 520, 360);
@@ -492,9 +468,9 @@ void x11_stop_server(void)
 
   x11_server_runloop_stop();
 
-  // NEW: clear backend state so second start is always clean
-  x11_backend_init();
-
+  // Clear backend window table so second start is always clean
+  x11_backend_clear_windows();
+  
   x11_events_shutdown();
 }
 
@@ -604,7 +580,7 @@ done:
     void *retired = NULL;
 
     x11_backend_lock();
-    x11_backend_repaint_end_locked(xwin_id, &g_srv.inflight_cv, g_srv.destroy_cv_inited, &retired);
+    x11_backend_repaint_end_locked(xwin_id, &retired);
 
     #ifndef NDEBUG
     x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
@@ -1122,8 +1098,14 @@ static void* runloop_main(void* _)
         ts.tv_sec += 1;
         ts.tv_nsec -= 1000000000L;
     }
-    x11_backend_cond_timedwait(&g_srv.cv, &ts);
-
+    if (g_srv.runloop_cv_inited) {
+      x11_backend_cond_timedwait(&g_srv.cv, &ts);
+    } else {
+      x11_backend_unlock();
+      usleep(16 * 1000);
+      x11_backend_lock();
+    }
+    
     x11_backend_unlock();
 
     x11_server_step();
@@ -1139,14 +1121,15 @@ void x11_server_runloop_start(void)
 {
   x11_backend_lock();
   
-  x11_srv_init_cvs_locked();
-  
+  x11_srv_init_runloop_cv_locked();
+
   if (g_srv.runloop_running) {
     x11_backend_unlock();
     return;
   }
   g_srv.runloop_stop = 0;
   g_srv.runloop_running = 1;
+  
   x11_backend_unlock();
 
   pthread_create(&g_srv.thread, NULL, runloop_main, NULL);
@@ -1159,17 +1142,18 @@ void x11_server_runloop_stop(void)
     x11_backend_unlock();
     return;
   }
+  
   g_srv.runloop_stop = 1;
-  x11_backend_cond_signal(&g_srv.cv);
+  if (g_srv.runloop_cv_inited) {
+    x11_backend_cond_signal(&g_srv.cv);
+  }
   x11_backend_unlock();
   
   pthread_join(g_srv.thread, NULL);
   
   x11_backend_lock();
   g_srv.runloop_running = 0;
-  
-  x11_srv_destroy_cvs_locked(); 
-  
+  x11_srv_destroy_runloop_cv_locked();   // if you have it
   x11_backend_unlock();
 }
 
