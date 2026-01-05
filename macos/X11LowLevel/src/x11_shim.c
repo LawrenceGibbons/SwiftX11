@@ -23,12 +23,6 @@ static x11_window_created_cb s_on_create = 0;
 static x11_window_closed_cb  s_on_close  = 0;
 static x11_present_frame_cb s_present = 0;
 
-#ifndef NDEBUG
-static void x11_debug_check_all_invariants_locked(void) {
-  x11_backend_debug_check_all_invariants_locked();
-}
-#endif
-
 // ---- Runloop thread + wakeup
 static pthread_t g_thread;
 static pthread_cond_t  g_cv;
@@ -94,7 +88,7 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
   }
   
 #ifndef NDEBUG
-  x11_debug_check_all_invariants_locked();
+  x11_backend_debug_check_all_invariants_locked();
 #endif
 
   x11_backend_unlock();
@@ -130,10 +124,6 @@ static inline uint64_t x11_now_ns(void)
   return (uint64_t)ns;
 }
 
-
-static inline bool any_buttons_down(uint32_t buttons) {
-    return buttons != 0;
-}
 
 // ---- Helper for async destroy (safe from repaint context)
 struct x11_destroy_arg { uint32_t xid; };
@@ -1010,7 +1000,7 @@ void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px)
   if (width_px < 1) width_px = 1;
   if (height_px < 1) height_px = 1;
 
-  x11_backend_alloc_slot(xid);
+  // Only window-create should allocate. Resize should be a no-op if missing.
   x11_backend_window_set_size(xid, width_px, height_px);
   x11_backend_mark_damage(xid);
   x11_server_wakeup();
@@ -1051,7 +1041,7 @@ void x11_server_step(void)
   #ifndef NDEBUG
   // Backend owns invariants; this check still validates the shared window table.
   x11_backend_lock();
-  x11_debug_check_all_invariants_locked();
+  x11_backend_debug_check_all_invariants_locked();
   x11_backend_unlock();
   #endif
   

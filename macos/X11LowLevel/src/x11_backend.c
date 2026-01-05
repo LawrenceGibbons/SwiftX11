@@ -390,17 +390,19 @@ void x11_backend_window_set_size_locked(uint32_t xid, int32_t w_px, int32_t h_px
   if (w_px < 1) w_px = 1;
   if (h_px < 1) h_px = 1;
 
-  int idx = x11_backend_alloc_slot_locked(xid);
-  if (idx >= 0) {
-    g_windows[idx].alive  = 1;
-    g_windows[idx].mapped = 1;
-    // For set_size we do NOT touch damaged, caller decides.
-    // Also: only clear closing if you intend resize to “revive” windows.
-    g_windows[idx].closing = 0;
-    g_windows[idx].w_px   = w_px;
-    g_windows[idx].h_px   = h_px;
-  }
+  // IMPORTANT: do not allocate here; only create-paths allocate.
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return;
+  if (!g_windows[idx].alive) return;
+
+  // Keep mapped consistent with “rootless visible” default.
+  g_windows[idx].mapped = 1;
+
+  // Do NOT clear closing here; resize must not “revive” a window mid-destroy.
+  g_windows[idx].w_px = w_px;
+  g_windows[idx].h_px = h_px;
 }
+
 
 void x11_backend_window_set_size(uint32_t xid, int32_t w_px, int32_t h_px)
 {
