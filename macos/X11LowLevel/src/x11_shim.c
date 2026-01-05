@@ -19,52 +19,120 @@
 static const uint32_t XID_A = 0x10001;
 static const uint32_t XID_B = 0x10002;
 
-static x11_window_created_cb s_on_create = 0;
-static x11_window_closed_cb  s_on_close  = 0;
-static x11_present_frame_cb s_present = 0;
+// -----------------------------------------------------------------------------
+// Shim-local server context (scaffold step): collect shim state into one struct.
+// Protected by the backend lock (x11_backend_lock/unlock).
+// -----------------------------------------------------------------------------
+typedef struct x11_server_ctx_t {
+  // Callbacks
+  x11_window_created_cb on_create;
+  x11_window_closed_cb  on_close;
+  x11_present_frame_cb  present;
 
-// ---- Runloop thread + wakeup
-static pthread_t g_thread;
-static pthread_cond_t  g_cv;
-static int             g_cv_inited = 0;
+  // ---- Runloop thread + wakeup
+  pthread_t      thread;
+  pthread_cond_t cv;
+  int            runloop_cv_inited;
 
-static pthread_cond_t  g_inflight_cv;
-static int             g_inflight_cv_inited = 0;
+  // ---- Destroy/inflight coordination
+  pthread_cond_t inflight_cv;
+  int            destroy_cv_inited;
 
-static int g_runloop_running = 0;
-static int g_runloop_stop = 0;
+  int runloop_running;
+  int runloop_stop;
 
+  // ---- Routing state
+  uint32_t pointer_xid;
+  uint32_t focus_xid;
+  uint32_t drag_xid;
+  uint32_t buttons;   // current button mask
 
-static uint32_t g_pointer_xid = 0;
-static uint32_t g_focus_xid = 0;
-static uint32_t g_drag_xid    = 0;
-static uint32_t g_buttons     = 0;   // current button mask
+  // ---- Debug: repaint storm injector (useful for stop/destroy race testing)
+  int      debug_storm;
+  uint32_t debug_storm_xid;
+  int      debug_destroy_during_repaint;
+  uint32_t debug_destroy_during_repaint_xid;
 
-// ---- Debug: repaint storm injector (useful for stop/destroy race testing)
-static int      g_debug_storm = 0;
-static uint32_t g_debug_storm_xid = 0;
-static int      g_debug_destroy_during_repaint = 0;
-static uint32_t g_debug_destroy_during_repaint_xid = 0;
+  // Debug: count how many destroys had to wait for in-flight repaints
+  _Atomic uint64_t debug_destroy_waits;
 
-// Debug: count how many destroys had to wait for in-flight repaints
-static _Atomic uint64_t g_debug_destroy_waits = 0;
-// Debug: motion routing diagnostics
-static _Atomic uint64_t g_dbg_move_calls = 0;
-static _Atomic uint64_t g_dbg_move_drop_target_mismatch = 0;
-static _Atomic uint64_t g_dbg_move_drop_no_target = 0;
-static _Atomic uint64_t g_dbg_move_target_focus = 0;
-static _Atomic uint64_t g_dbg_move_target_drag  = 0;
-static _Atomic uint64_t g_dbg_move_target_pointer = 0;
-// Debug: routing snapshots (manual + key transitions)
-static _Atomic uint64_t g_dbg_routing_snapshots = 0;
+  // Debug: motion routing diagnostics
+  _Atomic uint64_t dbg_move_calls;
+  _Atomic uint64_t dbg_move_drop_target_mismatch;
+  _Atomic uint64_t dbg_move_drop_no_target;
+  _Atomic uint64_t dbg_move_target_focus;
+  _Atomic uint64_t dbg_move_target_drag;
+  _Atomic uint64_t dbg_move_target_pointer;
+
+  // Debug: routing snapshots (manual + key transitions)
+  _Atomic uint64_t dbg_routing_snapshots;
 
 #ifndef NDEBUG
-static uint64_t g_dbg_last_motion_log_ns = 0;
+  uint64_t dbg_last_motion_log_ns;
+#endif
+} x11_server_ctx_t;
 
+static x11_server_ctx_t g_srv; // zero-initialized
+
+static void x11_srv_init_cvs_locked(void)
+{
+  // init g_srv.cv (runloop)
+  if (!g_srv.runloop_cv_inited) {
+    pthread_condattr_t attr;
+    int rc = pthread_condattr_init(&attr);
+#ifndef NDEBUG
+    assert(rc == 0);
+#else
+    (void)rc;
+#endif
+    rc = pthread_cond_init(&g_srv.cv, &attr);
+#ifndef NDEBUG
+    assert(rc == 0);
+#else
+    (void)rc;
+#endif
+    pthread_condattr_destroy(&attr);
+    g_srv.runloop_cv_inited = 1;
+  }
+
+  // init g_srv.inflight_cv (destroy/inflight)
+  if (!g_srv.destroy_cv_inited) {
+    pthread_condattr_t attr2;
+    int rc2 = pthread_condattr_init(&attr2);
+#ifndef NDEBUG
+    assert(rc2 == 0);
+#else
+    (void)rc2;
+#endif
+    rc2 = pthread_cond_init(&g_srv.inflight_cv, &attr2);
+#ifndef NDEBUG
+    assert(rc2 == 0);
+#else
+    (void)rc2;
+#endif
+    pthread_condattr_destroy(&attr2);
+    g_srv.destroy_cv_inited = 1;
+  }
+}
+
+static void x11_srv_destroy_cvs_locked(void)
+{
+  if (g_srv.runloop_cv_inited) {
+    pthread_cond_destroy(&g_srv.cv);
+    g_srv.runloop_cv_inited = 0;
+  }
+
+  if (g_srv.destroy_cv_inited) {
+    pthread_cond_destroy(&g_srv.inflight_cv);
+    g_srv.destroy_cv_inited = 0;
+  }
+}
+
+#ifndef NDEBUG
 // Rate-limit to ~10 Hz so logs are readable.
 static inline void dbg_motion_log_rl(uint64_t now_ns, const char* fmt, ...) {
-  if (now_ns - g_dbg_last_motion_log_ns < 100000000ULL) return; // 100ms
-  g_dbg_last_motion_log_ns = now_ns;
+  if (now_ns - g_srv.dbg_last_motion_log_ns < 100000000ULL) return; // 100ms
+  g_srv.dbg_last_motion_log_ns = now_ns;
 
   va_list ap;
   va_start(ap, fmt);
@@ -72,18 +140,19 @@ static inline void dbg_motion_log_rl(uint64_t now_ns, const char* fmt, ...) {
   va_end(ap);
 }
 #endif
+
 void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 {
   x11_backend_lock();
-  g_debug_storm = enabled ? 1 : 0;
-  g_debug_storm_xid = xid;
+  g_srv.debug_storm = enabled ? 1 : 0;
+  g_srv.debug_storm_xid = xid;
 
   // Kick the first repaint immediately if possible.
   // Decide under lock, apply outside lock.
   uint32_t kick_xid = 0;
-  if (g_debug_storm && g_debug_storm_xid != 0) {
-    if (x11_backend_window_can_repaint_locked(g_debug_storm_xid)) {
-      kick_xid = g_debug_storm_xid;
+  if (g_srv.debug_storm && g_srv.debug_storm_xid != 0) {
+    if (x11_backend_window_can_repaint_locked(g_srv.debug_storm_xid)) {
+      kick_xid = g_srv.debug_storm_xid;
     }
   }
   
@@ -106,8 +175,8 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 void x11_debug_destroy_during_next_repaint(int enabled, uint32_t xid)
 {
   x11_backend_lock();
-  g_debug_destroy_during_repaint = enabled ? 1 : 0;
-  g_debug_destroy_during_repaint_xid = xid;
+  g_srv.debug_destroy_during_repaint = enabled ? 1 : 0;
+  g_srv.debug_destroy_during_repaint_xid = xid;
   x11_backend_unlock();
 }
 
@@ -143,7 +212,7 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
   // Ask Swift to create the NSWindow
   x11_window_created_cb on_create = NULL;
   x11_backend_lock();
-  on_create = s_on_create;
+  on_create = g_srv.on_create;
   x11_backend_unlock();
 
   if (on_create) {
@@ -179,32 +248,32 @@ static void x11_emit_window_destroy(uint32_t xid)
   }
   
   // If we’re doing the repaint-storm test, stop generating new damage now.
-  g_debug_storm = 0;
-  g_debug_storm_xid = 0;
+  g_srv.debug_storm = 0;
+  g_srv.debug_storm_xid = 0;
 
   // Prevent *new* repaints from starting on this window.
   (void)x11_backend_window_begin_close_locked(xid);
   
   // Clear routing ownership while we still know xid.
-  if (g_pointer_xid == xid) g_pointer_xid = 0;
-  if (g_focus_xid == xid)   g_focus_xid = 0;
-  if (g_drag_xid == xid)    g_drag_xid = 0;
+  if (g_srv.pointer_xid == xid) g_srv.pointer_xid = 0;
+  if (g_srv.focus_xid == xid)   g_srv.focus_xid = 0;
+  if (g_srv.drag_xid == xid)    g_srv.drag_xid = 0;
 
   // Snapshot callback.
-  on_close = s_on_close;
+  on_close = g_srv.on_close;
 
   // Wait for any in-flight repaints to complete.
   uint32_t inflight = x11_backend_repaint_inflight_locked(xid);
 
   if (inflight != 0) {
-    atomic_fetch_add_explicit(&g_debug_destroy_waits, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_srv.debug_destroy_waits, 1, memory_order_relaxed);
 #ifndef NDEBUG
     fprintf(stderr, "[SwiftX11] destroy xid=0x%X waiting inflight=%u\n", xid, inflight);
 #endif
   }
   while (x11_backend_repaint_inflight_locked(xid) != 0) {
-    if (g_inflight_cv_inited) {
-      x11_backend_cond_wait(&g_inflight_cv);
+    if (g_srv.destroy_cv_inited) {
+      x11_backend_cond_wait(&g_srv.inflight_cv);
     } else {
       x11_backend_unlock();
       usleep(1000);
@@ -280,7 +349,7 @@ void x11_debug_dump_window_table(void)
   
     fprintf(stderr, "\n[SwiftX11] Window table dump:\n");
     fprintf(stderr, "  pointer_xid=0x%X focus_xid=0x%X drag_xid=0x%X buttons=0x%X storm=%d storm_xid=0x%X\n",
-            g_pointer_xid, g_focus_xid, g_drag_xid, g_buttons, g_debug_storm, g_debug_storm_xid);
+            g_srv.pointer_xid, g_srv.focus_xid, g_srv.drag_xid, g_srv.buttons, g_srv.debug_storm, g_srv.debug_storm_xid);
 
     #ifndef NDEBUG
     x11_backend_debug_win_t wins[X11_MAX_WINDOWS];
@@ -352,12 +421,12 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     // Backend + routing state must be read under g_mu
     x11_backend_lock();
   
-    out_snapshot->pointer_xid = g_pointer_xid;
-    out_snapshot->focus_xid   = g_focus_xid;
-    out_snapshot->drag_xid    = g_drag_xid;
-    out_snapshot->buttons     = g_buttons;
+    out_snapshot->pointer_xid = g_srv.pointer_xid;
+    out_snapshot->focus_xid   = g_srv.focus_xid;
+    out_snapshot->drag_xid    = g_srv.drag_xid;
+    out_snapshot->buttons     = g_srv.buttons;
     out_snapshot->destroy_waits =
-      atomic_load_explicit(&g_debug_destroy_waits, memory_order_relaxed);
+      atomic_load_explicit(&g_srv.debug_destroy_waits, memory_order_relaxed);
   
     #ifndef NDEBUG
     x11_backend_debug_win_t wins[X11_MAX_WINDOWS];
@@ -386,8 +455,8 @@ void x11_register_callbacks(
                             x11_window_closed_cb on_close)
 {
   x11_backend_lock();
-  s_on_create = on_create;
-  s_on_close  = on_close;
+  g_srv.on_create = on_create;
+  g_srv.on_close  = on_close;
   x11_backend_unlock();
 }
 
@@ -441,7 +510,7 @@ void x11_stop_server(void)
 void x11_register_frame_presenter(x11_present_frame_cb on_present)
 {
   x11_backend_lock();
-  s_present = on_present;
+  g_srv.present = on_present;
   x11_backend_unlock();
 
   // When the presenter becomes available, mark all live windows damaged
@@ -469,7 +538,7 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
 
   // 1) Snapshot presenter + check window + take inflight + snapshot destroy-test state
   x11_backend_lock();
-  presenter = s_present;
+  presenter = g_srv.present;
 
   if (!presenter || !x11_backend_window_can_repaint_locked(xwin_id)) {
     x11_backend_unlock();
@@ -482,12 +551,12 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   }
   inflight_taken = true;
 
-  if (g_debug_destroy_during_repaint &&
-      g_debug_destroy_during_repaint_xid == xwin_id)
+  if (g_srv.debug_destroy_during_repaint &&
+      g_srv.debug_destroy_during_repaint_xid == xwin_id)
   {
     do_destroy = 1;
-    dxid = g_debug_destroy_during_repaint_xid;
-    g_debug_destroy_during_repaint = 0; // one-shot
+    dxid = g_srv.debug_destroy_during_repaint_xid;
+    g_srv.debug_destroy_during_repaint = 0; // one-shot
   }
 
 #ifndef NDEBUG
@@ -497,7 +566,7 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   x11_backend_unlock();
 
   // debugging -- slow down the repaint (no lock held)
-  if (g_debug_storm) { usleep(20 * 1000); }  // 20ms
+  if (g_srv.debug_storm) { usleep(20 * 1000); }  // 20ms
 
   if (do_destroy) {
     // IMPORTANT: never call synchronous destroy from inside repaint
@@ -545,11 +614,11 @@ done:
     x11_backend_repaint_end_locked(xwin_id, &retired);
 
     // If destroy is waiting, wake it when we hit zero.
-    if (g_inflight_cv_inited &&
+    if (g_srv.destroy_cv_inited &&
         x11_backend_window_is_closing_locked(xwin_id) &&
         x11_backend_repaint_inflight_locked(xwin_id) == 0)
     {
-      x11_backend_cond_broadcast(&g_inflight_cv);
+      x11_backend_cond_broadcast(&g_srv.inflight_cv);
     }
 
 #ifndef NDEBUG
@@ -578,31 +647,31 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
     // NOTE: This is intentionally pointer-owner-first (more X11-ish). If you later want
     // "key window receives mouseMoved even when pointer is outside", swap focus/pointer.    
   if (type == X11_PTR_MOVE) {
-        atomic_fetch_add_explicit(&g_dbg_move_calls, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_srv.dbg_move_calls, 1, memory_order_relaxed);
         uint32_t drag = 0;
         uint32_t focus = 0;
         uint32_t pointer = 0;
 
         x11_backend_lock();
-        drag = g_drag_xid;
-        focus = g_focus_xid;
-        pointer = g_pointer_xid;
+        drag = g_srv.drag_xid;
+        focus = g_srv.focus_xid;
+        pointer = g_srv.pointer_xid;
         x11_backend_unlock();
 
       uint32_t target = 0;
       if (drag != 0) {
         target = drag;
-        atomic_fetch_add_explicit(&g_dbg_move_target_drag, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_srv.dbg_move_target_drag, 1, memory_order_relaxed);
       } else if (pointer != 0) {
         target = pointer;
-        atomic_fetch_add_explicit(&g_dbg_move_target_pointer, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_srv.dbg_move_target_pointer, 1, memory_order_relaxed);
       } else {
         target = focus;
-        atomic_fetch_add_explicit(&g_dbg_move_target_focus, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_srv.dbg_move_target_focus, 1, memory_order_relaxed);
       }
 
       if (target == 0) {
-        atomic_fetch_add_explicit(&g_dbg_move_drop_no_target, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_srv.dbg_move_drop_no_target, 1, memory_order_relaxed);
       #ifndef NDEBUG
         dbg_motion_log_rl(x11_now_ns(),
           "[SwiftX11] MOVE drop: no target (from xid=0x%X drag=0x%X focus=0x%X ptr=0x%X)\n",
@@ -613,7 +682,7 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
 
       // Deterministic routing: rewrite to the computed target instead of dropping.
       if (target != xid) {
-        atomic_fetch_add_explicit(&g_dbg_move_drop_target_mismatch, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_srv.dbg_move_drop_target_mismatch, 1, memory_order_relaxed);
       #ifndef NDEBUG
         dbg_motion_log_rl(x11_now_ns(),
           "[SwiftX11] MOVE reroute: from xid=0x%X -> target=0x%X (drag=0x%X focus=0x%X ptr=0x%X)\n",
@@ -631,8 +700,8 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
 
     // Keep canonical backend button/drag state correct even for the legacy API.
     // NOTE: Some callers historically passed 0 for motion. Therefore:
-    //   - For motion: NEVER trust `buttons`; read g_buttons instead.
-    //   - For down/up: treat `buttons` as the AFTER-state mask and commit it to g_buttons.
+    //   - For motion: NEVER trust `buttons`; read g_srv.buttons instead.
+    //   - For down/up: treat `buttons` as the AFTER-state mask and commit it to g_srv.buttons.
     // Drag ownership is derived from the 0->nonzero and nonzero->0 transitions.
     uint32_t buttons_snapshot = 0;
 
@@ -641,25 +710,25 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
       
         // A click implies pointer ownership.
         if (type == X11_PTR_DOWN) {
-            g_pointer_xid = xid;
+            g_srv.pointer_xid = xid;
         }
 
-        const uint32_t old_buttons = g_buttons;
+        const uint32_t old_buttons = g_srv.buttons;
         const uint32_t new_buttons = buttons; // legacy API supplies AFTER-state mask
-        g_buttons = new_buttons;
+        g_srv.buttons = new_buttons;
 
         // Drag grab behavior: first transition to nonzero grabs; transition to zero releases.
         if (old_buttons == 0 && new_buttons != 0) {
-            g_drag_xid = xid;
+            g_srv.drag_xid = xid;
         } else if (old_buttons != 0 && new_buttons == 0) {
-            g_drag_xid = 0;
+            g_srv.drag_xid = 0;
         }
 
-        buttons_snapshot = g_buttons;
+        buttons_snapshot = g_srv.buttons;
         x11_backend_unlock();
     } else if (type == X11_PTR_MOVE) {
         x11_backend_lock();
-        buttons_snapshot = g_buttons;
+        buttons_snapshot = g_srv.buttons;
         x11_backend_unlock();
     }
 
@@ -706,7 +775,7 @@ void x11_post_key_event(uint32_t xid, bool is_down,
   uint32_t target = xid;
   if (target == 0) {
     x11_backend_lock();
-    target = g_focus_xid;
+    target = g_srv.focus_xid;
     x11_backend_unlock();
   }
 
@@ -746,7 +815,7 @@ void x11_post_pointer_button(uint32_t xid,
   // Maintain canonical button state here instead of trusting the caller.
   // Some call sites send a release while the local mask still includes the bit,
   // so we force the bit on press and clear it on release.
-  const uint32_t old_buttons = g_buttons;
+  const uint32_t old_buttons = g_srv.buttons;
 
   uint32_t mask = buttons;
   if (button >= 1 && button <= 31) {
@@ -760,20 +829,20 @@ void x11_post_pointer_button(uint32_t xid,
 
   // EXTRA-CORRECT: a click implies pointer ownership for routing.
   if (is_press) {
-      g_pointer_xid = xid;
+      g_srv.pointer_xid = xid;
   }
 
   // Canonical after-state button mask.
-  g_buttons = mask;
+  g_srv.buttons = mask;
 
   // Drag ownership is derived from transitions of the canonical mask.
-  if (old_buttons == 0 && g_buttons != 0) {
-      g_drag_xid = xid;
-  } else if (old_buttons != 0 && g_buttons == 0) {
-      g_drag_xid = 0;
+  if (old_buttons == 0 && g_srv.buttons != 0) {
+      g_srv.drag_xid = xid;
+  } else if (old_buttons != 0 && g_srv.buttons == 0) {
+      g_srv.drag_xid = 0;
   }
 
-  const uint32_t buttons_snapshot = g_buttons;
+  const uint32_t buttons_snapshot = g_srv.buttons;
 
   x11_backend_unlock();
 
@@ -813,10 +882,10 @@ void x11_post_scroll_ticks(uint32_t xid,
   uint32_t buttons_snapshot = 0;
 
   x11_backend_lock();
-  drag = g_drag_xid;
-  focus = g_focus_xid;
-  pointer = g_pointer_xid;
-  buttons_snapshot = g_buttons;
+  drag = g_srv.drag_xid;
+  focus = g_srv.focus_xid;
+  pointer = g_srv.pointer_xid;
+  buttons_snapshot = g_srv.buttons;
   x11_backend_unlock();
 
   uint32_t target = 0;
@@ -860,22 +929,22 @@ void x11_post_focus_event(uint32_t xid, bool focused)
   uint32_t prev_drag = 0;
 
   x11_backend_lock();
-  prev_focus = g_focus_xid;
-  prev_ptr   = g_pointer_xid;
-  prev_drag  = g_drag_xid;
+  prev_focus = g_srv.focus_xid;
+  prev_ptr   = g_srv.pointer_xid;
+  prev_drag  = g_srv.drag_xid;
 
   if (focused) {
-    g_focus_xid = xid;
-    g_pointer_xid = xid;
+    g_srv.focus_xid = xid;
+    g_srv.pointer_xid = xid;
   } else {
-    if (g_focus_xid == xid) g_focus_xid = 0;
-    if (g_pointer_xid == xid && g_drag_xid == 0) g_pointer_xid = 0;
+    if (g_srv.focus_xid == xid) g_srv.focus_xid = 0;
+    if (g_srv.pointer_xid == xid && g_srv.drag_xid == 0) g_srv.pointer_xid = 0;
   }
 
   #ifndef NDEBUG
   fprintf(stderr,
           "[SwiftX11] FOCUS xid=0x%X focused=%d (prev_focus=0x%X) ptr=0x%X->0x%X drag=0x%X\n",
-          xid, focused ? 1 : 0, prev_focus, prev_ptr, g_pointer_xid, prev_drag);
+          xid, focused ? 1 : 0, prev_focus, prev_ptr, g_srv.pointer_xid, prev_drag);
   #endif
 
   x11_backend_unlock();
@@ -901,14 +970,14 @@ void x11_post_pointer_enter(uint32_t xid,
   uint32_t prev = 0;
   uint32_t drag = 0;
   x11_backend_lock();
-  prev = g_pointer_xid;
-  drag = g_drag_xid;
+  prev = g_srv.pointer_xid;
+  drag = g_srv.drag_xid;
   if (drag == 0) {
-    g_pointer_xid = xid;
+    g_srv.pointer_xid = xid;
   }
   #ifndef NDEBUG
   fprintf(stderr, "[SwiftX11] ENTER xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
-          xid, prev, g_pointer_xid, drag);
+          xid, prev, g_srv.pointer_xid, drag);
   #endif
   x11_backend_unlock();
   
@@ -937,14 +1006,14 @@ void x11_post_pointer_leave(uint32_t xid,
   uint32_t prev = 0;
   uint32_t drag = 0;
   x11_backend_lock();
-  prev = g_pointer_xid;
-  drag = g_drag_xid;
-  if (drag == 0 && g_pointer_xid == xid) {
-    g_pointer_xid = 0;
+  prev = g_srv.pointer_xid;
+  drag = g_srv.drag_xid;
+  if (drag == 0 && g_srv.pointer_xid == xid) {
+    g_srv.pointer_xid = 0;
   }
   #ifndef NDEBUG
   fprintf(stderr, "[SwiftX11] LEAVE xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
-          xid, prev, g_pointer_xid, drag);
+          xid, prev, g_srv.pointer_xid, drag);
   #endif
   x11_backend_unlock();
   
@@ -1015,8 +1084,8 @@ void x11_mark_damage(uint32_t xid)
 void x11_server_wakeup(void)
 {
   x11_backend_lock();
-  if (g_runloop_running && g_cv_inited) {
-    x11_backend_cond_signal(&g_cv);
+  if (g_srv.runloop_running && g_srv.runloop_cv_inited) {
+    x11_backend_cond_signal(&g_srv.cv);
   }
   x11_backend_unlock();
 }
@@ -1034,8 +1103,8 @@ void x11_server_step(void)
   n = x11_backend_take_damaged_snapshot(xids, ws, hs, X11_MAX_WINDOWS);
 
   // Debug storm: continuously re-damage one window so the runloop repaints every tick.
-  if (g_debug_storm && g_debug_storm_xid != 0) {
-    x11_backend_mark_damage(g_debug_storm_xid);
+  if (g_srv.debug_storm && g_srv.debug_storm_xid != 0) {
+    x11_backend_mark_damage(g_srv.debug_storm_xid);
   }
 
   #ifndef NDEBUG
@@ -1056,7 +1125,7 @@ static void* runloop_main(void* _)
   (void)_;
     x11_backend_lock();
   
-  while (!g_runloop_stop) {
+  while (!g_srv.runloop_stop) {
     // Sleep until woken (or timeout for safety)
     struct timespec ts;
     // macOS pthread condition variables use CLOCK_REALTIME for absolute timeouts.
@@ -1068,7 +1137,7 @@ static void* runloop_main(void* _)
         ts.tv_sec += 1;
         ts.tv_nsec -= 1000000000L;
     }
-    x11_backend_cond_timedwait(&g_cv, &ts);
+    x11_backend_cond_timedwait(&g_srv.cv, &ts);
 
     x11_backend_unlock();
 
@@ -1085,85 +1154,38 @@ void x11_server_runloop_start(void)
 {
   x11_backend_lock();
   
-  // initialize g_cv
-  int rc;
-  if (!g_cv_inited) {
-    pthread_condattr_t attr;
-    rc = pthread_condattr_init(&attr);
-#ifndef NDEBUG
-    assert(rc == 0);
-#else
-    (void)rc;
-#endif
-
-    // NOTE: On macOS, condition variables use CLOCK_REALTIME for timed waits.
-    rc = pthread_cond_init(&g_cv, &attr);
-#ifndef NDEBUG
-    assert(rc == 0);
-#else
-    (void)rc;
-#endif
-
-    pthread_condattr_destroy(&attr);
-    g_cv_inited = 1;
-  }
-
-  if (!g_inflight_cv_inited) {
-      pthread_condattr_t attr2;
-      int rc2 = pthread_condattr_init(&attr2);
-  #ifndef NDEBUG
-      assert(rc2 == 0);
-  #else
-      (void)rc2;
-  #endif
-      // macOS uses CLOCK_REALTIME; no setclock.
-      rc2 = pthread_cond_init(&g_inflight_cv, &attr2);
-  #ifndef NDEBUG
-      assert(rc2 == 0);
-  #else
-      (void)rc2;
-  #endif
-      pthread_condattr_destroy(&attr2);
-      g_inflight_cv_inited = 1;
-  }
+  x11_srv_init_cvs_locked();
   
-  if (g_runloop_running) {
+  if (g_srv.runloop_running) {
     x11_backend_unlock();
     return;
   }
-  g_runloop_stop = 0;
-  g_runloop_running = 1;
+  g_srv.runloop_stop = 0;
+  g_srv.runloop_running = 1;
   x11_backend_unlock();
 
-  pthread_create(&g_thread, NULL, runloop_main, NULL);
+  pthread_create(&g_srv.thread, NULL, runloop_main, NULL);
 }
 
 void x11_server_runloop_stop(void)
 {
-    x11_backend_lock();
-    if (!g_runloop_running) {
-        x11_backend_unlock();
-        return;
-    }
-    g_runloop_stop = 1;
-    pthread_cond_signal(&g_cv);
+  x11_backend_lock();
+  if (!g_srv.runloop_running) {
     x11_backend_unlock();
-
-    pthread_join(g_thread, NULL);
-
-    x11_backend_lock();
-    g_runloop_running = 0;
-    x11_backend_unlock();
-  
-  if (g_cv_inited) {
-    pthread_cond_destroy(&g_cv);
-    g_cv_inited = 0;
+    return;
   }
+  g_srv.runloop_stop = 1;
+  x11_backend_cond_signal(&g_srv.cv);
+  x11_backend_unlock();
   
-  if (g_inflight_cv_inited) {
-      pthread_cond_destroy(&g_inflight_cv);
-      g_inflight_cv_inited = 0;
-  }
+  pthread_join(g_srv.thread, NULL);
+  
+  x11_backend_lock();
+  g_srv.runloop_running = 0;
+  
+  x11_srv_destroy_cvs_locked(); 
+  
+  x11_backend_unlock();
 }
 
 
@@ -1173,15 +1195,15 @@ void x11_debug_dump_routing_snapshot(const char* reason)
   const char* why = (reason && reason[0]) ? reason : "(no reason)";
 
   // Motion diagnostics (atomics)
-  uint64_t move_calls    = atomic_load_explicit(&g_dbg_move_calls, memory_order_relaxed);
-  uint64_t move_mismatch = atomic_load_explicit(&g_dbg_move_drop_target_mismatch, memory_order_relaxed);
-  uint64_t move_no_target= atomic_load_explicit(&g_dbg_move_drop_no_target, memory_order_relaxed);
-  uint64_t move_t_focus  = atomic_load_explicit(&g_dbg_move_target_focus, memory_order_relaxed);
-  uint64_t move_t_drag   = atomic_load_explicit(&g_dbg_move_target_drag, memory_order_relaxed);
-  uint64_t move_t_ptr    = atomic_load_explicit(&g_dbg_move_target_pointer, memory_order_relaxed);
+  uint64_t move_calls    = atomic_load_explicit(&g_srv.dbg_move_calls, memory_order_relaxed);
+  uint64_t move_mismatch = atomic_load_explicit(&g_srv.dbg_move_drop_target_mismatch, memory_order_relaxed);
+  uint64_t move_no_target= atomic_load_explicit(&g_srv.dbg_move_drop_no_target, memory_order_relaxed);
+  uint64_t move_t_focus  = atomic_load_explicit(&g_srv.dbg_move_target_focus, memory_order_relaxed);
+  uint64_t move_t_drag   = atomic_load_explicit(&g_srv.dbg_move_target_drag, memory_order_relaxed);
+  uint64_t move_t_ptr    = atomic_load_explicit(&g_srv.dbg_move_target_pointer, memory_order_relaxed);
 
   // Count snapshots
-  uint64_t snaps = atomic_fetch_add_explicit(&g_dbg_routing_snapshots, 1, memory_order_relaxed) + 1;
+  uint64_t snaps = atomic_fetch_add_explicit(&g_srv.dbg_routing_snapshots, 1, memory_order_relaxed) + 1;
 
   // Snapshot routing + windows under mutex
   uint32_t pointer = 0, focus = 0, drag = 0, buttons = 0;
@@ -1197,11 +1219,11 @@ void x11_debug_dump_routing_snapshot(const char* reason)
   int wn = 0;
 
   x11_backend_lock();
-  pointer = g_pointer_xid;
-  focus   = g_focus_xid;
-  drag    = g_drag_xid;
-  buttons = g_buttons;
-  destroy_waits = atomic_load_explicit(&g_debug_destroy_waits, memory_order_relaxed);
+  pointer = g_srv.pointer_xid;
+  focus   = g_srv.focus_xid;
+  drag    = g_srv.drag_xid;
+  buttons = g_srv.buttons;
+  destroy_waits = atomic_load_explicit(&g_srv.debug_destroy_waits, memory_order_relaxed);
 
 #ifndef NDEBUG
   x11_backend_debug_win_t bwins[X11_MAX_WINDOWS];
@@ -1249,11 +1271,11 @@ void x11_debug_dump_routing_snapshot(const char* reason)
 
 void x11_debug_reset_routing_counters(void)
 {
-  atomic_store_explicit(&g_dbg_move_calls, 0, memory_order_relaxed);
-  atomic_store_explicit(&g_dbg_move_drop_target_mismatch, 0, memory_order_relaxed);
-  atomic_store_explicit(&g_dbg_move_drop_no_target, 0, memory_order_relaxed);
-  atomic_store_explicit(&g_dbg_move_target_focus, 0, memory_order_relaxed);
-  atomic_store_explicit(&g_dbg_move_target_drag, 0, memory_order_relaxed);
-  atomic_store_explicit(&g_dbg_move_target_pointer, 0, memory_order_relaxed);
-  atomic_store_explicit(&g_dbg_routing_snapshots, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_srv.dbg_move_calls, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_srv.dbg_move_drop_target_mismatch, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_srv.dbg_move_drop_no_target, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_srv.dbg_move_target_focus, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_srv.dbg_move_target_drag, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_srv.dbg_move_target_pointer, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_srv.dbg_routing_snapshots, 0, memory_order_relaxed);
 }
