@@ -180,16 +180,14 @@ static void x11_emit_window_destroy(uint32_t xid)
   uint32_t *old_fb = NULL;
   void *retired = NULL;
   
-  
   x11_backend_lock();
-  int idx = x11_backend_find_slot_locked(xid);
 
   // Idempotent destroy: if it's already gone, do nothing.
-  if (idx < 0) {
+  if (!x11_backend_window_is_alive_locked(xid) && !x11_backend_window_is_closing_locked(xid)) {
     x11_backend_unlock();
     return;
   }
-
+  
   // If we’re doing the repaint-storm test, stop generating new damage now.
   g_debug_storm = 0;
   g_debug_storm_xid = 0;
@@ -319,11 +317,10 @@ void x11_debug_dump_window_table(void)
 
 int x11_debug_get_window_alive(uint32_t xid)
 {
-    x11_backend_lock();
-    int idx = x11_backend_find_slot_locked(xid);
-    int alive = (idx >= 0) ? 1 : 0;
-    x11_backend_unlock();
-    return alive;
+  x11_backend_lock();
+  int alive = x11_backend_window_is_alive_locked(xid);
+  x11_backend_unlock();
+  return alive;
 }
 
 int x11_debug_get_window_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px)
@@ -467,57 +464,34 @@ void x11_register_frame_presenter(x11_present_frame_cb on_present)
   x11_server_wakeup();
 }
 
-
 void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
 {
   if (width_px <= 0 || height_px <= 0) return;
-  
+
   x11_present_frame_cb presenter = NULL;
-  int idx = -1;
   uint32_t *fb = NULL;
-  
-  // We must decrement inflight on every exit if we increment it.
+
   bool inflight_taken = false;
-  
-  // 1) Snapshot presenter + find window + block if closing, then take inflight
+
+  // One-shot destroy test
+  int do_destroy = 0;
+  uint32_t dxid = 0;
+
+  // 1) Snapshot presenter + check window + take inflight + snapshot destroy-test state
   x11_backend_lock();
   presenter = s_present;
-  idx = x11_backend_find_slot_locked(xwin_id);
 
-  if (!presenter || idx < 0 || !x11_backend_window_can_repaint_locked(xwin_id)) {
+  if (!presenter || !x11_backend_window_can_repaint_locked(xwin_id)) {
     x11_backend_unlock();
     return;
   }
-  
-  // Take inflight via backend API (also checks closing/alive in one place).
+
   if (!x11_backend_repaint_begin_locked(xwin_id)) {
     x11_backend_unlock();
     return;
   }
   inflight_taken = true;
-  
-  // Re-find slot for consistency with backend begin.
-  idx = x11_backend_find_slot_locked(xwin_id);
-  if (idx < 0) {
-    // extremely defensive; should not happen under g_mu, but keep safe
-    x11_backend_unlock();
-    return;
-  }
-  
-#ifndef NDEBUG
-  x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
-#endif
-  
-  (void)x11_backend_get_fb_locked(xwin_id, &fb);  
-  x11_backend_unlock();
-  
-  // debugging -- slow down the repaint
-  if (g_debug_storm) { usleep(20 * 1000); }  // 20ms, tune 1–20ms
-  
-  // Deterministic destroy-while-inflight test (one-shot)
-  int do_destroy = 0;
-  uint32_t dxid = 0;
-  x11_backend_lock();
+
   if (g_debug_destroy_during_repaint &&
       g_debug_destroy_during_repaint_xid == xwin_id)
   {
@@ -525,28 +499,35 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
     dxid = g_debug_destroy_during_repaint_xid;
     g_debug_destroy_during_repaint = 0; // one-shot
   }
+
+#ifndef NDEBUG
+  x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
+#endif
+
   x11_backend_unlock();
-  
+
+  // debugging -- slow down the repaint (no lock held)
+  if (g_debug_storm) { usleep(20 * 1000); }  // 20ms
+
   if (do_destroy) {
     // IMPORTANT: never call synchronous destroy from inside repaint
-    // (we hold repaint_inflight and would deadlock waiting for it to hit 0).
     x11_post_window_destroy_async(dxid);
   }
-  
-  // 2) Ensure backing store exists (backend may grow and returns a stable fb pointer)
+
+  // 2) Ensure backing store exists (backend locks internally)
   const size_t need_pixels = (size_t)width_px * (size_t)height_px;
   const int bpr = width_px * 4;
-  
+
   if (!x11_backend_ensure_fb(xwin_id, need_pixels, &fb) || !fb) {
     goto done;
   }
-  
+
   // 3) Render into fb (no lock held)
   for (int y = 0; y < height_px; y++) {
     for (int x = 0; x < width_px; x++) {
       uint8_t a = 0xFF;
       uint8_t r, g, b;
-      
+
       if (xwin_id == XID_A) {
         b = (uint8_t)(x & 0xFF);
         g = (uint8_t)((y * 2) & 0xFF);
@@ -557,38 +538,41 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
         r = (uint8_t)(200);
         if ((x / 20) % 2) { g = 255; }
       }
-      
+
       fb[(size_t)y * (size_t)width_px + (size_t)x] =
-      (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
+        (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
     }
   }
-  
+
   // 4) Present (no lock held)
   presenter(xwin_id, fb, width_px, height_px, bpr);
-  
+
 done:
   if (inflight_taken) {
     void *retired = NULL;
-    
+
     x11_backend_lock();
     x11_backend_repaint_end_locked(xwin_id, &retired);
-    
+
     // If destroy is waiting, wake it when we hit zero.
-    // (We need the current slot and inflight count; safest is to re-find.)
-    uint32_t v = x11_backend_repaint_inflight_locked(xwin_id);
-    if (v == 0 && g_inflight_cv_inited && x11_backend_window_is_closing_locked(xwin_id)) {
+    if (g_inflight_cv_inited &&
+        x11_backend_window_is_closing_locked(xwin_id) &&
+        x11_backend_repaint_inflight_locked(xwin_id) == 0)
+    {
       x11_backend_cond_broadcast(&g_inflight_cv);
     }
-    
+
 #ifndef NDEBUG
     x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
 #endif
 
     x11_backend_unlock();
-    
+
     if (retired) x11_backend_free_retired(retired);
   }
 }
+
+
 
 void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
                             int32_t x_px, int32_t y_px,
@@ -1042,7 +1026,7 @@ void x11_server_wakeup(void)
 {
   x11_backend_lock();
   if (g_runloop_running && g_cv_inited) {
-    pthread_cond_signal(&g_cv);
+    x11_backend_cond_signal(&g_cv);
   }
   x11_backend_unlock();
 }
