@@ -1351,3 +1351,29 @@ uint32_t x11_window_create(const char* title, int32_t w_px, int32_t h_px)
   x11_emit_window_create(xid, t, w_px, h_px);
   return xid;
 }
+
+void x11_window_set_title(uint32_t xid, const char* title_utf8)
+{
+  if (!title_utf8) title_utf8 = "";
+
+  // Optional: drop if window is gone (keeps queue cleaner).
+  x11_backend_lock();
+  int exists = x11_backend_window_exists_locked(xid);
+  x11_backend_unlock();
+  if (!exists) return;
+
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_TITLE;
+  ev.size = sizeof(ev.u.win_title);
+
+  size_t n = strnlen(title_utf8, X11_TEXT_MAX);
+  ev.u.win_title.title_len = (uint8_t)n;
+  memcpy(ev.u.win_title.title_utf8, title_utf8, n);
+
+  (void)x11_events_push(&ev);
+
+  // Wake so the UI sees it promptly.
+  x11_server_wakeup();
+}

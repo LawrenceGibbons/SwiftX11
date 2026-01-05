@@ -168,6 +168,9 @@ void x11_server_wakeup(void);
 void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px);
 void x11_mark_damage(uint32_t xid);
 
+// Window title related
+void x11_window_set_title(uint32_t xid, const char* title_utf8);
+  
 // NEW: process one runloop tick (drain damage -> repaint)
 void x11_server_step(void);
   

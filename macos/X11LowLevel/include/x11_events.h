@@ -45,6 +45,8 @@ static inline uint32_t x11_button_bit(uint8_t button_number /* 1..31 */) {
     X11_EV_POINTER_ENTER  = 9,
     X11_EV_POINTER_LEAVE  = 10,
     X11_EV_WINDOW_RAISE   = 11,
+    X11_EV_WINDOW_TITLE   = 12,
+    X11_EV_WINDOW_RESIZE  = 13,
   } x11_event_type_t;
 
 // ---- Scroll “wheels” (X11-ish)
@@ -128,27 +130,33 @@ typedef struct {
   uint64_t push_drops;
 } x11_eventq_stats_t;
 
+typedef struct x11_ev_win_title_t {
+  uint8_t title_len;                 // bytes, not including NUL
+  char    title_utf8[X11_TEXT_MAX];  // not necessarily NUL-terminated
+} x11_ev_win_title_t;
+  
 x11_eventq_stats_t x11_events_stats(void);
   
 // ---- Unified event
-typedef struct {
+  typedef struct {
     uint64_t         timestamp_ns; // monotonic, optional but nice
     uint32_t         xid;          // target window
     x11_event_type_t type;         // x11_event_type_t
     uint16_t         size;         // sizeof(payload) used (defensive)
     union {
-        x11_pointer_motion_t   motion;
-        x11_pointer_button_t   button;
-        x11_scroll_t           scroll;
-        x11_key_t              key;
-        x11_modifiers_t        mods;
-        x11_focus_t            focus;
-        x11_window_create_t    win_create;
-        x11_window_destroy_t   win_destroy;
-        x11_pointer_crossing_t crossing;
-        x11_window_raise_t     raise;
+      x11_pointer_motion_t   motion;
+      x11_pointer_button_t   button;
+      x11_scroll_t           scroll;
+      x11_key_t              key;
+      x11_modifiers_t        mods;
+      x11_focus_t            focus;
+      x11_window_create_t    win_create;
+      x11_window_destroy_t   win_destroy;
+      x11_pointer_crossing_t crossing;
+      x11_window_raise_t     raise;
+      x11_ev_win_title_t     win_title;
     } u;
-} x11_event_t;
+  } x11_event_t;
 
 // ---- Queue API
 void   x11_events_init(void);

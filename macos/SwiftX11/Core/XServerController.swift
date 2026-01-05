@@ -105,6 +105,7 @@ final class XServerController: ObservableObject {
       return
     }
     let xid = x11_window_create(title, w, h)
+    x11_window_set_title(xid, String(format: "SwiftX11 Window 0x%X", xid) )
     append(String(format: "Requested new window xid=0x%X", xid))
   }
   
@@ -138,6 +139,8 @@ final class XServerController: ObservableObject {
       var ev = x11_event_t()
       guard x11_debug_pop_event(&ev) else { break }
       
+      handleEventSideEffects(ev)
+      
       if (!isLogPausedNow()), let line = format(ev, showMotion: (showMotion?() ?? false)) {
         append(line)
       }
@@ -153,6 +156,8 @@ final class XServerController: ObservableObject {
     while n < max {
       var ev = x11_event_t()
       guard x11_debug_pop_event(&ev) else { break }
+
+      handleEventSideEffects(ev)
 
       // Force append, but still respect showMotion toggle
       if let line = format(ev, showMotion: (showMotion?() ?? false)) {
@@ -177,7 +182,7 @@ final class XServerController: ObservableObject {
     drainPaused?() ?? false
   }
 
-private func maybeAppendQueueStats(qBefore: Int, drained: Int) {
+  private func maybeAppendQueueStats(qBefore: Int, drained: Int) {
       guard shouldShowStats() else { return }          // your toggle
       guard !isLogPausedNow() else { return }          // your “Freeze log output” toggle
 
@@ -206,15 +211,45 @@ private func maybeAppendQueueStats(qBefore: Int, drained: Int) {
       }
   }
   
+  private func handleEventSideEffects(_ ev: x11_event_t) {
+    switch ev.type {
+    case X11_EV_WINDOW_TITLE:
+      // Drain thread is the main queue today, but keep the update on MainActor.
+      let len = Int(ev.u.win_title.title_len)
+      // Safety: cap to the fixed buffer size (and to UInt8 range).
+      let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
+
+      let bytes: [UInt8] = withUnsafeBytes(of: ev.u.win_title.title_utf8) { raw in
+        Array(raw.prefix(cappedLen))
+      }
+      let title = String(bytes: bytes, encoding: .utf8) ?? "SwiftX11 Window"
+      WindowRegistry.shared.setTitle(xid: ev.xid, title: title)
+
+    default:
+      break
+    }
+  }
+
   private func format(_ ev: x11_event_t, showMotion: Bool) -> String? {
       let xid = String(format: "0x%X", ev.xid)
 
       switch ev.type {
       case X11_EV_WINDOW_CREATE:
           return "EV_WINDOW_CREATE xid=\(xid) \(ev.u.win_create.width_px)x\(ev.u.win_create.height_px)"
-
+          
       case X11_EV_WINDOW_DESTROY:
           return "EV_WINDOW_DESTROY xid=\(xid)"
+          
+      case X11_EV_WINDOW_TITLE:
+          // Note: side-effects are handled in handleEventSideEffects(_:).
+          let xidStr = xid
+          let len = Int(ev.u.win_title.title_len)
+          let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
+          let bytes: [UInt8] = withUnsafeBytes(of: ev.u.win_title.title_utf8) { raw in
+            Array(raw.prefix(cappedLen))
+          }
+          let title = String(bytes: bytes, encoding: .utf8) ?? "(invalid utf8)"
+          return "EV_WINDOW_TITLE xid=\(xidStr) title=\(title)"
 
       case X11_EV_POINTER_ENTER:
           return "EV_ENTER xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"

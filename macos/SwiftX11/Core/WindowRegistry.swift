@@ -91,6 +91,11 @@ final class WindowRegistry {
     view.presentBGRA(framebuffer: bgra, width: width, height: height, bytesPerRow: bytesPerRow)
   }
   
+  func setTitle(xid: UInt32, title: String) {
+    guard let controller = windows[xid] else { return }
+    controller.window?.title = title
+  }
+  
   func windowResized(xid: UInt32, sizePoints _: CGSize, sizePixels: CGSize, scale _: CGFloat) {
     let w = Int32(max(1, Int(sizePixels.width.rounded(.down))))
     let h = Int32(max(1, Int(sizePixels.height.rounded(.down))))
@@ -162,3 +167,4 @@ final class WindowRegistry {
     }
   }
 }
+
