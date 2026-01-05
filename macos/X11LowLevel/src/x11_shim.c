@@ -338,13 +338,15 @@ void x11_debug_dump_window_table(void)
     x11_backend_unlock();
 }
 
+
 int x11_debug_get_window_alive(uint32_t xid)
 {
   x11_backend_lock();
-  int alive = x11_backend_window_is_alive_locked(xid);
+  int exists = x11_backend_window_exists_locked(xid);
   x11_backend_unlock();
-  return alive;
+  return exists;
 }
+
 
 int x11_debug_get_window_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px)
 {
@@ -1098,13 +1100,8 @@ static void* runloop_main(void* _)
         ts.tv_sec += 1;
         ts.tv_nsec -= 1000000000L;
     }
-    if (g_srv.runloop_cv_inited) {
-      x11_backend_cond_timedwait(&g_srv.cv, &ts);
-    } else {
-      x11_backend_unlock();
-      usleep(16 * 1000);
-      x11_backend_lock();
-    }
+    // since start guarantees cv init
+    x11_backend_cond_timedwait(&g_srv.cv, &ts);
     
     x11_backend_unlock();
 
