@@ -455,10 +455,6 @@ bool x11_start_server(int32_t display)
   // Reset window table for a clean start
   x11_backend_clear_windows();
   
-  // Create two test windows (backend alloc + Swift callback + event + damage)
-  x11_emit_window_create(XID_A, "Test X11 Window A", 800, 600);
-  x11_emit_window_create(XID_B, "Test X11 Window B", 520, 360);
-
 #if 0
   x11_debug_dump_window_table();
 #endif
