@@ -158,11 +158,17 @@ int x11_backend_wait_inflight_zero_locked(uint32_t xid,
   // Caller must hold backend lock.
   // Return 1 if we successfully reached inflight==0 (or it already was),
   // 0 if the window no longer exists.
-  if (x11_backend_find_slot_locked(xid) < 0) return 0;
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
 
-  while (x11_backend_repaint_inflight_locked(xid) != 0) {
+  while (atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed) != 0) {
     if (inflight_cv_inited && inflight_cv) {
       x11_backend_cond_wait(inflight_cv);
+      
+      // Defensive: if window was destroyed between wakeups (future-proofing)
+      // Also re-find idx in case slots are ever reused differently later.
+      idx = x11_backend_find_slot_locked(xid);
+      if (idx < 0) return 0;
     } else {
       // Fallback when CV is not available: briefly yield without holding the lock.
       x11_backend_unlock();
@@ -170,7 +176,8 @@ int x11_backend_wait_inflight_zero_locked(uint32_t xid,
       x11_backend_lock();
 
       // Window might have been destroyed while unlocked
-      if (x11_backend_find_slot_locked(xid) < 0) return 0;
+      idx = x11_backend_find_slot_locked(xid);
+      if (idx < 0) return 0;
     }
   }
 
@@ -185,6 +192,40 @@ int x11_backend_window_begin_close_locked(uint32_t xid)
   g_windows[idx].damaged = 0;
   return 1;
 }
+
+void x11_backend_window_begin_close_and_wait_inflight_locked(
+    uint32_t xid,
+    pthread_cond_t *inflight_cv,
+    int inflight_cv_inited)
+{
+  // If it doesn't exist, nothing to do.
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return;
+
+  // Mark closing and prevent new repaints.
+  g_windows[idx].closing = 1;
+  g_windows[idx].damaged = 0;
+
+  // Wait for in-flight repaints to drain.
+  // repaint_end_locked will broadcast when (closing && inflight hits 0).
+  while (atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed) != 0) {
+    if (inflight_cv_inited && inflight_cv) {
+      x11_backend_cond_wait(inflight_cv);   // releases/reacquires g_mu
+      // loop and re-check
+    } else {
+      // Fallback: avoid deadlock if CV wasn't initialized (not ideal).
+      // We must release the backend lock while sleeping.
+      x11_backend_unlock();
+      usleep(1000);
+      x11_backend_lock();
+
+      // Slot may have disappeared while unlocked.
+      idx = x11_backend_find_slot_locked(xid);
+      if (idx < 0) return;
+    }
+  }
+}
+
 
 int x11_backend_get_fb_locked(uint32_t xid, uint32_t **out_fb)
 {

@@ -110,7 +110,15 @@ int   x11_backend_window_destroy(uint32_t xid, uint32_t **out_fb, void **out_ret
 int   x11_backend_window_destroy_locked(uint32_t xid, uint32_t **out_fb, void **out_retired);
 
 void  x11_backend_free_retired(void *retired);
-
+  // Begin close (sets closing=1, clears damaged=0) and wait until repaint_inflight==0.
+  // Caller must hold backend lock (x11_backend_lock()).
+  // If inflight_cv_inited && inflight_cv are provided, uses the CV for waiting;
+  // otherwise caller must poll externally (not recommended).
+  void x11_backend_window_begin_close_and_wait_inflight_locked(
+      uint32_t xid,
+      pthread_cond_t *inflight_cv,
+      int inflight_cv_inited);
+  
 // Split lifecycle helpers (preferred going forward)
 void  x11_backend_window_set_size(uint32_t xid, int32_t w_px, int32_t h_px);
 void  x11_backend_window_set_size_locked(uint32_t xid, int32_t w_px, int32_t h_px);

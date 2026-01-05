@@ -267,11 +267,11 @@ static void x11_emit_window_destroy(uint32_t xid)
 
   if (inflight != 0) {
     atomic_fetch_add_explicit(&g_srv.debug_destroy_waits, 1, memory_order_relaxed);
-#ifndef NDEBUG
+    #ifndef NDEBUG
     fprintf(stderr, "[SwiftX11] destroy xid=0x%X waiting inflight=%u\n", xid, inflight);
-#endif
-  }
-  (void)x11_backend_wait_inflight_zero_locked(xid, &g_srv.inflight_cv, g_srv.destroy_cv_inited);
+    #endif
+    (void)x11_backend_wait_inflight_zero_locked(xid, &g_srv.inflight_cv, g_srv.destroy_cv_inited);
+  }  
   
   // Now inflight is 0; detach fb + clear slot via backend (under the same lock).
   (void)x11_backend_window_destroy_locked(xid, &old_fb, &retired);
