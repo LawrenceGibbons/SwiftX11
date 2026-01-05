@@ -26,6 +26,7 @@ let swiftX11CreateCallback: X11CreateCB = { xwinID, titlePtr, width, height in
             height: Int(height)
         )
     }
+    print(String(format: "CREATE xid=0x%X title=%@", xwinID, title))
 }
 
 let swiftX11CloseCallback: X11CloseCB = { xwinID in

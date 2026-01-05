@@ -98,6 +98,15 @@ final class XServerController: ObservableObject {
     logLines.append("[\(Date())] \(line)")
   }
   
+  @MainActor
+  func newWindow(title: String = "SwiftX11 Window", w: Int32 = 800, h: Int32 = 600) {
+    guard isRunning else {
+      append("Server not running; cannot create window.")
+      return
+    }
+    let xid = x11_window_create(title, w, h)
+    append(String(format: "Requested new window xid=0x%X", xid))
+  }
   
   private func startDrainTimer() {
     stopDrainTimer()

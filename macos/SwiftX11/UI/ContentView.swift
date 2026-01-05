@@ -19,6 +19,10 @@ struct ContentView: View {
       }
       .padding(.bottom, 8)
       
+      Button("New X11 Window") {
+        server.newWindow()
+      }
+
       Toggle("Freeze log output", isOn: $settings.pauseLogAppend)
 
       Toggle("Show queue stats (1/sec)", isOn: $settings.showQueueStats)

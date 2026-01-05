@@ -178,6 +178,11 @@ size_t x11_debug_dump_windows(char* out, size_t out_cap);
 // Stress test helpers (debug)
 void x11_debug_torture_once(int iters, int us_between, int allow_destroy);
   
+// window create and destroy
+uint32_t x11_window_create(const char* title, int32_t w, int32_t h);
+void     x11_window_destroy(uint32_t xid);
+void     x11_window_set_title(uint32_t xid, const char* title); // optional
+  
 #ifdef __cplusplus
 }
 #endif

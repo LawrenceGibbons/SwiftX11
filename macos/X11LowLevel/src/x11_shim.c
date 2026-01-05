@@ -16,8 +16,9 @@
 #include "x11_events.h"   // so we can enqueue x11_event_t
 #include "x11_backend.h"
 
-static const uint32_t XID_A = 0x10001;
-static const uint32_t XID_B = 0x10002;
+// For window creation and handling
+static _Atomic uint32_t g_next_xid = 0x10010; // avoid colliding with old demo ids
+
 
 // -----------------------------------------------------------------------------
 // Shim-local server context (scaffold step): collect shim state into one struct.
@@ -565,22 +566,33 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   }
 
   // 3) Render into fb (no lock held)
+  // temporary pattern for now based on xwin_id
+  // Derive a stable per-window seed from xid
+  uint32_t seed = xwin_id * 2654435761u; // Knuth multiplicative hash
+
+  // Simple per-window base color
+  uint8_t base_r = (seed >>  0) & 0xFF;
+  uint8_t base_g = (seed >>  8) & 0xFF;
+  uint8_t base_b = (seed >> 16) & 0xFF;
+  #ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] REPAINT xid=0x%X seed=0x%08X base=%u,%u,%u\n",
+          xwin_id, seed, base_r, base_g, base_b);
+  #endif
+  
   for (int y = 0; y < height_px; y++) {
     for (int x = 0; x < width_px; x++) {
       uint8_t a = 0xFF;
-      uint8_t r, g, b;
 
-      if (xwin_id == XID_A) {
-        b = (uint8_t)(x & 0xFF);
-        g = (uint8_t)((y * 2) & 0xFF);
-        r = (uint8_t)((x ^ y) & 0xFF);
-      } else {
-        b = (uint8_t)((y * 3) & 0xFF);
-        g = (uint8_t)((x * 2) & 0xFF);
-        r = (uint8_t)(200);
-        if ((x / 20) % 2) { g = 255; }
+      uint8_t r = (uint8_t)(base_r ^ (x & 0xFF));
+      uint8_t g = (uint8_t)(base_g ^ (y & 0xFF));
+      uint8_t b = (uint8_t)(base_b ^ ((x + y) & 0xFF));
+      
+      if (((x / (16 + (seed & 31))) & 1) ^ ((y / (16 + ((seed >> 5) & 31))) & 1))  {
+        r = (uint8_t)(255 - r);
+        g = (uint8_t)(255 - g);
+        b = (uint8_t)(255 - b);
       }
-
+      
       fb[(size_t)y * (size_t)width_px + (size_t)x] =
         (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
     }
@@ -1289,12 +1301,17 @@ void x11_debug_torture_once(int iters, int us_between, int allow_destroy)
   if (iters < 1) iters = 1;
   if (us_between < 0) us_between = 0;
 
+  uint32_t live[X11_MAX_WINDOWS];
+  int n = x11_backend_snapshot_live_xids(live, X11_MAX_WINDOWS);
+  if (n <= 0) return;
+
+
   fprintf(stderr, "[SwiftX11] torture_once iters=%d us_between=%d\n", iters, us_between);
 
   // Alternate windows to stress routing and slot lifecycle.
   for (int i = 0; i < iters; i++) {
-    uint32_t xid = (i & 1) ? XID_A : XID_B;
-
+    uint32_t xid = live[i % n];
+    
     // 1) Start a repaint storm (causes constant damage->repaint activity).
     x11_debug_set_repaint_storm(1, xid);
 
@@ -1323,3 +1340,14 @@ void x11_debug_torture_once(int iters, int us_between, int allow_destroy)
 #endif
 }
 
+
+uint32_t x11_window_create(const char* title, int32_t w_px, int32_t h_px)
+{
+  // Generate an xid (simple monotonic allocator)
+  uint32_t xid = atomic_fetch_add_explicit(&g_next_xid, 1, memory_order_relaxed);
+
+  // Use existing internal helper so events+damage happen consistently
+  const char* t = (title && title[0]) ? title : "SwiftX11 Window";
+  x11_emit_window_create(xid, t, w_px, h_px);
+  return xid;
+}
