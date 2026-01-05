@@ -122,6 +122,16 @@ void x11_debug_destroy_during_next_repaint(int enabled, uint32_t xid)
   x11_backend_unlock();
 }
 
+
+static void x11_debug_print_build_mode(void) {
+#ifdef NDEBUG
+  fprintf(stderr, "[SwiftX11] BUILD: RELEASE (NDEBUG defined)\n");
+#else
+  fprintf(stderr, "[SwiftX11] BUILD: DEBUG (NDEBUG NOT defined)\n");
+#endif
+}
+
+
 static inline uint64_t x11_now_ns(void)
 {
   static mach_timebase_info_data_t s_tb = {0,0};
@@ -192,6 +202,14 @@ static void x11_emit_window_destroy(uint32_t xid)
     x11_backend_unlock();
     return;
   }
+  
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] DESTROY xid=0x%X (DEBUG)\n", xid);
+#else
+  fprintf(stderr, "[SwiftX11] DESTROY xid=0x%X (RELEASE)\n", xid);
+#endif
+  
+
   
   // If we’re doing the repaint-storm test, stop generating new damage now.
   g_srv.debug_storm = 0;
@@ -280,27 +298,20 @@ static void x11_emit_window_destroy_async(uint32_t xid)
   }
 }
 
-static void x11_srv_init_runloop_cv_locked(void)
+static int x11_srv_init_runloop_cv_locked(void)
 {
-  if (g_srv.runloop_cv_inited) return;
+  if (g_srv.runloop_cv_inited) return 1;
 
   pthread_condattr_t attr;
   int rc = pthread_condattr_init(&attr);
-#ifndef NDEBUG
-  assert(rc == 0);
-#else
-  (void)rc;
-#endif
+  if (rc != 0) return 0;
 
   rc = pthread_cond_init(&g_srv.cv, &attr);
-#ifndef NDEBUG
-  assert(rc == 0);
-#else
-  (void)rc;
-#endif
-
   pthread_condattr_destroy(&attr);
+  if (rc != 0) return 0;
+
   g_srv.runloop_cv_inited = 1;
+  return 1;
 }
 
 static void x11_srv_destroy_runloop_cv_locked(void)
@@ -1020,8 +1031,13 @@ void x11_post_window_raise(uint32_t xid)
 
 void x11_post_window_destroy(uint32_t xid)
 {
-    // Synchronous destroy. Safe from normal UI/control paths.
+#ifndef NDEBUG
+  // In debug, synchronous destroy. Safe from normal UI/control paths.
     x11_emit_window_destroy(xid);
+#else
+    // In release, always use async to avoid deadlock hazards.
+    x11_emit_window_destroy_async(xid);
+#endif
 }
 
 
@@ -1096,6 +1112,8 @@ static void* runloop_main(void* _)
   while (!g_srv.runloop_stop) {
 #ifndef NDEBUG
     assert(g_srv.runloop_cv_inited);
+#else
+    if (!g_srv.runloop_cv_inited) break;
 #endif
     
     // Sleep until woken (or timeout for safety)
@@ -1124,14 +1142,26 @@ static void* runloop_main(void* _)
 
 void x11_server_runloop_start(void)
 {
+  
+  // temporary
+  x11_debug_print_build_mode();
+  
   x11_backend_lock();
   
-  x11_srv_init_runloop_cv_locked();
+  if (!x11_srv_init_runloop_cv_locked()) {
+#ifndef NDEBUG
+    fprintf(stderr, "[SwiftX11] runloop_start: failed to init cv\n");
+#endif
+    x11_backend_unlock();
+    return;
+  }
+
 
   if (g_srv.runloop_running) {
     x11_backend_unlock();
     return;
   }
+  
   g_srv.runloop_stop = 0;
   g_srv.runloop_running = 1;
   
@@ -1256,3 +1286,44 @@ void x11_debug_reset_routing_counters(void)
   atomic_store_explicit(&g_srv.dbg_move_target_pointer, 0, memory_order_relaxed);
   atomic_store_explicit(&g_srv.dbg_routing_snapshots, 0, memory_order_relaxed);
 }
+
+void x11_debug_torture_once(int iters, int us_between, int allow_destroy)
+{
+#ifndef NDEBUG
+  if (iters < 1) iters = 1;
+  if (us_between < 0) us_between = 0;
+
+  fprintf(stderr, "[SwiftX11] torture_once iters=%d us_between=%d\n", iters, us_between);
+
+  // Alternate windows to stress routing and slot lifecycle.
+  for (int i = 0; i < iters; i++) {
+    uint32_t xid = (i & 1) ? XID_A : XID_B;
+
+    // 1) Start a repaint storm (causes constant damage->repaint activity).
+    x11_debug_set_repaint_storm(1, xid);
+
+    // 2) Arrange a destroy during the next repaint.
+    if (allow_destroy) {
+      x11_debug_destroy_during_next_repaint(1, xid);
+    }
+
+    // 3) Wake runloop so repaint happens quickly.
+    x11_server_wakeup();
+
+    // Let the runloop tick a couple times.
+    if (us_between) usleep((useconds_t)us_between);
+
+    // Turn storm off so we don’t just pin the CPU forever.
+    x11_debug_set_repaint_storm(0, 0);
+
+    if (us_between) usleep((useconds_t)us_between);
+  }
+
+  // Dump final state/counters so you can eyeball that things stabilized.
+  x11_debug_dump_routing_snapshot("torture_once: done");
+#else
+  (void)iters;
+  (void)us_between;
+#endif
+}
+

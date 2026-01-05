@@ -44,6 +44,10 @@ struct ContentView: View {
           x11_debug_destroy_during_next_repaint(1, XID_A)
         }
       }
+
+      Button("Torture Interface") {
+             x11_debug_torture_once(Int32(50), Int32(2000), Int32(0) )
+      }
       
       Button("Open Inspector") {
           X11DebugInspectorWindowController.shared.show()

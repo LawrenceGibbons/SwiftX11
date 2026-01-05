@@ -175,6 +175,9 @@ void x11_server_step(void);
 // Writes a human-readable dump into `out` (NUL-terminated). Returns bytes written (excluding NUL).
 size_t x11_debug_dump_windows(char* out, size_t out_cap);
   
+// Stress test helpers (debug)
+void x11_debug_torture_once(int iters, int us_between, int allow_destroy);
+  
 #ifdef __cplusplus
 }
 #endif
