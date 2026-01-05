@@ -15,7 +15,6 @@
 #include "x11_shim.h"
 #include "x11_events.h"   // so we can enqueue x11_event_t
 #include "x11_backend.h"
-#include "x11_backend_internal.h"
 
 static const uint32_t XID_A = 0x10001;
 static const uint32_t XID_B = 0x10002;
@@ -24,43 +23,9 @@ static x11_window_created_cb s_on_create = 0;
 static x11_window_closed_cb  s_on_close  = 0;
 static x11_present_frame_cb s_present = 0;
 
-
 #ifndef NDEBUG
-static void x11_debug_check_slot_invariants_locked(int i) {
-  // Must be called with g_mu held.
-  x11_win_state_t *w = &g_windows[i];
-
-  if (!w->alive) {
-    assert(w->xid == 0);
-    assert(w->w_px == 0);
-    assert(w->h_px == 0);
-    assert(w->damaged == 0);
-    assert(w->closing == 0);
-    assert(w->fb == NULL);
-    assert(w->fb_cap_pixels == 0);
-    assert(atomic_load_explicit(&w->repaint_inflight, memory_order_relaxed) == 0);
-    return;
-  }
-
-  assert(w->xid != 0);
-  assert(w->w_px >= 1);
-  assert(w->h_px >= 1);
-
-  if (w->closing) {
-    assert(w->damaged == 0);
-  }
-
-  if (w->fb == NULL) {
-    assert(w->fb_cap_pixels == 0);
-  } else {
-    assert(w->fb_cap_pixels > 0);
-  }
-}
-
 static void x11_debug_check_all_invariants_locked(void) {
-  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-    x11_debug_check_slot_invariants_locked(i);
-  }
+  x11_backend_debug_check_all_invariants_locked();
 }
 #endif
 
@@ -75,35 +40,6 @@ static int             g_inflight_cv_inited = 0;
 static int g_runloop_running = 0;
 static int g_runloop_stop = 0;
 
-//static int find_slot(uint32_t xid) {
-//    for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-//        if (g_windows[i].alive && g_windows[i].xid == xid) return i;
-//    }
-//    return -1;
-//}
-//
-//static int alloc_slot(uint32_t xid) {
-//  int idx = find_slot(xid);
-//  if (idx >= 0) return idx;
-//  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-//    if (!g_windows[i].alive) {
-//      g_windows[i].alive = 1;
-//      g_windows[i].xid = xid;
-//      g_windows[i].w_px = 1;
-//      g_windows[i].h_px = 1;
-//      g_windows[i].damaged = 1;
-//      g_windows[i].fb = NULL;
-//      g_windows[i].fb_cap_pixels = 0;
-//      atomic_store_explicit(&g_windows[i].repaint_inflight, 0, memory_order_relaxed);
-//      g_windows[i].closing = 0;
-//#ifndef NDEBUG
-//      x11_debug_check_slot_invariants_locked(i);
-//#endif
-//      return i;
-//    }
-//  }
-//  return -1;
-//}
 
 static uint32_t g_pointer_xid = 0;
 static uint32_t g_focus_xid = 0;
@@ -144,7 +80,7 @@ static inline void dbg_motion_log_rl(uint64_t now_ns, const char* fmt, ...) {
 #endif
 void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   g_debug_storm = enabled ? 1 : 0;
   g_debug_storm_xid = xid;
 
@@ -152,8 +88,7 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
   // Decide under lock, apply outside lock.
   uint32_t kick_xid = 0;
   if (g_debug_storm && g_debug_storm_xid != 0) {
-    int idx = x11_backend_find_slot_locked(g_debug_storm_xid);
-    if (idx >= 0 && g_windows[idx].alive && !g_windows[idx].closing) {
+    if (x11_backend_window_can_repaint_locked(g_debug_storm_xid)) {
       kick_xid = g_debug_storm_xid;
     }
   }
@@ -162,7 +97,7 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
   x11_debug_check_all_invariants_locked();
 #endif
 
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   
   if (kick_xid != 0) {
     x11_backend_mark_damage(kick_xid);
@@ -176,10 +111,10 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
 
 void x11_debug_destroy_during_next_repaint(int enabled, uint32_t xid)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   g_debug_destroy_during_repaint = enabled ? 1 : 0;
   g_debug_destroy_during_repaint_xid = xid;
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 }
 
 static inline uint64_t x11_now_ns(void)
@@ -217,9 +152,9 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
   
   // Ask Swift to create the NSWindow
   x11_window_created_cb on_create = NULL;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   on_create = s_on_create;
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   if (on_create) {
     on_create(xid, title, (int)ww, (int)hh);
@@ -246,12 +181,12 @@ static void x11_emit_window_destroy(uint32_t xid)
   void *retired = NULL;
   
   
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   int idx = x11_backend_find_slot_locked(xid);
 
   // Idempotent destroy: if it's already gone, do nothing.
   if (idx < 0) {
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return;
   }
 
@@ -260,9 +195,8 @@ static void x11_emit_window_destroy(uint32_t xid)
   g_debug_storm_xid = 0;
 
   // Prevent *new* repaints from starting on this window.
-  g_windows[idx].closing = 1;
-  g_windows[idx].damaged = 0;
-
+  (void)x11_backend_window_begin_close_locked(xid);
+  
   // Clear routing ownership while we still know xid.
   if (g_pointer_xid == xid) g_pointer_xid = 0;
   if (g_focus_xid == xid)   g_focus_xid = 0;
@@ -272,20 +206,21 @@ static void x11_emit_window_destroy(uint32_t xid)
   on_close = s_on_close;
 
   // Wait for any in-flight repaints to complete.
-  uint32_t inflight = atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed);
+  uint32_t inflight = x11_backend_repaint_inflight_locked(xid);
+
   if (inflight != 0) {
     atomic_fetch_add_explicit(&g_debug_destroy_waits, 1, memory_order_relaxed);
 #ifndef NDEBUG
     fprintf(stderr, "[SwiftX11] destroy xid=0x%X waiting inflight=%u\n", xid, inflight);
 #endif
   }
-  while (atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed) != 0) {
+  while (x11_backend_repaint_inflight_locked(xid) != 0) {
     if (g_inflight_cv_inited) {
-      pthread_cond_wait(&g_inflight_cv, &g_mu);
+      x11_backend_cond_wait(&g_inflight_cv);
     } else {
-      pthread_mutex_unlock(&g_mu);
+      x11_backend_unlock();
       usleep(1000);
-      pthread_mutex_lock(&g_mu);
+      x11_backend_lock();
     }
   }
 
@@ -293,14 +228,10 @@ static void x11_emit_window_destroy(uint32_t xid)
   (void)x11_backend_window_destroy_locked(xid, &old_fb, &retired);
   
 #ifndef NDEBUG
-  // Slot invariants should hold after backend clears the slot.
-  // (We can only validate the original index if it is still in-range.)
-  if (idx >= 0 && idx < X11_MAX_WINDOWS) {
-    x11_debug_check_slot_invariants_locked(idx);
-  }
+  x11_backend_debug_check_all_invariants_locked();
 #endif
 
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
 #ifndef NDEBUG
   x11_debug_dump_routing_snapshot("emit_window_destroy: after slot cleared");
@@ -357,34 +288,41 @@ static void x11_emit_window_destroy_async(uint32_t xid)
 // ---- Debug helpers
 void x11_debug_dump_window_table(void)
 {
-    pthread_mutex_lock(&g_mu);
-
+    x11_backend_lock();
+  
     fprintf(stderr, "\n[SwiftX11] Window table dump:\n");
     fprintf(stderr, "  pointer_xid=0x%X focus_xid=0x%X drag_xid=0x%X buttons=0x%X storm=%d storm_xid=0x%X\n",
             g_pointer_xid, g_focus_xid, g_drag_xid, g_buttons, g_debug_storm, g_debug_storm_xid);
 
-    for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-        if (!g_windows[i].alive) continue;
+    #ifndef NDEBUG
+    x11_backend_debug_win_t wins[X11_MAX_WINDOWS];
+    int wn = x11_backend_debug_snapshot_windows_locked(wins, X11_MAX_WINDOWS);
+    for (int i = 0; i < wn; i++) {
         fprintf(stderr,
-                "  slot=%d xid=0x%X size=%dx%d damaged=%u\n",
-                i,
-                g_windows[i].xid,
-                (int)g_windows[i].w_px,
-                (int)g_windows[i].h_px,
-                (unsigned)g_windows[i].damaged);
+                "  xid=0x%X size=%dx%d damaged=%u closing=%u inflight=%u\n",
+                wins[i].xid,
+                (int)wins[i].w_px,
+                (int)wins[i].h_px,
+                (unsigned)wins[i].damaged,
+                (unsigned)wins[i].closing,
+                (unsigned)wins[i].inflight);
     }
+#else
+    // In release builds, keep output minimal.
+    (void)0;
+#endif
 
     fprintf(stderr, "[SwiftX11] End window table dump.\n\n");
 
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
 }
 
 int x11_debug_get_window_alive(uint32_t xid)
 {
-    pthread_mutex_lock(&g_mu);
+    x11_backend_lock();
     int idx = x11_backend_find_slot_locked(xid);
     int alive = (idx >= 0) ? 1 : 0;
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return alive;
 }
 
@@ -392,17 +330,26 @@ int x11_debug_get_window_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px
 {
     if (!out_w_px || !out_h_px) return 0;
 
-    pthread_mutex_lock(&g_mu);
-    int idx = x11_backend_find_slot_locked(xid);
-    if (idx < 0) {
-        pthread_mutex_unlock(&g_mu);
-        return 0;
+    x11_backend_lock();
+    #ifndef NDEBUG
+    // Use backend snapshot so shim doesn't touch g_windows.
+    x11_backend_debug_win_t wins[X11_MAX_WINDOWS];
+    int wn = x11_backend_debug_snapshot_windows_locked(wins, X11_MAX_WINDOWS);
+    int ok = 0;
+    for (int i = 0; i < wn; i++) {
+        if (wins[i].xid == xid) {
+            *out_w_px = wins[i].w_px;
+            *out_h_px = wins[i].h_px;
+            ok = 1;
+            break;
+        }
     }
-
-    *out_w_px = g_windows[idx].w_px;
-    *out_h_px = g_windows[idx].h_px;
-    pthread_mutex_unlock(&g_mu);
-    return 1;
+    x11_backend_unlock();
+    return ok;
+#else
+    x11_backend_unlock();
+    return 0;
+#endif
 }
 
 int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
@@ -416,8 +363,8 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     out_snapshot->q_push_drops = x11_debug_push_drops();
 
     // Backend + routing state must be read under g_mu
-    pthread_mutex_lock(&g_mu);
-
+    x11_backend_lock();
+  
     out_snapshot->pointer_xid = g_pointer_xid;
     out_snapshot->focus_xid   = g_focus_xid;
     out_snapshot->drag_xid    = g_drag_xid;
@@ -425,20 +372,25 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     out_snapshot->destroy_waits =
       atomic_load_explicit(&g_debug_destroy_waits, memory_order_relaxed);
   
-    uint32_t n = 0;
-    for (int i = 0; i < X11_MAX_WINDOWS && n < X11_DEBUG_MAX_WINDOWS; i++) {
-        if (!g_windows[i].alive) continue;
+    #ifndef NDEBUG
+    x11_backend_debug_win_t wins[X11_MAX_WINDOWS];
+    int wn = x11_backend_debug_snapshot_windows_locked(wins, X11_MAX_WINDOWS);
 
-        out_snapshot->windows[n].xid     = g_windows[i].xid;
-        out_snapshot->windows[n].w_px    = g_windows[i].w_px;
-        out_snapshot->windows[n].h_px    = g_windows[i].h_px;
-        out_snapshot->windows[n].alive   = g_windows[i].alive;
-        out_snapshot->windows[n].damaged = g_windows[i].damaged;
+    uint32_t n = 0;
+    for (int i = 0; i < wn && n < X11_DEBUG_MAX_WINDOWS; i++) {
+        out_snapshot->windows[n].xid     = wins[i].xid;
+        out_snapshot->windows[n].w_px    = wins[i].w_px;
+        out_snapshot->windows[n].h_px    = wins[i].h_px;
+        out_snapshot->windows[n].alive   = wins[i].alive;
+        out_snapshot->windows[n].damaged = wins[i].damaged;
         n++;
     }
     out_snapshot->window_count = n;
+#else
+    out_snapshot->window_count = 0;
+#endif
 
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return 1;
 }
 
@@ -446,10 +398,10 @@ void x11_register_callbacks(
                             x11_window_created_cb on_create,
                             x11_window_closed_cb on_close)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   s_on_create = on_create;
   s_on_close  = on_close;
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 }
 
 bool x11_start_server(int32_t display)
@@ -478,17 +430,9 @@ bool x11_start_server(int32_t display)
 
 void x11_stop_server(void)
 {
-  // Snapshot live windows under lock (avoid iterating while mutating)
+  // Snapshot live windows via backend (avoid iterating while mutating)
   uint32_t live[X11_MAX_WINDOWS];
-  int n = 0;
-
-  pthread_mutex_lock(&g_mu);
-  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-    if (g_windows[i].alive && n < X11_MAX_WINDOWS) {
-      live[n++] = g_windows[i].xid;
-    }
-  }
-  pthread_mutex_unlock(&g_mu);
+  int n = x11_backend_snapshot_live_xids(live, X11_MAX_WINDOWS);
 
   // Close all live windows (idempotent destroy makes this safe)
   for (int i = 0; i < n; i++) {
@@ -509,9 +453,9 @@ void x11_stop_server(void)
 
 void x11_register_frame_presenter(x11_present_frame_cb on_present)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   s_present = on_present;
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   // When the presenter becomes available, mark all live windows damaged
   // so their first frame is guaranteed to be produced.
@@ -536,18 +480,18 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   bool inflight_taken = false;
   
   // 1) Snapshot presenter + find window + block if closing, then take inflight
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   presenter = s_present;
   idx = x11_backend_find_slot_locked(xwin_id);
-  
-  if (!presenter || idx < 0 || !g_windows[idx].alive || g_windows[idx].xid != xwin_id || g_windows[idx].closing) {
-    pthread_mutex_unlock(&g_mu);
+
+  if (!presenter || idx < 0 || !x11_backend_window_can_repaint_locked(xwin_id)) {
+    x11_backend_unlock();
     return;
   }
   
   // Take inflight via backend API (also checks closing/alive in one place).
   if (!x11_backend_repaint_begin_locked(xwin_id)) {
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return;
   }
   inflight_taken = true;
@@ -556,16 +500,16 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   idx = x11_backend_find_slot_locked(xwin_id);
   if (idx < 0) {
     // extremely defensive; should not happen under g_mu, but keep safe
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return;
   }
   
 #ifndef NDEBUG
-  x11_debug_check_slot_invariants_locked(idx);
+  x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
 #endif
   
-  fb  = g_windows[idx].fb;
-  pthread_mutex_unlock(&g_mu);
+  (void)x11_backend_get_fb_locked(xwin_id, &fb);  
+  x11_backend_unlock();
   
   // debugging -- slow down the repaint
   if (g_debug_storm) { usleep(20 * 1000); }  // 20ms, tune 1–20ms
@@ -573,7 +517,7 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   // Deterministic destroy-while-inflight test (one-shot)
   int do_destroy = 0;
   uint32_t dxid = 0;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   if (g_debug_destroy_during_repaint &&
       g_debug_destroy_during_repaint_xid == xwin_id)
   {
@@ -581,7 +525,7 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
     dxid = g_debug_destroy_during_repaint_xid;
     g_debug_destroy_during_repaint = 0; // one-shot
   }
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   
   if (do_destroy) {
     // IMPORTANT: never call synchronous destroy from inside repaint
@@ -626,23 +570,21 @@ done:
   if (inflight_taken) {
     void *retired = NULL;
     
-    pthread_mutex_lock(&g_mu);
+    x11_backend_lock();
     x11_backend_repaint_end_locked(xwin_id, &retired);
     
     // If destroy is waiting, wake it when we hit zero.
     // (We need the current slot and inflight count; safest is to re-find.)
-    int didx = x11_backend_find_slot_locked(xwin_id);
-    if (didx >= 0) {
-      uint32_t v = atomic_load_explicit(&g_windows[didx].repaint_inflight, memory_order_relaxed);
-      if (g_windows[didx].closing && v == 0 && g_inflight_cv_inited) {
-        pthread_cond_broadcast(&g_inflight_cv);
-      }
+    uint32_t v = x11_backend_repaint_inflight_locked(xwin_id);
+    if (v == 0 && g_inflight_cv_inited && x11_backend_window_is_closing_locked(xwin_id)) {
+      x11_backend_cond_broadcast(&g_inflight_cv);
     }
     
 #ifndef NDEBUG
-    if (didx >= 0) x11_debug_check_slot_invariants_locked(didx);
+    x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
 #endif
-    pthread_mutex_unlock(&g_mu);
+
+    x11_backend_unlock();
     
     if (retired) x11_backend_free_retired(retired);
   }
@@ -667,11 +609,11 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
         uint32_t focus = 0;
         uint32_t pointer = 0;
 
-        pthread_mutex_lock(&g_mu);
+        x11_backend_lock();
         drag = g_drag_xid;
         focus = g_focus_xid;
         pointer = g_pointer_xid;
-        pthread_mutex_unlock(&g_mu);
+        x11_backend_unlock();
 
       uint32_t target = 0;
       if (drag != 0) {
@@ -721,8 +663,8 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
     uint32_t buttons_snapshot = 0;
 
     if (type == X11_PTR_DOWN || type == X11_PTR_UP) {
-        pthread_mutex_lock(&g_mu);
-
+        x11_backend_lock();
+      
         // A click implies pointer ownership.
         if (type == X11_PTR_DOWN) {
             g_pointer_xid = xid;
@@ -740,11 +682,11 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
         }
 
         buttons_snapshot = g_buttons;
-        pthread_mutex_unlock(&g_mu);
+        x11_backend_unlock();
     } else if (type == X11_PTR_MOVE) {
-        pthread_mutex_lock(&g_mu);
+        x11_backend_lock();
         buttons_snapshot = g_buttons;
-        pthread_mutex_unlock(&g_mu);
+        x11_backend_unlock();
     }
 
     x11_event_t ev = (x11_event_t){0};
@@ -789,9 +731,9 @@ void x11_post_key_event(uint32_t xid, bool is_down,
   // Route xid==0 to the currently focused window
   uint32_t target = xid;
   if (target == 0) {
-    pthread_mutex_lock(&g_mu);
+    x11_backend_lock();
     target = g_focus_xid;
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
   }
 
   // If nothing focused, drop the key
@@ -825,8 +767,8 @@ void x11_post_pointer_button(uint32_t xid,
                              uint32_t buttons,
                              uint32_t modifiers)
 {
-  pthread_mutex_lock(&g_mu);
-
+  x11_backend_lock();
+  
   // Maintain canonical button state here instead of trusting the caller.
   // Some call sites send a release while the local mask still includes the bit,
   // so we force the bit on press and clear it on release.
@@ -859,7 +801,7 @@ void x11_post_pointer_button(uint32_t xid,
 
   const uint32_t buttons_snapshot = g_buttons;
 
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
 #ifndef NDEBUG
   x11_debug_dump_routing_snapshot(is_press ? "pointer_button(down)" : "pointer_button(up)");
@@ -896,12 +838,12 @@ void x11_post_scroll_ticks(uint32_t xid,
   uint32_t pointer = 0;
   uint32_t buttons_snapshot = 0;
 
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   drag = g_drag_xid;
   focus = g_focus_xid;
   pointer = g_pointer_xid;
   buttons_snapshot = g_buttons;
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   uint32_t target = 0;
   if (drag != 0) {
@@ -943,7 +885,7 @@ void x11_post_focus_event(uint32_t xid, bool focused)
   uint32_t prev_ptr = 0;
   uint32_t prev_drag = 0;
 
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   prev_focus = g_focus_xid;
   prev_ptr   = g_pointer_xid;
   prev_drag  = g_drag_xid;
@@ -962,7 +904,7 @@ void x11_post_focus_event(uint32_t xid, bool focused)
           xid, focused ? 1 : 0, prev_focus, prev_ptr, g_pointer_xid, prev_drag);
   #endif
 
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   
 #ifndef NDEBUG
   x11_debug_dump_routing_snapshot(focused ? "focus(true)" : "focus(false)");
@@ -984,7 +926,7 @@ void x11_post_pointer_enter(uint32_t xid,
 {
   uint32_t prev = 0;
   uint32_t drag = 0;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   prev = g_pointer_xid;
   drag = g_drag_xid;
   if (drag == 0) {
@@ -994,7 +936,7 @@ void x11_post_pointer_enter(uint32_t xid,
   fprintf(stderr, "[SwiftX11] ENTER xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
           xid, prev, g_pointer_xid, drag);
   #endif
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   
 #ifndef NDEBUG
   x11_debug_dump_routing_snapshot("pointer_enter");
@@ -1020,7 +962,7 @@ void x11_post_pointer_leave(uint32_t xid,
 {
   uint32_t prev = 0;
   uint32_t drag = 0;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   prev = g_pointer_xid;
   drag = g_drag_xid;
   if (drag == 0 && g_pointer_xid == xid) {
@@ -1030,7 +972,7 @@ void x11_post_pointer_leave(uint32_t xid,
   fprintf(stderr, "[SwiftX11] LEAVE xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
           xid, prev, g_pointer_xid, drag);
   #endif
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   
 #ifndef NDEBUG
   x11_debug_dump_routing_snapshot("pointer_leave");
@@ -1098,11 +1040,11 @@ void x11_mark_damage(uint32_t xid)
 
 void x11_server_wakeup(void)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   if (g_runloop_running && g_cv_inited) {
     pthread_cond_signal(&g_cv);
   }
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 }
 
 // process one “tick”: snapshot damaged windows and repaint them.
@@ -1124,9 +1066,9 @@ void x11_server_step(void)
 
   #ifndef NDEBUG
   // Backend owns invariants; this check still validates the shared window table.
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   x11_debug_check_all_invariants_locked();
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   #endif
   
   // Perform repaints outside lock
@@ -1138,8 +1080,8 @@ void x11_server_step(void)
 static void* runloop_main(void* _)
 {
   (void)_;
-    pthread_mutex_lock(&g_mu);
-
+    x11_backend_lock();
+  
   while (!g_runloop_stop) {
     // Sleep until woken (or timeout for safety)
     struct timespec ts;
@@ -1152,23 +1094,22 @@ static void* runloop_main(void* _)
         ts.tv_sec += 1;
         ts.tv_nsec -= 1000000000L;
     }
-    (void)pthread_cond_timedwait(&g_cv, &g_mu, &ts);
+    x11_backend_cond_timedwait(&g_cv, &ts);
 
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
 
     x11_server_step();
 
-    pthread_mutex_lock(&g_mu);
-
+    x11_backend_lock();
   }
 
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return NULL;
 }
 
 void x11_server_runloop_start(void)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   
   // initialize g_cv
   int rc;
@@ -1213,32 +1154,32 @@ void x11_server_runloop_start(void)
   }
   
   if (g_runloop_running) {
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return;
   }
   g_runloop_stop = 0;
   g_runloop_running = 1;
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   pthread_create(&g_thread, NULL, runloop_main, NULL);
 }
 
 void x11_server_runloop_stop(void)
 {
-    pthread_mutex_lock(&g_mu);
+    x11_backend_lock();
     if (!g_runloop_running) {
-        pthread_mutex_unlock(&g_mu);
+        x11_backend_unlock();
         return;
     }
     g_runloop_stop = 1;
     pthread_cond_signal(&g_cv);
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
 
     pthread_join(g_thread, NULL);
 
-    pthread_mutex_lock(&g_mu);
+    x11_backend_lock();
     g_runloop_running = 0;
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
   
   if (g_cv_inited) {
     pthread_cond_destroy(&g_cv);
@@ -1277,30 +1218,30 @@ void x11_debug_dump_routing_snapshot(const char* reason)
     int32_t  w;
     int32_t  h;
     uint8_t  damaged;
-    uint8_t  closing;
     uint32_t inflight;
   } wins[X11_MAX_WINDOWS];
   int wn = 0;
 
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   pointer = g_pointer_xid;
   focus   = g_focus_xid;
   drag    = g_drag_xid;
   buttons = g_buttons;
   destroy_waits = atomic_load_explicit(&g_debug_destroy_waits, memory_order_relaxed);
 
-  for (int i = 0; i < X11_MAX_WINDOWS && wn < X11_MAX_WINDOWS; i++) {
-    if (!g_windows[i].alive) continue;
-    wins[wn].xid = g_windows[i].xid;
-    wins[wn].w   = g_windows[i].w_px;
-    wins[wn].h   = g_windows[i].h_px;
-    wins[wn].damaged = g_windows[i].damaged;
-    wins[wn].closing = g_windows[i].closing;
-    wins[wn].inflight =
-      atomic_load_explicit(&g_windows[i].repaint_inflight, memory_order_relaxed);
+#ifndef NDEBUG
+  x11_backend_debug_win_t bwins[X11_MAX_WINDOWS];
+  int bwn = x11_backend_debug_snapshot_windows_locked(bwins, X11_MAX_WINDOWS);
+  for (int i = 0; i < bwn && wn < X11_MAX_WINDOWS; i++) {
+    wins[wn].xid = bwins[i].xid;
+    wins[wn].w   = bwins[i].w_px;
+    wins[wn].h   = bwins[i].h_px;
+    wins[wn].damaged = bwins[i].damaged;
+    wins[wn].inflight = bwins[i].inflight;
     wn++;
   }
-  pthread_mutex_unlock(&g_mu);
+#endif
+  x11_backend_unlock();
 
   fprintf(stderr,
           "[SwiftX11] ROUTING SNAP #%llu reason=%s ptr=0x%X focus=0x%X drag=0x%X buttons=0x%X destroyWaits=%llu\n",
@@ -1320,12 +1261,11 @@ void x11_debug_dump_routing_snapshot(const char* reason)
 
   for (int i = 0; i < wn; i++) {
     fprintf(stderr,
-            "[SwiftX11]   WIN xid=0x%X size=%dx%d damaged=%u closing=%u inflight=%u\n",
+            "[SwiftX11]   WIN xid=0x%X size=%dx%d damaged=%u inflight=%u\n",
             wins[i].xid,
             (int)wins[i].w,
             (int)wins[i].h,
             (unsigned)wins[i].damaged,
-            (unsigned)wins[i].closing,
             (unsigned)wins[i].inflight);
   }
 #else

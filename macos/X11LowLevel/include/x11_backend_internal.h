@@ -22,7 +22,6 @@ extern "C" {
 #endif
 
 // This header is internal to the X11 backend implementation.
-/// This header is internal to the X11 backend implementation.
 // It must NOT be included by public headers or external consumers.
 // It MAY be included by backend implementation files such as x11_backend.c and x11_shim.c.
 //
@@ -78,6 +77,10 @@ typedef struct x11_win_state_t {
 extern pthread_mutex_t g_mu;
 extern x11_win_state_t g_windows[X11_MAX_WINDOWS];
   
+// NOTE:
+// Backend APIs and debug helpers are declared in `x11_backend.h`.
+// This internal header only exposes backend-owned state/layout used by backend implementation.
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

@@ -10,6 +10,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <assert.h>
+#include <time.h>
 
 #include "x11_backend.h"
 #include "x11_backend_internal.h"
@@ -46,6 +48,41 @@ static void maybe_detach_retired_locked(int idx, x11_fb_retired_node_t **out_lis
 // Backend truth + lock live here now.
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 x11_win_state_t g_windows[X11_MAX_WINDOWS];
+
+void x11_backend_lock(void)
+{
+  pthread_mutex_lock(&g_mu);
+}
+
+void x11_backend_unlock(void)
+{
+  pthread_mutex_unlock(&g_mu);
+}
+
+void x11_backend_cond_wait(pthread_cond_t *cv)
+{
+  if (!cv) return;
+  (void)pthread_cond_wait(cv, &g_mu);
+}
+
+int x11_backend_cond_timedwait(pthread_cond_t *cv, const struct timespec *abstime)
+{
+  if (!cv || !abstime) return -1;
+  return pthread_cond_timedwait(cv, &g_mu, abstime);
+}
+
+void x11_backend_cond_signal(pthread_cond_t *cv)
+{
+  if (!cv) return;
+  (void)pthread_cond_signal(cv);
+}
+
+void x11_backend_cond_broadcast(pthread_cond_t *cv)
+{
+  if (!cv) return;
+  (void)pthread_cond_broadcast(cv);
+}
+
 
 void x11_backend_init(void)
 {
@@ -88,6 +125,147 @@ int x11_backend_alloc_slot_locked(uint32_t xid)
     }
   }
   return -1; // no slots left
+}
+
+
+// ---- Backend-internal helpers used by x11_shim.c (caller must hold g_mu)
+int x11_backend_window_is_alive_locked(uint32_t xid)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
+  return g_windows[idx].alive ? 1 : 0;
+}
+
+int x11_backend_window_is_closing_locked(uint32_t xid)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
+  return g_windows[idx].closing ? 1 : 0;
+}
+
+uint32_t x11_backend_repaint_inflight_locked(uint32_t xid)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
+  return atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed);
+}
+
+int x11_backend_window_begin_close_locked(uint32_t xid)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
+  g_windows[idx].closing = 1;
+  g_windows[idx].damaged = 0;
+  return 1;
+}
+
+int x11_backend_get_fb_locked(uint32_t xid, uint32_t **out_fb)
+{
+  if (out_fb) *out_fb = NULL;
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
+  if (!g_windows[idx].alive) return 0;
+  if (out_fb) *out_fb = g_windows[idx].fb;
+  return 1;
+}
+
+#ifndef NDEBUG
+
+
+static void debug_check_slot_invariants_locked(int i)
+{
+  x11_win_state_t *w = &g_windows[i];
+
+  if (!w->alive) {
+    assert(w->xid == 0);
+    assert(w->w_px == 0);
+    assert(w->h_px == 0);
+    assert(w->damaged == 0);
+    assert(w->closing == 0);
+    assert(w->fb == NULL);
+    assert(w->fb_cap_pixels == 0);
+    assert(atomic_load_explicit(&w->repaint_inflight, memory_order_relaxed) == 0);
+    return;
+  }
+
+  assert(w->xid != 0);
+  assert(w->w_px >= 1);
+  assert(w->h_px >= 1);
+
+  if (w->closing) {
+    assert(w->damaged == 0);
+  }
+
+  if (w->fb == NULL) {
+    assert(w->fb_cap_pixels == 0);
+  } else {
+    assert(w->fb_cap_pixels > 0);
+  }
+}
+
+void x11_backend_debug_check_all_invariants_locked(void)
+{
+  for (int i = 0; i < X11_MAX_WINDOWS; i++) {
+    debug_check_slot_invariants_locked(i);
+  }
+}
+
+void x11_backend_debug_check_invariants_for_xid_locked(uint32_t xid)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return;
+  debug_check_slot_invariants_locked(idx);
+}
+
+int x11_backend_debug_snapshot_windows_locked(x11_backend_debug_win_t *out_wins, int cap)
+{
+  if (!out_wins || cap <= 0) return 0;
+  int n = 0;
+  for (int i = 0; i < X11_MAX_WINDOWS && n < cap; i++) {
+    if (!g_windows[i].alive) continue;
+    out_wins[n].xid      = g_windows[i].xid;
+    out_wins[n].w_px     = g_windows[i].w_px;
+    out_wins[n].h_px     = g_windows[i].h_px;
+    out_wins[n].alive    = g_windows[i].alive;
+    out_wins[n].damaged  = g_windows[i].damaged;
+    out_wins[n].closing  = g_windows[i].closing;
+    out_wins[n].inflight =
+      atomic_load_explicit(&g_windows[i].repaint_inflight, memory_order_relaxed);
+    n++;
+  }
+  return n;
+}
+#endif
+
+
+int x11_backend_get_size_locked(uint32_t xid, int32_t *out_w_px, int32_t *out_h_px)
+{
+  if (out_w_px) *out_w_px = 0;
+  if (out_h_px) *out_h_px = 0;
+
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0 || !g_windows[idx].alive) return 0;
+
+  if (out_w_px) *out_w_px = g_windows[idx].w_px;
+  if (out_h_px) *out_h_px = g_windows[idx].h_px;
+  return 1;
+}
+
+int x11_backend_get_damaged_locked(uint32_t xid, uint8_t *out_damaged)
+{
+  if (out_damaged) *out_damaged = 0;
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0 || !g_windows[idx].alive) return 0;
+  if (out_damaged) *out_damaged = g_windows[idx].damaged;
+  return 1;
+}
+
+int x11_backend_window_can_repaint_locked(uint32_t xid)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0 || !g_windows[idx].alive) return 0;
+  if (g_windows[idx].closing) return 0;
+  return 1;
 }
 
 
@@ -345,9 +523,6 @@ int x11_backend_ensure_fb(uint32_t xid, size_t need_pixels, uint32_t **out_fb)
   if (idx >= 0 && g_windows[idx].alive && g_windows[idx].xid == xid) {
     old_fb = g_windows[idx].fb;
     g_windows[idx].fb = new_fb;
-    // After swapping in new_fb...
-    // Always detach retired list if inflight is 0 (may free old stuff promptly).
-    maybe_detach_retired_locked(idx, &to_free);
     g_windows[idx].fb_cap_pixels = need_pixels;
     if (out_fb) *out_fb = new_fb;
     kept = 1;
@@ -437,5 +612,6 @@ void x11_backend_repaint_end(uint32_t xid)
 
   if (retired) x11_backend_free_retired(retired);
 }
+
 
 // x11_backend.c
