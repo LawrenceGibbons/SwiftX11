@@ -51,6 +51,7 @@ typedef struct x11_server_ctx_t {
 
   // Debug: count how many destroys had to wait for in-flight repaints
   _Atomic uint64_t debug_destroy_waits;
+  _Atomic uint64_t dbg_destroy_noop;
 
   // Debug: motion routing diagnostics
   _Atomic uint64_t dbg_move_calls;
@@ -184,6 +185,10 @@ static void x11_emit_window_destroy(uint32_t xid)
 
   // Idempotent destroy: if it's already gone, do nothing.
   if (!x11_backend_window_exists_locked(xid)) {
+    atomic_fetch_add_explicit(&g_srv.dbg_destroy_noop, 1, memory_order_relaxed);
+  #ifndef NDEBUG
+    fprintf(stderr, "[SwiftX11] destroy noop xid=0x%X (already gone)\n", xid);
+  #endif
     x11_backend_unlock();
     return;
   }
@@ -320,13 +325,14 @@ void x11_debug_dump_window_table(void)
     int wn = x11_backend_debug_snapshot_windows_locked(wins, X11_MAX_WINDOWS);
     for (int i = 0; i < wn; i++) {
         fprintf(stderr,
-                "  xid=0x%X size=%dx%d damaged=%u closing=%u inflight=%u\n",
+                "  xid=0x%X size=%dx%d damaged=%u closing=%u inflight=%u\n debug_destroy_waits=%u\n",
                 wins[i].xid,
                 (int)wins[i].w_px,
                 (int)wins[i].h_px,
                 (unsigned)wins[i].damaged,
                 (unsigned)wins[i].closing,
-                (unsigned)wins[i].inflight);
+                (unsigned)wins[i].inflight,
+                (unsigned)wins[i].debug_destroy_waits);
     }
 #else
     // In release builds, keep output minimal.
@@ -391,7 +397,6 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     out_snapshot->focus_xid   = g_srv.focus_xid;
     out_snapshot->drag_xid    = g_srv.drag_xid;
     out_snapshot->buttons     = g_srv.buttons;
-    out_snapshot->destroy_waits =
       atomic_load_explicit(&g_srv.debug_destroy_waits, memory_order_relaxed);
   
     #ifndef NDEBUG
@@ -401,10 +406,10 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     uint32_t n = 0;
     for (int i = 0; i < wn && n < X11_DEBUG_MAX_WINDOWS; i++) {
         out_snapshot->windows[n].xid     = wins[i].xid;
-        out_snapshot->windows[n].w_px    = wins[i].w_px;
-        out_snapshot->windows[n].h_px    = wins[i].h_px;
-        out_snapshot->windows[n].alive   = wins[i].alive;
-        out_snapshot->windows[n].damaged = wins[i].damaged;
+        out_snapshot->windows[n].w_px                = wins[i].w_px;
+        out_snapshot->windows[n].h_px                = wins[i].h_px;
+        out_snapshot->windows[n].alive               = wins[i].alive;
+        out_snapshot->windows[n].damaged             = wins[i].damaged;
         n++;
     }
     out_snapshot->window_count = n;
@@ -1089,11 +1094,16 @@ static void* runloop_main(void* _)
     x11_backend_lock();
   
   while (!g_srv.runloop_stop) {
+#ifndef NDEBUG
+    assert(g_srv.runloop_cv_inited);
+#endif
+    
     // Sleep until woken (or timeout for safety)
     struct timespec ts;
     // macOS pthread condition variables use CLOCK_REALTIME for absolute timeouts.
     // (pthread_condattr_setclock is not available on macOS.)
     clock_gettime(CLOCK_REALTIME, &ts);
+    
     // ~16ms timeout (60Hz) so we still repaint if a wake is missed
     ts.tv_nsec += 16 * 1000 * 1000;
     while (ts.tv_nsec >= 1000000000L) {
@@ -1104,9 +1114,7 @@ static void* runloop_main(void* _)
     x11_backend_cond_timedwait(&g_srv.cv, &ts);
     
     x11_backend_unlock();
-
     x11_server_step();
-
     x11_backend_lock();
   }
 
@@ -1181,6 +1189,7 @@ void x11_debug_dump_routing_snapshot(const char* reason)
     int32_t  h;
     uint8_t  damaged;
     uint32_t inflight;
+    uint64_t debug_destroy_waits;
   } wins[X11_MAX_WINDOWS];
   int wn = 0;
 
@@ -1200,6 +1209,7 @@ void x11_debug_dump_routing_snapshot(const char* reason)
     wins[wn].h   = bwins[i].h_px;
     wins[wn].damaged = bwins[i].damaged;
     wins[wn].inflight = bwins[i].inflight;
+    wins[wn].debug_destroy_waits = bwins[i].debug_destroy_waits;
     wn++;
   }
 #endif
@@ -1223,12 +1233,13 @@ void x11_debug_dump_routing_snapshot(const char* reason)
 
   for (int i = 0; i < wn; i++) {
     fprintf(stderr,
-            "[SwiftX11]   WIN xid=0x%X size=%dx%d damaged=%u inflight=%u\n",
+            "[SwiftX11]   WIN xid=0x%X size=%dx%d damaged=%u inflight=%u\n debug_destroy_waits=%u\n",
             wins[i].xid,
             (int)wins[i].w,
             (int)wins[i].h,
             (unsigned)wins[i].damaged,
-            (unsigned)wins[i].inflight);
+            (unsigned)wins[i].inflight,
+            (unsigned)wins[i].debug_destroy_waits);
   }
 #else
   (void)reason;

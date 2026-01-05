@@ -91,6 +91,7 @@ typedef struct x11_backend_debug_win_t {
   uint8_t  closing;
   uint8_t  _pad;
   uint32_t inflight;
+  uint64_t debug_destroy_waits;
 } x11_backend_debug_win_t;
 
 // Debug-only: validate backend invariants for a specific xid (must hold backend lock).
