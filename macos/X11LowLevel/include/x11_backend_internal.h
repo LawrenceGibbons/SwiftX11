@@ -72,11 +72,7 @@ typedef struct x11_win_state_t {
   // Concurrency / teardown safety
   _Atomic uint32_t repaint_inflight;  // counts active repaints using the framebuffer pointer
 } x11_win_state_t;
-  
-// globals owned by x11_backend.c
-extern pthread_mutex_t g_mu;
-extern x11_win_state_t g_windows[X11_MAX_WINDOWS];
-  
+    
 // NOTE:
 // Backend APIs and debug helpers are declared in `x11_backend.h`.
 // This internal header only exposes backend-owned state/layout used by backend implementation.

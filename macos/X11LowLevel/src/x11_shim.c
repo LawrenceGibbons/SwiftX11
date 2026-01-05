@@ -151,9 +151,8 @@ void x11_debug_set_repaint_storm(int enabled, uint32_t xid)
   // Decide under lock, apply outside lock.
   uint32_t kick_xid = 0;
   if (g_srv.debug_storm && g_srv.debug_storm_xid != 0) {
-    if (x11_backend_window_can_repaint_locked(g_srv.debug_storm_xid)) {
-      kick_xid = g_srv.debug_storm_xid;
-    }
+    // Backend will ignore mark_damage if missing/closing.
+    kick_xid = g_srv.debug_storm_xid;
   }
   
 #ifndef NDEBUG
@@ -242,7 +241,7 @@ static void x11_emit_window_destroy(uint32_t xid)
   x11_backend_lock();
 
   // Idempotent destroy: if it's already gone, do nothing.
-  if (!x11_backend_window_is_alive_locked(xid) && !x11_backend_window_is_closing_locked(xid)) {
+  if (!x11_backend_window_exists_locked(xid)) {
     x11_backend_unlock();
     return;
   }
@@ -532,12 +531,14 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   x11_backend_lock();
   presenter = g_srv.present;
 
-  if (!presenter || !x11_backend_window_can_repaint_locked(xwin_id)) {
+  if (!presenter) {
     x11_backend_unlock();
     return;
   }
 
   if (!x11_backend_repaint_begin_locked(xwin_id)) {
+    // begin_locked is the single source of truth:
+    // it fails if missing / not alive / closing.
     x11_backend_unlock();
     return;
   }

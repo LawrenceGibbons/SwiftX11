@@ -18,6 +18,11 @@
 #include "x11_backend_internal.h"
 #include "x11_parameters.h"
 
+// Backend truth + lock live here now.
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static x11_win_state_t g_windows[X11_MAX_WINDOWS];
+
+
 // Helper to free a retired fb list.
 static void free_retired_list(x11_fb_retired_node_t *node) {
   while (node) {
@@ -45,10 +50,6 @@ static void maybe_detach_retired_locked(int idx, x11_fb_retired_node_t **out_lis
   }
   g_windows[idx].fb_retired = NULL;
 }
-
-// Backend truth + lock live here now.
-pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-x11_win_state_t g_windows[X11_MAX_WINDOWS];
 
 void x11_backend_lock(void)
 {
@@ -87,9 +88,9 @@ void x11_backend_cond_broadcast(pthread_cond_t *cv)
 
 void x11_backend_init(void)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   memset(g_windows, 0, sizeof(g_windows));
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 }
 
 // ---- Slot helpers
@@ -192,6 +193,12 @@ int x11_backend_window_begin_close_locked(uint32_t xid)
   g_windows[idx].damaged = 0;
   return 1;
 }
+
+int x11_backend_window_exists_locked(uint32_t xid)
+{
+  return (x11_backend_find_slot_locked(xid) >= 0) ? 1 : 0;
+}
+
 
 void x11_backend_window_begin_close_and_wait_inflight_locked(
     uint32_t xid,
@@ -379,9 +386,9 @@ int x11_backend_window_destroy_locked(uint32_t xid,
 int x11_backend_find_slot(uint32_t xid)
 {
   int idx;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   idx = x11_backend_find_slot_locked(xid);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   return idx;
 }
 
@@ -389,9 +396,9 @@ int x11_backend_find_slot(uint32_t xid)
 int x11_backend_alloc_slot(uint32_t xid)
 {
   int idx;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   idx = x11_backend_alloc_slot_locked(xid);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   return idx;
 }
 
@@ -417,9 +424,9 @@ int x11_backend_set_size_and_damage_locked(uint32_t xid, int32_t w_px, int32_t h
 // Public wrapper: takes lock
 int x11_backend_set_size_and_damage(uint32_t xid, int32_t w_px, int32_t h_px)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   int idx = x11_backend_set_size_and_damage_locked(xid, w_px, h_px);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   return idx;
 }
 
@@ -432,9 +439,9 @@ int x11_backend_window_destroy(uint32_t xid, uint32_t **out_fb, void **out_retir
   uint32_t *old_fb = NULL;
   void *retired_opaque = NULL;
 
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   int ok = x11_backend_window_destroy_locked(xid, &old_fb, &retired_opaque);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   if (!ok) return 0;
 
@@ -474,9 +481,9 @@ void x11_backend_window_set_size_locked(uint32_t xid, int32_t w_px, int32_t h_px
 
 void x11_backend_window_set_size(uint32_t xid, int32_t w_px, int32_t h_px)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   x11_backend_window_set_size_locked(xid, w_px, h_px);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 }
 
 
@@ -521,25 +528,25 @@ int x11_backend_snapshot_live_xids_locked(uint32_t *out, int cap)
 
 void x11_backend_mark_damage(uint32_t xid)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   x11_backend_mark_damage_locked(xid);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 }
 
 // Mark all live windows as damaged
 void x11_backend_mark_all_damage(void)
 {
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   x11_backend_mark_all_damage_locked();
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 }
 
 int x11_backend_take_damaged_snapshot(uint32_t *xids, int32_t *ws, int32_t *hs, int cap)
 {
   int n;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   n = x11_backend_take_damaged_snapshot_locked(xids, ws, hs, cap);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   return n;
 }
 
@@ -547,9 +554,9 @@ int x11_backend_take_damaged_snapshot(uint32_t *xids, int32_t *ws, int32_t *hs, 
 int x11_backend_snapshot_live_xids(uint32_t *out, int cap)
 {
   int n;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   n = x11_backend_snapshot_live_xids_locked(out, cap);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   return n;
 }
 
@@ -564,20 +571,20 @@ int x11_backend_ensure_fb(uint32_t xid, size_t need_pixels, uint32_t **out_fb)
   size_t cap = 0;
 
   // Fast path: check existing capacity under lock.
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   idx = x11_backend_find_slot_locked(xid);
   if (idx < 0 || !g_windows[idx].alive) {
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return 0;
   }
   fb  = g_windows[idx].fb;
   cap = g_windows[idx].fb_cap_pixels;
   if (cap >= need_pixels && fb) {
     if (out_fb) *out_fb = fb;
-    pthread_mutex_unlock(&g_mu);
+    x11_backend_unlock();
     return 1;
   }
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   // Grow outside lock.
   uint32_t *new_fb = (uint32_t*)malloc(need_pixels * sizeof(uint32_t));
@@ -588,7 +595,7 @@ int x11_backend_ensure_fb(uint32_t xid, size_t need_pixels, uint32_t **out_fb)
   int kept = 0;
 
   // Swap in under lock if still alive.
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   idx = x11_backend_find_slot_locked(xid);
   if (idx >= 0 && g_windows[idx].alive && g_windows[idx].xid == xid) {
     old_fb = g_windows[idx].fb;
@@ -617,7 +624,7 @@ int x11_backend_ensure_fb(uint32_t xid, size_t need_pixels, uint32_t **out_fb)
     maybe_detach_retired_locked(idx, &to_free);
   }
   
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   if (!kept) {
     free(new_fb);
@@ -681,9 +688,9 @@ void x11_backend_repaint_end_locked(uint32_t xid,
 int x11_backend_repaint_begin(uint32_t xid)
 {
   int ok;
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   ok = x11_backend_repaint_begin_locked(xid);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
   return ok;
 }
 
@@ -691,9 +698,9 @@ void x11_backend_repaint_end(uint32_t xid)
 {
   void *retired = NULL;
 
-  pthread_mutex_lock(&g_mu);
+  x11_backend_lock();
   x11_backend_repaint_end_locked(xid, NULL, 0, &retired);
-  pthread_mutex_unlock(&g_mu);
+  x11_backend_unlock();
 
   if (retired) x11_backend_free_retired(retired);
 }

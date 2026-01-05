@@ -75,6 +75,9 @@ int      x11_backend_get_damaged_locked(uint32_t xid, uint8_t *out_damaged);
 // Sets closing=1 and clears damaged=0. Returns 1 if window exists, else 0.
 int      x11_backend_window_begin_close_locked(uint32_t xid);
 
+// Returns 1 if a slot exists for this xid (alive or closing), else 0.
+int x11_backend_window_exists_locked(uint32_t xid);
+  
 #ifndef NDEBUG
 // -----------------------------------------------------------------------------
 // Debug snapshot helpers (caller must hold backend lock)
