@@ -271,16 +271,8 @@ static void x11_emit_window_destroy(uint32_t xid)
     fprintf(stderr, "[SwiftX11] destroy xid=0x%X waiting inflight=%u\n", xid, inflight);
 #endif
   }
-  while (x11_backend_repaint_inflight_locked(xid) != 0) {
-    if (g_srv.destroy_cv_inited) {
-      x11_backend_cond_wait(&g_srv.inflight_cv);
-    } else {
-      x11_backend_unlock();
-      usleep(1000);
-      x11_backend_lock();
-    }
-  }
-
+  (void)x11_backend_wait_inflight_zero_locked(xid, &g_srv.inflight_cv, g_srv.destroy_cv_inited);
+  
   // Now inflight is 0; detach fb + clear slot via backend (under the same lock).
   (void)x11_backend_window_destroy_locked(xid, &old_fb, &retired);
   
@@ -611,22 +603,14 @@ done:
     void *retired = NULL;
 
     x11_backend_lock();
-    x11_backend_repaint_end_locked(xwin_id, &retired);
+    x11_backend_repaint_end_locked(xwin_id, &g_srv.inflight_cv, g_srv.destroy_cv_inited, &retired);
 
-    // If destroy is waiting, wake it when we hit zero.
-    if (g_srv.destroy_cv_inited &&
-        x11_backend_window_is_closing_locked(xwin_id) &&
-        x11_backend_repaint_inflight_locked(xwin_id) == 0)
-    {
-      x11_backend_cond_broadcast(&g_srv.inflight_cv);
-    }
-
-#ifndef NDEBUG
+    #ifndef NDEBUG
     x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
-#endif
+    #endif
 
     x11_backend_unlock();
-
+    
     if (retired) x11_backend_free_retired(retired);
   }
 }

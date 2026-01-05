@@ -142,8 +142,14 @@ int   x11_backend_repaint_begin(uint32_t xid);
 void  x11_backend_repaint_end(uint32_t xid);
 
 int   x11_backend_repaint_begin_locked(uint32_t xid);
-void  x11_backend_repaint_end_locked(uint32_t xid, void **out_retired);
-
+void  x11_backend_repaint_end_locked(uint32_t xid,
+                                     pthread_cond_t *inflight_cv,
+                                     int inflight_cv_inited,
+                                     void **out_retired);
+  
+int   x11_backend_wait_inflight_zero_locked(uint32_t xid,
+                                            pthread_cond_t *inflight_cv,
+                                            int inflight_cv_inited);
 #ifdef __cplusplus
 }
 #endif

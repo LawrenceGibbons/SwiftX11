@@ -12,6 +12,7 @@
 #include <stdatomic.h>
 #include <assert.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "x11_backend.h"
 #include "x11_backend_internal.h"
@@ -148,6 +149,32 @@ uint32_t x11_backend_repaint_inflight_locked(uint32_t xid)
   int idx = x11_backend_find_slot_locked(xid);
   if (idx < 0) return 0;
   return atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed);
+}
+
+int x11_backend_wait_inflight_zero_locked(uint32_t xid,
+                                          pthread_cond_t *inflight_cv,
+                                          int inflight_cv_inited)
+{
+  // Caller must hold backend lock.
+  // Return 1 if we successfully reached inflight==0 (or it already was),
+  // 0 if the window no longer exists.
+  if (x11_backend_find_slot_locked(xid) < 0) return 0;
+
+  while (x11_backend_repaint_inflight_locked(xid) != 0) {
+    if (inflight_cv_inited && inflight_cv) {
+      x11_backend_cond_wait(inflight_cv);
+    } else {
+      // Fallback when CV is not available: briefly yield without holding the lock.
+      x11_backend_unlock();
+      usleep(1000);
+      x11_backend_lock();
+
+      // Window might have been destroyed while unlocked
+      if (x11_backend_find_slot_locked(xid) < 0) return 0;
+    }
+  }
+
+  return 1;
 }
 
 int x11_backend_window_begin_close_locked(uint32_t xid)
@@ -577,15 +604,30 @@ int x11_backend_repaint_begin_locked(uint32_t xid)
 
 // Decrements inflight (if >0) and detaches any now-safe retired FB list.
 // Returns a list to free outside the lock via *out_to_free.
-void x11_backend_repaint_end_locked(uint32_t xid, void **out_retired)
+void x11_backend_repaint_end_locked(uint32_t xid,
+                                    pthread_cond_t *inflight_cv,
+                                    int inflight_cv_inited,
+                                    void **out_retired)
 {
   if (out_retired) *out_retired = NULL;
+
   int idx = x11_backend_find_slot_locked(xid);
   if (idx < 0) return;
 
   uint32_t v = atomic_load_explicit(&g_windows[idx].repaint_inflight, memory_order_relaxed);
+  uint32_t v_after = v;
+
   if (v != 0) {
     (void)atomic_fetch_sub_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed);
+    v_after = v - 1;
+  }
+
+  // If a destroy is waiting, wake it when we hit zero inflight on a closing window.
+  if (inflight_cv_inited && inflight_cv &&
+      g_windows[idx].closing &&
+      v_after == 0)
+  {
+    x11_backend_cond_broadcast(inflight_cv);
   }
 
   x11_fb_retired_node_t *to_free = NULL;
@@ -609,7 +651,7 @@ void x11_backend_repaint_end(uint32_t xid)
   void *retired = NULL;
 
   pthread_mutex_lock(&g_mu);
-  x11_backend_repaint_end_locked(xid, &retired);
+  x11_backend_repaint_end_locked(xid, NULL, 0, &retired);
   pthread_mutex_unlock(&g_mu);
 
   if (retired) x11_backend_free_retired(retired);
