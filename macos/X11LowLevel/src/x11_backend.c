@@ -173,7 +173,7 @@ int x11_backend_alloc_slot_locked(uint32_t xid)
 
       g_windows[i].xid     = xid;
       g_windows[i].alive   = 1;
-      g_windows[i].mapped  = 1;   // rootless default visible
+      g_windows[i].mapped  = 0;   // X11 semantics: created != mapped
       g_windows[i].closing = 0;
       // repaint_inflight atomic is already zero due to memset
 
@@ -471,7 +471,7 @@ int x11_backend_window_destroy(uint32_t xid, uint32_t **out_fb, void **out_retir
 void x11_backend_mark_damage_locked(uint32_t xid)
 {
   int idx = x11_backend_find_slot_locked(xid);
-  if (idx >= 0 && g_windows[idx].alive && !g_windows[idx].closing) {
+  if (idx >= 0 && g_windows[idx].alive && !g_windows[idx].closing && g_windows[idx].mapped) {
     g_windows[idx].damaged = 1;
   }
 }
@@ -506,7 +506,7 @@ void x11_backend_window_set_size(uint32_t xid, int32_t w_px, int32_t h_px)
 void x11_backend_mark_all_damage_locked(void)
 {
   for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-    if (g_windows[i].alive && !g_windows[i].closing) {
+    if (g_windows[i].alive && !g_windows[i].closing && g_windows[i].mapped) {
       g_windows[i].damaged = 1;
     }
   }
@@ -719,17 +719,23 @@ void x11_backend_repaint_end(uint32_t xid)
 }
 
 
+int x11_backend_window_is_mapped_locked(uint32_t xid)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0 || !g_windows[idx].alive) return 0;
+  return g_windows[idx].mapped ? 1 : 0;
+}
+
+
 int x11_backend_window_set_mapped_locked(uint32_t xid, int mapped)
 {
   int idx = x11_backend_find_slot_locked(xid);
-  if (idx < 0) return 0;
-  if (!g_windows[idx].alive) return 0;
-
+  if (idx < 0 || !g_windows[idx].alive) return 0;
+  
   g_windows[idx].mapped = mapped ? 1 : 0;
-
-  // If we are unmapping, ensure we don't keep generating repaints.
+  
   if (!g_windows[idx].mapped) {
-    g_windows[idx].damaged = 0;
+    g_windows[idx].damaged = 0; // unmapped windows should not remain damaged
   }
   return 1;
 }

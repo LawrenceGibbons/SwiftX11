@@ -137,7 +137,7 @@ final class WindowRegistry {
       self?.showQueueStats?() ?? false
     }
     windows[xid] = controller
-    controller.showWindow(nil)
+    controller.window?.orderOut(nil)   // start unmapped/hidden
     if let win = controller.window {
       installWindowObservers(xid: xid, window: win)
     }
@@ -151,7 +151,6 @@ final class WindowRegistry {
       let scale = win.backingScaleFactor
       let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
       let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-      x11_post_window_map(xid)
       x11_post_window_resize(xid, wPx, hPx)
     }
   }

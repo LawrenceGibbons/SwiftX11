@@ -167,7 +167,11 @@ int   x11_backend_wait_inflight_zero_locked(uint32_t xid);
 // -----------------------------------------------------------------------------
 
 int x11_backend_window_set_mapped_locked(uint32_t xid, int mapped);
-
+// Mapped state
+int  x11_backend_window_is_mapped_locked(uint32_t xid);
+int  x11_backend_window_set_mapped_locked(uint32_t xid, int mapped);
+  
+  
 #ifdef __cplusplus
 }
 #endif

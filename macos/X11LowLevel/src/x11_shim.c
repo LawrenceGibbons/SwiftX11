@@ -192,6 +192,8 @@ static void x11_emit_window_destroy(uint32_t xid)
   uint32_t *old_fb = NULL;
   void *retired = NULL;
   
+  int was_mapped = 0;
+  
   x11_backend_lock();
 
   // Idempotent destroy: if it's already gone, do nothing.
@@ -203,22 +205,22 @@ static void x11_emit_window_destroy(uint32_t xid)
     x11_backend_unlock();
     return;
   }
-  
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] DESTROY xid=0x%X (DEBUG)\n", xid);
-#else
-  fprintf(stderr, "[SwiftX11] DESTROY xid=0x%X (RELEASE)\n", xid);
-#endif
-  
-
-  
+    
   // If we’re doing the repaint-storm test, stop generating new damage now.
   g_srv.debug_storm = 0;
   g_srv.debug_storm_xid = 0;
 
+  // Snapshot whether the window is mapped so we can emit UNMAP before DESTROY.
+  was_mapped = x11_backend_window_is_mapped_locked(xid);
+  
   // Prevent *new* repaints from starting on this window.
   (void)x11_backend_window_begin_close_locked(xid);
   
+  // Force mapped=0 as part of teardown semantics.
+  if (was_mapped) {
+    (void)x11_backend_window_set_mapped_locked(xid, 0);
+  }
+
   // Clear routing ownership while we still know xid.
   if (g_srv.pointer_xid == xid) g_srv.pointer_xid = 0;
   if (g_srv.focus_xid == xid)   g_srv.focus_xid = 0;
@@ -235,8 +237,8 @@ static void x11_emit_window_destroy(uint32_t xid)
     #ifndef NDEBUG
     fprintf(stderr, "[SwiftX11] destroy xid=0x%X waiting inflight=%u\n", xid, inflight);
     #endif
-    (void)x11_backend_wait_inflight_zero_locked(xid);
   }  
+  (void)x11_backend_wait_inflight_zero_locked(xid);
   
   // Now inflight is 0; detach fb + clear slot via backend (under the same lock).
   (void)x11_backend_window_destroy_locked(xid, &old_fb, &retired);
@@ -255,9 +257,20 @@ static void x11_emit_window_destroy(uint32_t xid)
   if (old_fb) free(old_fb);
   if (retired) x11_backend_free_retired(retired);
   
-  // Enqueue event as backend truth.
+  // If the window was mapped, emit UNMAP before DESTROY (X11-ish ordering).
+  uint64_t timestamp = x11_now_ns();
+  if (was_mapped) {
+    x11_event_t un = (x11_event_t){0};
+    un.timestamp_ns = timestamp;
+    un.xid = xid;
+    un.type = X11_EV_WINDOW_UNMAP;
+    un.size = sizeof(un.u.win_unmap);
+    (void)x11_events_push(&un);
+  }
+
+  // Enqueue DESTROY as backend truth.
   x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
+  ev.timestamp_ns = timestamp;
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_DESTROY;
   ev.size = sizeof(ev.u.win_destroy);
@@ -1060,9 +1073,18 @@ void x11_post_window_map(uint32_t xid)
 {
   if (xid == 0) return;
 
-  // Update backend truth first (so repaint gating is correct immediately).
   x11_backend_lock();
-  (void)x11_backend_window_set_mapped_locked(xid, 1);
+  if (!x11_backend_window_exists_locked(xid) || x11_backend_window_is_closing_locked(xid)) {
+    x11_backend_unlock();
+    return;
+  }
+
+  // If already mapped, keep it idempotent.
+  if (!x11_backend_window_is_mapped_locked(xid)) {
+    (void)x11_backend_window_set_mapped_locked(xid, 1);
+    x11_backend_mark_damage_locked(xid);
+  }
+
   x11_backend_unlock();
 
   // Enqueue event.
@@ -1073,8 +1095,6 @@ void x11_post_window_map(uint32_t xid)
   ev.size = sizeof(ev.u.win_map);
   (void)x11_events_push(&ev);
 
-  // Force a repaint after mapping (typical X behavior)
-  x11_backend_mark_damage(xid);
   x11_server_wakeup();
 }
 
@@ -1082,9 +1102,17 @@ void x11_post_window_unmap(uint32_t xid)
 {
   if (xid == 0) return;
 
-  // Update backend truth first: unmapped windows should not repaint.
   x11_backend_lock();
-  (void)x11_backend_window_set_mapped_locked(xid, 0);
+  if (!x11_backend_window_exists_locked(xid)) {
+    x11_backend_unlock();
+    return;
+  }
+
+  // Idempotent
+  if (x11_backend_window_is_mapped_locked(xid)) {
+    (void)x11_backend_window_set_mapped_locked(xid, 0);
+  }
+
   x11_backend_unlock();
 
   // Enqueue event.
@@ -1095,7 +1123,7 @@ void x11_post_window_unmap(uint32_t xid)
   ev.size = sizeof(ev.u.win_unmap);
   (void)x11_events_push(&ev);
 
-  x11_server_wakeup();
+  // No repaint needed; it's hidden. Wakeup optional.
 }
 
 
