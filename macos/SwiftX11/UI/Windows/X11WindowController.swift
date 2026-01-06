@@ -47,6 +47,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   }
   
   func windowDidResize(_ notification: Notification) {
+    assert(Thread.isMainThread)
     if WindowRegistry.shared.shouldSuppressResizeFromCocoa(xid: xid) {
       return
     }
@@ -72,6 +73,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   }
   
   func windowDidEndLiveResize(_ notification: Notification) {
+    assert(Thread.isMainThread)
     // Force an immediate final repaint at the final size
     windowDidResize(notification)
     WindowRegistry.shared.flushRepaintNow(xid: xid)
@@ -109,6 +111,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   }
 
   func windowDidBecomeKey(_ notification: Notification) {
+      assert(Thread.isMainThread)
       postSyntheticEnterForCurrentMouseLocation()
       x11_post_focus_event(xid, true)
       x11_post_window_raise(xid)
@@ -120,6 +123,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   }
 
   func windowDidResignKey(_ notification: Notification) {
+      assert(Thread.isMainThread)
       postSyntheticLeaveForCurrentMouseLocation()
       x11_post_focus_event(xid, false)
     
@@ -131,12 +135,13 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
 
   @objc
   func windowWillClose(_ notification: Notification) {
+    assert(Thread.isMainThread)
     // make state look clean before arrival of the destroy event
     x11_post_focus_event(xid, false)
     postSyntheticLeaveForCurrentMouseLocation()
 
     // Tell the backend/event-queue that this X11 window is gone
-    x11_post_window_destroy(xid)
+    x11_client_destroy_window(xid)
     
 #if DEBUG
     // warn if somehow it's still alive
@@ -146,6 +151,31 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
 #endif
 
   }  
+  
+  func windowDidMiniaturize(_ notification: Notification) {
+    assert(Thread.isMainThread)
+    if WindowRegistry.shared.consumeSuppressUnmapFromCocoa(xid: xid) { return }
+    x11_client_unmap_window(xid)
+  }
+
+  func windowDidDeminiaturize(_ notification: Notification) {
+    assert(Thread.isMainThread)
+    if WindowRegistry.shared.consumeSuppressMapFromCocoa(xid: xid) { return }
+    x11_client_map_window(xid)
+  }
+  
+  func windowDidHide(_ notification: Notification) {
+    assert(Thread.isMainThread)
+    if WindowRegistry.shared.consumeSuppressUnmapFromCocoa(xid: xid) { return }
+    x11_client_unmap_window(xid)
+  }
+
+  func windowDidUnhide(_ notification: Notification) {
+    assert(Thread.isMainThread)
+    if WindowRegistry.shared.consumeSuppressMapFromCocoa(xid: xid) { return }
+    x11_client_map_window(xid)
+  }
+  
 }
 
 final class X11ViewHolder {

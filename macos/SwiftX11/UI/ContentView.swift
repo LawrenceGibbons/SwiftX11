@@ -4,6 +4,7 @@ import X11LowLevel
 struct ContentView: View {
   @EnvironmentObject var server: XServerController
   @EnvironmentObject var settings: SettingsStore
+  @State private var lastXid: UInt32?
   
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -20,9 +21,15 @@ struct ContentView: View {
       .padding(.bottom, 8)
       
       Button("New X11 Window") {
-        server.newWindow()
+        lastXid = server.newWindow()
       }
 
+      Button("Show Window") {
+        if let xid = lastXid {
+          server.showWindow(xid: xid)
+        }
+      }
+      
       Toggle("Freeze log output", isOn: $settings.pauseLogAppend)
 
       Toggle("Show queue stats (1/sec)", isOn: $settings.showQueueStats)

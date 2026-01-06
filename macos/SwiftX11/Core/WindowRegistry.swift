@@ -37,8 +37,9 @@ final class WindowRegistry {
   private var lastRepaintTimeByXid: [UInt32: CFTimeInterval] = [:]
   private var windowObserversByXid: [UInt32: [NSObjectProtocol]] = [:]
   private var suppressNextRaiseFromCocoa: Set<UInt32> = []
-  @MainActor
   private var suppressNextResizeFromCocoa: Set<UInt32> = []
+  private var suppressNextMapFromCocoa: Set<UInt32> = []
+  private var suppressNextUnmapFromCocoa: Set<UInt32> = []
   
   var useMetalForNewWindows: Bool = true  // set from UI on launch / changes
   
@@ -85,14 +86,28 @@ final class WindowRegistry {
     let didMini = center.addObserver(
       forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main
     ) { _ in
-      x11_post_window_unmap(xid)
+      MainActor.assumeIsolated {
+        // Prevent feedback loop when unmap came from X11 -> Swift.
+        if self.consumeSuppressUnmapFromCocoa(xid: xid) {
+          return
+        }
+        // Cocoa -> X11
+        x11_client_unmap_window(xid)
+      }
     }
     toks.append(didMini)
     
     let didDeMini = center.addObserver(
       forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main
     ) { _ in
-      x11_post_window_map(xid)
+      MainActor.assumeIsolated {
+        // Prevent feedback loop when map came from X11 -> Swift.
+        if self.consumeSuppressMapFromCocoa(xid: xid) {
+          return
+        }
+        // Cocoa -> X11
+        x11_client_map_window(xid)
+      }
     }
     toks.append(didDeMini)
     
@@ -106,19 +121,21 @@ final class WindowRegistry {
   }
   
   func mapWindow(xid: UInt32) {
-    guard let controller = windows[xid] else { return }
-    controller.window?.orderFront(nil)          // <— map without stealing focus
+    guard let win = windows[xid]?.window else { return }
+    suppressNextMapFromCocoa.insert(xid)
+    win.orderFront(nil)              // show without forcing key
   }
   
   func unmapWindow(xid: UInt32) {
       guard let controller = windows[xid] else { return }
+      suppressNextUnmapFromCocoa.insert(xid)
       controller.window?.orderOut(nil)
   }
   
   func createWindow(xid: UInt32, title: String, width: Int, height: Int) {
     // Avoid duplicates
-    if let existing = windows[xid] {
-      existing.window?.makeKeyAndOrderFront(nil)
+    if windows[xid] != nil {
+      // Don’t implicitly map/raise; just ignore duplicate create.
       return
     }
     
@@ -142,22 +159,36 @@ final class WindowRegistry {
       installWindowObservers(xid: xid, window: win)
     }
     
-    //controller.x11View?.xid = xid
-    
-    // IMPORTANT: request an initial repaint at the *actual* pixel size once the window has laid out.
+    // IMPORTANT: request an initial resize at the *actual* pixel size once the window has laid out.
+    // Defensive: if layout reports 0 while unmapped/hidden, fall back to the requested size.
+    let fallbackWPoints = CGFloat(max(1, width))
+    let fallbackHPoints = CGFloat(max(1, height))
+
     DispatchQueue.main.async { [weak controller] in
       guard let win = controller?.window else { return }
-      let sizePoints = win.contentLayoutRect.size
+
+      // Prefer contentLayoutRect, but it can be 0x0 when the window is never shown.
+      var sizePoints = win.contentLayoutRect.size
+
+      if sizePoints.width < 1 || sizePoints.height < 1 {
+        // Fallback to the initial requested size (points)
+        sizePoints = CGSize(width: fallbackWPoints, height: fallbackHPoints)
+      }
+
       let scale = win.backingScaleFactor
       let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
       let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-      x11_post_window_resize(xid, wPx, hPx)
+
+      x11_client_configure_window(xid, wPx, hPx)
     }
   }
   
   func closeWindow(xid: UInt32) {
     removeWindowObservers(xid: xid)
     suppressNextRaiseFromCocoa.remove(xid)
+    suppressNextResizeFromCocoa.remove(xid)
+    suppressNextMapFromCocoa.remove(xid)
+    suppressNextUnmapFromCocoa.remove(xid)
     
     repaintWorkItemByXid[xid]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: xid)
@@ -189,8 +220,7 @@ final class WindowRegistry {
   
   
   func windowResized(xid: UInt32, sizePoints _: CGSize, sizePixels: CGSize, scale _: CGFloat) {
-    if suppressNextResizeFromCocoa.contains(xid) {
-      suppressNextResizeFromCocoa.remove(xid)
+    if shouldSuppressResizeFromCocoa(xid: xid) {
       return
     }
 
@@ -206,9 +236,11 @@ final class WindowRegistry {
       repaintWorkItemByXid[xid]?.cancel()
       repaintWorkItemByXid.removeValue(forKey: xid)
       
-      x11_post_window_resize(xid, w, h)
+      x11_client_configure_window(xid, w, h)
       return
     }
+    
+    // Removed nested mapWindow/unmapWindow functions here.
     
     // Otherwise debounce to the final size shortly
     repaintWorkItemByXid[xid]?.cancel()
@@ -218,9 +250,7 @@ final class WindowRegistry {
       
       self.lastRepaintTimeByXid[xid] = CACurrentMediaTime()
       
-      x11_set_window_size(xid, sz.w, sz.h)
-      x11_mark_damage(xid)
-      x11_server_wakeup()
+      x11_client_configure_window(xid, sz.w, sz.h)
     }
     repaintWorkItemByXid[xid] = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
@@ -264,11 +294,26 @@ final class WindowRegistry {
     windows.removeAll()
   }
   
-  @MainActor
   func shouldSuppressResizeFromCocoa(xid: UInt32) -> Bool {
     // Consume-once suppression: if present, remove and suppress exactly one callback.
     if suppressNextResizeFromCocoa.contains(xid) {
       suppressNextResizeFromCocoa.remove(xid)
+      return true
+    }
+    return false
+  }
+  
+  func consumeSuppressMapFromCocoa(xid: UInt32) -> Bool {
+    if suppressNextMapFromCocoa.contains(xid) {
+      suppressNextMapFromCocoa.remove(xid)
+      return true
+    }
+    return false
+  }
+
+  func consumeSuppressUnmapFromCocoa(xid: UInt32) -> Bool {
+    if suppressNextUnmapFromCocoa.contains(xid) {
+      suppressNextUnmapFromCocoa.remove(xid)
       return true
     }
     return false
@@ -292,4 +337,3 @@ final class WindowRegistry {
     }
   }
 }
-

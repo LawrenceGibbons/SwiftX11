@@ -9,7 +9,7 @@ final class XServerController: ObservableObject {
   @Published var display: Int = 0
   @Published var logLines: [String] = []
   @Published var didInstallLogControls = false
-  
+
   private var drainTimer: DispatchSourceTimer?
   private var isPaused:    (() -> Bool)?
   private var showMotion:  (() -> Bool)?
@@ -98,15 +98,25 @@ final class XServerController: ObservableObject {
     logLines.append("[\(Date())] \(line)")
   }
   
+  
   @MainActor
-  func newWindow(title: String = "SwiftX11 Window", w: Int32 = 800, h: Int32 = 600) {
+  func newWindow(title: String = "SwiftX11 Window", w: Int32 = 800, h: Int32 = 600)  -> UInt32  {
     guard isRunning else {
       append("Server not running; cannot create window.")
-      return
+      return 0
     }
-    let xid = x11_window_create(title, w, h)
-    x11_window_set_title(xid, String(format: "SwiftX11 Window 0x%X", xid) )
+    let xid = x11_client_create_window(title, w, h)
+    x11_client_set_window_title(xid, String(format: "SwiftX11 Window 0x%X", xid) )
     append(String(format: "Requested new window xid=0x%X", xid))
+    return xid
+  }
+  
+  @MainActor
+  func showWindow(xid: UInt32) {
+    x11_client_map_window(xid)
+
+    // Force processing immediately (removes the timer as a variable)
+    drainEventsForce(max: 256)
   }
   
   private func startDrainTimer() {
@@ -129,11 +139,17 @@ final class XServerController: ObservableObject {
   private var lastStatsPrintTime: CFTimeInterval = 0
 
   private func drainEvents(max: Int) {
-    if isDrainPausedNow() { return }  // optional: don’t drain at all
+    if isDrainPausedNow() { 
+      append("drain paused; not popping events")
+      return 
+    }  // optional: don’t drain at all
     
     // sample before
     let qBefore = Int(x11_events_count())
-    
+    if qBefore > 0 {
+      append("drain tick: qBefore=\(qBefore)")
+    }
+
     var n = 0
     while n < max {
       var ev = x11_event_t()

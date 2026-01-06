@@ -160,7 +160,9 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
   x11_backend_alloc_slot(xid);
   x11_backend_window_set_size(xid, ww, hh);
   x11_backend_mark_damage(xid);
-
+  x11_backend_lock();
+  x11_backend_window_set_mapped_locked(xid, 0);
+  x11_backend_unlock();
   
   // Ask Swift to create the NSWindow
   x11_window_created_cb on_create = NULL;
@@ -1074,20 +1076,23 @@ void x11_post_window_map(uint32_t xid)
   if (xid == 0) return;
 
   x11_backend_lock();
-  if (!x11_backend_window_exists_locked(xid) || x11_backend_window_is_closing_locked(xid)) {
+  int exists  = x11_backend_window_exists_locked(xid);
+  int closing = x11_backend_window_is_closing_locked(xid);
+  int mapped  = exists ? x11_backend_window_is_mapped_locked(xid) : 0;
+
+  if (!exists || closing) {
     x11_backend_unlock();
     return;
   }
 
-  // If already mapped, keep it idempotent.
-  if (!x11_backend_window_is_mapped_locked(xid)) {
+  // Idempotent state change (only flip if needed)
+  if (!mapped) {
     (void)x11_backend_window_set_mapped_locked(xid, 1);
     x11_backend_mark_damage_locked(xid);
   }
-
   x11_backend_unlock();
 
-  // Enqueue event.
+  // ALWAYS enqueue MAP so Swift can perform the side-effect (show window).
   x11_event_t ev = (x11_event_t){0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
@@ -1098,32 +1103,27 @@ void x11_post_window_map(uint32_t xid)
   x11_server_wakeup();
 }
 
+
 void x11_post_window_unmap(uint32_t xid)
 {
   if (xid == 0) return;
 
   x11_backend_lock();
-  if (!x11_backend_window_exists_locked(xid)) {
-    x11_backend_unlock();
-    return;
-  }
+  int exists = x11_backend_window_exists_locked(xid);
+  int mapped = exists ? x11_backend_window_is_mapped_locked(xid) : 0;
+  if (!exists) { x11_backend_unlock(); return; }
 
-  // Idempotent
-  if (x11_backend_window_is_mapped_locked(xid)) {
+  if (mapped) {
     (void)x11_backend_window_set_mapped_locked(xid, 0);
   }
-
   x11_backend_unlock();
 
-  // Enqueue event.
   x11_event_t ev = (x11_event_t){0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_UNMAP;
   ev.size = sizeof(ev.u.win_unmap);
   (void)x11_events_push(&ev);
-
-  // No repaint needed; it's hidden. Wakeup optional.
 }
 
 
@@ -1486,3 +1486,42 @@ void x11_window_set_title(uint32_t xid, const char* title_utf8)
 }
 
 
+uint32_t x11_client_create_window(const char* title_utf8, int32_t w_px, int32_t h_px)
+{
+  // For now: forward to existing helper (which already allocs + emits create callback/event).
+  return x11_window_create(title_utf8, w_px, h_px);
+}
+
+void x11_client_destroy_window(uint32_t xid)
+{
+  // For now: forward to server entrypoint.
+  x11_post_window_destroy(xid);
+}
+
+void x11_client_destroy_window_async(uint32_t xid)
+{
+  x11_post_window_destroy_async(xid);
+}
+
+void x11_client_map_window(uint32_t xid)
+{
+  // For now: direct to existing map hook.
+  x11_post_window_map(xid);
+}
+
+void x11_client_unmap_window(uint32_t xid)
+{
+  x11_post_window_unmap(xid);
+}
+
+void x11_client_configure_window(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  // For now: your resize path already updates backend truth + damage + event.
+  x11_post_window_resize(xid, w_px, h_px);
+}
+
+void x11_client_set_window_title(uint32_t xid, const char* title_utf8)
+{
+  // For now: you already have x11_window_set_title posting an event and doing side-effects.
+  x11_window_set_title(xid, title_utf8);
+}

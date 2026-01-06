@@ -663,6 +663,7 @@ int x11_backend_repaint_begin_locked(uint32_t xid)
   int idx = x11_backend_find_slot_locked(xid);
   if (idx < 0) return 0;
   if (!g_windows[idx].alive) return 0;
+  if (!g_windows[idx].mapped) return 0;
   if (g_windows[idx].closing) return 0;
   atomic_fetch_add_explicit(&g_windows[idx].repaint_inflight, 1, memory_order_relaxed);
   return 1;
