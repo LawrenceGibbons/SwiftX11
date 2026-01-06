@@ -1195,9 +1195,10 @@ void x11_server_wakeup(void)
 // process one “tick”: snapshot damaged windows and repaint them.
 void x11_server_step(void)
 {
+  // 0) Apply queued client requests first (server thread truth)
   x11_requests_drain_on_server_thread();   // new
 
-  // Snapshot damaged windows under lock, and clear damage before repainting.
+  // 1) Then snapshot damaged windows and repaint them.
   uint32_t xids[X11_MAX_WINDOWS];
   int32_t  ws[X11_MAX_WINDOWS];
   int32_t  hs[X11_MAX_WINDOWS];
@@ -1500,4 +1501,99 @@ void x11_server_emit_window_destroy(uint32_t xid)
 {
   x11_emit_window_destroy(xid);
 }
+
+void x11_server_apply_map_request(uint32_t xid)
+{
+  if (xid == 0) return;
+
+  int did_map = 0;
+
+  x11_backend_lock();
+  if (x11_backend_window_exists_locked(xid) &&
+      !x11_backend_window_is_closing_locked(xid) &&
+      !x11_backend_window_is_mapped_locked(xid))
+  {
+    (void)x11_backend_window_set_mapped_locked(xid, 1);
+    x11_backend_mark_damage_locked(xid);
+    did_map = 1;
+  }
+  x11_backend_unlock();
+
+  if (!did_map) return;
+
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_MAP;
+  ev.size = sizeof(ev.u.win_map);
+  (void)x11_events_push(&ev);
+
+  x11_server_wakeup();
+}
+
+
+void x11_server_apply_unmap_request(uint32_t xid)
+{
+  if (xid == 0) return;
+
+  int did_unmap = 0;
+
+  x11_backend_lock();
+  if (x11_backend_window_exists_locked(xid) &&
+      x11_backend_window_is_mapped_locked(xid))
+  {
+    (void)x11_backend_window_set_mapped_locked(xid, 0);
+    did_unmap = 1;
+  }
+  x11_backend_unlock();
+
+  if (!did_unmap) return;
+
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_UNMAP;
+  ev.size = sizeof(ev.u.win_unmap);
+  (void)x11_events_push(&ev);
+}
+
+
+void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  if (xid == 0) return;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  int did = 0;
+  int mapped = 0;
+
+  x11_backend_lock();
+  if (x11_backend_window_exists_locked(xid) &&
+      !x11_backend_window_is_closing_locked(xid))
+  {
+    // Apply geometry always (even if unmapped)
+    x11_backend_window_set_size_locked(xid, w_px, h_px);
+    mapped = x11_backend_window_is_mapped_locked(xid);
+
+    // If mapped, schedule repaint
+    if (mapped) x11_backend_mark_damage_locked(xid);
+    did = 1;
+  }
+  x11_backend_unlock();
+
+  if (!did) return;
+
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_RESIZE;
+  ev.size = sizeof(ev.u.win_resize);
+  ev.u.win_resize.width_px  = w_px;
+  ev.u.win_resize.height_px = h_px;
+  (void)x11_events_push(&ev);
+
+  if (mapped) x11_server_wakeup();
+}
+
+
 

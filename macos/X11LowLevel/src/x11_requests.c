@@ -49,17 +49,58 @@ static uint32_t g_req_r = 0;
 static uint32_t g_req_w = 0;
 
 static inline uint32_t req_next(uint32_t v) { return (v + 1u) % X11_CLIENT_REQ_CAP; }
+static inline uint32_t req_prev(uint32_t v) { return (v + X11_CLIENT_REQ_CAP - 1u) % X11_CLIENT_REQ_CAP; }
+static inline int req_is_empty(void) { return (g_req_r == g_req_w); }
 
-static int req_push_locked(const x11_client_req_t *req) {
+
+static int req_push_locked(const x11_client_req_t *req)
+{
+  if (!req) return 0;
+
+  // Coalesce ONLY when the last queued request is the same xid + same type,
+  // so we don't reorder around MAP/UNMAP/DESTROY etc.
+  if (!req_is_empty()) {
+    const uint32_t prev_i = req_prev(g_req_w);
+    x11_client_req_t *prev = &g_req_q[prev_i];
+
+    if (prev->xid == req->xid) {
+      // Coalesce CONFIGURE (resize)
+      if (prev->type == X11_REQ_CONFIGURE && req->type == X11_REQ_CONFIGURE) {
+        prev->u.configure = req->u.configure;
+        return 1;
+      }
+
+      // Coalesce SET_TITLE
+      if (prev->type == X11_REQ_SET_TITLE && req->type == X11_REQ_SET_TITLE) {
+        prev->title_len = req->title_len;
+        memcpy(prev->title, req->title, X11_TEXT_MAX);
+        return 1;
+      }
+
+      // Optional (safe) idempotent drops:
+      // MAP after MAP for same xid -> drop
+      if (prev->type == X11_REQ_MAP && req->type == X11_REQ_MAP) {
+        return 1;
+      }
+      // UNMAP after UNMAP for same xid -> drop
+      if (prev->type == X11_REQ_UNMAP && req->type == X11_REQ_UNMAP) {
+        return 1;
+      }
+    }
+  }
+
+  // Normal enqueue path
   uint32_t next = req_next(g_req_w);
   if (next == g_req_r) {
     // full -> drop (or overwrite oldest if you prefer)
     return 0;
   }
+
   g_req_q[g_req_w] = *req;
   g_req_w = next;
   return 1;
 }
+
 
 static int req_pop_locked(x11_client_req_t *out) {
   if (g_req_r == g_req_w) return 0;
