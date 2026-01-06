@@ -1056,6 +1056,85 @@ void x11_post_window_destroy_async(uint32_t xid)
 }
 
 
+void x11_post_window_map(uint32_t xid)
+{
+  if (xid == 0) return;
+
+  // Update backend truth first (so repaint gating is correct immediately).
+  x11_backend_lock();
+  (void)x11_backend_window_set_mapped_locked(xid, 1);
+  x11_backend_unlock();
+
+  // Enqueue event.
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_MAP;
+  ev.size = sizeof(ev.u.win_map);
+  (void)x11_events_push(&ev);
+
+  // Force a repaint after mapping (typical X behavior)
+  x11_backend_mark_damage(xid);
+  x11_server_wakeup();
+}
+
+void x11_post_window_unmap(uint32_t xid)
+{
+  if (xid == 0) return;
+
+  // Update backend truth first: unmapped windows should not repaint.
+  x11_backend_lock();
+  (void)x11_backend_window_set_mapped_locked(xid, 0);
+  x11_backend_unlock();
+
+  // Enqueue event.
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_UNMAP;
+  ev.size = sizeof(ev.u.win_unmap);
+  (void)x11_events_push(&ev);
+
+  x11_server_wakeup();
+}
+
+
+void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  if (xid == 0) return;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  // Gate on existence (and optionally "not closing") to avoid stale events.
+  x11_backend_lock();
+  const int exists = x11_backend_window_is_alive_locked(xid);
+  const int closing = x11_backend_window_is_closing_locked(xid);
+  x11_backend_unlock();
+
+  if (!exists || closing) {
+    return;
+  }
+
+  // Update backend truth first.
+  x11_backend_window_set_size(xid, w_px, h_px);
+
+  // Resizing implies we need a repaint.
+  x11_backend_mark_damage(xid);
+
+  // Emit event for Swift-side observers/logging.
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_RESIZE;
+  ev.size = sizeof(ev.u.win_resize);
+  ev.u.win_resize.width_px  = w_px;
+  ev.u.win_resize.height_px = h_px;
+  (void)x11_events_push(&ev);
+
+  // Wake repaint loop so the resize shows immediately.
+  x11_server_wakeup();
+}
+
 void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px)
 {
   if (width_px < 1) width_px = 1;
@@ -1377,3 +1456,5 @@ void x11_window_set_title(uint32_t xid, const char* title_utf8)
   // Wake so the UI sees it promptly.
   x11_server_wakeup();
 }
+
+

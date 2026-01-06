@@ -35,8 +35,85 @@ final class WindowRegistry {
   private var repaintWorkItemByXid: [UInt32: DispatchWorkItem] = [:]
   private var latestPixelSizeByXid: [UInt32: (w: Int32, h: Int32)] = [:]
   private var lastRepaintTimeByXid: [UInt32: CFTimeInterval] = [:]
+  private var windowObserversByXid: [UInt32: [NSObjectProtocol]] = [:]
+  private var suppressNextRaiseFromCocoa: Set<UInt32> = []
+  @MainActor
+  private var suppressNextResizeFromCocoa: Set<UInt32> = []
   
   var useMetalForNewWindows: Bool = true  // set from UI on launch / changes
+  
+  private func installWindowObservers(xid: UInt32, window: NSWindow) {
+    removeWindowObservers(xid: xid)
+
+    let center = NotificationCenter.default
+
+    var toks: [NSObjectProtocol] = []
+
+    let didBecomeKey = center.addObserver(
+      forName: NSWindow.didBecomeKeyNotification,
+      object: window,
+      queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      MainActor.assumeIsolated {
+        assert(Thread.isMainThread)
+        
+        // Prevent feedback loop when raise came from X11 -> Swift.
+        if self.suppressNextRaiseFromCocoa.contains(xid) {
+          self.suppressNextRaiseFromCocoa.remove(xid)
+          return
+        }
+
+        // Cocoa -> X11
+        x11_post_focus_event(xid, true)
+        x11_post_window_raise(xid)
+      }
+    }
+    toks.append(didBecomeKey)
+    
+    let didResignKey = center.addObserver(
+      forName: NSWindow.didResignKeyNotification,
+      object: window,
+      queue: .main
+    ) { _ in
+      MainActor.assumeIsolated {
+        x11_post_focus_event(xid, false)
+      }
+    }
+    toks.append(didResignKey)
+    
+    let didMini = center.addObserver(
+      forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main
+    ) { _ in
+      x11_post_window_unmap(xid)
+    }
+    toks.append(didMini)
+    
+    let didDeMini = center.addObserver(
+      forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main
+    ) { _ in
+      x11_post_window_map(xid)
+    }
+    toks.append(didDeMini)
+    
+    windowObserversByXid[xid] = toks
+  }
+
+  private func removeWindowObservers(xid: UInt32) {
+    guard let toks = windowObserversByXid.removeValue(forKey: xid) else { return }
+    let center = NotificationCenter.default
+    for t in toks { center.removeObserver(t) }
+  }
+  
+  func mapWindow(xid: UInt32) {
+    guard let controller = windows[xid] else { return }
+    controller.window?.orderFront(nil)          // <— map without stealing focus
+  }
+  
+  func unmapWindow(xid: UInt32) {
+      guard let controller = windows[xid] else { return }
+      controller.window?.orderOut(nil)
+  }
   
   func createWindow(xid: UInt32, title: String, width: Int, height: Int) {
     // Avoid duplicates
@@ -61,6 +138,10 @@ final class WindowRegistry {
     }
     windows[xid] = controller
     controller.showWindow(nil)
+    if let win = controller.window {
+      installWindowObservers(xid: xid, window: win)
+    }
+    
     //controller.x11View?.xid = xid
     
     // IMPORTANT: request an initial repaint at the *actual* pixel size once the window has laid out.
@@ -70,13 +151,15 @@ final class WindowRegistry {
       let scale = win.backingScaleFactor
       let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
       let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-      x11_set_window_size(xid, wPx, hPx)
-      x11_mark_damage(xid)
-      x11_server_wakeup()
+      x11_post_window_map(xid)
+      x11_post_window_resize(xid, wPx, hPx)
     }
   }
   
   func closeWindow(xid: UInt32) {
+    removeWindowObservers(xid: xid)
+    suppressNextRaiseFromCocoa.remove(xid)
+    
     repaintWorkItemByXid[xid]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: xid)
     latestPixelSizeByXid.removeValue(forKey: xid)
@@ -96,7 +179,22 @@ final class WindowRegistry {
     controller.window?.title = title
   }
   
+  func raiseWindow(xid: UInt32) {
+    guard let controller = windows[xid], let win = controller.window else { return }
+
+    // Suppress the next didBecomeKey notification since we're causing it.
+    suppressNextRaiseFromCocoa.insert(xid)
+
+    win.makeKeyAndOrderFront(nil)
+  }
+  
+  
   func windowResized(xid: UInt32, sizePoints _: CGSize, sizePixels: CGSize, scale _: CGFloat) {
+    if suppressNextResizeFromCocoa.contains(xid) {
+      suppressNextResizeFromCocoa.remove(xid)
+      return
+    }
+
     let w = Int32(max(1, Int(sizePixels.width.rounded(.down))))
     let h = Int32(max(1, Int(sizePixels.height.rounded(.down))))
     latestPixelSizeByXid[xid] = (w: w, h: h)
@@ -109,9 +207,7 @@ final class WindowRegistry {
       repaintWorkItemByXid[xid]?.cancel()
       repaintWorkItemByXid.removeValue(forKey: xid)
       
-      x11_set_window_size(xid, w, h)
-      x11_mark_damage(xid)
-      x11_server_wakeup()
+      x11_post_window_resize(xid, w, h)
       return
     }
     
@@ -131,6 +227,24 @@ final class WindowRegistry {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
   }
   
+  @MainActor
+  func applyX11Resize(xid: UInt32, wPx: Int32, hPx: Int32) {
+    guard let controller = windows[xid], let win = controller.window else { return }
+
+    // Mark that the next Cocoa resize callback is "caused by us"
+    suppressNextResizeFromCocoa.insert(xid)
+
+    let scale = win.backingScaleFactor
+    let wPoints = CGFloat(max(1, wPx)) / scale
+    let hPoints = CGFloat(max(1, hPx)) / scale
+    
+    // Optional: avoid churn
+    let cur = win.contentLayoutRect.size
+    if abs(cur.width - wPoints) < 0.5, abs(cur.height - hPoints) < 0.5 { return }
+
+    win.setContentSize(NSSize(width: wPoints, height: hPoints))
+  }
+  
   func flushRepaintNow(xid: UInt32) {
     repaintWorkItemByXid[xid]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: xid)
@@ -143,10 +257,22 @@ final class WindowRegistry {
   }
   
   func closeAll() {
-    for (_, controller) in windows {
+    for (xid, controller) in windows {
+      removeWindowObservers(xid: xid)
+      suppressNextRaiseFromCocoa.remove(xid)
       controller.close()
     }
     windows.removeAll()
+  }
+  
+  @MainActor
+  func shouldSuppressResizeFromCocoa(xid: UInt32) -> Bool {
+    // Consume-once suppression: if present, remove and suppress exactly one callback.
+    if suppressNextResizeFromCocoa.contains(xid) {
+      suppressNextResizeFromCocoa.remove(xid)
+      return true
+    }
+    return false
   }
   
   func setUseMetalForAllWindows(_ enabled: Bool) {

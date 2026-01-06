@@ -47,6 +47,8 @@ static inline uint32_t x11_button_bit(uint8_t button_number /* 1..31 */) {
     X11_EV_WINDOW_RAISE   = 11,
     X11_EV_WINDOW_TITLE   = 12,
     X11_EV_WINDOW_RESIZE  = 13,
+    X11_EV_WINDOW_MAP     = 14,
+    X11_EV_WINDOW_UNMAP   = 15,
   } x11_event_type_t;
 
 // ---- Scroll “wheels” (X11-ish)
@@ -107,6 +109,11 @@ typedef struct {
     int32_t width_px;
     int32_t height_px;
 } x11_window_create_t;
+ 
+typedef struct {
+  int32_t width_px;
+  int32_t height_px;
+} x11_ev_window_resize_t;
   
 typedef struct {
     uint8_t _pad; // nothing for now, reserved
@@ -134,6 +141,14 @@ typedef struct x11_ev_win_title_t {
   uint8_t title_len;                 // bytes, not including NUL
   char    title_utf8[X11_TEXT_MAX];  // not necessarily NUL-terminated
 } x11_ev_win_title_t;
+
+  typedef struct x11_ev_window_map_t {
+    uint8_t _reserved;
+  } x11_ev_window_map_t;
+
+  typedef struct x11_ev_window_unmap_t {
+    uint8_t _reserved;
+  } x11_ev_window_unmap_t;
   
 x11_eventq_stats_t x11_events_stats(void);
   
@@ -155,6 +170,9 @@ x11_eventq_stats_t x11_events_stats(void);
       x11_pointer_crossing_t crossing;
       x11_window_raise_t     raise;
       x11_ev_win_title_t     win_title;
+      x11_ev_window_resize_t win_resize;
+      x11_ev_window_map_t    win_map;
+      x11_ev_window_unmap_t  win_unmap;
     } u;
   } x11_event_t;
 

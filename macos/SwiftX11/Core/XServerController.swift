@@ -213,23 +213,57 @@ final class XServerController: ObservableObject {
   
   private func handleEventSideEffects(_ ev: x11_event_t) {
     switch ev.type {
-    case X11_EV_WINDOW_TITLE:
-      // Drain thread is the main queue today, but keep the update on MainActor.
+
+    case X11_EV_WINDOW_TITLE: do {
+      let xid = ev.xid
+
       let len = Int(ev.u.win_title.title_len)
-      // Safety: cap to the fixed buffer size (and to UInt8 range).
       let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
 
       let bytes: [UInt8] = withUnsafeBytes(of: ev.u.win_title.title_utf8) { raw in
         Array(raw.prefix(cappedLen))
       }
       let title = String(bytes: bytes, encoding: .utf8) ?? "SwiftX11 Window"
-      WindowRegistry.shared.setTitle(xid: ev.xid, title: title)
 
+      Task { @MainActor in
+        WindowRegistry.shared.setTitle(xid: xid, title: title)
+      }
+    }
+
+    case X11_EV_WINDOW_RAISE: do {
+      let xid = ev.xid
+      Task { @MainActor in
+        WindowRegistry.shared.raiseWindow(xid: xid)
+      }
+    }
+
+    case X11_EV_WINDOW_MAP: do {
+      let xid = ev.xid
+      Task { @MainActor in
+        WindowRegistry.shared.mapWindow(xid: xid)
+      }
+    }
+
+    case X11_EV_WINDOW_UNMAP: do {
+      let xid = ev.xid
+      Task { @MainActor in
+        WindowRegistry.shared.unmapWindow(xid: xid)
+      }
+    }
+
+    case X11_EV_WINDOW_RESIZE:
+      let wPx = ev.u.win_resize.width_px
+      let hPx = ev.u.win_resize.height_px
+      Task { @MainActor in
+        WindowRegistry.shared.applyX11Resize(xid: ev.xid, wPx: wPx, hPx: hPx)
+      }
+      
     default:
       break
     }
   }
-
+  
+  
   private func format(_ ev: x11_event_t, showMotion: Bool) -> String? {
       let xid = String(format: "0x%X", ev.xid)
 
@@ -267,13 +301,40 @@ final class XServerController: ObservableObject {
           return "EV_SCROLL xid=\(xid) axis=\(ev.u.scroll.axis) ticks=\(ev.u.scroll.ticks)"
 
       case X11_EV_KEY:
-          return "EV_KEY xid=\(xid) code=\(ev.u.key.keycode) press=\(ev.u.key.is_press)"
+          let modsHex = String(format: "0x%X", ev.u.key.modifiers)
+          let isPress = ev.u.key.is_press != 0
 
+          let len = Int(ev.u.key.text_len)
+          let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
+
+          let text: String
+          if cappedLen > 0 {
+              let bytes: [UInt8] = withUnsafeBytes(of: ev.u.key.text_utf8) { raw in
+                  Array(raw.prefix(cappedLen))
+              }
+              text = String(bytes: bytes, encoding: .utf8) ?? "(invalid utf8)"
+          } else {
+              text = ""
+          }
+
+          return """
+          EV_KEY xid=\(xid) code=\(ev.u.key.keycode) press=\(isPress) mods=\(modsHex)\(text.isEmpty ? "" : " text=\"\(text)\"")
+          """
+      
       case X11_EV_FOCUS:
           return "EV_FOCUS xid=\(xid) focused=\(ev.u.focus.focused)"
 
       case X11_EV_WINDOW_RAISE:
           return "EV_WINDOW_RAISE xid=\(xid)"
+        
+      case X11_EV_WINDOW_MAP:
+          return "EV_WINDOW_MAP xid=\(xid)"
+
+      case X11_EV_WINDOW_UNMAP:
+          return "EV_WINDOW_UNMAP xid=\(xid)"
+        
+      case X11_EV_WINDOW_RESIZE:
+        return "EV_WINDOW_RESIZE xid=\(xid) \(ev.u.win_resize.width_px)x\(ev.u.win_resize.height_px)"
         
       default:
           return "EV type=\(ev.type.rawValue) xid=\(xid) size=\(ev.size)"

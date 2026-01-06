@@ -186,6 +186,11 @@ uint32_t x11_window_create(const char* title, int32_t w, int32_t h);
 void     x11_window_destroy(uint32_t xid);
 void     x11_window_set_title(uint32_t xid, const char* title); // optional
   
+// X11 hooks
+void x11_post_window_map(uint32_t xid);
+void x11_post_window_unmap(uint32_t xid);
+void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);
+  
 #ifdef __cplusplus
 }
 #endif

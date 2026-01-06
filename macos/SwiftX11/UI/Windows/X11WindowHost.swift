@@ -9,7 +9,7 @@ final class X11MTKView: MTKView {
 
     override var acceptsFirstResponder: Bool { true }
 
-    override func mouseDown(with event: NSEvent) { owner?.mouseDown(with: event)  }
+    override func mouseDown(with event: NSEvent) { owner?.mouseDown(with: event) }
     override func mouseUp(with event: NSEvent) { owner?.mouseUp(with: event) }
     override func rightMouseDown(with event: NSEvent) { owner?.rightMouseDown(with: event) }
     override func rightMouseUp(with event: NSEvent) { owner?.rightMouseUp(with: event) }
@@ -51,6 +51,7 @@ final class X11View: NSView, MTKViewDelegate {
     private var buttonMask: UInt32 = 0
     private var scrollAccumX: CGFloat = 0
     private var scrollAccumY: CGFloat = 0
+    private var lastModifierFlags: NSEvent.ModifierFlags = []
   
     // MARK: -- be authoritative for the tracking events 
     private var lastInsideForSyntheticCrossing: Bool = false
@@ -92,6 +93,7 @@ final class X11View: NSView, MTKViewDelegate {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
+        window?.makeFirstResponder(self)
         isPointerInside = false
       
         // Defer to next runloop turn (avoids “already being laid out” warnings)
@@ -219,9 +221,6 @@ final class X11View: NSView, MTKViewDelegate {
         if wF > 0, hF > 0 {
             view.drawableSize = CGSize(width: floor(wF), height: floor(hF))
         }
-      
-        //let opts: NSTrackingArea.Options = [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect]
-        //view.addTrackingArea(NSTrackingArea(rect: .zero, options: opts, owner: view, userInfo: nil))
   
         addSubview(view, positioned: .above, relativeTo: nil)
         self.mtkView = view
@@ -240,14 +239,9 @@ final class X11View: NSView, MTKViewDelegate {
           .mouseEnteredAndExited,
           .mouseMoved,
           .activeInActiveApp,
+          .enabledDuringMouseDrag,
           .inVisibleRect
         ]
-        //let opts: NSTrackingArea.Options = [
-        //    .mouseEnteredAndExited,
-        //    .mouseMoved,
-        //    .activeInActiveApp,
-        //    .inVisibleRect
-        //]
 
         let area = NSTrackingArea(rect: .zero, options: opts, owner: self, userInfo: nil)
         target.addTrackingArea(area)
@@ -513,14 +507,49 @@ extension X11View {
   }
   
   // MARK: Keyboard
+  override func flagsChanged(with event: NSEvent) {
+    // Convert Cocoa modifier changes into X11-style key up/down events.
+    // We track transitions because `flagsChanged` fires for both press and release.
+    let newFlags = event.modifierFlags
+    let oldFlags = lastModifierFlags
+    lastModifierFlags = newFlags
+
+    // We only care about the four primary modifiers we encode in `mods()`.
+    let tracked: [(NSEvent.ModifierFlags, String)] = [
+      (.shift, "shift"),
+      (.control, "control"),
+      (.option, "option"),
+      (.command, "command")
+    ]
+
+    for (flag, _) in tracked {
+      let wasDown = oldFlags.contains(flag)
+      let isDown  = newFlags.contains(flag)
+      if wasDown == isDown { continue }
+
+      #if DEBUG
+      print("[SwiftX11][MOD] xid=0x\(String(xid, radix: 16)) flag=\(flag) isDown=\(isDown) keyCode=\(event.keyCode) mods=0x\(String(mods(newFlags), radix: 16))")
+      #endif
+
+      // Cocoa reports the physical key in `event.keyCode`.
+      // This matches the key that triggered the modifier transition.
+      // For our current shim, emitting the transition with that keycode is sufficient.
+      x11_post_key_event(xid, isDown, UInt32(event.keyCode), mods(newFlags), nil)
+    }
+  }
+
   override func keyDown(with event: NSEvent) {
+    lastModifierFlags = event.modifierFlags
+
     let text = event.characters ?? ""
+
     text.withCString { cstr in
       x11_post_key_event(xid, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
     }
   }
-  
+
   override func keyUp(with event: NSEvent) {
+    lastModifierFlags = event.modifierFlags
     x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
   }
 }

@@ -161,6 +161,13 @@ void  x11_backend_repaint_end_locked(uint32_t xid,
                                      void **out_retired);
   
 int   x11_backend_wait_inflight_zero_locked(uint32_t xid);
+
+// -----------------------------------------------------------------------------
+// X11 hooks
+// -----------------------------------------------------------------------------
+
+int x11_backend_window_set_mapped_locked(uint32_t xid, int mapped);
+
 #ifdef __cplusplus
 }
 #endif

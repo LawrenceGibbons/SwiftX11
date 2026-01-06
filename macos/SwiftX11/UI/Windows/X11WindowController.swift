@@ -47,6 +47,10 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   }
   
   func windowDidResize(_ notification: Notification) {
+    if WindowRegistry.shared.shouldSuppressResizeFromCocoa(xid: xid) {
+      return
+    }
+
     guard let win = window else { return }
     
     // Size in points (logical)
@@ -125,6 +129,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       }
   }
 
+  @objc
   func windowWillClose(_ notification: Notification) {
     // make state look clean before arrival of the destroy event
     x11_post_focus_event(xid, false)

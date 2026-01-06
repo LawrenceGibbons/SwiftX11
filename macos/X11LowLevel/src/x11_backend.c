@@ -356,9 +356,9 @@ int x11_backend_window_can_repaint_locked(uint32_t xid)
   int idx = x11_backend_find_slot_locked(xid);
   if (idx < 0 || !g_windows[idx].alive) return 0;
   if (g_windows[idx].closing) return 0;
+  if (!g_windows[idx].mapped) return 0;
   return 1;
 }
-
 
 // Locked destroy helper used by the public wrapper.
 int x11_backend_window_destroy_locked(uint32_t xid,
@@ -517,7 +517,9 @@ int x11_backend_take_damaged_snapshot_locked(uint32_t *xids, int32_t *ws, int32_
   if (!xids || !ws || !hs || cap <= 0) return 0;
   int n = 0;
   for (int i = 0; i < X11_MAX_WINDOWS; i++) {
-    if (g_windows[i].alive && g_windows[i].damaged && !g_windows[i].closing) {
+    if (g_windows[i].alive && g_windows[i].mapped &&
+        g_windows[i].damaged && !g_windows[i].closing) 
+    {
       if (n >= cap) break;
       // Clear damage now that we are committing to a repaint.
       g_windows[i].damaged = 0;
@@ -716,5 +718,20 @@ void x11_backend_repaint_end(uint32_t xid)
   if (retired) x11_backend_free_retired(retired);
 }
 
+
+int x11_backend_window_set_mapped_locked(uint32_t xid, int mapped)
+{
+  int idx = x11_backend_find_slot_locked(xid);
+  if (idx < 0) return 0;
+  if (!g_windows[idx].alive) return 0;
+
+  g_windows[idx].mapped = mapped ? 1 : 0;
+
+  // If we are unmapping, ensure we don't keep generating repaints.
+  if (!g_windows[idx].mapped) {
+    g_windows[idx].damaged = 0;
+  }
+  return 1;
+}
 
 // x11_backend.c
