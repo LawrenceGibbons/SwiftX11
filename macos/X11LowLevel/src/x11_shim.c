@@ -15,6 +15,9 @@
 #include "x11_shim.h"
 #include "x11_events.h"   // so we can enqueue x11_event_t
 #include "x11_backend.h"
+#include "x11_requests.h"
+#include "x11_server_internal.h"
+
 
 // For window creation and handling
 static _Atomic uint32_t g_next_xid = 0x10010; // avoid colliding with old demo ids
@@ -1192,6 +1195,8 @@ void x11_server_wakeup(void)
 // process one “tick”: snapshot damaged windows and repaint them.
 void x11_server_step(void)
 {
+  x11_requests_drain_on_server_thread();   // new
+
   // Snapshot damaged windows under lock, and clear damage before repainting.
   uint32_t xids[X11_MAX_WINDOWS];
   int32_t  ws[X11_MAX_WINDOWS];
@@ -1485,43 +1490,14 @@ void x11_window_set_title(uint32_t xid, const char* title_utf8)
   x11_server_wakeup();
 }
 
-
-uint32_t x11_client_create_window(const char* title_utf8, int32_t w_px, int32_t h_px)
+// x11_shim.c (non-static wrappers)
+void x11_server_emit_window_create(uint32_t xid, const char* title, int32_t w, int32_t h)
 {
-  // For now: forward to existing helper (which already allocs + emits create callback/event).
-  return x11_window_create(title_utf8, w_px, h_px);
+  x11_emit_window_create(xid, title, w, h);
 }
 
-void x11_client_destroy_window(uint32_t xid)
+void x11_server_emit_window_destroy(uint32_t xid)
 {
-  // For now: forward to server entrypoint.
-  x11_post_window_destroy(xid);
+  x11_emit_window_destroy(xid);
 }
 
-void x11_client_destroy_window_async(uint32_t xid)
-{
-  x11_post_window_destroy_async(xid);
-}
-
-void x11_client_map_window(uint32_t xid)
-{
-  // For now: direct to existing map hook.
-  x11_post_window_map(xid);
-}
-
-void x11_client_unmap_window(uint32_t xid)
-{
-  x11_post_window_unmap(xid);
-}
-
-void x11_client_configure_window(uint32_t xid, int32_t w_px, int32_t h_px)
-{
-  // For now: your resize path already updates backend truth + damage + event.
-  x11_post_window_resize(xid, w_px, h_px);
-}
-
-void x11_client_set_window_title(uint32_t xid, const char* title_utf8)
-{
-  // For now: you already have x11_window_set_title posting an event and doing side-effects.
-  x11_window_set_title(xid, title_utf8);
-}

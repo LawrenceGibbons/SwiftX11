@@ -8,6 +8,7 @@
 #import <Foundation/Foundation.h>
 
 #import <X11LowLevel/x11_shim.h>
+#import <X11LowLevel/x11_requests.h>
 
 //! Project version number for X11LowLevel.
 FOUNDATION_EXPORT double X11LowLevelVersionNumber;
