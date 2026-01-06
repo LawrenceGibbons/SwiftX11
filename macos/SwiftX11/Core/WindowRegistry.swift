@@ -277,12 +277,11 @@ final class WindowRegistry {
   func flushRepaintNow(xid: UInt32) {
     repaintWorkItemByXid[xid]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: xid)
-    
+
     guard let sz = latestPixelSizeByXid[xid] else { return }
-    // Update backend window state and force immediate repaint via runloop
-    x11_set_window_size(xid, sz.w, sz.h)   // also marks damaged inside C (by our design)
-    x11_mark_damage(xid)                   // harmless even if redundant
-    x11_server_wakeup()                    // ensures the runloop doesn’t wait for timeout
+
+    // Client-style request: configure implies damage + wakeup on the server.
+    x11_client_configure_window(xid, sz.w, sz.h)
   }
   
   func closeAll() {
@@ -330,9 +329,7 @@ final class WindowRegistry {
         let scale = win.backingScaleFactor
         let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
         let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-        x11_set_window_size(xid, wPx, hPx)
-        x11_mark_damage(xid)
-        x11_server_wakeup()
+        x11_client_configure_window(xid, wPx, hPx)
       }
     }
   }

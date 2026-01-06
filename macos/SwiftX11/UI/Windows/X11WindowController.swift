@@ -114,6 +114,8 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       assert(Thread.isMainThread)
       postSyntheticEnterForCurrentMouseLocation()
       x11_post_focus_event(xid, true)
+      // Cocoa → X11 event injection (intentionally NOT using client API)
+      // This reflects a native window-manager action, not a client request.
       x11_post_window_raise(xid)
     
       if shouldLogQueueStats?() == true {

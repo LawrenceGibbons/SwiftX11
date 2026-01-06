@@ -3,6 +3,7 @@
 //  X11LowLevel
 //
 //  Created by Lawrence Gibbons on 1/6/26.
+//  This file models client → server requests (X11 protocol–like).
 //
 
 #include <stdatomic.h>

@@ -1,3 +1,11 @@
+//
+//  x11_requests.c
+//  X11LowLevel
+//
+//  Created by Lawrence Gibbons on 1/6/26.
+// This file emits server → client events and bridges to Swift.
+//
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
