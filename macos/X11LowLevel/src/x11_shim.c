@@ -18,6 +18,11 @@
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdarg.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
 
 #include "x11_parameters.h"
 #include "x11_shim.h"
@@ -25,6 +30,7 @@
 #include "x11_backend.h"
 #include "x11_requests.h"
 #include "x11_server_internal.h"
+#include "x11_xproto.h"
 
 
 // For window creation and handling
@@ -76,12 +82,25 @@ typedef struct x11_server_ctx_t {
   // Debug: routing snapshots (manual + key transitions)
   _Atomic uint64_t dbg_routing_snapshots;
 
+  // ---- X11 socket listener (early scaffold)
+  int            display;
+  int            x11_listen_fd;
+  pthread_t      x11_listen_thread;
+  int            x11_listen_running;
+  int            x11_listen_stop;
+  
 #ifndef NDEBUG
   uint64_t dbg_last_motion_log_ns;
 #endif
 } x11_server_ctx_t;
 
 static x11_server_ctx_t g_srv; // zero-initialized
+
+__attribute__((constructor))
+static void x11_srv_ctor_defaults(void) {
+  g_srv.x11_listen_fd = -1;
+}
+
 
 #ifndef NDEBUG
 // Rate-limit to ~10 Hz so logs are readable.
@@ -348,7 +367,6 @@ static void x11_srv_destroy_runloop_cv_locked(void)
   g_srv.runloop_cv_inited = 0;
 }
 
-
 // ---- Debug helpers
 void x11_debug_dump_window_table(void)
 {
@@ -471,8 +489,10 @@ void x11_register_callbacks(
 
 bool x11_start_server(int32_t display)
 {
-  (void)display;
-
+  x11_backend_lock();
+  g_srv.display = (int)display;
+  x11_backend_unlock();
+  
   // mouse and keyboard event handling
   x11_events_init();
 
@@ -489,6 +509,9 @@ bool x11_start_server(int32_t display)
   // Start repaint runloop
   x11_server_runloop_start();
 
+  // Start the (scaffold) X11 socket listener so external X11 clients can connect.
+  x11_xproto_listener_start( display );
+  
   return true;
 }
 
@@ -507,6 +530,9 @@ void x11_stop_server(void)
   x11_debug_dump_window_table();
 #endif
 
+  // Stop listener before stopping the runloop.
+  x11_xproto_listener_stop();
+  
   x11_server_runloop_stop();
 
   // Clear backend window table so second start is always clean
@@ -1602,6 +1628,5 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
 
   if (mapped) x11_server_wakeup();
 }
-
 
 

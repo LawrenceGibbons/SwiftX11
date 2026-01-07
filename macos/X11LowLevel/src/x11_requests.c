@@ -133,7 +133,7 @@ uint32_t x11_client_create_window(const char* title_utf8, int32_t w_px, int32_t 
 
   // Copy title into fixed buffer (truncate safely)
   if (title_utf8) {
-    size_t n = strnlen(title_utf8, X11_TEXT_MAX);
+    size_t n = strnlen(title_utf8, X11_TEXT_MAX-1);
     memcpy(r.title, title_utf8, n);
     r.title_len = (uint8_t)n;
     if (n < X11_TEXT_MAX) r.title[n] = 0;
@@ -223,7 +223,7 @@ void x11_client_set_window_title(uint32_t xid, const char* title_utf8)
   r.xid  = xid;
 
   if (title_utf8) {
-    size_t n = strnlen(title_utf8, X11_TEXT_MAX);
+    size_t n = strnlen(title_utf8, X11_TEXT_MAX-1);
     memcpy(r.title, title_utf8, n);
     r.title_len = (uint8_t)n;
     if (n < X11_TEXT_MAX) r.title[n] = 0;

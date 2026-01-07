@@ -59,8 +59,9 @@ final class XServerController: ObservableObject {
 
     // x11_start_server spins its own runloop thread; keep the call on MainActor to
     // avoid Swift 6 Sendable capture warnings from DispatchQueue.async.
-    let ok = x11_start_server(Int32(display))
-
+    //let ok = x11_start_server(Int32(display))
+    let ok = x11_start_server(Int32(1))
+    
     isRunning = ok
     append(ok ? "Server started" : "Failed to start server")
     if ok { startDrainTimer() }
