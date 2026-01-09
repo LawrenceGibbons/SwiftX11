@@ -166,16 +166,20 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     x11_client_map_window(xid)
   }
   
-  func windowDidHide(_ notification: Notification) {
+  func windowDidChangeOcclusionState(_ notification: Notification) {
     assert(Thread.isMainThread)
-    if WindowRegistry.shared.consumeSuppressUnmapFromCocoa(xid: xid) { return }
-    x11_client_unmap_window(xid)
-  }
+    guard let win = window else { return }
 
-  func windowDidUnhide(_ notification: Notification) {
-    assert(Thread.isMainThread)
-    if WindowRegistry.shared.consumeSuppressMapFromCocoa(xid: xid) { return }
-    x11_client_map_window(xid)
+    // Treat "not visible" (occluded/hidden/off-screen) as an Unmap, and visible as a Map.
+    // This is the most reliable way to observe hide/unhide semantics on macOS.
+    let isVisible = win.occlusionState.contains(.visible)
+    if isVisible {
+      if WindowRegistry.shared.consumeSuppressMapFromCocoa(xid: xid) { return }
+      x11_client_map_window(xid)
+    } else {
+      if WindowRegistry.shared.consumeSuppressUnmapFromCocoa(xid: xid) { return }
+      x11_client_unmap_window(xid)
+    }
   }
   
 }

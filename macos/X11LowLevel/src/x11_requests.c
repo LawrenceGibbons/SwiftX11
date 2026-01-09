@@ -239,6 +239,135 @@ void x11_client_set_window_title(uint32_t xid, const char* title_utf8)
   x11_server_wakeup();
 }
 
+// ---- Server-queue push APIs (used by x11_xproto thread)
+// These enqueue onto the same client->server request queue.
+// Return 1 on success, 0 if dropped.
+
+int x11_requests_push_create(uint32_t xid, const char* title_utf8, int32_t w_px, int32_t h_px)
+{
+  if (xid == 0) return 0;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_CREATE;
+  r.xid  = xid;
+  r.u.create.w_px = w_px;
+  r.u.create.h_px = h_px;
+
+  // Copy title into fixed buffer (truncate safely)
+  if (title_utf8) {
+    size_t n = strnlen(title_utf8, X11_TEXT_MAX - 1);
+    memcpy(r.title, title_utf8, n);
+    r.title_len = (uint8_t)n;
+    r.title[n] = 0;
+  } else {
+    r.title_len = 0;
+    r.title[0] = 0;
+  }
+
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
+int x11_requests_push_destroy(uint32_t xid)
+{
+  if (xid == 0) return 0;
+
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_DESTROY;
+  r.xid  = xid;
+
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
+int x11_requests_push_map(uint32_t xid)
+{
+  if (xid == 0) return 0;
+
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_MAP;
+  r.xid  = xid;
+
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
+int x11_requests_push_unmap(uint32_t xid)
+{
+  if (xid == 0) return 0;
+
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_UNMAP;
+  r.xid  = xid;
+
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
+int x11_requests_push_configure(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  if (xid == 0) return 0;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_CONFIGURE;
+  r.xid  = xid;
+  r.u.configure.w_px = w_px;
+  r.u.configure.h_px = h_px;
+
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
+int x11_requests_push_set_title(uint32_t xid, const char* title_utf8)
+{
+  if (xid == 0) return 0;
+
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_SET_TITLE;
+  r.xid  = xid;
+
+  if (title_utf8) {
+    size_t n = strnlen(title_utf8, X11_TEXT_MAX - 1);
+    memcpy(r.title, title_utf8, n);
+    r.title_len = (uint8_t)n;
+    r.title[n] = 0;
+  } else {
+    r.title_len = 0;
+    r.title[0] = 0;
+  }
+
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
 // Called by the server/runloop thread (e.g. from x11_server_step).
 void x11_requests_drain_on_server_thread(void)
 {
