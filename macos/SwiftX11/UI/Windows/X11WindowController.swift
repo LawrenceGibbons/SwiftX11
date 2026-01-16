@@ -182,6 +182,22 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     }
   }
   
+  
+  /// Present a BGRA8888 little-endian framebuffer for this X11 window.
+  ///
+  /// This routes to the SwiftUI-created `X11View` (captured as `x11View`).
+  /// The buffer is provided as `Data` so callers can safely own/copy bytes.
+  @MainActor
+  func presentBGRA(data: Data, width: Int, height: Int, bytesPerRow: Int) {
+    guard width > 0, height > 0, bytesPerRow > 0 else { return }
+    guard let view = self.x11View else { return }
+
+    data.withUnsafeBytes { raw in
+      guard let base = raw.baseAddress else { return }
+      view.presentBGRA(framebuffer: base, width: width, height: height, bytesPerRow: bytesPerRow)
+    }
+  }
+  
 }
 
 final class X11ViewHolder {

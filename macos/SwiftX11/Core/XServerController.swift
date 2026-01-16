@@ -25,8 +25,8 @@ final class XServerController: ObservableObject {
     )
     append("Registered X11 callbacks")
     
-    x11_register_frame_presenter(swiftX11PresentFrame)
-    append("Registered frame presenter")
+//    x11_register_frame_presenter(swiftX11PresentFrame)
+//    append("Registered frame presenter")
     
     NotificationCenter.default.addObserver(
       self,
@@ -82,6 +82,10 @@ final class XServerController: ObservableObject {
     append("Server stopped")
   }
   
+  private func tstamp() -> String {
+    String(format: "%.6f", CACurrentMediaTime())
+  }
+  
   func setLogControls(
     isPaused:    @escaping () -> Bool,
     showMotion:  @escaping () -> Bool,
@@ -96,7 +100,7 @@ final class XServerController: ObservableObject {
 
   @MainActor
   func append(_ line: String) {
-    logLines.append("[\(Date())] \(line)")
+    logLines.append("[\(tstamp())] \(line)")
   }
   
   
@@ -140,51 +144,62 @@ final class XServerController: ObservableObject {
   private var lastStatsPrintTime: CFTimeInterval = 0
 
   private func drainEvents(max: Int) {
-    if isDrainPausedNow() { 
+    if isDrainPausedNow() {
       append("drain paused; not popping events")
-      return 
-    }  // optional: don’t drain at all
-    
-    // sample before
-    let qBefore = Int(x11_events_count())
-    if qBefore > 0 {
-      append("drain tick: qBefore=\(qBefore)")
+      return
     }
 
+    // 1) Pop off the C queue here (NOT MainActor)
+    var batch: [x11_event_t] = []
+    batch.reserveCapacity(max)
+
+    assert(Thread.isMainThread)
     var n = 0
     while n < max {
       var ev = x11_event_t()
       guard x11_debug_pop_event(&ev) else { break }
-      
-      handleEventSideEffects(ev)
-      
-      if (!isLogPausedNow()), let line = format(ev, showMotion: (showMotion?() ?? false)) {
-        append(line)
-      }
+      batch.append(ev)
       n += 1
     }
-    
-    maybeAppendQueueStats(qBefore: qBefore, drained: n)
+    if batch.isEmpty { return }
+
+    // 2) Apply effects + logging in-order on MainActor
+    Task { @MainActor in
+      for ev in batch {
+        handleEventSideEffects(ev)
+        if (!isLogPausedNow()),
+           let line = format(ev, showMotion: (showMotion?() ?? false)) {
+          append(line)
+        }
+      }
+    }
   }
+
   
   private func drainEventsForce(max: Int) {
-    let qBefore = Int(x11_events_count())
+    // 1) Pop off the C queue here (NOT MainActor)
+    var batch: [x11_event_t] = []
+    batch.reserveCapacity(max)
+
     var n = 0
     while n < max {
       var ev = x11_event_t()
       guard x11_debug_pop_event(&ev) else { break }
-
-      handleEventSideEffects(ev)
-
-      // Force append, but still respect showMotion toggle
-      if let line = format(ev, showMotion: (showMotion?() ?? false)) {
-        append(line)
-      }
+      batch.append(ev)
       n += 1
     }
+    if batch.isEmpty { return }
 
-    // Optional: still show stats if enabled (or always show once on stop)
-    maybeAppendQueueStats(qBefore: qBefore, drained: n)
+    // 2) Apply effects + logging in-order on MainActor
+    Task { @MainActor in
+      for ev in batch {
+        handleEventSideEffects(ev)
+        if (!isLogPausedNow()),
+           let line = format(ev, showMotion: (showMotion?() ?? false)) {
+          append(line)
+        }
+      }
+    }
   }
   
   private func shouldShowStats() -> Bool {
@@ -228,7 +243,10 @@ final class XServerController: ObservableObject {
       }
   }
   
+  
+  @MainActor
   private func handleEventSideEffects(_ ev: x11_event_t) {
+    assert(Thread.isMainThread)
     switch ev.type {
 
     case X11_EV_WINDOW_TITLE: do {
@@ -242,39 +260,74 @@ final class XServerController: ObservableObject {
       }
       let title = String(bytes: bytes, encoding: .utf8) ?? "SwiftX11 Window"
 
-      Task { @MainActor in
-        WindowRegistry.shared.setTitle(xid: xid, title: title)
-      }
+      //Task { @MainActor in
+      WindowRegistry.shared.setTitle(xid: xid, title: title)
+      //}
     }
 
     case X11_EV_WINDOW_RAISE: do {
       let xid = ev.xid
-      Task { @MainActor in
-        WindowRegistry.shared.raiseWindow(xid: xid)
-      }
+      //Task { @MainActor in
+      WindowRegistry.shared.raiseWindow(xid: xid)
+      //}
     }
 
     case X11_EV_WINDOW_MAP: do {
       let xid = ev.xid
-      Task { @MainActor in
-        WindowRegistry.shared.mapWindow(xid: xid)
-      }
+      //Task { @MainActor in
+      WindowRegistry.shared.mapWindow(xid: xid)
+      //}
     }
 
     case X11_EV_WINDOW_UNMAP: do {
       let xid = ev.xid
-      Task { @MainActor in
-        WindowRegistry.shared.unmapWindow(xid: xid)
-      }
+      //Task { @MainActor in
+      WindowRegistry.shared.unmapWindow(xid: xid)
+      //}
     }
 
-    case X11_EV_WINDOW_RESIZE:
+    case X11_EV_WINDOW_RESIZE: do {
+      let xid = ev.xid
       let wPx = ev.u.win_resize.width_px
       let hPx = ev.u.win_resize.height_px
-      Task { @MainActor in
-        WindowRegistry.shared.applyX11Resize(xid: ev.xid, wPx: wPx, hPx: hPx)
-      }
+      //Task { @MainActor in
+      WindowRegistry.shared.applyX11Resize(xid: xid, wPx: wPx, hPx: hPx)
+      //}
+    }
+
+    case X11_EV_WINDOW_CREATE: do {
+      let xid = ev.xid
+      let parent = ev.u.win_create.parent_xid
+      let w = Int(ev.u.win_create.width_px)
+      let h = Int(ev.u.win_create.height_px)
       
+      //Task { @MainActor in
+      WindowRegistry.shared.noteX11WindowCreated(
+        xid: xid,
+        parentXid: parent,
+        title: "SwiftX11 Window",   // title may arrive later via TITLE event
+        width: w,
+        height: h
+      )
+      //}
+    }
+
+    case X11_EV_WINDOW_DESTROY: do {
+      let xid = ev.xid
+      //Task { @MainActor in
+      WindowRegistry.shared.noteX11WindowDestroyed(xid: xid)
+      //}
+    }
+
+    case X11_EV_WINDOW_DAMAGE: do {
+      // Keep damage handling centralized in WindowRegistry.
+      let evCopy = ev
+      //Task { @MainActor in
+      WindowRegistry.shared.handleDamageEvent(evCopy)
+      //}
+    }
+
+
     default:
       break
     }
@@ -283,10 +336,12 @@ final class XServerController: ObservableObject {
   
   private func format(_ ev: x11_event_t, showMotion: Bool) -> String? {
       let xid = String(format: "0x%X", ev.xid)
+      let parent_xid = String(format: "0x%X", ev.u.win_create.parent_xid)
+      
 
       switch ev.type {
       case X11_EV_WINDOW_CREATE:
-          return "EV_WINDOW_CREATE xid=\(xid) \(ev.u.win_create.width_px)x\(ev.u.win_create.height_px)"
+        return "EV_WINDOW_CREATE xid=\(xid) parent=\(parent_xid) \(ev.u.win_create.width_px)x\(ev.u.win_create.height_px)"
           
       case X11_EV_WINDOW_DESTROY:
           return "EV_WINDOW_DESTROY xid=\(xid)"
@@ -352,6 +407,9 @@ final class XServerController: ObservableObject {
         
       case X11_EV_WINDOW_RESIZE:
         return "EV_WINDOW_RESIZE xid=\(xid) \(ev.u.win_resize.width_px)x\(ev.u.win_resize.height_px)"
+        
+      case X11_EV_WINDOW_DAMAGE:
+        return "EV_WINDOW_DAMAGE xid=\(xid) rect=(\(ev.u.win_damage.x_px),\(ev.u.win_damage.y_px)) \(ev.u.win_damage.w_px)x\(ev.u.win_damage.h_px)"
         
       default:
           return "EV type=\(ev.type.rawValue) xid=\(xid) size=\(ev.size)"

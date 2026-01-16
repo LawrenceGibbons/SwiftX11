@@ -1,11 +1,14 @@
 import SwiftUI
 import AppKit
+import Cocoa
 import MetalKit
 import CoreGraphics
 import X11LowLevel
 
+
 final class X11MTKView: MTKView {
     weak var owner: X11View?
+    var xid: UInt32 = 0
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -31,7 +34,7 @@ final class X11MTKView: MTKView {
     override func flagsChanged(with event: NSEvent) { owner?.flagsChanged(with: event) }
 }
 
-final class X11View: NSView, MTKViewDelegate {
+final class X11View: NSView {
     // MARK: - Mode
     private var usingMetal: Bool = false
 
@@ -43,25 +46,31 @@ final class X11View: NSView, MTKViewDelegate {
     // MARK: - Metal path
     private var mtkView: X11MTKView?
     private var device: MTLDevice?
-    private var commandQueue: MTLCommandQueue?
-    private var frameTexture: MTLTexture?
     private weak var trackingHost: NSView?
+    private var renderer: X11MetalRenderer?
+    private var mtkDelegate: X11Renderer?
 
     // MARK: -- interface to X11
     private var buttonMask: UInt32 = 0
     private var scrollAccumX: CGFloat = 0
     private var scrollAccumY: CGFloat = 0
     private var lastModifierFlags: NSEvent.ModifierFlags = []
-  
+
     // MARK: -- be authoritative for the tracking events 
     private var lastInsideForSyntheticCrossing: Bool = false
     private var isPointerInside: Bool = false
   
-    // Latest frame (copied) that we upload to texture
-    private var pendingFrame: (data: Data, width: Int, height: Int, bytesPerRow: Int)?
 
-    // know which window to use
-    var xid: UInt32 = 0
+    // MARK: -- know which window to use
+    var xid: UInt32 = 0 {
+      didSet {
+        // Propagate xid to the MTKView and delegate.
+        mtkView?.xid = xid
+        mtkDelegate?.setXid(xid)
+      }
+    }
+    private var didNotifyPresentable = false
+    override var acceptsFirstResponder: Bool { true }
   
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -70,6 +79,9 @@ final class X11View: NSView, MTKViewDelegate {
         // Don’t setup metal yet until setUseMetal() is called.
     }
 
+  
+  
+  
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
@@ -138,23 +150,47 @@ final class X11View: NSView, MTKViewDelegate {
         refreshTrackingArea()
     }
 
-    /// Present BGRA8888 little-endian framebuffer
-    func presentBGRA(framebuffer: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int) {
-        guard width > 0, height > 0 else { return }
-        let byteCount = bytesPerRow * height
+    /// Back-compat entrypoint used by older callers.
+    /// Treats the incoming buffer as BGRA8888 little-endian.
+    func updateFrameBuffer(_ framebuffer: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int) {
+        presentBGRA(framebuffer: framebuffer, width: width, height: height, bytesPerRow: bytesPerRow)
+    }
 
-        // Always copy bytes so the memory remains valid after C frees it
+    /// Present BGRA8888 little-endian framebuffer.
+    ///
+    /// Callers may pass a pointer that is only valid for the duration of this call.
+    /// We always copy into `Data` first to decouple lifetime from the C backend.
+    func presentBGRA(framebuffer: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int) {
+        guard width > 0, height > 0, bytesPerRow > 0 else { return }
+
+        // This is an NSView API; we expect to be called on the main thread.
+        // WindowRegistry.schedulePresent runs on DispatchQueue.main, so this should hold.
+        assert(Thread.isMainThread)
+
+        let byteCount = bytesPerRow * height
+        guard byteCount > 0 else { return }
+
+        // Copy bytes so the backing memory remains valid after C returns/frees.
         let data = Data(bytes: framebuffer, count: byteCount)
+      
+        // debug only
+        let p0: UInt32 = data.withUnsafeBytes { raw in
+          raw.load(fromByteOffset: 0, as: UInt32.self)
+        }
+        print(String(format: "PRESENT xid=%u p0=0x%08X", xid, p0))
+      
 
         if usingMetal {
-            pendingFrame = (data: data, width: width, height: height, bytesPerRow: bytesPerRow)
-            DispatchQueue.main.async { [weak self] in
-              guard let self else { return }
-              guard let mv = self.mtkView else { return }
-              if mv.drawableSize.width <= 0 || mv.drawableSize.height <= 0 { return }
-              mv.draw()
-            }
+            // Metal path: upload texture now; actual present happens in MTKViewDelegate.draw(in:)
+            guard let mv = self.mtkView else { return }
+            guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else { return }
+
+            self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow)
+
+            // Ask MTKView to draw exactly once (draw(in:) will use currentDrawable and present).
+            mv.setNeedsDisplay(mv.bounds)
         } else {
+            // Software path: build a CGImage and put it into the layer.
             presentSoftware(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
         }
     }
@@ -202,28 +238,42 @@ final class X11View: NSView, MTKViewDelegate {
 
     // MARK: - Metal setup
     private func setupMetal(device: MTLDevice) {
-        self.device = device
-        self.commandQueue = device.makeCommandQueue()
-
-        let view = X11MTKView(frame: bounds, device: device)
-        view.owner = self
-        view.autoresizingMask = [.width, .height]
-        view.delegate = self
-        view.enableSetNeedsDisplay = false
-        view.isPaused = true              // we will call draw() manually
-        view.framebufferOnly = false      // allow blit/copy to drawable texture
-        view.colorPixelFormat = .bgra8Unorm
-
-        // initialize drawableSize (in pixels) so the first draw fills the window
-        let scale = window?.backingScaleFactor ?? 1.0
-        let wF = bounds.size.width * scale
-        let hF = bounds.size.height * scale
-        if wF > 0, hF > 0 {
-            view.drawableSize = CGSize(width: floor(wF), height: floor(hF))
-        }
+      self.device = device
   
-        addSubview(view, positioned: .above, relativeTo: nil)
-        self.mtkView = view
+      let view = X11MTKView(frame: bounds, device: device)
+      view.owner = self
+      view.xid = self.xid
+      view.autoresizingMask = [.width, .height]
+  
+      let del = X11Renderer(owner: self)
+      del.setXid(self.xid)
+      self.mtkDelegate = del
+      view.delegate = del
+  
+      view.enableSetNeedsDisplay = true
+      view.isPaused = true
+      view.framebufferOnly = false
+      view.colorPixelFormat = .bgra8Unorm
+      view.preferredFramesPerSecond = 0
+  
+      self.renderer = X11MetalRenderer(device: device)
+  
+      addSubview(view, positioned: .above, relativeTo: nil)
+      self.mtkView = view
+  
+      // init drawableSize using the *actual* window scale (now more likely non-nil)
+      let scale = self.window?.backingScaleFactor ?? 1.0
+      let wF = bounds.size.width * scale
+      let hF = bounds.size.height * scale
+      if wF > 0, hF > 0 {
+          let ds = CGSize(width: floor(wF), height: floor(hF))
+          view.drawableSize = ds
+          del.mtkView(view, drawableSizeWillChange: ds)   // force presentable notification
+      }
+      
+      // kick once so X11Renderer posts presentable+resize immediately
+      view.setNeedsDisplay(view.bounds)
+      view.draw()
     }
 
     private func refreshTrackingArea() {
@@ -249,20 +299,7 @@ final class X11View: NSView, MTKViewDelegate {
         self.trackingHost = target
     }
   
-    private func ensureTexture(width: Int, height: Int) {
-        if let tex = frameTexture, tex.width == width, tex.height == height { return }
-        guard let device else { return }
-
-        let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm,
-            width: width,
-            height: height,
-            mipmapped: false
-        )
-        // No explicit usage needed for CPU upload + blit copy
-        desc.storageMode = .shared
-        frameTexture = device.makeTexture(descriptor: desc)
-    }
+    // (ensureTexture removed; now handled by X11MetalRenderer)
   
     // MARK: X11 interface
     private func bitForButton(_ button: Int) -> UInt32 {
@@ -271,53 +308,225 @@ final class X11View: NSView, MTKViewDelegate {
         return 1 << UInt32(button - 1)
     }
 
-    // MARK: - MTKViewDelegate
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        // No-op: we size our source texture to the incoming frames.
+    // MARK: - Metal draw entrypoint (called by X11Renderer)
+    fileprivate func metalDraw(in view: MTKView) {
+      // Single, authoritative presentation path:
+      // MTKView calls X11Renderer.draw(in:), which forwards here.
+      guard usingMetal else { return }
+      guard let renderer = self.renderer else { return }
+      print("MTK draw(in:) xid=\(xid) hasTex=\(renderer.hasTexture) drawable=\(String(describing: view.currentDrawable))")
+      renderer.draw(on: view)
     }
-
   
-    func draw(in view: MTKView) {
-        guard let queue = commandQueue,
-              let drawable = view.currentDrawable,
-              let frame = pendingFrame else { return }
-
-        pendingFrame = nil
-
-        ensureTexture(width: frame.width, height: frame.height)
-        guard let src = frameTexture else { return }
-
-        // Upload pixel bytes into src texture
-        frame.data.withUnsafeBytes { rawBuf in
-            guard let base = rawBuf.baseAddress else { return }
-            let region = MTLRegionMake2D(0, 0, frame.width, frame.height)
-            src.replace(region: region, mipmapLevel: 0, withBytes: base, bytesPerRow: frame.bytesPerRow)
-        }
-
-        // Copy src texture to drawable texture
-        guard let cmd = queue.makeCommandBuffer(),
-              let blit = cmd.makeBlitCommandEncoder() else { return }
-
-        let w = min(src.width, drawable.texture.width)
-        let h = min(src.height, drawable.texture.height)
-
-        blit.copy(
-            from: src,
-            sourceSlice: 0,
-            sourceLevel: 0,
-            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-            sourceSize: MTLSize(width: w, height: h, depth: 1),
-            to: drawable.texture,
-            destinationSlice: 0,
-            destinationLevel: 0,
-            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
-        )
-        blit.endEncoding()
-
-        cmd.present(drawable)
-        cmd.commit()
-    }
+// MARK: - Input helpers
+private func mods(_ flags: NSEvent.ModifierFlags) -> UInt32 {
+  var m: UInt32 = 0
+  if flags.contains(.shift) { m |= 1 << 0 }
+  if flags.contains(.control) { m |= 1 << 1 }
+  if flags.contains(.option) { m |= 1 << 2 }
+  if flags.contains(.command) { m |= 1 << 3 }
+  return m
 }
+
+private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
+  // Convert to view coords (origin bottom-left)
+  let pInWindow = event.locationInWindow
+  let p = convert(pInWindow, from: nil)
+
+  let scale = window?.backingScaleFactor ?? 1.0
+
+  // Allow negative/outside coords when NOT clamping (drag semantics).
+  var xF = p.x * scale
+  var yF = p.y * scale
+
+  if clampToView {
+    // Clamp in points then scale (matches bounds.contains logic)
+    let clampedXPt = min(max(p.x, 0), bounds.width)
+    let clampedYPt = min(max(p.y, 0), bounds.height)
+    xF = clampedXPt * scale
+    yF = clampedYPt * scale
+
+    // Clamp in pixels to [0 .. sizePx-1]
+    let wPx = max(1, Int(floor(bounds.width * scale)))
+    let hPx = max(1, Int(floor(bounds.height * scale)))
+    xF = min(max(xF, 0), CGFloat(wPx - 1))
+    yF = min(max(yF, 0), CGFloat(hPx - 1))
+  }
+
+  return (Int32(floor(xF)), Int32(floor(yF)))
+}
+
+// MARK: - Mouse
+private func sendMotion(_ event: NSEvent) {
+  // Compute inside in *points*
+  let p = convert(event.locationInWindow, from: nil)
+  let insideNow = bounds.contains(p)
+  let dragging = (buttonMask != 0)
+
+  // Synthesize enter/leave transitions (robust even if trackingArea misses)
+  if insideNow && !isPointerInside {
+    isPointerInside = true
+    let (x, y) = pointInPixels(event, clampToView: true)
+    x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
+  } else if !insideNow && isPointerInside && !dragging {
+    // Only synth-leave when not dragging (during drag we want “grab” semantics)
+    isPointerInside = false
+    let (x, y) = pointInPixels(event, clampToView: true)
+    x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+  }
+
+  // Deliver motion only when inside OR dragging/grab
+  if !insideNow && !dragging {
+    return
+  }
+
+  // During drag allow outside coords; hover clamps.
+  let (x, y) = pointInPixels(event, clampToView: !dragging)
+  x11_post_pointer_event(xid, X11_PTR_MOVE, x, y, buttonMask, mods(event.modifierFlags))
+}
+
+private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
+  let (x, y) = pointInPixels(event, clampToView: false)
+  x11_post_pointer_button(xid, isPress, button, x, y, buttonMask, mods(event.modifierFlags))
+}
+
+override func mouseDown(with event: NSEvent) {
+  lastInsideForSyntheticCrossing = true
+  self.window?.makeFirstResponder(self)
+  buttonMask |= bitForButton(1)
+  sendButton(true, button: 1, event)
+}
+
+override func mouseUp(with event: NSEvent) {
+  // report release while still "down", then clear
+  sendButton(false, button: 1, event)
+  buttonMask &= ~bitForButton(1)
+}
+
+override func rightMouseDown(with event: NSEvent) {
+  lastInsideForSyntheticCrossing = true
+  self.window?.makeFirstResponder(self)
+  buttonMask |= bitForButton(3)
+  sendButton(true, button: 3, event)
+}
+
+override func rightMouseUp(with event: NSEvent) {
+  sendButton(false, button: 3, event)
+  buttonMask &= ~bitForButton(3)
+}
+
+override func otherMouseDown(with event: NSEvent) {
+  self.window?.makeFirstResponder(self)
+  lastInsideForSyntheticCrossing = true
+
+  // NSEvent.buttonNumber is 0-based; X11 uses 1-based
+  let btn = UInt8(min(max(event.buttonNumber + 1, 1), 31))
+  buttonMask |= bitForButton(Int(btn))
+  sendButton(true, button: btn, event)
+}
+
+override func otherMouseUp(with event: NSEvent) {
+  let btn = UInt8(min(max(event.buttonNumber + 1, 1), 31))
+  sendButton(false, button: btn, event)
+  buttonMask &= ~bitForButton(Int(btn))
+}
+
+override func mouseMoved(with event: NSEvent) { sendMotion(event) }
+override func mouseDragged(with event: NSEvent) { sendMotion(event) }
+override func rightMouseDragged(with event: NSEvent) { sendMotion(event) }
+override func otherMouseDragged(with event: NSEvent) { sendMotion(event) }
+
+override func mouseEntered(with event: NSEvent) {
+  lastInsideForSyntheticCrossing = true
+  isPointerInside = true
+  let (x, y) = pointInPixels(event, clampToView: true)
+  x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
+}
+
+override func mouseExited(with event: NSEvent) {
+  lastInsideForSyntheticCrossing = false
+  // If a drag is in progress, we keep “grab” semantics; don’t force a leave.
+  if buttonMask == 0 {
+    isPointerInside = false
+  }
+  let (x, y) = pointInPixels(event, clampToView: true)
+  x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+}
+
+override func scrollWheel(with event: NSEvent) {
+  let dy = event.scrollingDeltaY
+  let dx = event.scrollingDeltaX
+
+  // Trackpads are often “precise”; accumulate until we cross a tick threshold.
+  // Tune: 8–20 feels reasonable. Start at 12.
+  let tick: CGFloat = 12
+
+  scrollAccumY += dy
+  scrollAccumX += dx
+
+  // Only deliver scroll when inside, unless dragging/grab is active.
+  let p = convert(event.locationInWindow, from: nil)
+  let insideNow = bounds.contains(p)
+  let dragging = (buttonMask != 0)
+  if !insideNow && !dragging { return }
+
+  let (x, y) = pointInPixels(event, clampToView: true)
+  let m = mods(event.modifierFlags)
+
+  func postScroll(axis: x11_scroll_axis_t, ticks: Int16) {
+    x11_post_scroll_ticks(xid, axis, ticks, x, y, buttonMask, m)
+  }
+
+  while scrollAccumY >= tick { scrollAccumY -= tick; postScroll(axis: X11_SCROLL_VERT, ticks: +1) }
+  while scrollAccumY <= -tick { scrollAccumY += tick; postScroll(axis: X11_SCROLL_VERT, ticks: -1) }
+
+  while scrollAccumX >=  tick { scrollAccumX -= tick; postScroll(axis: X11_SCROLL_HORZ, ticks: +1) }
+  while scrollAccumX <= -tick { scrollAccumX += tick; postScroll(axis: X11_SCROLL_HORZ, ticks: -1) }
+}
+
+// MARK: - Keyboard
+override func flagsChanged(with event: NSEvent) {
+  // Convert Cocoa modifier changes into X11-style key up/down events.
+  // We track transitions because `flagsChanged` fires for both press and release.
+  let newFlags = event.modifierFlags
+  let oldFlags = lastModifierFlags
+  lastModifierFlags = newFlags
+
+  // We only care about the four primary modifiers we encode in `mods()`.
+  let tracked: [(NSEvent.ModifierFlags, String)] = [
+    (.shift, "shift"),
+    (.control, "control"),
+    (.option, "option"),
+    (.command, "command")
+  ]
+
+  for (flag, _) in tracked {
+    let wasDown = oldFlags.contains(flag)
+    let isDown  = newFlags.contains(flag)
+    if wasDown == isDown { continue }
+
+    // Cocoa reports the physical key in `event.keyCode`.
+    // This matches the key that triggered the modifier transition.
+    x11_post_key_event(xid, isDown, UInt32(event.keyCode), mods(newFlags), nil)
+  }
+}
+
+override func keyDown(with event: NSEvent) {
+  lastModifierFlags = event.modifierFlags
+
+  let text = event.characters ?? ""
+  text.withCString { cstr in
+    x11_post_key_event(xid, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
+  }
+}
+
+override func keyUp(with event: NSEvent) {
+  lastModifierFlags = event.modifierFlags
+  x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
+}
+
+}
+
 struct X11WindowHost: NSViewRepresentable {
   let useMetal: Bool
   let onViewReady: (X11View) -> Void
@@ -334,222 +543,52 @@ struct X11WindowHost: NSViewRepresentable {
   }
 }
 
-extension X11View {
-  override var acceptsFirstResponder: Bool { true }
-  
-  private func mods(_ flags: NSEvent.ModifierFlags) -> UInt32 {
-    var m: UInt32 = 0
-    if flags.contains(.shift) { m |= 1 << 0 }
-    if flags.contains(.control) { m |= 1 << 1 }
-    if flags.contains(.option) { m |= 1 << 2 }
-    if flags.contains(.command) { m |= 1 << 3 }
-    return m
+
+final class X11Renderer: NSObject, MTKViewDelegate {
+  private weak var owner: X11View?
+  private var xid: UInt32 = 0
+
+  private var didNotifyPresentable = false
+  private var lastDrawablePx: (w: Int32, h: Int32) = (0, 0)
+
+  init(owner: X11View) {
+    self.owner = owner
+    super.init()
   }
-  
-  private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
-    // Convert to view coords (origin bottom-left)
-    let pInWindow = event.locationInWindow
-    let p = convert(pInWindow, from: nil)
 
-    let scale = window?.backingScaleFactor ?? 1.0
+  func setXid(_ xid: UInt32) {
+    self.xid = xid
+    self.didNotifyPresentable = false
+    self.lastDrawablePx = (0, 0)
+  }
 
-    // Allow negative/outside coords when NOT clamping (drag semantics).
-    var xF = p.x * scale
-    var yF = p.y * scale
+  func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+    handleDrawableSize(size)
+  }
 
-    if clampToView {
-      // Clamp in points then scale (matches bounds.contains logic)
-      let clampedXPt = min(max(p.x, 0), bounds.width)
-      let clampedYPt = min(max(p.y, 0), bounds.height)
-      xF = clampedXPt * scale
-      yF = clampedYPt * scale
+  func draw(in view: MTKView) {
+    handleDrawableSize(view.drawableSize)
+    owner?.metalDraw(in: view)
+  }
 
-      // Clamp in pixels to [0 .. sizePx-1]
-      let wPx = max(1, Int(floor(bounds.width * scale)))
-      let hPx = max(1, Int(floor(bounds.height * scale)))
-      xF = min(max(xF, 0), CGFloat(wPx - 1))
-      yF = min(max(yF, 0), CGFloat(hPx - 1))
+  private func handleDrawableSize(_ size: CGSize) {
+    guard xid != 0 else { return }
+
+    let wPx = Int32(size.width.rounded(.down))
+    let hPx = Int32(size.height.rounded(.down))
+    guard wPx >= 1, hPx >= 1 else { return }
+
+    // Presentable: once.
+    if !didNotifyPresentable {
+      didNotifyPresentable = true
+      x11_post_window_presentable(xid)
     }
 
-    return (Int32(floor(xF)), Int32(floor(yF)))
-  }
-
-  
-  // MARK: Mouse
-  private func sendMotion(_ event: NSEvent) {
-    // Compute inside in *points*
-    let p = convert(event.locationInWindow, from: nil)
-    let insideNow = bounds.contains(p)
-    let dragging = (buttonMask != 0)
-
-    // Synthesize enter/leave transitions (robust even if trackingArea misses)
-    if insideNow && !isPointerInside {
-      isPointerInside = true
-      let (x, y) = pointInPixels(event, clampToView: true)
-      x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
-    } else if !insideNow && isPointerInside && !dragging {
-      // Only synth-leave when not dragging (during drag we want “grab” semantics)
-      isPointerInside = false
-      let (x, y) = pointInPixels(event, clampToView: true)
-      x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+    // Resize: whenever it changes.
+    if wPx != lastDrawablePx.w || hPx != lastDrawablePx.h {
+      lastDrawablePx = (wPx, hPx)
+      x11_post_window_resize(xid, wPx, hPx)
     }
-
-    // Deliver motion only when inside OR dragging/grab
-    if !insideNow && !dragging {
-      return
-    }
-
-    // During drag allow outside coords; hover clamps.
-    let (x, y) = pointInPixels(event, clampToView: !dragging)
-    x11_post_pointer_event(xid, X11_PTR_MOVE, x, y, buttonMask, mods(event.modifierFlags))
-  }  
-  
-  private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
-    let (x, y) = pointInPixels(event, clampToView: false)
-    x11_post_pointer_button(xid, isPress, button, x, y, buttonMask, mods(event.modifierFlags))
-  }
-  
-  override func mouseDown(with event: NSEvent) {
-    lastInsideForSyntheticCrossing = true
-    self.window?.makeFirstResponder(self)
-    buttonMask |= bitForButton(1)
-    sendButton(true, button: 1, event)
-  }
-  
-  override func mouseUp(with event: NSEvent) {
-    // report release while still "down", then clear
-    sendButton(false, button: 1, event)
-    buttonMask &= ~bitForButton(1)
-  }
-  
-  override func rightMouseDown(with event: NSEvent) {
-    lastInsideForSyntheticCrossing = true
-    self.window?.makeFirstResponder(self)
-    buttonMask |= bitForButton(3)
-    sendButton(true, button: 3, event)
-  }
-  
-  override func rightMouseUp(with event: NSEvent) {
-    sendButton(false, button: 3, event)
-    buttonMask &= ~bitForButton(3)
-  }
-  
-  override func otherMouseDown(with event: NSEvent) {
-    self.window?.makeFirstResponder(self)
-    lastInsideForSyntheticCrossing = true
-
-    // NSEvent.buttonNumber is 0-based; X11 uses 1-based
-    let btn = UInt8(min(max(event.buttonNumber + 1, 1), 31))
-    buttonMask |= bitForButton(Int(btn))
-    sendButton(true, button: btn, event)
-  }
-
-  override func otherMouseUp(with event: NSEvent) {
-    let btn = UInt8(min(max(event.buttonNumber + 1, 1), 31))
-    sendButton(false, button: btn, event)
-    buttonMask &= ~bitForButton(Int(btn))
-  }
-  
-  
-  override func mouseMoved(with event: NSEvent) { sendMotion(event) }
-  override func mouseDragged(with event: NSEvent) { sendMotion(event) }
-  override func rightMouseDragged(with event: NSEvent) { sendMotion(event) }
-  override func otherMouseDragged(with event: NSEvent) { sendMotion(event) }
-  
-  override func mouseEntered(with event: NSEvent) {
-    lastInsideForSyntheticCrossing = true
-    isPointerInside = true
-    let (x, y) = pointInPixels(event, clampToView: true)
-    x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
-  }
-
-
-  override func mouseExited(with event: NSEvent) {
-    lastInsideForSyntheticCrossing = false
-    // If a drag is in progress, we keep “grab” semantics; don’t force a leave.
-    if buttonMask == 0 {
-      isPointerInside = false
-    }
-    let (x, y) = pointInPixels(event, clampToView: true)
-    x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
-  }
-
-
-  override func scrollWheel(with event: NSEvent) {
-    let dy = event.scrollingDeltaY
-    let dx = event.scrollingDeltaX
-    
-    // Trackpads are often “precise”; accumulate until we cross a tick threshold.
-    // Tune: 8–20 feels reasonable. Start at 12.
-    let tick: CGFloat = 12
-    
-    scrollAccumY += dy
-    scrollAccumX += dx
-
-    // Only deliver scroll when inside, unless dragging/grab is active.
-    let p = convert(event.locationInWindow, from: nil)
-    let insideNow = bounds.contains(p)
-    let dragging = (buttonMask != 0)
-    if !insideNow && !dragging { return }
-    
-    let (x, y) = pointInPixels(event, clampToView: true)
-    let m = mods(event.modifierFlags)
-
-    func postScroll(axis: x11_scroll_axis_t, ticks: Int16) {
-      x11_post_scroll_ticks(xid, axis, ticks, x, y, buttonMask, m)
-    }
-
-    while scrollAccumY >= tick { scrollAccumY -= tick; postScroll(axis: X11_SCROLL_VERT, ticks: +1) }
-    while scrollAccumY <= -tick { scrollAccumY += tick; postScroll(axis: X11_SCROLL_VERT, ticks: -1) }
-
-    while scrollAccumX >=  tick { scrollAccumX -= tick; postScroll(axis: X11_SCROLL_HORZ, ticks: +1) }
-    while scrollAccumX <= -tick { scrollAccumX += tick; postScroll(axis: X11_SCROLL_HORZ, ticks: -1) }
-  }
-  
-  // MARK: Keyboard
-  override func flagsChanged(with event: NSEvent) {
-    // Convert Cocoa modifier changes into X11-style key up/down events.
-    // We track transitions because `flagsChanged` fires for both press and release.
-    let newFlags = event.modifierFlags
-    let oldFlags = lastModifierFlags
-    lastModifierFlags = newFlags
-
-    // We only care about the four primary modifiers we encode in `mods()`.
-    let tracked: [(NSEvent.ModifierFlags, String)] = [
-      (.shift, "shift"),
-      (.control, "control"),
-      (.option, "option"),
-      (.command, "command")
-    ]
-
-    for (flag, _) in tracked {
-      let wasDown = oldFlags.contains(flag)
-      let isDown  = newFlags.contains(flag)
-      if wasDown == isDown { continue }
-
-      #if DEBUG
-      print("[SwiftX11][MOD] xid=0x\(String(xid, radix: 16)) flag=\(flag) isDown=\(isDown) keyCode=\(event.keyCode) mods=0x\(String(mods(newFlags), radix: 16))")
-      #endif
-
-      // Cocoa reports the physical key in `event.keyCode`.
-      // This matches the key that triggered the modifier transition.
-      // For our current shim, emitting the transition with that keycode is sufficient.
-      x11_post_key_event(xid, isDown, UInt32(event.keyCode), mods(newFlags), nil)
-    }
-  }
-
-  override func keyDown(with event: NSEvent) {
-    lastModifierFlags = event.modifierFlags
-
-    let text = event.characters ?? ""
-
-    text.withCString { cstr in
-      x11_post_key_event(xid, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
-    }
-  }
-
-  override func keyUp(with event: NSEvent) {
-    lastModifierFlags = event.modifierFlags
-    x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
   }
 }
+

@@ -46,7 +46,7 @@ typedef void (*x11_present_frame_cb)(
     int bytes_per_row
 );
 
-void x11_register_frame_presenter(x11_present_frame_cb on_present);
+//void x11_register_frame_presenter(x11_present_frame_cb on_present);
 
 void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px);  
 
@@ -195,12 +195,30 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);
 // These must be called from the server thread (or otherwise safe context).
 // Not for Swift/UI
 void x11_server_emit_window_create(uint32_t xid,
+                                   uint32_t parent_xid, 
                                   const char* title_utf8,
                                   int32_t w_px,
                                   int32_t h_px);
 
 void x11_server_emit_window_destroy(uint32_t xid);
+
+// -------------------------------------------------------------------
+// Damage callback from server → shim → Swift
+// Called by x11_requests_drain_on_server_thread when a damage arrives.
+// Swift implements this via a C bridge function.
+void x11_server_emit_window_damage(uint32_t xid);
+
+// -------------------------------------------------------------------
+// make the one authoritative bgra copy visible to Swift
+int x11_server_copy_window_bgra(uint32_t xid,
+                                uint8_t* out_bytes,
+                                int32_t out_cap,
+                                int32_t* out_w,
+                                int32_t* out_h,
+                                int32_t* out_bpr);
   
+void x11_post_window_presentable(uint32_t xid);
+
 #ifdef __cplusplus
 }
 #endif

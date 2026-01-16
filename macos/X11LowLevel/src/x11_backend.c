@@ -486,9 +486,6 @@ void x11_backend_window_set_size_locked(uint32_t xid, int32_t w_px, int32_t h_px
   if (idx < 0) return;
   if (!g_windows[idx].alive) return;
 
-  // Keep mapped consistent with “rootless visible” default.
-  g_windows[idx].mapped = 1;
-
   // Do NOT clear closing here; resize must not “revive” a window mid-destroy.
   g_windows[idx].w_px = w_px;
   g_windows[idx].h_px = h_px;

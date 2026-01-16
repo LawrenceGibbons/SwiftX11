@@ -43,9 +43,9 @@ static _Atomic uint32_t g_next_xid = 0x10010; // avoid colliding with old demo i
 // -----------------------------------------------------------------------------
 typedef struct x11_server_ctx_t {
   // Callbacks
-  x11_window_created_cb on_create;
-  x11_window_closed_cb  on_close;
-  x11_present_frame_cb  present;
+//  x11_window_created_cb on_create;
+//  x11_window_closed_cb  on_close;
+//  x11_present_frame_cb  present;
 
   // ---- Runloop thread + wakeup
   pthread_t      thread;
@@ -180,29 +180,40 @@ static inline uint64_t x11_now_ns(void)
 // ---- Helper for async destroy (safe from repaint context)
 struct x11_destroy_arg { uint32_t xid; };
 
-static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, int32_t h)
+static void x11_emit_window_create(uint32_t xid, uint32_t parent_xid, const char* title, int32_t w, int32_t h)
 {
   // ensure nonzero
   int32_t ww = (w < 1) ? 1 : w;
   int32_t hh = (h < 1) ? 1 : h;
 
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] emit_window_create: xid=0x%08X title=\"%s\" size=%dx%d\n",
+          (unsigned)xid, title ? title : "(null)", (int)ww, (int)hh);
+#endif
+  
   // Ensure backend state exists, then set size + mark damage.
   x11_backend_alloc_slot(xid);
   x11_backend_window_set_size(xid, ww, hh);
-  x11_backend_mark_damage(xid);
+  //x11_backend_mark_damage(xid);
   x11_backend_lock();
   x11_backend_window_set_mapped_locked(xid, 0);
   x11_backend_unlock();
   
-  // Ask Swift to create the NSWindow
-  x11_window_created_cb on_create = NULL;
-  x11_backend_lock();
-  on_create = g_srv.on_create;
-  x11_backend_unlock();
-
-  if (on_create) {
-    on_create(xid, title, (int)ww, (int)hh);
-  }
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[SwiftX11] emit_window_create: xid=0x%08X mapped=0 (explicit)\n",
+          (unsigned)xid);
+#endif
+  
+//  // Ask Swift to create the NSWindow
+//  x11_window_created_cb on_create = NULL;
+//  x11_backend_lock();
+//  on_create = g_srv.on_create;
+//  x11_backend_unlock();
+//
+//  if (on_create) {
+//    on_create(xid, title, (int)ww, (int)hh);
+//  }
   
   // Enqueue event as backend truth
   x11_event_t ev = (x11_event_t){0};
@@ -212,6 +223,7 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
   ev.size = sizeof(ev.u.win_create);
   ev.u.win_create.width_px = ww;
   ev.u.win_create.height_px = hh;
+  ev.u.win_create.parent_xid = parent_xid;
   (void)x11_events_push(&ev);
 
   x11_server_wakeup();
@@ -220,7 +232,6 @@ static void x11_emit_window_create(uint32_t xid, const char* title, int32_t w, i
 
 static void x11_emit_window_destroy(uint32_t xid)
 {
-  x11_window_closed_cb on_close = NULL;
   uint32_t *old_fb = NULL;
   void *retired = NULL;
   
@@ -259,7 +270,7 @@ static void x11_emit_window_destroy(uint32_t xid)
   if (g_srv.drag_xid == xid)    g_srv.drag_xid = 0;
 
   // Snapshot callback.
-  on_close = g_srv.on_close;
+  //on_close = g_srv.on_close;
 
   // Wait for any in-flight repaints to complete.
   uint32_t inflight = x11_backend_repaint_inflight_locked(xid);
@@ -302,16 +313,16 @@ static void x11_emit_window_destroy(uint32_t xid)
 
   // Enqueue DESTROY as backend truth.
   x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = timestamp;
+  ev.timestamp_ns = timestamp + 1;
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_DESTROY;
   ev.size = sizeof(ev.u.win_destroy);
   (void)x11_events_push(&ev);
 
   // Ask Swift to actually close the NSWindow (NO LOCK held).
-  if (on_close) {
-    on_close(xid);
-  }
+  // if (on_close) {
+  //   on_close(xid);
+  // }
 
   x11_server_wakeup();
 }
@@ -453,7 +464,7 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     out_snapshot->focus_xid   = g_srv.focus_xid;
     out_snapshot->drag_xid    = g_srv.drag_xid;
     out_snapshot->buttons     = g_srv.buttons;
-      atomic_load_explicit(&g_srv.debug_destroy_waits, memory_order_relaxed);
+    out_snapshot->destroy_waits = atomic_load_explicit(&g_srv.debug_destroy_waits, memory_order_relaxed);
   
     #ifndef NDEBUG
     x11_backend_debug_win_t wins[X11_MAX_WINDOWS];
@@ -482,8 +493,13 @@ void x11_register_callbacks(
                             x11_window_closed_cb on_close)
 {
   x11_backend_lock();
-  g_srv.on_create = on_create;
-  g_srv.on_close  = on_close;
+//  g_srv.on_create = on_create;
+//  g_srv.on_close  = on_close;
+  (void)on_create;
+  (void)on_close;
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] x11_register_callbacks: ignored (event-driven)\n");
+#endif
   x11_backend_unlock();
 }
 
@@ -541,134 +557,249 @@ void x11_stop_server(void)
   x11_events_shutdown();
 }
 
-void x11_register_frame_presenter(x11_present_frame_cb on_present)
-{
-  x11_backend_lock();
-  g_srv.present = on_present;
-  x11_backend_unlock();
-
-  // When the presenter becomes available, mark all live windows damaged
-  // so their first frame is guaranteed to be produced.
-  if (on_present) {
-    x11_backend_mark_all_damage();
-  }
-
-  // Wake the runloop so we repaint immediately (rather than waiting for timeout).
-  x11_server_wakeup();
-}
+//void x11_register_frame_presenter(x11_present_frame_cb on_present)
+//{
+//  x11_backend_lock();
+//  g_srv.present = on_present;
+//  x11_backend_unlock();
+//
+//  // When the presenter becomes available, mark all live windows damaged
+//  // so their first frame is guaranteed to be produced.
+//  if (on_present) {
+//    x11_backend_mark_all_damage();
+//  }
+//
+//  // Wake the runloop so we repaint immediately (rather than waiting for timeout).
+//  x11_server_wakeup();
+//}
 
 void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
 {
-  if (width_px <= 0 || height_px <= 0) return;
+  (void)width_px;
+  (void)height_px;
 
-  x11_present_frame_cb presenter = NULL;
-  uint32_t *fb = NULL;
-
-  bool inflight_taken = false;
-
-  // One-shot destroy test
-  int do_destroy = 0;
-  uint32_t dxid = 0;
-
-  // 1) Snapshot presenter + check window + take inflight + snapshot destroy-test state
-  x11_backend_lock();
-  presenter = g_srv.present;
-
-  if (!presenter) {
-    x11_backend_unlock();
-    return;
-  }
-
-  if (!x11_backend_repaint_begin_locked(xwin_id)) {
-    // begin_locked is the single source of truth:
-    // it fails if missing / not alive / closing.
-    x11_backend_unlock();
-    return;
-  }
-  inflight_taken = true;
-
-  if (g_srv.debug_destroy_during_repaint &&
-      g_srv.debug_destroy_during_repaint_xid == xwin_id)
-  {
-    do_destroy = 1;
-    dxid = g_srv.debug_destroy_during_repaint_xid;
-    g_srv.debug_destroy_during_repaint = 0; // one-shot
-  }
+  // In rootless mode, Swift is responsible for presenting.
+  // C side only emits DAMAGE events when the xproto framebuffer changes.
 
 #ifndef NDEBUG
-  x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
+  fprintf(stderr,
+          "[SwiftX11] repaint: SKIP (rootless presenter disabled) xid=0x%08X\n",
+          (unsigned)xwin_id);
 #endif
-
-  x11_backend_unlock();
-
-  // debugging -- slow down the repaint (no lock held)
-  if (g_srv.debug_storm) { usleep(20 * 1000); }  // 20ms
-
-  if (do_destroy) {
-    // IMPORTANT: never call synchronous destroy from inside repaint
-    x11_post_window_destroy_async(dxid);
-  }
-
-  // 2) Ensure backing store exists (backend locks internally)
-  const size_t need_pixels = (size_t)width_px * (size_t)height_px;
-  const int bpr = width_px * 4;
-
-  if (!x11_backend_ensure_fb(xwin_id, need_pixels, &fb) || !fb) {
-    goto done;
-  }
-
-  // 3) Render into fb (no lock held)
-  // temporary pattern for now based on xwin_id
-  // Derive a stable per-window seed from xid
-  uint32_t seed = xwin_id * 2654435761u; // Knuth multiplicative hash
-
-  // Simple per-window base color
-  uint8_t base_r = (seed >>  0) & 0xFF;
-  uint8_t base_g = (seed >>  8) & 0xFF;
-  uint8_t base_b = (seed >> 16) & 0xFF;
-  #ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] REPAINT xid=0x%X seed=0x%08X base=%u,%u,%u\n",
-          xwin_id, seed, base_r, base_g, base_b);
-  #endif
-  
-  for (int y = 0; y < height_px; y++) {
-    for (int x = 0; x < width_px; x++) {
-      uint8_t a = 0xFF;
-
-      uint8_t r = (uint8_t)(base_r ^ (x & 0xFF));
-      uint8_t g = (uint8_t)(base_g ^ (y & 0xFF));
-      uint8_t b = (uint8_t)(base_b ^ ((x + y) & 0xFF));
-      
-      if (((x / (16 + (seed & 31))) & 1) ^ ((y / (16 + ((seed >> 5) & 31))) & 1))  {
-        r = (uint8_t)(255 - r);
-        g = (uint8_t)(255 - g);
-        b = (uint8_t)(255 - b);
-      }
-      
-      fb[(size_t)y * (size_t)width_px + (size_t)x] =
-        (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
-    }
-  }
-
-  // 4) Present (no lock held)
-  presenter(xwin_id, fb, width_px, height_px, bpr);
-
-done:
-  if (inflight_taken) {
-    void *retired = NULL;
-
-    x11_backend_lock();
-    x11_backend_repaint_end_locked(xwin_id, &retired);
-
-    #ifndef NDEBUG
-    x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
-    #endif
-
-    x11_backend_unlock();
-    
-    if (retired) x11_backend_free_retired(retired);
-  }
 }
+
+//void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
+//{
+//  if (width_px <= 0 || height_px <= 0) return;
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] repaint: enter xid=0x%08X req=%dx%d\n",
+//          (unsigned)xwin_id, (int)width_px, (int)height_px);
+//#endif
+//
+//  x11_present_frame_cb presenter = NULL;
+//  uint32_t *fb = NULL;
+//
+//  bool inflight_taken = false;
+//
+//  // One-shot destroy test
+//  int do_destroy = 0;
+//  uint32_t dxid = 0;
+//
+//  // 1) Snapshot presenter + check window + take inflight + snapshot destroy-test state
+//  x11_backend_lock();
+//  presenter = g_srv.present;
+//
+//  if (!presenter) {
+//#ifndef NDEBUG
+//    fprintf(stderr,
+//            "[SwiftX11] repaint: no presenter xid=0x%08X\n",
+//            (unsigned)xwin_id);
+//#endif
+//    x11_backend_unlock();
+//    return;
+//  }
+//
+//  if (!x11_backend_repaint_begin_locked(xwin_id)) {
+//    // begin_locked is the single source of truth:
+//    // it fails if missing / not alive / closing.
+//#ifndef NDEBUG
+//    fprintf(stderr,
+//            "[SwiftX11] repaint: begin_locked FAILED xid=0x%08X\n",
+//            (unsigned)xwin_id);
+//#endif
+//    x11_backend_unlock();
+//    return;
+//  }
+//  inflight_taken = true;
+//
+//  if (g_srv.debug_destroy_during_repaint &&
+//      g_srv.debug_destroy_during_repaint_xid == xwin_id)
+//  {
+//    do_destroy = 1;
+//    dxid = g_srv.debug_destroy_during_repaint_xid;
+//    g_srv.debug_destroy_during_repaint = 0; // one-shot
+//  }
+//
+//#ifndef NDEBUG
+//  x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
+//#endif
+//
+//  x11_backend_unlock();
+//
+//  // debugging -- slow down the repaint (no lock held)
+//  if (g_srv.debug_storm) { usleep(20 * 1000); }  // 20ms
+//
+//  if (do_destroy) {
+//    // IMPORTANT: never call synchronous destroy from inside repaint
+//    x11_post_window_destroy_async(dxid);
+//  }
+//
+//  // 2) Ensure backing store exists (backend locks internally)
+//  const size_t need_pixels = (size_t)width_px * (size_t)height_px;
+//  const int bpr = width_px * 4;
+//
+//  if (!x11_backend_ensure_fb(xwin_id, need_pixels, &fb) || !fb) {
+//    goto done;
+//  }
+//
+//  // Bridge: if xproto owns a framebuffer for this xid, copy it into the backend fb.
+//  {
+//    int64_t cap64 = (int64_t)bpr * (int64_t)height_px;
+//    if (cap64 > 0 && cap64 <= INT32_MAX) {
+//      int32_t cw = 0, ch = 0, cbpr = 0;
+//      int ok_copy = x11_xproto_copy_window_bgra(xwin_id,
+//                                                (uint8_t*)fb,
+//                                                (int32_t)cap64,
+//                                                &cw, &ch, &cbpr);
+//#ifndef NDEBUG
+//      fprintf(stderr,
+//              "[SwiftX11] repaint: copy_window_bgra xid=0x%08X ok=%d cw=%d ch=%d cbpr=%d expect=%dx%d bpr=%d cap=%lld\n",
+//              (unsigned)xwin_id, ok_copy, (int)cw, (int)ch, (int)cbpr,
+//              (int)width_px, (int)height_px, (int)bpr, (long long)cap64);
+//#endif
+//      if (!ok_copy) {
+//        const size_t npx = (size_t)width_px * (size_t)height_px;
+//        for (size_t i = 0; i < npx; i++) fb[i] = 0xFF000000u; // opaque black
+//#ifndef NDEBUG
+//        fprintf(stderr,
+//                "[SwiftX11] repaint: copy FAILED -> filled black xid=0x%08X npx=%zu\n",
+//                (unsigned)xwin_id, npx);
+//#endif
+//      } else if (cw != width_px || ch != height_px || cbpr != bpr) {
+//#ifndef NDEBUG
+//        fprintf(stderr,
+//                "[SwiftX11] repaint: SIZE MISMATCH xid=0x%08X src=%dx%d bpr=%d dst=%dx%d bpr=%d (will blit overlap)\n",
+//                (unsigned)xwin_id, (int)cw, (int)ch, (int)cbpr,
+//                (int)width_px, (int)height_px, (int)bpr);
+//#endif
+//        // Best-effort mismatch handling: clear to black then blit the overlapping region.
+//        const size_t dst_npx = (size_t)width_px * (size_t)height_px;
+//        for (size_t i = 0; i < dst_npx; i++) fb[i] = 0xFF000000u;
+//
+//        int64_t src_cap64 = (int64_t)cbpr * (int64_t)ch;
+//        if (src_cap64 > 0 && src_cap64 <= INT32_MAX && cw > 0 && ch > 0 && cbpr == cw * 4) {
+//          uint8_t* tmp = (uint8_t*)malloc((size_t)src_cap64);
+//          if (tmp) {
+//            int32_t rw = 0, rh = 0, rbpr = 0;
+//            int ok2 = x11_xproto_copy_window_bgra(xwin_id, tmp, (int32_t)src_cap64, &rw, &rh, &rbpr);
+//            if (ok2 && rw == cw && rh == ch && rbpr == cbpr) {
+//              const int copy_w = (rw < width_px) ? rw : width_px;
+//              const int copy_h = (rh < height_px) ? rh : height_px;
+//              for (int y = 0; y < copy_h; y++) {
+//                memcpy((uint8_t*)fb + (size_t)y * (size_t)bpr,
+//                       tmp + (size_t)y * (size_t)rbpr,
+//                       (size_t)copy_w * 4u);
+//              }
+//#ifndef NDEBUG
+//              fprintf(stderr,
+//                      "[SwiftX11] repaint: copy mismatch xid=0x%08X src=%dx%d bpr=%d dst=%dx%d bpr=%d -> blit %dx%d\n",
+//                      (unsigned)xwin_id, (int)rw, (int)rh, (int)rbpr,
+//                      (int)width_px, (int)height_px, (int)bpr,
+//                      (int)copy_w, (int)copy_h);
+//#endif
+//            }
+//            free(tmp);
+//          }
+//        }
+//      } else {
+//#ifndef NDEBUG
+//        if (width_px > 0 && height_px > 0) {
+//          fprintf(stderr,
+//                  "[SwiftX11] repaint: copy ok sample p0=0x%08X\n",
+//                  (unsigned)fb[0]);
+//        }
+//#endif
+//      }
+//    }
+//  }
+//  
+//  // 3) Render into fb (no lock held)
+//  // IMPORTANT:
+//  // - In the real server, X11 requests (PutImage, CopyArea, PolyFillRect, etc.)
+//  //   mutate the window backing store in the backend.
+//  // - This repaint step should normally *only present* the current backing store.
+//  // - The old demo checkerboard/grid pattern is now only used for the debug
+//  //   repaint-storm torture mode.
+//
+//  if (g_srv.debug_storm) {
+//    // Demo pattern (debug only): stable per-window seed from xid
+//    uint32_t seed = xwin_id * 2654435761u; // Knuth multiplicative hash
+//
+//    uint8_t base_r = (seed >>  0) & 0xFF;
+//    uint8_t base_g = (seed >>  8) & 0xFF;
+//    uint8_t base_b = (seed >> 16) & 0xFF;
+//
+//    #ifndef NDEBUG
+//    fprintf(stderr, "[SwiftX11] REPAINT(STORM) xid=0x%X seed=0x%08X base=%u,%u,%u\n",
+//            xwin_id, seed, base_r, base_g, base_b);
+//    #endif
+//
+//    for (int y = 0; y < height_px; y++) {
+//      for (int x = 0; x < width_px; x++) {
+//        uint8_t a = 0xFF;
+//
+//        uint8_t r = (uint8_t)(base_r ^ (x & 0xFF));
+//        uint8_t g = (uint8_t)(base_g ^ (y & 0xFF));
+//        uint8_t b = (uint8_t)(base_b ^ ((x + y) & 0xFF));
+//
+//        if (((x / (16 + (seed & 31))) & 1) ^ ((y / (16 + ((seed >> 5) & 31))) & 1))  {
+//          r = (uint8_t)(255 - r);
+//          g = (uint8_t)(255 - g);
+//          b = (uint8_t)(255 - b);
+//        }
+//
+//        fb[(size_t)y * (size_t)width_px + (size_t)x] =
+//          (uint32_t)(b | (g << 8) | (r << 16) | (a << 24));
+//      }
+//    }
+//  }
+//
+//  // 4) Present (no lock held)
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] repaint: present xid=0x%08X %dx%d bpr=%d p0=0x%08X\n",
+//          (unsigned)xwin_id, (int)width_px, (int)height_px, (int)bpr,
+//          fb ? (unsigned)fb[0] : 0u);
+//#endif
+//  presenter(xwin_id, fb, width_px, height_px, bpr);
+//
+//done:
+//  if (inflight_taken) {
+//    void *retired = NULL;
+//
+//    x11_backend_lock();
+//    x11_backend_repaint_end_locked(xwin_id, &retired);
+//
+//    #ifndef NDEBUG
+//    x11_backend_debug_check_invariants_for_xid_locked(xwin_id);
+//    #endif
+//
+//    x11_backend_unlock();
+//    
+//    if (retired) x11_backend_free_retired(retired);
+//  }
+//}
 
 
 
@@ -1170,21 +1301,41 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
   if (w_px < 1) w_px = 1;
   if (h_px < 1) h_px = 1;
 
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[SwiftX11] post_window_resize: xid=0x%08X new=%dx%d (pre-gate)\n",
+          (unsigned)xid, (int)w_px, (int)h_px);
+#endif
+  
   // Gate on existence (and optionally "not closing") to avoid stale events.
   x11_backend_lock();
-  const int exists = x11_backend_window_is_alive_locked(xid);
-  const int closing = x11_backend_window_is_closing_locked(xid);
+  const int exists = x11_backend_window_exists_locked(xid);
+  const int closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;
   x11_backend_unlock();
 
   if (!exists || closing) {
+#ifndef NDEBUG
+    fprintf(stderr,
+            "[SwiftX11] post_window_resize: DROP xid=0x%08X exists=%d closing=%d\n",
+            (unsigned)xid, exists, closing);
+#endif
     return;
   }
-
+  
   // Update backend truth first.
   x11_backend_window_set_size(xid, w_px, h_px);
-
+  
+  // Tell xproto/server-thread to resize its window+fb too.
+  int ok = x11_requests_push_rootless_resize(xid, w_px, h_px);
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] post_window_resize: PUSH_ROOTLESS xid=0x%08X %dx%d ok=%d\n",
+        (unsigned)xid, (int)w_px, (int)h_px, ok);
+#endif
+  
   // Resizing implies we need a repaint.
-  x11_backend_mark_damage(xid);
+  // Actually, we will rely on the marking of damage in 
+  // x11_xproto_apply_rootless_resize_on_server_thread
+  // x11_backend_mark_damage(xid);
 
   // Emit event for Swift-side observers/logging.
   x11_event_t ev = (x11_event_t){0};
@@ -1217,6 +1368,55 @@ void x11_mark_damage(uint32_t xid)
   x11_server_wakeup();
 }
 
+// -----------------------------------------------------------------------------
+// Damage request side-effect
+//
+// This is called from the server-thread request drain (x11_requests_drain_on_server_thread)
+// when an X11_REQ_DAMAGE is dequeued.
+//
+// IMPORTANT: do NOT push another request here (that would create a request-loop).
+// Instead, mark backend damage and wake the repaint runloop.
+// -----------------------------------------------------------------------------
+void x11_server_emit_window_damage(uint32_t xid)
+{
+  if (xid == 0) return;
+
+  // Gate on existence and "not closing" so stale damage doesn't resurrect windows.
+  int ok = 0;
+  int exists = 0;
+  int closing = 0;
+  x11_backend_lock();
+  exists = x11_backend_window_exists_locked(xid);
+  closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;
+  if (exists && !closing) {
+    x11_backend_mark_damage_locked(xid);
+    ok = 1;
+  }
+  x11_backend_unlock();
+
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[SwiftX11] x11_server_emit_window_damage: xid=0x%08X exists=%d closing=%d ok=%d\n",
+          (unsigned)xid, exists, closing, ok);
+#endif
+
+  if (!ok) return;
+  
+  // Backend event: DAMAGE (distinct from request queue)
+  x11_event_t ev = (x11_event_t){0};
+  ev.timestamp_ns = x11_now_ns();
+  ev.xid = xid;
+  ev.type = X11_EV_WINDOW_DAMAGE;
+  ev.size = sizeof(ev.u.win_damage);
+  ev.u.win_damage.x_px = 0;
+  ev.u.win_damage.y_px = 0;
+  ev.u.win_damage.w_px = 0;
+  ev.u.win_damage.h_px = 0;
+  (void)x11_events_push(&ev);
+
+  x11_server_wakeup();
+}
+
 void x11_server_wakeup(void)
 {
   x11_backend_lock();
@@ -1230,8 +1430,8 @@ void x11_server_wakeup(void)
 void x11_server_step(void)
 {
   // 0) Apply queued client requests first (server thread truth)
-  x11_requests_drain_on_server_thread();   // new
-
+  x11_requests_drain_on_server_thread();
+  
   // 1) Then snapshot damaged windows and repaint them.
   uint32_t xids[X11_MAX_WINDOWS];
   int32_t  ws[X11_MAX_WINDOWS];
@@ -1488,16 +1688,23 @@ void x11_debug_torture_once(int iters, int us_between, int allow_destroy)
 }
 
 
-uint32_t x11_window_create(const char* title, int32_t w_px, int32_t h_px)
-{
-  // Generate an xid (simple monotonic allocator)
-  uint32_t xid = atomic_fetch_add_explicit(&g_next_xid, 1, memory_order_relaxed);
-
-  // Use existing internal helper so events+damage happen consistently
-  const char* t = (title && title[0]) ? title : "SwiftX11 Window";
-  x11_emit_window_create(xid, t, w_px, h_px);
-  return xid;
+uint32_t x11_window_create(const char* title, int32_t w_px, int32_t h_px) {
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] ERROR: x11_window_create() should not be called (event-driven path)\n");
+  abort();
+#endif
 }
+
+//uint32_t x11_window_create(const char* title, int32_t w_px, int32_t h_px)
+//{
+//  // Generate an xid (simple monotonic allocator)
+//  uint32_t xid = atomic_fetch_add_explicit(&g_next_xid, 1, memory_order_relaxed);
+//
+//  // Use existing internal helper so events+damage happen consistently
+//  const char* t = (title && title[0]) ? title : "SwiftX11 Window";
+//  x11_emit_window_create(xid, t, w_px, h_px);
+//  return xid;
+//}
 
 void x11_window_set_title(uint32_t xid, const char* title_utf8)
 {
@@ -1526,9 +1733,9 @@ void x11_window_set_title(uint32_t xid, const char* title_utf8)
 }
 
 // x11_shim.c (non-static wrappers)
-void x11_server_emit_window_create(uint32_t xid, const char* title, int32_t w, int32_t h)
+void x11_server_emit_window_create(uint32_t xid, uint32_t parent_xid, const char* title, int32_t w, int32_t h)
 {
-  x11_emit_window_create(xid, title, w, h);
+  x11_emit_window_create(xid, parent_xid, title, w, h);
 }
 
 void x11_server_emit_window_destroy(uint32_t xid)
@@ -1598,6 +1805,12 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
   if (w_px < 1) w_px = 1;
   if (h_px < 1) h_px = 1;
 
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[SwiftX11] apply_configure_request: xid=0x%08X size=%dx%d\n",
+          (unsigned)xid, (int)w_px, (int)h_px);
+#endif
+  
   int did = 0;
   int mapped = 0;
 
@@ -1617,6 +1830,12 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
 
   if (!did) return;
 
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[SwiftX11] apply_configure_request: xid=0x%08X did=1 mapped=%d -> resize event\n",
+          (unsigned)xid, mapped);
+#endif
+
   x11_event_t ev = (x11_event_t){0};
   ev.timestamp_ns = x11_now_ns();
   ev.xid = xid;
@@ -1627,6 +1846,36 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
   (void)x11_events_push(&ev);
 
   if (mapped) x11_server_wakeup();
+}
+
+
+int x11_server_copy_window_bgra(uint32_t xid,
+                                uint8_t* out_bytes,
+                                int32_t out_cap,
+                                int32_t* out_w,
+                                int32_t* out_h,
+                                int32_t* out_bpr)
+{
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11] shim: x11_server_copy_window_bgra xid=0x%08X out_bytes=%p cap=%d\n",
+          (unsigned)xid, (void*)out_bytes, (int)out_cap);
+#endif
+
+  return x11_xproto_copy_window_bgra(xid, out_bytes, out_cap, out_w, out_h, out_bpr);
+}
+
+void x11_post_window_presentable(uint32_t xid)
+{
+  if (xid == 0) return;
+
+  x11_backend_lock();
+  // If you track this state in backend too, set it there.
+  // But at minimum, tell xproto.
+  x11_backend_unlock();
+
+  // Push a request to server thread so xproto mutation happens on the server thread.
+  x11_requests_push_window_presentable(xid);
+  x11_server_wakeup();
 }
 
 

@@ -73,26 +73,28 @@ struct ContentView: View {
       
       Text("Logs").font(.headline)
       ScrollViewReader { proxy in
-          ScrollView {
-              LazyVStack(alignment: .leading) {
-                  ForEach(Array(server.logLines.enumerated()), id: \.offset) { idx, line in
-                      Text(line)
-                          .font(.system(.caption, design: .monospaced))
-                          .frame(maxWidth: .infinity, alignment: .leading)
-                          .id(idx)
-                  }
-              }
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(server.logLines.enumerated()), id: \.offset) { idx, line in
+              Text(line)
+                .font(.system(.caption, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .id(idx)
+            }
           }
-          .onAppear {
-              if let last = server.logLines.indices.last {
-                  proxy.scrollTo(last, anchor: .bottom)
-              }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear {
+          if let last = server.logLines.indices.last {
+            proxy.scrollTo(last, anchor: .bottom)
           }
-          .onChange(of: server.logLines.count) { _, _ in
-              if let last = server.logLines.indices.last {
-                  proxy.scrollTo(last, anchor: .bottom)
-              }
+        }
+        .onChange(of: server.logLines.count) { _, _ in
+          if let last = server.logLines.indices.last {
+            proxy.scrollTo(last, anchor: .bottom)
           }
+        }
       }
       Toggle("Use Metal rendering", isOn: $settings.useMetal)
     }

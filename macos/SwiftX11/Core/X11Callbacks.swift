@@ -16,18 +16,29 @@ typealias X11CreateCB = @convention(c) (
 
 typealias X11CloseCB = @convention(c) (UInt32) -> Void
 
+//let swiftX11CreateCallback: X11CreateCB = { xwinID, titlePtr, width, height in
+//    let title = titlePtr.map { String(cString: $0) } ?? "SwiftX11 Window"
+//    Task { @MainActor in
+//        WindowRegistry.shared.createWindow(
+//            xid: xwinID,
+//            title: title,
+//            width: Int(width),
+//            height: Int(height)
+//        )
+//    }
+//    print(String(format: "CREATE xid=0x%X title=%@", xwinID, title))
+//}
+
+
 let swiftX11CreateCallback: X11CreateCB = { xwinID, titlePtr, width, height in
-    let title = titlePtr.map { String(cString: $0) } ?? "SwiftX11 Window"
-    Task { @MainActor in
-        WindowRegistry.shared.createWindow(
-            xid: xwinID,
-            title: title,
-            width: Int(width),
-            height: Int(height)
-        )
-    }
-    print(String(format: "CREATE xid=0x%X title=%@", xwinID, title))
+    // Intentionally disabled: window creation is driven by X11_EV_WINDOW_CREATE events.
+    #if DEBUG
+    let title = titlePtr.map { String(cString: $0) } ?? ""
+    print(String(format: "[SwiftX11] CreateCB NO-OP xid=0x%X title=%@ %dx%d",
+                 xwinID, title, Int(width), Int(height)))
+    #endif
 }
+
 
 let swiftX11CloseCallback: X11CloseCB = { xwinID in
     Task { @MainActor in

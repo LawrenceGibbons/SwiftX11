@@ -8,11 +8,13 @@
 
 #include <stdatomic.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "x11_requests.h"
 #include "x11_shim.h"
 #include "x11_backend.h"
 #include "x11_server_internal.h"
+#include "x11_xproto.h"
 
 // ---------------- Client request queue (C -> server thread) ------------------
 
@@ -24,11 +26,15 @@ typedef enum {
   X11_REQ_UNMAP,
   X11_REQ_CONFIGURE,   // resize for now
   X11_REQ_SET_TITLE,
+  X11_REQ_DAMAGE,
+  X11_REQ_ROOTLESS_RESIZE,
+  X11_REQ_WINDOW_PRESENTABLE,
 } x11_client_req_type_t;
 
 typedef struct {
   x11_client_req_type_t type;
   uint32_t xid;
+  uint32_t parent_xid;
 
   // Optional UTF-8 payload used by CREATE and SET_TITLE.
   // Always NUL-terminated.
@@ -38,6 +44,8 @@ typedef struct {
   union {
     struct { int32_t w_px, h_px; } create;
     struct { int32_t w_px, h_px; } configure;
+    struct { int32_t w_px, h_px; } resize;
+    struct { int32_t w_px, h_px; } rootless_resize;
   } u;
 } x11_client_req_t;
 
@@ -85,6 +93,10 @@ static int req_push_locked(const x11_client_req_t *req)
       }
       // UNMAP after UNMAP for same xid -> drop
       if (prev->type == X11_REQ_UNMAP && req->type == X11_REQ_UNMAP) {
+        return 1;
+      }
+      // DAMAGE after DAMAGE for same xid -> drop (safe coalesce)
+      if (prev->type == X11_REQ_DAMAGE && req->type == X11_REQ_DAMAGE) {
         return 1;
       }
     }
@@ -243,7 +255,7 @@ void x11_client_set_window_title(uint32_t xid, const char* title_utf8)
 // These enqueue onto the same client->server request queue.
 // Return 1 on success, 0 if dropped.
 
-int x11_requests_push_create(uint32_t xid, const char* title_utf8, int32_t w_px, int32_t h_px)
+int x11_requests_push_create(uint32_t xid, uint32_t parent_xid, const char* title_utf8, int32_t w_px, int32_t h_px)
 {
   if (xid == 0) return 0;
   if (w_px < 1) w_px = 1;
@@ -252,8 +264,10 @@ int x11_requests_push_create(uint32_t xid, const char* title_utf8, int32_t w_px,
   x11_client_req_t r = {0};
   r.type = X11_REQ_CREATE;
   r.xid  = xid;
+  r.parent_xid = parent_xid;
   r.u.create.w_px = w_px;
   r.u.create.h_px = h_px;
+
 
   // Copy title into fixed buffer (truncate safely)
   if (title_utf8) {
@@ -306,6 +320,22 @@ int x11_requests_push_map(uint32_t xid)
   return ok;
 }
 
+int x11_requests_push_window_presentable(uint32_t xid)
+{
+  if (xid == 0) return 0;
+
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_WINDOW_PRESENTABLE;
+  r.xid  = xid;
+
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
 int x11_requests_push_unmap(uint32_t xid)
 {
   if (xid == 0) return 0;
@@ -342,6 +372,35 @@ int x11_requests_push_configure(uint32_t xid, int32_t w_px, int32_t h_px)
   return ok;
 }
 
+
+int x11_requests_push_rootless_resize(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  if (xid == 0) return 0;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_ROOTLESS_RESIZE;
+  r.xid = xid;
+  r.u.resize.w_px = w_px;
+  r.u.resize.h_px = h_px;
+  
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+  fprintf(stderr, "[SwiftX11] push_rootless_resize: enqueue type=%d xid=0x%08X %dx%d\n",
+          (int)X11_REQ_ROOTLESS_RESIZE, (unsigned)xid, (int)w_px, (int)h_px);
+#ifndef NDEBUG
+fprintf(stderr, "[SwiftX11] push_rootless_resize: xid=0x%08X %dx%d ok=%d\n",
+        (unsigned)xid, (int)w_px, (int)h_px, ok);
+#endif
+  
+  return ok;
+}
+
+
 int x11_requests_push_set_title(uint32_t xid, const char* title_utf8)
 {
   if (xid == 0) return 0;
@@ -368,6 +427,27 @@ int x11_requests_push_set_title(uint32_t xid, const char* title_utf8)
   return ok;
 }
 
+int x11_requests_push_damage(uint32_t xid)
+{
+  if (xid == 0) return 0;
+  x11_client_req_t r = {0};
+  r.type = X11_REQ_DAMAGE;
+  r.xid  = xid;
+  x11_backend_lock();
+  int ok = req_push_locked(&r);
+  x11_backend_unlock();
+
+#ifndef NDEBUG
+  // ok==0 means the queue was full and we dropped the request.
+  // ok==1 means enqueued OR coalesced (req_push_locked coalesces adjacent DAMAGE for same xid).
+  fprintf(stderr, "[SwiftX11] x11_requests_push_damage: xid=0x%08X ok=%d\n",
+          (unsigned)xid, ok);
+#endif
+
+  if (ok) x11_server_wakeup();
+  return ok;
+}
+
 // Called by the server/runloop thread (e.g. from x11_server_step).
 void x11_requests_drain_on_server_thread(void)
 {
@@ -378,12 +458,17 @@ void x11_requests_drain_on_server_thread(void)
     x11_backend_unlock();
     if (!ok) break;
 
+#ifndef NDEBUG
+    fprintf(stderr, "[SwiftX11] drain_on_server_thread: POP REQ type=%d xid=0x%08X\n",
+            r.type, (unsigned)r.xid);
+#endif
+    
     switch (r.type) {
       case X11_REQ_CREATE: {
         // Create the backend slot + Swift window via existing helper.
         // IMPORTANT: use r.xid (already allocated), and title from r.title.
         const char* title = (r.title_len > 0) ? r.title : "SwiftX11 Window";
-        x11_server_emit_window_create(r.xid, title, r.u.create.w_px, r.u.create.h_px);
+        x11_server_emit_window_create(r.xid, r.parent_xid, title, r.u.create.w_px, r.u.create.h_px);
 
         // X11-ish default: created != mapped. So DO NOT map here.
         // Your Swift side creates hidden/unmapped now — great.
@@ -409,6 +494,34 @@ void x11_requests_drain_on_server_thread(void)
         x11_window_set_title(r.xid, r.title);
         break;
 
+      case X11_REQ_DAMAGE:
+#ifndef NDEBUG
+        fprintf(stderr,
+                "[SwiftX11] drain_on_server_thread: POP DAMAGE xid=0x%08X -> emit_window_damage\n",
+                (unsigned)r.xid);
+#endif
+        x11_server_emit_window_damage(r.xid); // implement in shim
+        break;
+        
+        
+        
+      case X11_REQ_ROOTLESS_RESIZE: {
+#ifndef NDEBUG
+        fprintf(stderr, "[SwiftX11] drain_on_server_thread: APPLY ROOTLESS_RESIZE xid=0x%08X %dx%d\n",
+                (unsigned)r.xid, (int)r.u.rootless_resize.w_px, (int)r.u.rootless_resize.h_px);
+#endif
+        // Runs on server thread. Do not take backend lock here if your xproto state
+        // (win_find/g_framebuffers) is not protected by it.
+        x11_xproto_apply_rootless_resize_on_server_thread(r.xid,
+                                                          r.u.resize.w_px,
+                                                          r.u.resize.h_px);
+        break;
+      }
+        
+      case X11_REQ_WINDOW_PRESENTABLE:
+        x11_xproto_set_window_presentable(r.xid);
+        break;
+        
       default:
         break;
     }

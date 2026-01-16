@@ -11,6 +11,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +50,7 @@ static inline uint32_t x11_button_bit(uint8_t button_number /* 1..31 */) {
     X11_EV_WINDOW_RESIZE  = 13,
     X11_EV_WINDOW_MAP     = 14,
     X11_EV_WINDOW_UNMAP   = 15,
+    X11_EV_WINDOW_DAMAGE  = 16,
   } x11_event_type_t;
 
 // ---- Scroll “wheels” (X11-ish)
@@ -108,6 +110,7 @@ typedef struct {
 typedef struct {
     int32_t width_px;
     int32_t height_px;
+    uint32_t parent_xid;
 } x11_window_create_t;
  
 typedef struct {
@@ -142,13 +145,20 @@ typedef struct x11_ev_win_title_t {
   char    title_utf8[X11_TEXT_MAX];  // not necessarily NUL-terminated
 } x11_ev_win_title_t;
 
-  typedef struct x11_ev_window_map_t {
-    uint8_t _reserved;
-  } x11_ev_window_map_t;
+typedef struct x11_ev_window_map_t {
+  uint8_t _reserved;
+} x11_ev_window_map_t;
 
-  typedef struct x11_ev_window_unmap_t {
-    uint8_t _reserved;
-  } x11_ev_window_unmap_t;
+typedef struct x11_ev_window_unmap_t {
+  uint8_t _reserved;
+} x11_ev_window_unmap_t;
+
+typedef struct {
+  int32_t x_px;
+  int32_t y_px;
+  int32_t w_px;
+  int32_t h_px;
+} x11_ev_window_damage_t;
   
 x11_eventq_stats_t x11_events_stats(void);
   
@@ -173,6 +183,8 @@ x11_eventq_stats_t x11_events_stats(void);
       x11_ev_window_resize_t win_resize;
       x11_ev_window_map_t    win_map;
       x11_ev_window_unmap_t  win_unmap;
+      x11_ev_window_damage_t win_damage;
+      
     } u;
   } x11_event_t;
 
@@ -198,6 +210,15 @@ void     x11_debug_reset_counters(void);    // reset both counters to 0
 // queue snapshot “table dump” into caller-provided buffer.
 // Returns true if something was written.
 bool x11_debug_dump_queue(char* dst, size_t cap, uint32_t max_items);
+
+typedef void (*x11_damage_cb_t)(uint32_t xid,
+                               const uint8_t* pixels,
+                               int32_t width,
+                               int32_t height,
+                               int32_t bytes_per_row);
+
+// Swift (or any consumer) calls this once at startup.
+void x11_set_damage_callback(x11_damage_cb_t cb);
 
 #ifdef __cplusplus
 } // extern "C"
