@@ -49,6 +49,9 @@ final class X11View: NSView {
     private weak var trackingHost: NSView?
     private var renderer: X11MetalRenderer?
     private var mtkDelegate: X11Renderer?
+    // Avoid triggering MTKView delegate callbacks during NSView.layout (can cause layout recursion).
+    private var pendingDrawableSize: CGSize?
+    private var drawableSizeUpdateScheduled: Bool = false
 
     // MARK: -- interface to X11
     private var buttonMask: UInt32 = 0
@@ -86,6 +89,25 @@ final class X11View: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private func scheduleDrawableSizeUpdate(_ size: CGSize) {
+        pendingDrawableSize = size
+        guard !drawableSizeUpdateScheduled else { return }
+        drawableSizeUpdateScheduled = true
+  
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.drawableSizeUpdateScheduled = false
+            guard let mv = self.mtkView else { return }
+            guard let size = self.pendingDrawableSize else { return }
+            self.pendingDrawableSize = nil
+  
+            // Only apply if it actually changed.
+            if mv.drawableSize != size {
+                mv.drawableSize = size
+            }
+        }
+    }
+  
     override func layout() {
         super.layout()
         imageLayer?.frame = bounds
@@ -98,7 +120,12 @@ final class X11View: NSView {
           let wF = bounds.size.width * scale
           let hF = bounds.size.height * scale
           guard wF > 0, hF > 0 else { return }
-          mv.drawableSize = CGSize(width: floor(wF), height: floor(hF))
+          let ds = CGSize(width: floor(wF), height: floor(hF))
+
+          // Defer changing drawableSize until after layout completes.
+          if mv.drawableSize != ds {
+              scheduleDrawableSizeUpdate(ds)
+          }
         }
     }
 

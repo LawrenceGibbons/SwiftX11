@@ -136,8 +136,17 @@ typedef struct {
   uint32_t width;
   uint32_t height;
   uint8_t  depth;
-  uint32_t *pixels; // BGRA 32-bit
+
+  // depth==1: packed bitmap bits, scanlines padded to 32 bits
+  uint32_t stride_bytes;
+
+  // depth!=1: 32-bit pixels
+  uint32_t *pixels;
+
+  // depth==1: packed bits
+  uint8_t  *bits;
 } x11_pixmap_t;
+
 
 static x11_pixmap_t g_pixmaps[X11_MAX_PIXMAPS];
 static _Atomic int g_stop = 0;
@@ -217,6 +226,7 @@ static void pix_free(uint32_t xid) {
   ssize_t idx = pix_index(xid);
   if (idx < 0) return;
   free(g_pixmaps[(size_t)idx].pixels);
+  free(g_pixmaps[(size_t)idx].bits);
   memset(&g_pixmaps[(size_t)idx], 0, sizeof(g_pixmaps[(size_t)idx]));
 }
 
@@ -893,10 +903,12 @@ static void x11_send_setup_success_minimal_little_endian(int fd)
   out[off + 2] = 32;
   off += 8;
  
+  // IMPORTANT: whitePixel and blackPixel must be distinct.
+  // Many clients derive default GC colors from these values.
   // xWindowRoot (40 bytes)
-  wr32_le(out + off + 0, root_xid);     // root
-  wr32_le(out + off + 4, root_cmap);    // defaultColormap
-  wr32_le(out + off + 8, 0);            // whitePixel
+  wr32_le(out + off +  0, root_xid);     // root
+  wr32_le(out + off +  4, root_cmap);    // defaultColormap
+  wr32_le(out + off +  8, 1);            // whitePixel
   wr32_le(out + off + 12, 0);           // blackPixel
   wr32_le(out + off + 16, 0);           // currentInputMasks
   wr16_le(out + off + 20, screen_w_px); 
@@ -1691,6 +1703,10 @@ fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize: xid=0x%08X %dx%d\n",
     return;
   }
 
+  // compute the scale factors
+  float sx = (old_w > 0) ? ((float)new_w / (float)old_w) : 1.0f;
+  float sy = (old_h > 0) ? ((float)new_h / (float)old_h) : 1.0f;
+  
   // Resize the top-level window + framebuffer.
   resize_window_and_fb(wid, new_w, new_h);
 
@@ -1708,54 +1724,107 @@ fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize: xid=0x%08X %dx%d\n",
     }
   }
   
-  // Heuristic: if a child exactly covered the old parent, keep it covering after rootless resize.
-  // This matches common toolkit behavior (one content child at 0,0 same size as parent).
-  // Pick a canonical “content child”:
-  // - direct child of wid
-  // - positioned at origin (0,0)
-  // - choose the largest by area (toolkits typically have one big content child)
-  x11_win_t* best = NULL;
-  uint64_t best_area = 0;
+  // Rootless-resize child handling:
+  // Prefer correctness by propagating geometry changes to children rather than
+  // scaling pixels.
+  //
+  // Rules (direct children of `wid` only):
+  //  1) If a child exactly covered the old parent at (0,0), keep it covering.
+  //  2) Else if a child is anchored at (0,0), scale its size.
+  //  3) Else scale both position and size.
+  //
+  // NOTE: This is a heuristic; real X11 toolkits often manage layout via
+  // ConfigureWindow from the client, but rootless hosts commonly need this.
 
   for (size_t i = 0; i < g_wins_n; i++) {
     x11_win_t* c = &g_wins[i];
     if (!c->xid) continue;
     if (c->parent != wid) continue;
-    if (c->x != 0 || c->y != 0) continue;
-    if (c->w == 0 || c->h == 0) continue;
 
-    uint64_t area = (uint64_t)c->w * (uint64_t)c->h;
-    if (area > best_area) {
-      best = c;
-      best_area = area;
+    // Snapshot old child geometry.
+    const int16_t  cx0 = c->x;
+    const int16_t  cy0 = c->y;
+    const uint16_t cw0 = c->w;
+    const uint16_t ch0 = c->h;
+
+    // Compute new child geometry.
+    int16_t  cx1 = cx0;
+    int16_t  cy1 = cy0;
+    uint16_t cw1 = cw0;
+    uint16_t ch1 = ch0;
+
+    const int covered_old_parent = (cx0 == 0 && cy0 == 0 && cw0 == old_w && ch0 == old_h);
+    const int anchored_origin    = (cx0 == 0 && cy0 == 0);
+
+    if (covered_old_parent) {
+      // Case 1: canonical covering child.
+      cx1 = 0;
+      cy1 = 0;
+      cw1 = new_w;
+      ch1 = new_h;
+    } else if (anchored_origin) {
+      // Case 2: anchored at origin; scale size.
+      // Use the host scale factors computed above.
+      int nw = (int)lroundf((float)cw0 * sx);
+      int nh = (int)lroundf((float)ch0 * sy);
+      if (nw < 1) nw = 1;
+      if (nh < 1) nh = 1;
+      cw1 = (uint16_t)nw;
+      ch1 = (uint16_t)nh;
+    } else {
+      // Case 3: scale both position and size.
+      int nx = (int)lroundf((float)cx0 * sx);
+      int ny = (int)lroundf((float)cy0 * sy);
+      int nw = (int)lroundf((float)cw0 * sx);
+      int nh = (int)lroundf((float)ch0 * sy);
+      if (nw < 1) nw = 1;
+      if (nh < 1) nh = 1;
+      cx1 = (int16_t)nx;
+      cy1 = (int16_t)ny;
+      cw1 = (uint16_t)nw;
+      ch1 = (uint16_t)nh;
     }
-  }
 
-  // Sanity guard: only do this if there *is* a plausible content child.
-  if (best) {
-  #ifndef NDEBUG
+    // No-op if nothing changed.
+    if (cx1 == cx0 && cy1 == cy0 && cw1 == cw0 && ch1 == ch0) {
+      continue;
+    }
+
+#ifndef NDEBUG
     fprintf(stderr,
-            "[SwiftX11] rootless_resize: resizing content child xid=0x%08X %ux%u -> %ux%u (host old %ux%u)\n",
-            (unsigned)best->xid,
-            (unsigned)best->w, (unsigned)best->h,
-            (unsigned)new_w, (unsigned)new_h,
-            (unsigned)old_w, (unsigned)old_h);
-  #endif
+            "[SwiftX11] rootless_resize: child xid=0x%08X (%d,%d %ux%u) -> (%d,%d %ux%u) host old %ux%u new %ux%u\n",
+            (unsigned)c->xid,
+            (int)cx0, (int)cy0, (unsigned)cw0, (unsigned)ch0,
+            (int)cx1, (int)cy1, (unsigned)cw1, (unsigned)ch1,
+            (unsigned)old_w, (unsigned)old_h,
+            (unsigned)new_w, (unsigned)new_h);
+#endif
 
-    resize_window_and_fb(best->xid, new_w, new_h);
+    // Apply geometry change in xproto truth.
+    c->x = cx1;
+    c->y = cy1;
 
+    // Resize backing FB (and update w/h) using the shared helper.
+    resize_window_and_fb(c->xid, cw1, ch1);
+
+    // Notify client on xproto thread.
     {
-      x11_win_t* cc = win_find(best->xid);
+      x11_win_t* cc = win_find(c->xid);
       if (cc) {
-        const int want_cfg = (cc->event_mask & (1u << 17)) ? 1 : 0;
-        const int want_exp = (cc->mapped && (cc->event_mask & (1u << 15))) ? 1 : 0;
+        const int want_cfg = (cc->event_mask & (1u << 17)) ? 1 : 0; // StructureNotifyMask
+        const int want_exp = (cc->mapped && (cc->event_mask & (1u << 15))) ? 1 : 0; // ExposureMask
         if (want_cfg || want_exp) {
           queue_notify(cc->xid, want_cfg, want_exp);
         }
       }
     }
 
-    enqueue_damage_window(best->xid);
+    // Ensure the UI presents updated contents.
+    enqueue_damage_window(c->xid);
+
+    // Also enqueue a ConfigureWindow event to the shim so Cocoa/Swift can track size.
+    // (No socket write; this just feeds the Swift side.)
+    enqueue_configure_window(c->xid, c->x, c->y, c->w, c->h);
   }
   
   // Mark the host as damaged too.
@@ -2504,6 +2573,52 @@ static inline int angle_in_arc(float theta_deg, float start_deg, float extent_de
   }
 }
 
+// Helper to resolve a drawable to a writable pixel buffer and size.
+// Returns 1 on success, 0 on failure.
+static int resolve_drawable_pixels_rw(uint32_t drawable,
+                                     uint32_t **outPixels,
+                                     uint32_t *outW,
+                                     uint32_t *outH,
+                                     bool *out_is_window)
+{
+  if (outPixels) *outPixels = NULL;
+  if (outW) *outW = 0;
+  if (outH) *outH = 0;
+  if (out_is_window) *out_is_window = false;
+
+  // Window drawable
+  x11_win_t *w = win_find(drawable);
+  if (w) {
+    const ssize_t idx = win_index(drawable);
+    if (idx < 0) return 0;
+    x11_fb_t *fb = &g_framebuffers[(size_t)idx];
+    if (!fb->pixels || fb->width == 0 || fb->height == 0) return 0;
+    if (outPixels) *outPixels = fb->pixels;
+    if (outW) *outW = fb->width;
+    if (outH) *outH = fb->height;
+    if (out_is_window) *out_is_window = true;
+    return 1;
+  }
+
+  // Pixmap drawable
+  const ssize_t pidx = pix_index(drawable);
+  if (pidx < 0) return 0;
+
+  x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
+  if (pm->width == 0 || pm->height == 0) return 0;
+
+  // IMPORTANT: depth-1 pixmaps are packed bits in pm->bits, not 32bpp pixels.
+  if (pm->depth == 1) return 0;
+
+  if (!pm->pixels) return 0;
+
+  if (outPixels) *outPixels = pm->pixels;
+  if (outW) *outW = pm->width;
+  if (outH) *outH = pm->height;
+  if (out_is_window) *out_is_window = false;
+  return 1;
+}
+
 
 // CreatePixmap (major = 53) -- no reply
 static void handle_CreatePixmap(uint8_t depth, const uint8_t* payload, size_t remain)
@@ -2522,29 +2637,43 @@ static void handle_CreatePixmap(uint8_t depth, const uint8_t* payload, size_t re
 
   x11_pixmap_t *p = &g_pixmaps[(size_t)idx];
 
-  // Free any previous storage for idempotency
-  free(p->pixels);
-  p->pixels = NULL;
-
   p->depth  = depth;
   p->width  = (wpx ? wpx : 1);
   p->height = (hpx ? hpx : 1);
 
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] CreatePixmap: pid=0x%08X depth=%u size=%ux%u\n",
-        (unsigned)pid, (unsigned)depth, (unsigned)p->width, (unsigned)p->height);
-#endif
-  
-  const size_t npx = (size_t)p->width * (size_t)p->height;
-  p->pixels = (uint32_t*)malloc(npx * sizeof(uint32_t));
-  if (!p->pixels) {
-    // leave pixmap entry allocated but empty
-    p->width = p->height = 0;
-    return;
-  }
+  // Reset any previous storage.
+  free(p->pixels);
+  free(p->bits);
+  p->pixels = NULL;
+  p->bits = NULL;
+  p->stride_bytes = 0;
 
-  // White background
-  for (size_t i = 0; i < npx; i++) p->pixels[i] = 0xFFFFFFFFu;
+  if (p->depth == 1) {
+    // Packed bitmap, scanlines padded to 32 bits.
+    p->stride_bytes = (uint32_t)(((p->width + 31u) & ~31u) >> 3); // /8
+    const size_t nbytes = (size_t)p->stride_bytes * (size_t)p->height;
+
+    p->bits = (uint8_t*)malloc(nbytes);
+    if (!p->bits) {
+      p->width = p->height = 0;
+      p->stride_bytes = 0;
+      return;
+    }
+
+    // Initialize to 0 bits (background/off)
+    memset(p->bits, 0, nbytes);
+  } else {
+    // 32-bit pixels.
+    const size_t npx = (size_t)p->width * (size_t)p->height;
+    p->pixels = (uint32_t*)malloc(npx * sizeof(uint32_t));
+    if (!p->pixels) {
+      p->width = p->height = 0;
+      return;
+    }
+
+    // White background
+    for (size_t i = 0; i < npx; i++) p->pixels[i] = 0xFFFFFFFFu;
+  }
 }
 
 
@@ -2561,7 +2690,7 @@ static void handle_FreePixmap(const uint8_t* payload, size_t remain)
 // CopyArea (major = 62) -- no reply
 static void handle_CopyArea(const uint8_t* payload, size_t remain)
 {
-  if (remain < 20) return;
+  if (remain < 24) return;
 
   const uint32_t src = rd32(payload + 0);
   const uint32_t dst = rd32(payload + 4);
@@ -2600,7 +2729,6 @@ static void handle_CopyArea(const uint8_t* payload, size_t remain)
   // Resolve src buffer (window fb or pixmap)
   const uint32_t *srcPixels = NULL;
   int srcW = 0, srcH = 0;
-
   {
     x11_win_t *sw = win_find(src);
     if (sw) {
@@ -2627,23 +2755,16 @@ static void handle_CopyArea(const uint8_t* payload, size_t remain)
         win_find(src) ? "window" : "pixmap",
         srcW, srcH);
 #endif
-  
-  // Resolve dst buffer (must be a window for now)
-  x11_win_t *dw = win_find(dst);
-  if (!dw) return;
-
-  const ssize_t didx = win_index(dst);
-  if (didx < 0) return;
-  x11_fb_t *dfb = &g_framebuffers[(size_t)didx];
-  if (!dfb->pixels) return;
-
-  uint32_t *dstPixels = dfb->pixels;
-  const int dstW = (int)dfb->width;
-  const int dstH = (int)dfb->height;
+  // Resolve dst buffer (window fb or pixmap)
+  uint32_t *dstPixels = NULL;
+  uint32_t dstW = 0, dstH = 0;
+  bool dst_is_window = false;
+  if (!resolve_drawable_pixels_rw(dst, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
 #ifndef NDEBUG
   fprintf(stderr,
-        "[SwiftX11] CopyArea: dst_kind=window dstWH=(%d,%d) -> enqueue_damage_window(0x%08X)\n",
-        dstW, dstH, (unsigned)dst);
+        "[SwiftX11] CopyArea: dst_kind=%s dstWH=(%u,%u) -> enqueue_damage_window(0x%08X)\n",
+        dst_is_window ? "window" : "pixmap",
+        (unsigned)dstW, (unsigned)dstH, (unsigned)dst);
 #endif
   
   // Minimal blit: per-pixel copy with clamp.
@@ -2651,21 +2772,23 @@ static void handle_CopyArea(const uint8_t* payload, size_t remain)
     int sy = (int)srcY + yy;
     int dy = (int)dstY + yy;
     if (sy < 0 || sy >= srcH) continue;
-    if (dy < 0 || dy >= dstH) continue;
+    if (dy < 0 || dy >= (int)dstH) continue;
 
     for (int xx = 0; xx < (int)wpx; xx++) {
       int sx = (int)srcX + xx;
       int dx = (int)dstX + xx;
       if (sx < 0 || sx >= srcW) continue;
-      if (dx < 0 || dx >= dstW) continue;
+      if (dx < 0 || dx >= (int)dstW) continue;
 
       dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] =
         srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
     }
   }
 
-  // Present it
-  enqueue_damage_window(dst);
+  // Present it (only windows are presentable; pixmaps are presented when copied into a window)
+  if (dst_is_window) {
+    enqueue_damage_window(dst);
+  }
 }
 
 // CopyPlane (major = 63) -- no reply
@@ -2725,12 +2848,21 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
     return;
   }
 
+  // CopyPlane: X11 bitmapBitOrder handling.
+  // We advertise LSBFirst in SetupSuccess, so keep that consistent here.
+  const int BIT_ORDER_LSB_FIRST = 1;
+  
   // Resolve src buffer (window fb or pixmap)
-  const uint32_t *srcPixels = NULL;
+  const uint32_t *srcPixels = NULL;   // for window FB or non-1 pixmap
+  const uint8_t  *srcBits   = NULL;   // for depth-1 pixmap
   int srcW = 0, srcH = 0;
+  int src_pm_depth1 = 0;
+  uint32_t src_stride_bytes = 0;
+
   {
     x11_win_t *sw = win_find(src);
     if (sw) {
+      src_pm_depth1 = 0;
       const ssize_t sidx = win_index(src);
       if (sidx < 0) return;
       const x11_fb_t *sfb = &g_framebuffers[(size_t)sidx];
@@ -2742,10 +2874,22 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
       const ssize_t pidx = pix_index(src);
       if (pidx < 0) return;
       const x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
-      if (!pm->pixels) return;
-      srcPixels = pm->pixels;
-      srcW = (int)pm->width;
-      srcH = (int)pm->height;
+      if (pm->width == 0 || pm->height == 0) return;
+
+      if (pm->depth == 1) {
+        if (!pm->bits || pm->stride_bytes == 0) return;
+        src_pm_depth1 = 1;
+        srcBits = pm->bits;
+        src_stride_bytes = pm->stride_bytes;
+        srcW = (int)pm->width;
+        srcH = (int)pm->height;
+      } else {
+        if (!pm->pixels) return;
+        src_pm_depth1 = 0;
+        srcPixels = pm->pixels;
+        srcW = (int)pm->width;
+        srcH = (int)pm->height;
+      }
     }
   }
 
@@ -2753,6 +2897,9 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
   uint32_t *dstPixels = NULL;
   int dstW = 0, dstH = 0;
   bool dst_is_window = false;
+  uint8_t *dstBits = NULL;
+  uint32_t dst_stride_bytes = 0;
+  int dst_pm_depth1 = 0;
   {
     x11_win_t *dw = win_find(dst);
     if (dw) {
@@ -2768,11 +2915,27 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
       const ssize_t pidx = pix_index(dst);
       if (pidx < 0) return;
       x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
-      if (!pm->pixels) return;
-      dstPixels = pm->pixels;
+      if (pm->width == 0 || pm->height == 0) return;
+
       dstW = (int)pm->width;
       dstH = (int)pm->height;
       dst_is_window = false;
+
+      if (pm->depth == 1) {
+        // depth-1 destination: packed bits
+        if (!pm->bits || pm->stride_bytes == 0) return;
+        dst_pm_depth1 = 1;
+        dstBits = pm->bits;
+        dst_stride_bytes = pm->stride_bytes;
+        dstPixels = NULL;
+      } else {
+        // 32bpp destination
+        if (!pm->pixels) return;
+        dst_pm_depth1 = 0;
+        dstPixels = pm->pixels;
+        dstBits = NULL;
+        dst_stride_bytes = 0;
+      }
     }
   }
 
@@ -2793,12 +2956,12 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
       bg = g->bg;
     }
 #ifndef NDEBUG
-    fprintf(stderr,
-            "[SwiftX11] CopyPlane: gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X\n",
-            (unsigned)gc,
-            g ? 1 : 0,
-            (unsigned)fg,
-            (unsigned)bg);
+  fprintf(stderr,
+    "[SwiftX11] CopyPlane: src=0x%08X(%s) dst=0x%08X(%s) src_depth1=%d fg=0x%08X bg=0x%08X\n",
+    (unsigned)src, win_find(src) ? "win" : "pix",
+    (unsigned)dst, win_find(dst) ? "win" : "pix",
+    src_pm_depth1,
+    (unsigned)fg, (unsigned)bg);
 #endif
   }
 
@@ -2817,10 +2980,35 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
       if (sx < 0 || sx >= srcW) continue;
       if (dx < 0 || dx >= dstW) continue;
 
-      const uint32_t sp = srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
-      const int on = (sp != 0xFFFFFFFFu) ? 1 : 0; // non-white => 1
-      on_px += (size_t)on;
-      dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? fg : bg;
+      int on = 0;
+
+      if (src_pm_depth1) {
+        const size_t byte_index =
+          (size_t)sy * (size_t)src_stride_bytes + ((size_t)sx >> 3);
+
+        const int bit_in_byte = BIT_ORDER_LSB_FIRST ? (sx & 7) : (7 - (sx & 7));
+        on = (srcBits[byte_index] >> bit_in_byte) & 1;
+      } else {
+        const uint32_t sp =
+          srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
+        on = (sp != 0xFFFFFFFFu);
+      }
+      
+      if (on) on_px++;
+
+      if (dst_pm_depth1) {
+        // Store 1-bit result into packed bitmap (set/clear a bit).
+        const size_t dbyte_index =
+          (size_t)dy * (size_t)dst_stride_bytes + ((size_t)dx >> 3);
+        const int dbit_in_byte = BIT_ORDER_LSB_FIRST ? (dx & 7) : (7 - (dx & 7));
+        const uint8_t dmask = (uint8_t)(1u << dbit_in_byte);
+
+        if (on) dstBits[dbyte_index] |= dmask;
+        else    dstBits[dbyte_index] &= (uint8_t)~dmask;
+      } else {
+        // 32bpp destination
+        dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? fg : bg;
+      }
     }
   }
 #ifndef NDEBUG
@@ -2837,6 +3025,134 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
 }
 
 
+// PolyArc (major = 68) -- no reply
+// Minimal stroke implementation (xeyes uses this for eye outlines).
+// Draws a ~1px outline of each ellipse/arc using GC foreground.
+// Angle clipping is honored for non-full arcs.
+static void handle_PolyArc(int fd, uint16_t seq,
+                           const uint8_t* payload, size_t remain)
+{
+  (void)fd;
+  (void)seq;
+
+  // Body after 4-byte header:
+  //   CARD32 drawable
+  //   CARD32 gc
+  //   LISTofxArc arcs (each 12 bytes)
+  if (remain < 8) return;
+
+  const uint32_t drawable = rd32(payload + 0);
+  const uint32_t gc_id    = rd32(payload + 4);
+
+#ifndef NDEBUG
+  {
+    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
+    const size_t narcs = list_bytes / 12u;
+    x11_gc_t* g = gc_find(gc_id);
+    fprintf(stderr,
+            "[SwiftX11] PolyArc: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X narcs=%zu remain=%zu\n",
+            (unsigned)drawable,
+            (unsigned)gc_id,
+            g ? 1 : 0,
+            (unsigned)(g ? g->fg : 0),
+            (unsigned)(g ? g->bg : 0),
+            narcs,
+            remain);
+  }
+#endif
+
+  // Resolve destination buffer (window fb OR pixmap)
+  uint32_t *dstPixels = NULL;
+  uint32_t dstW = 0, dstH = 0;
+  bool dst_is_window = false;
+  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
+
+  const size_t list_bytes = remain - 8u;
+  const size_t narcs = list_bytes / 12u;
+  if (narcs == 0) return;
+
+  // GC foreground (default black)
+  uint32_t fg_color = 0xFF000000u;
+  {
+    x11_gc_t* g = gc_find(gc_id);
+    if (g) fg_color = g->fg;
+  }
+
+  const uint8_t* arcs = payload + 8;
+
+  for (size_t ai = 0; ai < narcs; ai++) {
+    const uint8_t* ap = arcs + ai * 12u;
+
+    // xArc is: INT16 x, INT16 y, CARD16 width, CARD16 height, INT16 angle1, INT16 angle2
+    const int16_t  ax = (int16_t)rd16(ap + 0);
+    const int16_t  ay = (int16_t)rd16(ap + 2);
+    const uint16_t aw = rd16(ap + 4);
+    const uint16_t ah = rd16(ap + 6);
+    const int16_t  a1 = (int16_t)rd16(ap + 8);
+    const int16_t  a2 = (int16_t)rd16(ap + 10);
+
+    if (aw == 0 || ah == 0) continue;
+
+    // X11 angles are in 1/64 degrees
+    const float start_deg  = (float)a1 / 64.0f;
+    const float extent_deg = (float)a2 / 64.0f;
+
+    const float abs_extent = fabsf(extent_deg);
+    const int full_ellipse = (abs_extent >= (360.0f - (1.0f / 64.0f)));
+
+    // Ellipse center/radii
+    const float rx = (float)aw * 0.5f;
+    const float ry = (float)ah * 0.5f;
+    if (rx <= 0.0f || ry <= 0.0f) continue;
+
+    const float cx = (float)ax + rx;
+    const float cy = (float)ay + ry;
+
+    // Clamp bounding box
+    int x0 = ax;
+    int y0 = ay;
+    int x1 = ax + (int)aw; // exclusive
+    int y1 = ay + (int)ah; // exclusive
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)dstW)  x1 = (int)dstW;
+    if (y1 > (int)dstH)  y1 = (int)dstH;
+    if (x0 >= x1 || y0 >= y1) continue;
+
+    // A thin band around the ellipse boundary.
+    // Use epsilon in normalized space so thickness is ~1 pixel.
+    const float eps = fmaxf(1.0f / fmaxf(rx, 1.0f), 1.0f / fmaxf(ry, 1.0f));
+
+    for (int py = y0; py < y1; py++) {
+      const float ny = ((float)py + 0.5f - cy) / ry;
+
+      for (int px = x0; px < x1; px++) {
+        const float nx = ((float)px + 0.5f - cx) / rx;
+        const float d2 = nx*nx + ny*ny;
+
+        // Keep only pixels near boundary
+        const float dist = fabsf(d2 - 1.0f);
+        if (dist > eps) continue;
+
+        if (!full_ellipse) {
+          const float dx = (float)px + 0.5f - cx;
+          const float dy = (float)py + 0.5f - cy;
+          float theta = atan2f(-dy, dx) * (180.0f / (float)M_PI);
+          theta = norm360(theta);
+          if (!angle_in_arc(theta, start_deg, extent_deg)) continue;
+        }
+
+        dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg_color;
+      }
+    }
+  }
+
+  if (dst_is_window) {
+    enqueue_damage_window(drawable);
+  }
+}
+
+
 // PolyFillRectangle (major = 70)
 static void handle_PolyFillRectangle(int fd, uint16_t seq,
                                      const uint8_t* payload, size_t remain)
@@ -2846,77 +3162,63 @@ static void handle_PolyFillRectangle(int fd, uint16_t seq,
   //   CARD32 gc
   //   LISTofxRectangle rectangles (each 8 bytes)
   if (remain < 8) return;
-  
+
   uint32_t drawable = rd32(payload + 0);
   uint32_t gc_id    = rd32(payload + 4);
-  
+
 #ifndef NDEBUG
   size_t dbg_written = 0;
-{
-  const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
-  const size_t nrects = list_bytes / 8u;
-  x11_gc_t* g = gc_find(gc_id);
-  fprintf(stderr,
-          "[SwiftX11] PolyFillRectangle: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X nrects=%zu remain=%zu\n",
-          (unsigned)drawable,
-          (unsigned)gc_id,
-          g ? 1 : 0,
-          (unsigned)(g ? g->fg : 0),
-          (unsigned)(g ? g->bg : 0),
-          nrects,
-          remain);
-}
+  {
+    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
+    const size_t nrects = list_bytes / 8u;
+    x11_gc_t* g = gc_find(gc_id);
+    fprintf(stderr,
+            "[SwiftX11] PolyFillRectangle: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X nrects=%zu remain=%zu\n",
+            (unsigned)drawable,
+            (unsigned)gc_id,
+            g ? 1 : 0,
+            (unsigned)(g ? g->fg : 0),
+            (unsigned)(g ? g->bg : 0),
+            nrects,
+            remain);
+  }
 #endif
-  
-  
-  x11_win_t* w = win_find(drawable);
-  if (!w) return;
-  
-  // Find framebuffer for this window using the aligned index.
-  const ssize_t idx = win_index(drawable);
-  if (idx < 0) return;
-  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-  if (!fb->pixels) return;
-  
-#if !defined(NDEBUG) && SWIFTX11_TRACE_NOOP_DRAW
-  const uint32_t drawable = rd32(payload + 0);
-  const uint32_t gc       = rd32(payload + 4);
-  const size_t list_bytes = remain - 8u;
-  const size_t nrects     = list_bytes / 8u;
-  fprintf(stderr,
-          "[SwiftX11] xproto: PolyFillRectangle drawable=0x%08X gc=0x%08X nrects=%zu remain=%zu\n",
-          (unsigned)drawable, (unsigned)gc, nrects, remain);
-#endif
-  
+
+  // Resolve destination buffer (window fb OR pixmap)
+  uint32_t *dstPixels = NULL;
+  uint32_t dstW = 0, dstH = 0;
+  bool dst_is_window = false;
+  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
+
   // GC foreground (default black)
   uint32_t fg_color = 0xFF000000u;
   {
     x11_gc_t* g = gc_find(gc_id);
     if (g) fg_color = g->fg;
   }
-  
+
   // Each rectangle is 8 bytes: x, y, width, height
   const uint8_t* rects = payload + 8;
   size_t nrects = (remain - 8) / 8;
-  
+
   for (size_t ri = 0; ri < nrects; ri++) {
     int16_t x = (int16_t)rd16(rects + ri*8 + 0);
     int16_t y = (int16_t)rd16(rects + ri*8 + 2);
     uint16_t w_px = rd16(rects + ri*8 + 4);
     uint16_t h_px = rd16(rects + ri*8 + 6);
-    
+
     for (int yy = 0; yy < h_px; yy++) {
       int row = y + yy;
-      if (row < 0 || row >= fb->height) continue;
+      if (row < 0 || (uint32_t)row >= dstH) continue;
       for (int xx = 0; xx < w_px; xx++) {
         int col = x + xx;
-        if (col < 0 || col >= fb->width) continue;
-        const size_t idxp = (size_t)row * (size_t)fb->width + (size_t)col;
-        if (fb->pixels[idxp] != fg_color) {
-          fb->pixels[idxp] = fg_color;
-        #ifndef NDEBUG
+        if (col < 0 || (uint32_t)col >= dstW) continue;
+        const size_t idxp = (size_t)row * (size_t)dstW + (size_t)col;
+        if (dstPixels[idxp] != fg_color) {
+          dstPixels[idxp] = fg_color;
+#ifndef NDEBUG
           dbg_written++;
-        #endif
+#endif
         }
       }
     }
@@ -2926,9 +3228,11 @@ static void handle_PolyFillRectangle(int fd, uint16_t seq,
   fprintf(stderr, "[SwiftX11] PolyFillRectangle: wrote_pixels=%zu (fg=0x%08X)\n",
           dbg_written, (unsigned)fg_color);
 #endif
-  
-  // Notify UI shim that framebuffer changed
-  enqueue_damage_window(drawable);
+
+  // Notify UI shim only if the drawable is a window.
+  if (dst_is_window) {
+    enqueue_damage_window(drawable);
+  }
 }
 
 
@@ -2969,14 +3273,11 @@ static void handle_PolyFillArc(int fd, uint16_t seq,
   }
 #endif
 
-  x11_win_t* w = win_find(drawable);
-  if (!w) return;
-
-  const ssize_t idx = win_index(drawable);
-  if (idx < 0) return;
-
-  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-  if (!fb->pixels || fb->width == 0 || fb->height == 0) return;
+  // Resolve destination buffer (window fb OR pixmap)
+  uint32_t *dstPixels = NULL;
+  uint32_t dstW = 0, dstH = 0;
+  bool dst_is_window = false;
+  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
 
   const size_t list_bytes = remain - 8u;
   const size_t narcs = list_bytes / 12u;
@@ -3036,23 +3337,23 @@ static void handle_PolyFillArc(int fd, uint16_t seq,
 
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x1 > (int)fb->width)  x1 = (int)fb->width;
-    if (y1 > (int)fb->height) y1 = (int)fb->height;
+    if (x1 > (int)dstW)  x1 = (int)dstW;
+    if (y1 > (int)dstH) y1 = (int)dstH;
 
     if (x0 >= x1 || y0 >= y1) continue;
 
 #ifndef NDEBUG
     fprintf(stderr,
             "[SwiftX11]   Arc[%zu] bbox=(%d,%d)..(%d,%d) fb=%ux%u full=%d start=%.2f extent=%.2f\n",
-            ai, x0, y0, x1, y1, (unsigned)fb->width, (unsigned)fb->height,
+            ai, x0, y0, x1, y1, (unsigned)dstW, (unsigned)dstH,
             full_ellipse, (double)start_deg, (double)extent_deg);
 #endif
 #ifndef NDEBUG
     {
       int sx = (int)cx;
       int sy = (int)cy;
-      if (sx >= 0 && sy >= 0 && sx < (int)fb->width && sy < (int)fb->height) {
-        uint32_t sp = fb->pixels[(size_t)sy * (size_t)fb->width + (size_t)sx];
+      if (sx >= 0 && sy >= 0 && sx < (int)dstW && sy < (int)dstH) {
+        uint32_t sp = dstPixels[(size_t)sy * (size_t)dstW + (size_t)sx];
         fprintf(stderr, "[SwiftX11]   Arc[%zu] sample@center (%d,%d) before=0x%08X\n",
                 ai, sx, sy, (unsigned)sp);
       }
@@ -3092,11 +3393,11 @@ static void handle_PolyFillArc(int fd, uint16_t seq,
           }
         }
 
-        const size_t idxp = (size_t)py * (size_t)fb->width + (size_t)px;
+        const size_t idxp = (size_t)py * (size_t)dstW + (size_t)px;
 #ifndef NDEBUG
-        if (fb->pixels[idxp] != fg_color) dbg_written++;
+        if (dstPixels[idxp] != fg_color) dbg_written++;
 #endif
-        fb->pixels[idxp] = fg_color;
+        dstPixels[idxp] = fg_color;
       }
     }
   }
@@ -3107,7 +3408,9 @@ static void handle_PolyFillArc(int fd, uint16_t seq,
           dbg_written, dbg_inside, dbg_angle_reject, (unsigned)fg_color);
 #endif
 
-  enqueue_damage_window(drawable);
+  if (dst_is_window) {
+    enqueue_damage_window(drawable);
+  }
 }
 
 
@@ -3160,6 +3463,10 @@ static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remai
   uint32_t* dstPixels = NULL;
   uint32_t dstW = 0, dstH = 0;
   bool dst_is_window = false;
+  x11_pixmap_t* dst_pm = NULL;
+  uint8_t*  dstBits = NULL;
+  uint32_t  dstStrideBytes = 0;
+  int       dst_pm_depth1 = 0;
 
   {
     x11_win_t* w = win_find(drawable);
@@ -3172,15 +3479,31 @@ static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remai
       dstW = fb->width;
       dstH = fb->height;
       dst_is_window = true;
+      dst_pm = NULL;   // optional but explicit
     } else {
       const ssize_t pidx = pix_index(drawable);
       if (pidx < 0) return;
       x11_pixmap_t* pm = &g_pixmaps[(size_t)pidx];
-      if (!pm->pixels || pm->width == 0 || pm->height == 0) return;
-      dstPixels = pm->pixels;
+      if (pm->width == 0 || pm->height == 0) return;
+
       dstW = pm->width;
       dstH = pm->height;
       dst_is_window = false;
+      dst_pm = pm;
+
+      if (pm->depth == 1) {
+        if (!pm->bits || pm->stride_bytes == 0) return;
+        dst_pm_depth1 = 1;
+        dstBits = pm->bits;
+        dstStrideBytes = pm->stride_bytes;
+        dstPixels = NULL;
+      } else {
+        if (!pm->pixels) return;
+        dst_pm_depth1 = 0;
+        dstPixels = pm->pixels;
+        dstBits = NULL;
+        dstStrideBytes = 0;
+      }
     }
   }
 
@@ -3205,6 +3528,17 @@ static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remai
   }
 #endif
 
+#ifndef NDEBUG
+fprintf(stderr,
+  "[SwiftX11] PutImage dst_kind=%s pm=%p pm_depth=%d depth1=%d dstStride=%u dstWH=%ux%u\n",
+  dst_is_window ? "window" : "pixmap",
+  (void*)dst_pm,
+  dst_pm ? (int)dst_pm->depth : -1,
+  dst_pm_depth1,
+  (unsigned)dstStrideBytes,
+  (unsigned)dstW, (unsigned)dstH);
+#endif
+  
   // -------------------------------------------------------------------------
   // Case A: XYPixmap, depth=1 (this is the key path for xeyes)
   // -------------------------------------------------------------------------
@@ -3264,23 +3598,17 @@ static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remai
     // Use GC fg/bg if present; otherwise default to black/white.
     uint32_t on_color  = 0xFF000000u;
     uint32_t off_color = 0xFFFFFFFFu;
-    {
+    if (!dst_is_window && dst_pm && dst_pm->depth == 1) {
+      on_color  = 1u;
+      off_color = 0u;
+    } else {
       x11_gc_t* g = gc_find(gc);
-      if (g) {
-        on_color  = g->fg;
-        off_color = g->bg;
+      if (g) { 
+        on_color = g->fg; 
+        off_color = g->bg; 
       }
-#ifndef NDEBUG
-      if (SWIFTX11_TRACE) {
-        fprintf(stderr,
-                "[SwiftX11] PutImage: XYPixmap(depth=1) using gc=0x%08X fg(on)=0x%08X bg(off)=0x%08X\n",
-                (unsigned)gc,
-                (unsigned)on_color,
-                (unsigned)off_color);
-      }
-#endif
     }
-
+    
     size_t on_bits = 0;
     for (uint32_t y = 0; y < (uint32_t)height; y++) {
       const int32_t dy = (int32_t)dst_y + (int32_t)y;
@@ -3302,7 +3630,25 @@ static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remai
         const uint32_t on = (b & (uint8_t)mask) ? 1u : 0u;
         on_bits += (size_t)on;
         
-        dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? on_color : off_color;
+        if (dst_pm_depth1) {
+          // Store into packed depth-1 pixmap bits.
+          // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
+          const uint32_t dxu = (uint32_t)dx;
+          const uint32_t dyu = (uint32_t)dy;
+
+          const uint32_t byte_x = dxu >> 3;
+          const uint32_t bit_x  = dxu & 7u;
+
+          const uint32_t dbit = BIT_ORDER_LSB_FIRST ? bit_x : (7u - bit_x);
+          const size_t dbyte =
+            (size_t)dyu * (size_t)dstStrideBytes + (size_t)byte_x;          const uint8_t dmask = (uint8_t)(1u << dbit);
+
+          if (on) dstBits[dbyte] |= dmask;
+          else    dstBits[dbyte] &= (uint8_t)~dmask;
+        } else {
+          // Store into 32bpp window/pixmap pixels.
+          dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? on_color : off_color;
+        }
       }
     }
 
@@ -3312,11 +3658,20 @@ static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remai
           on_bits,
           (size_t)width * (size_t)height,
           dst_is_window ? "window" : "pixmap");
-    // Print a tiny checksum-ish sample.
-    const uint32_t p0 = dstPixels[0];
-    fprintf(stderr, "[SwiftX11] PutImage: XYPixmap(depth=1) wrote, sample p0=0x%08X\n", (unsigned)p0);
-#endif
 
+  if (!dst_is_window && dst_pm && dst_pm->depth == 1) {
+    // depth-1 pixmap: sample first byte of packed bits
+    uint8_t b0 = (dst_pm->bits && dst_pm->stride_bytes && dst_pm->height) ? dst_pm->bits[0] : 0;
+    fprintf(stderr, "[SwiftX11] PutImage: depth1 pixmap sample bits[0]=0x%02X\n", (unsigned)b0);
+  } else if (dstPixels) {
+    // window or depth>1 pixmap: 32-bit pixels
+    const uint32_t p0 = dstPixels[0];
+    fprintf(stderr, "[SwiftX11] PutImage: sample p0=0x%08X\n", (unsigned)p0);
+  } else {
+    fprintf(stderr, "[SwiftX11] PutImage: sample skipped (no dstPixels)\n");
+  }
+#endif
+    
     // Damage: if drawable is a window, present it; if pixmap, don't.
     // The pixmap will be copied into a window via CopyArea, which will damage the window.
     if (dst_is_window) enqueue_damage_window(drawable);
@@ -3651,13 +4006,16 @@ static void drain_requests(int cfd)
     }
     #endif
     
-#ifndef NDEBUG
+//#ifndef NDEBUG
 if (major == 62 || major == 63) {
   fprintf(stderr, "[SwiftX11] DISPATCH major=%u (Copy%s)\n",
           (unsigned)major, (major == 62) ? "Area" : "Plane");
 }
-#endif
-    
+if (major >= 128) {
+  fprintf(stderr, "[SwiftX11] DISPATCH extension opcode=%u minor=%u len_words=%u\n",
+          (unsigned)major, (unsigned)minor, (unsigned)len_words);
+}
+//zThe#endif    
     // Dispatch
     switch (major) {
       case 1: // CreateWindow
@@ -3753,6 +4111,10 @@ if (major == 62 || major == 63) {
 
       case 63: // CopyPlane (no reply)
         handle_CopyPlane(payload, remain);
+        break;
+        
+      case 68: // PolyArc (no reply)
+        handle_PolyArc(cfd, seq, payload, remain);
         break;
         
       case 70: // PolyFillRectangle
