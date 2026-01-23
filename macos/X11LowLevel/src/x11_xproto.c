@@ -24,6 +24,8 @@
 #include <arpa/inet.h>
 
 #include "x11_requests.h"
+#include "XProtoConnectionWrapper.h"
+#include "XProtoServerBridge.h"
 
 // Forward decls (used by enqueue helpers near top of file)
 static const char* atoms_name(uint32_t atom, size_t* out_len);
@@ -91,6 +93,10 @@ static void enqueue_maybe_set_title(uint32_t xid, uint32_t property_atom,
   free(s);
 }
 
+// For SIGPIPE avoidance on macOS
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 
 // -----------------------------------------------------------------------------
 // Debug tracing toggles
@@ -307,6 +313,8 @@ static void prop_set_bytes(uint32_t wid, uint32_t atom, uint32_t type,
   p->format = format;
 }
 
+
+
 static void prop_prepend_append(uint32_t wid, uint32_t atom, uint32_t type,
                                 uint8_t format, const uint8_t* bytes, uint32_t nbytes,
                                 int append)
@@ -417,6 +425,27 @@ static ssize_t win_add(uint32_t xid)
   return (ssize_t)idx;
 }
 
+int x11_xproto_snapshot_window_view(uint32_t xid,
+                                   int16_t* out_x,
+                                   int16_t* out_y,
+                                   uint16_t* out_w,
+                                   uint16_t* out_h,
+                                   uint32_t* out_event_mask,
+                                   int* out_mapped,
+                                   int* out_owner_fd)
+{
+  x11_win_t* w = win_find(xid);
+  if (!w) return 0;
+
+  if (out_x) *out_x = w->x;
+  if (out_y) *out_y = w->y;
+  if (out_w) *out_w = w->w;
+  if (out_h) *out_h = w->h;
+  if (out_event_mask) *out_event_mask = w->event_mask;
+  if (out_mapped) *out_mapped = (int)w->mapped;
+  if (out_owner_fd) *out_owner_fd = w->owner_fd;
+  return 1;
+}
 
 int x11_xproto_copy_window_bgra(uint32_t xid,
                                 uint8_t* out_bytes,
@@ -536,7 +565,13 @@ static int g_xproto_thread_valid = 0;
 static _Atomic uint16_t g_last_seq = 0;
 
 #ifndef NDEBUG
-static void dbg_require_xproto_thread(const char* what)
+// expose setters if you want, or wire to your existing globals instead
+void dbg_set_xproto_thread(pthread_t tid) { g_xproto_thread = tid; g_xproto_thread_valid = 1; }
+void dbg_clear_xproto_thread(void) { g_xproto_thread_valid = 0; }
+
+
+
+void dbg_require_xproto_thread(const char* what)
 {
   if (!g_xproto_thread_valid) return;
   if (!pthread_equal(pthread_self(), g_xproto_thread)) {
@@ -554,12 +589,11 @@ static void dbg_require_xproto_thread(const char* what)
 
 static int x11_send_all(int fd, const void* buf, size_t n)
 {
-  const uint8_t* p = (const uint8_t*)buf;
-  
 #ifndef NDEBUG
   dbg_require_xproto_thread("x11_send_all");
 #endif
-  
+
+  const uint8_t* p = (const uint8_t*)buf;
   while (n) {
     ssize_t w = send(fd, p, n, MSG_NOSIGNAL);
     if (w < 0) {
@@ -572,6 +606,7 @@ static int x11_send_all(int fd, const void* buf, size_t n)
   }
   return 1;
 }
+
 
 static int x11_recv_all(int fd, void* buf, size_t n)
 {
@@ -609,35 +644,35 @@ static void send_Expose(int fd, uint16_t seq, uint32_t wid, uint16_t x, uint16_t
 }
 
 
-static void send_ConfigureNotify(int fd, uint16_t seq, uint32_t wid,
-                                 int16_t x, int16_t y,
-                                 uint16_t w, uint16_t h,
-                                 uint16_t border_width)
-{
-  // ConfigureNotify is event type 22, 32 bytes
-  uint8_t ev[32];
-  memset(ev, 0, sizeof(ev));
-  ev[0] = 22; // ConfigureNotify
-  ev[1] = 0;  // unused (event is not synthetic)
-  // sequence is set by server 
-  wr16_le(ev + 2, seq);
-
-  // event and window are both 'wid' for a normal ConfigureNotify delivered to that window
-  wr32_le(ev + 4, wid);  // event
-  wr32_le(ev + 8, wid);  // window
-
-  wr32_le(ev + 12, 0);   // aboveSibling = None (0)
-
-  wr16_le(ev + 16, (uint16_t)x);
-  wr16_le(ev + 18, (uint16_t)y);
-  wr16_le(ev + 20, w);
-  wr16_le(ev + 22, h);
-  wr16_le(ev + 24, border_width);
-  ev[26] = 0;            // overrideRedirect = false
-  // rest pad
-
-  (void)x11_send_all(fd, ev, sizeof(ev));
-}
+//static void send_ConfigureNotify(int fd, uint16_t seq, uint32_t wid,
+//                                 int16_t x, int16_t y,
+//                                 uint16_t w, uint16_t h,
+//                                 uint16_t border_width)
+//{
+//  // ConfigureNotify is event type 22, 32 bytes
+//  uint8_t ev[32];
+//  memset(ev, 0, sizeof(ev));
+//  ev[0] = 22; // ConfigureNotify
+//  ev[1] = 0;  // unused (event is not synthetic)
+//  // sequence is set by server 
+//  wr16_le(ev + 2, seq);
+//
+//  // event and window are both 'wid' for a normal ConfigureNotify delivered to that window
+//  wr32_le(ev + 4, wid);  // event
+//  wr32_le(ev + 8, wid);  // window
+//
+//  wr32_le(ev + 12, 0);   // aboveSibling = None (0)
+//
+//  wr16_le(ev + 16, (uint16_t)x);
+//  wr16_le(ev + 18, (uint16_t)y);
+//  wr16_le(ev + 20, w);
+//  wr16_le(ev + 22, h);
+//  wr16_le(ev + 24, border_width);
+//  ev[26] = 0;            // overrideRedirect = false
+//  // rest pad
+//
+//  (void)x11_send_all(fd, ev, sizeof(ev));
+//}
 
 
 #ifndef NDEBUG
@@ -666,94 +701,95 @@ static void dbg_check_reply_total(const char* op, uint16_t seq, size_t total_byt
 #endif
 
 
+// ************ this entire block should be deleted once we have verified C++ ********
 // ----------------------------------------------------------------------------
 // Server-thread -> xproto-thread notify queue (to avoid cross-thread socket writes)
 // ----------------------------------------------------------------------------
 
-typedef struct {
-  uint32_t wid;
-  uint8_t  want_configure;
-  uint8_t  want_expose;
-  uint8_t  _pad[2];
-} x11_pending_notify_t;
+//typedef struct {
+//  uint32_t wid;
+//  uint8_t  want_configure;
+//  uint8_t  want_expose;
+//  uint8_t  _pad[2];
+//} x11_pending_notify_t;
+//
+//static pthread_mutex_t g_pending_mu = PTHREAD_MUTEX_INITIALIZER;
+//static x11_pending_notify_t g_pending[1024];
+//static size_t g_pending_n = 0;
+//
+//static void queue_notify(uint32_t wid, int want_configure, int want_expose)
+//{
+//  if (wid == 0) return;
+//
+//  pthread_mutex_lock(&g_pending_mu);
+//
+//  // Coalesce by wid.
+//  for (size_t i = 0; i < g_pending_n; i++) {
+//    if (g_pending[i].wid == wid) {
+//      if (want_configure) g_pending[i].want_configure = 1;
+//      if (want_expose)    g_pending[i].want_expose = 1;
+//      pthread_mutex_unlock(&g_pending_mu);
+//      return;
+//    }
+//  }
+//
+//  if (g_pending_n < (sizeof(g_pending) / sizeof(g_pending[0]))) {
+//    g_pending[g_pending_n].wid = wid;
+//    g_pending[g_pending_n].want_configure = want_configure ? 1 : 0;
+//    g_pending[g_pending_n].want_expose    = want_expose ? 1 : 0;
+//    g_pending_n++;
+//  }
+//
+//  pthread_mutex_unlock(&g_pending_mu);
+//}
 
-static pthread_mutex_t g_pending_mu = PTHREAD_MUTEX_INITIALIZER;
-static x11_pending_notify_t g_pending[1024];
-static size_t g_pending_n = 0;
-
-static void queue_notify(uint32_t wid, int want_configure, int want_expose)
-{
-  if (wid == 0) return;
-
-  pthread_mutex_lock(&g_pending_mu);
-
-  // Coalesce by wid.
-  for (size_t i = 0; i < g_pending_n; i++) {
-    if (g_pending[i].wid == wid) {
-      if (want_configure) g_pending[i].want_configure = 1;
-      if (want_expose)    g_pending[i].want_expose = 1;
-      pthread_mutex_unlock(&g_pending_mu);
-      return;
-    }
-  }
-
-  if (g_pending_n < (sizeof(g_pending) / sizeof(g_pending[0]))) {
-    g_pending[g_pending_n].wid = wid;
-    g_pending[g_pending_n].want_configure = want_configure ? 1 : 0;
-    g_pending[g_pending_n].want_expose    = want_expose ? 1 : 0;
-    g_pending_n++;
-  }
-
-  pthread_mutex_unlock(&g_pending_mu);
-}
-
-// Flush queued notifications; MUST be called only from the xproto thread.
-static void flush_notify_queue(int fd)
-{
-  if (!g_xproto_thread_valid) return;
-  if (!pthread_equal(pthread_self(), g_xproto_thread)) return;
-
-  x11_pending_notify_t local[1024];
-  size_t n = 0;
-
-  pthread_mutex_lock(&g_pending_mu);
-  n = g_pending_n;
-  if (n > (sizeof(local) / sizeof(local[0]))) n = (sizeof(local) / sizeof(local[0]));
-  for (size_t i = 0; i < n; i++) local[i] = g_pending[i];
-  // compact: drop everything we copied
-  if (n == g_pending_n) {
-    g_pending_n = 0;
-  } else {
-    // shift remaining down
-    const size_t remain = g_pending_n - n;
-    for (size_t i = 0; i < remain; i++) g_pending[i] = g_pending[n + i];
-    g_pending_n = remain;
-  }
-  pthread_mutex_unlock(&g_pending_mu);
-
-  // THe last used equence number
-  uint16_t seq0 = atomic_load_explicit(&g_last_seq, memory_order_relaxed);
-  if (seq0 == 0) seq0 = 1;  // defensive: avoid “0 seq” before first request
-  
-  for (size_t i = 0; i < n; i++) {
-    const uint32_t wid = local[i].wid;
-    x11_win_t* w = win_find(wid);
-    if (!w) continue;
-
-    // Only send what the client asked for.
-    if (local[i].want_configure) {
-      if ((w->event_mask & (1u << 17)) && w->owner_fd > 0) {
-        send_ConfigureNotify(fd, seq0, wid, w->x, w->y, w->w, w->h, 0);
-      }
-    }
-
-    if (local[i].want_expose) {
-      if (w->mapped && (w->event_mask & (1u << 15)) && w->owner_fd > 0) {
-        send_Expose(fd, seq0, wid, 0, 0, w->w, w->h, 0);
-      }
-    }
-  }
-}
+//// Flush queued notifications; MUST be called only from the xproto thread.
+//static void flush_notify_queue(int fd)
+//{
+//  if (!g_xproto_thread_valid) return;
+//  if (!pthread_equal(pthread_self(), g_xproto_thread)) return;
+//
+//  x11_pending_notify_t local[1024];
+//  size_t n = 0;
+//
+//  pthread_mutex_lock(&g_pending_mu);
+//  n = g_pending_n;
+//  if (n > (sizeof(local) / sizeof(local[0]))) n = (sizeof(local) / sizeof(local[0]));
+//  for (size_t i = 0; i < n; i++) local[i] = g_pending[i];
+//  // compact: drop everything we copied
+//  if (n == g_pending_n) {
+//    g_pending_n = 0;
+//  } else {
+//    // shift remaining down
+//    const size_t remain = g_pending_n - n;
+//    for (size_t i = 0; i < remain; i++) g_pending[i] = g_pending[n + i];
+//    g_pending_n = remain;
+//  }
+//  pthread_mutex_unlock(&g_pending_mu);
+//
+//  // THe last used equence number
+//  uint16_t seq0 = atomic_load_explicit(&g_last_seq, memory_order_relaxed);
+//  if (seq0 == 0) seq0 = 1;  // defensive: avoid “0 seq” before first request
+//  
+//  for (size_t i = 0; i < n; i++) {
+//    const uint32_t wid = local[i].wid;
+//    x11_win_t* w = win_find(wid);
+//    if (!w) continue;
+//
+//    // Only send what the client asked for.
+//    if (local[i].want_configure) {
+//      if ((w->event_mask & (1u << 17)) && w->owner_fd > 0) {
+//        send_ConfigureNotify(fd, seq0, wid, w->x, w->y, w->w, w->h, 0);
+//      }
+//    }
+//
+//    if (local[i].want_expose) {
+//      if (w->mapped && (w->event_mask & (1u << 15)) && w->owner_fd > 0) {
+//        send_Expose(fd, seq0, wid, 0, 0, w->w, w->h, 0);
+//      }
+//    }
+//  }
+//}
 
 
 static void x11_send_setup_failed_le(int fd, const char* reason)
@@ -1436,9 +1472,10 @@ static void handle_MapSubwindows(int fd, uint16_t seq, const uint8_t* payload, s
           enqueue_damage_window(ch->xid);
         }
         
-        // Only send Expose if the client selected ExposureMask on THAT window.
+        //}
         if (ch->event_mask & (1u << 15)) { // ExposureMask
-          send_Expose(fd, seq, ch->xid, 0, 0, ch->w, ch->h, 0);
+          //send_Expose(fd, seq, ch->xid, 0, 0, ch->w, ch->h, 0);
+          x11_proto_bridge_queue_notify(ch->xid, 0 /*want_cfg*/, 1 /*want_exp*/);
         }
       }
     }
@@ -1595,9 +1632,12 @@ static void handle_ConfigureWindow(int fd, uint16_t seq, const uint8_t* payload,
   enqueue_configure_window(wid, w->x, w->y, w->w, w->h);
 
   // If mapped and client selected for Exposure, send another Expose.
-  if (w->mapped && (w->event_mask & (1u << 15))) { // ExposureMask = (1<<15)
-    send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
-  }
+  const int want_cfg = (w->event_mask & (1u<<17)) != 0;   // StructureNotifyMask
+  const int want_exp =  w->mapped && (w->event_mask & (1u<<15)) != 0;  // ExposureMask
+  x11_proto_bridge_queue_notify(wid, want_cfg, want_exp);
+  // if (w->mapped && (w->event_mask & (1u << 15))) { // ExposureMask = (1<<15)
+  //   send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
+  // }
 }
 
 
@@ -1719,7 +1759,14 @@ fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize: xid=0x%08X %dx%d\n",
       const int want_cfg = (ww->event_mask & (1u << 17)) ? 1 : 0; // StructureNotifyMask
       const int want_exp = (ww->mapped && (ww->event_mask & (1u << 15))) ? 1 : 0; // ExposureMask
       if (want_cfg || want_exp) {
-        queue_notify(wid, want_cfg, want_exp);
+#ifndef NDEBUG
+fprintf(stderr,
+        "[SwiftX11] rootless_resize: QUEUE host notify wid=0x%08X cfg=%d exp=%d mapped=%d mask=0x%08X\n",
+        (unsigned)wid, want_cfg, want_exp,
+        ww ? (int)ww->mapped : -1,
+        ww ? (unsigned)ww->event_mask : 0u);
+#endif
+        x11_proto_bridge_queue_notify(wid, want_cfg, want_exp);
       }
     }
   }
@@ -1813,8 +1860,16 @@ fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize: xid=0x%08X %dx%d\n",
       if (cc) {
         const int want_cfg = (cc->event_mask & (1u << 17)) ? 1 : 0; // StructureNotifyMask
         const int want_exp = (cc->mapped && (cc->event_mask & (1u << 15))) ? 1 : 0; // ExposureMask
+#ifndef NDEBUG
+fprintf(stderr,
+        "[SwiftX11] rootless_resize: QUEUE child notify wid=0x%08X cfg=%d exp=%d mapped=%d mask=0x%08X parent=0x%08X\n",
+        (unsigned)cc->xid, want_cfg, want_exp,
+        (int)cc->mapped,
+        (unsigned)cc->event_mask,
+        (unsigned)cc->parent);
+#endif
         if (want_cfg || want_exp) {
-          queue_notify(cc->xid, want_cfg, want_exp);
+          x11_proto_bridge_queue_notify(cc->xid, want_cfg, want_exp);
         }
       }
     }
@@ -2159,8 +2214,12 @@ static void handle_MapWindow(int fd, uint16_t seq, const uint8_t* payload, size_
     enqueue_damage_window(wid); // now mapped, so it pushes
   }
 
+//  if (w->event_mask & (1u << 15)) { // ExposureMask
+//    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
+//  }
   if (w->event_mask & (1u << 15)) {
-    send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
+    //send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
+    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
   }
 }
 
@@ -3888,13 +3947,17 @@ static void handle_ClearArea(int fd, uint16_t seq, uint8_t exposures,
   }
 
   // If exposures==true and the client selected ExposureMask, send Expose
+//  if (exposures && w->mapped && (w->event_mask & (1u << 15))) {
+//    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
+//  }
   if (exposures && w->mapped && (w->event_mask & (1u << 15))) {
     // Expose wants unsigned coords; clamp to 0
     uint16_t ex = (x0 < 0) ? 0u : (uint16_t)x0;
     uint16_t ey = (y0 < 0) ? 0u : (uint16_t)y0;
     uint16_t ew = (uint16_t)(x1 - x0);
     uint16_t eh = (uint16_t)(y1 - y0);
-    send_Expose(fd, seq, wid, ex, ey, ew, eh, 0);
+    //send_Expose(fd, seq, wid, ex, ey, ew, eh, 0);
+    x11_proto_bridge_queue_expose_rect(wid, ex, ey, ew, eh, 0);
   }
 }
 
@@ -3927,7 +3990,7 @@ void x11_xproto_set_window_presentable(uint32_t xid)
 // ----------------------------------------------------------------------------
 // Request pump + dispatcher
 // ----------------------------------------------------------------------------
-static void drain_requests(int cfd)
+void drain_requests(int cfd)
 {
   // Small recv timeout so we can notice stop without blocking forever.
   struct timeval tv;
@@ -3940,12 +4003,14 @@ static void drain_requests(int cfd)
   // Record the xproto client thread for cross-thread safety checks.
   g_xproto_thread = pthread_self();
   g_xproto_thread_valid = 1;
-
+  dbg_set_xproto_thread(pthread_self());
+  
   bool should_cleanup = true;
 
   for (;;) {
     // Flush any pending synthetic events requested by other threads.
-    flush_notify_queue(cfd);
+    x11_proto_bridge_flush_notify_queue();
+    //    flush_notify_queue(cfd);
     if (atomic_load_explicit(&g_stop, memory_order_relaxed)) {
       should_cleanup = false;
       break; // stop requested -> break out to disconnect cleanup
@@ -3968,7 +4033,8 @@ static void drain_requests(int cfd)
     const size_t remain = total - 4u;
 
     seq++;
-    atomic_store_explicit(&g_last_seq, seq, memory_order_relaxed);
+    x11_proto_bridge_note_last_seq(seq);
+//    atomic_store_explicit(&g_last_seq, seq, memory_order_relaxed);
     
     uint8_t stack_buf[4096];
     uint8_t* payload = stack_buf;
@@ -4151,7 +4217,8 @@ if (major >= 128) {
     }
 
     // Flush again after handling a request so synthetic events don't backlog behind traffic.
-    flush_notify_queue(cfd);
+    x11_proto_bridge_flush_notify_queue();
+    //flush_notify_queue(cfd);
     
     // Always free heap_buf if used
     if (heap_buf) {
@@ -4193,7 +4260,8 @@ if (major >= 128) {
     }
   }
   
-  flush_notify_queue(cfd);
+  x11_proto_bridge_flush_notify_queue();
+  //flush_notify_queue(cfd);
   
 //#if !defined(NDEBUG) && SWIFTX11_TRACE
   fprintf(stderr, "[SwiftX11] xproto: 787878787878787878787878778787878787878 drain_requests exiting (client closed or error)\n");
@@ -4270,9 +4338,13 @@ static void* listener_main(void* _)
 
     x11_send_setup_success_minimal_little_endian(cfd);
 
+    // ************ temporary bridge for C -> C++ transision **************
+    x11_proto_bridge_begin_session(cfd);
+    
     // Now drain requests
     drain_requests(cfd);
 
+    x11_proto_bridge_end_session();
     close(cfd);
   }
 
