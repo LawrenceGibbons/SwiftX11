@@ -95,3 +95,16 @@ extern "C" void x11_proto_bridge_queue_expose_rect(uint32_t wid,
   srv->transport().queueExposeRect(wid, x, y, w, h, count);
 }
 
+extern "C" int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n)
+{
+  // Replies/handshake bytes: raw stream write to the *current* client fd.
+  // Must be called on the xproto thread (transport enforces this).
+  if (!buf || n == 0) return 1;
+
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+
+  const bool ok = srv->transport().sendReplyBytes(buf, n);
+  return ok ? 1 : 0;
+}
+

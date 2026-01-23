@@ -83,18 +83,7 @@ namespace x11 {
     //
     // seq is the sequence number Transport decided to stamp on the event.
     void flushPendingNotify(const PendingNotify& pn, uint16_t seq);
-    
-    // ****** TEMPORARY for migration from C to C++ ******
-    // A 32-byte event sender callback (used for bridging to C x11_send_all / fd routing).
-    using SendEventFn = bool(*)(uint32_t targetWid,
-                                const uint8_t ev[32],
-                                void* user);
-
-    void flushPendingNotify(const PendingNotify& pn,
-                            uint16_t seq,
-                            SendEventFn send,
-                            void* user);
-    
+        
   private:
     XProtoContext& ctx_;
   };

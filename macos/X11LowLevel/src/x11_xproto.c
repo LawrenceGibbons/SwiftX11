@@ -587,7 +587,7 @@ void dbg_require_xproto_thread(const char* what)
 #endif
 
 
-static int x11_send_all(int fd, const void* buf, size_t n)
+static int x11_send_all_fd(int fd, const void* buf, size_t n)
 {
 #ifndef NDEBUG
   dbg_require_xproto_thread("x11_send_all");
@@ -607,6 +607,12 @@ static int x11_send_all(int fd, const void* buf, size_t n)
   return 1;
 }
 
+extern int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
+
+static int x11_send_all(int fd, const void* buf, size_t n) {
+  // fd ignored: transport owns the active client fd
+  return x11_proto_bridge_send_reply_bytes(buf, n);
+}
 
 static int x11_recv_all(int fd, void* buf, size_t n)
 {
@@ -626,22 +632,22 @@ static int x11_recv_all(int fd, void* buf, size_t n)
 }
 
 
-static void send_Expose(int fd, uint16_t seq, uint32_t wid, uint16_t x, uint16_t y,
-                        uint16_t w, uint16_t h, uint16_t count){
-  // Expose event: type=12
-  uint8_t ev[32];
-  memset(ev, 0, sizeof(ev));
-  ev[0] = 12; // Expose
-  // ev[1] unused
-  wr16_le(ev + 2, seq);
-  wr32_le(ev + 4, wid);
-  wr16_le(ev + 8, x);
-  wr16_le(ev + 10, y);
-  wr16_le(ev + 12, w);
-  wr16_le(ev + 14, h);
-  wr16_le(ev + 16, count);
-  (void)x11_send_all(fd, ev, sizeof(ev));
-}
+//static void send_Expose(int fd, uint16_t seq, uint32_t wid, uint16_t x, uint16_t y,
+//                        uint16_t w, uint16_t h, uint16_t count){
+//  // Expose event: type=12
+//  uint8_t ev[32];
+//  memset(ev, 0, sizeof(ev));
+//  ev[0] = 12; // Expose
+//  // ev[1] unused
+//  wr16_le(ev + 2, seq);
+//  wr32_le(ev + 4, wid);
+//  wr16_le(ev + 8, x);
+//  wr16_le(ev + 10, y);
+//  wr16_le(ev + 12, w);
+//  wr16_le(ev + 14, h);
+//  wr16_le(ev + 16, count);
+//  (void)x11_send_all(fd, ev, sizeof(ev));
+//}
 
 
 //static void send_ConfigureNotify(int fd, uint16_t seq, uint32_t wid,
@@ -812,15 +818,15 @@ static void x11_send_setup_failed_le(int fd, const char* reason)
   hdr[6] = (uint8_t)(length_words & 0xFF);
   hdr[7] = (uint8_t)((length_words >> 8) & 0xFF);
 
-  (void)x11_send_all(fd, hdr, sizeof(hdr));
-  if (reason_len) (void)x11_send_all(fd, reason, reason_len);
+  (void)x11_send_all_fd(fd, hdr, sizeof(hdr));
+  if (reason_len) (void)x11_send_all_fd(fd, reason, reason_len);
 
   if (reason_padded > reason_len) {
     static const uint8_t zeros[4] = {0,0,0,0};
     uint16_t pad = (uint16_t)(reason_padded - reason_len);
     while (pad) {
       uint16_t chunk = (pad > 4) ? 4 : pad;
-      (void)x11_send_all(fd, zeros, chunk);
+      (void)x11_send_all_fd(fd, zeros, chunk);
       pad -= chunk;
     }
   }
@@ -986,7 +992,7 @@ static void x11_send_setup_success_minimal_little_endian(int fd)
     // still try sending what we built
   }
 
-  (void)x11_send_all(fd, out, total_bytes);
+  (void)x11_send_all_fd(fd, out, total_bytes);
   free(out);
 }
 

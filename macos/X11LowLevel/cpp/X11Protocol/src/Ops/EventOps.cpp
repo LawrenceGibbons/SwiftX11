@@ -142,66 +142,13 @@ namespace x11 {
   }
   
   // ******************* temporarily commented out for C -> C++ transition
-//  void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
-//    if (pn.wid == 0) return;
-//    
-//    const WindowView* w = ctx_.window(pn.wid);
-//    if (!w) return;
-//    
-//    // Only send what the client asked for (mask check mirrors C).
-//    if (pn.want_configure) {
-//      if ((w->event_mask & (1u << 17)) && w->owner_fd > 0) {
-//        ConfigureNotifyParams p;
-//        p.seq = seq;
-//        p.window = pn.wid;
-//        p.x = w->x;
-//        p.y = w->y;
-//        p.w = static_cast<uint16_t>(w->w);
-//        p.h = static_cast<uint16_t>(w->h);
-//        p.borderWidth = 0;
-//        p.aboveSibling = 0;
-//        p.overrideRedirect = false;
-//        auto ev = buildConfigureNotify(p);
-//        ctx_.transport().sendAll(ev.data(), ev.size());
-//      }
-//    }
-//    
-//    if (pn.want_expose) {
-//      if (w->mapped && (w->event_mask & (1u << 15)) && w->owner_fd > 0) {
-//        auto ev = buildExpose(seq, pn.wid, 0, 0, w->w, w->h, 0);
-//        ctx_.transport().sendAll(ev.data(), ev.size());
-//      }
-//    }
-//  }
-//  
-  
-  void EventOps::flushPendingNotify(const PendingNotify& pn,
-                                    uint16_t seq,
-                                    SendEventFn send,
-                                    void* user)
-  {
-    ctx_.tracef("[EventOps] flushPendingNotify wid=0x%08X cfg=%u exp=%u\n",
-                (unsigned)pn.wid,
-                (unsigned)pn.want_configure,
-                (unsigned)pn.want_expose);
+  void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
     if (pn.wid == 0) return;
-    if (!send && !user) {
-      // send/user are ignored, so allow nullptr here.
-    } else if (!send) {
-      return;
-    }
     
     const WindowView* w = ctx_.window(pn.wid);
-    ctx_.tracef("[EventOps] window=%p\n", (void*)w);
-    if (w) {
-      ctx_.tracef("[EventOps] w mapped=%d owner_fd=%d event_mask=0x%08X wh=%ux%u\n",
-                  (int)w->mapped, (int)w->owner_fd,
-                  (unsigned)w->event_mask,
-                  (unsigned)w->w, (unsigned)w->h);
-    }
     if (!w) return;
     
-    // ConfigureNotify
+    // Only send what the client asked for (mask check mirrors C).
     if (pn.want_configure) {
       if ((w->event_mask & (1u << 17)) && w->owner_fd > 0) {
         ConfigureNotifyParams p;
@@ -214,30 +161,17 @@ namespace x11 {
         p.borderWidth = 0;
         p.aboveSibling = 0;
         p.overrideRedirect = false;
-        
         auto ev = buildConfigureNotify(p);
         ctx_.transport().sendEvent32(pn.wid, ev.data());
       }
     }
     
-    // Expose
     if (pn.want_expose) {
       if (w->mapped && (w->event_mask & (1u << 15)) && w->owner_fd > 0) {
-        uint16_t ex = 0, ey = 0, ew = static_cast<uint16_t>(w->w), eh = static_cast<uint16_t>(w->h), cnt = 0;
-        if (pn.expose_has_rect) {
-          ex = pn.expose_x; ey = pn.expose_y; ew = pn.expose_w; eh = pn.expose_h; cnt = pn.expose_count;
-        }
-        auto ev = buildExpose(seq, pn.wid, ex, ey, ew, eh, cnt);
+        auto ev = buildExpose(seq, pn.wid, 0, 0, w->w, w->h, 0);
         ctx_.transport().sendEvent32(pn.wid, ev.data());
       }
     }
-  }
-  
-  void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq)
-  {
-    // This implementation now sends via ctx_.transport().sendEvent32() internally.
-    // The send/user parameters are ignored.
-    flushPendingNotify(pn, seq, /*send*/nullptr, /*user*/nullptr);
   }
   
 } // namespace x11

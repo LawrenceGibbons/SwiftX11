@@ -7,6 +7,7 @@
 
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +32,12 @@ void x11_proto_bridge_queue_expose_rect(uint32_t wid,
                                         uint16_t x, uint16_t y,
                                         uint16_t w, uint16_t h,
                                         uint16_t count);
+  
+// Send raw reply/handshake bytes on the current client connection (must be called on xproto thread).
+// Returns 1 on success, 0 on failure.
+int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
+
 #ifdef __cplusplus
 }
 #endif
+
