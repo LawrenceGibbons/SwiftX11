@@ -74,15 +74,12 @@ extern "C" void x11_proto_bridge_note_last_seq(uint16_t seq)
 
 extern "C" void x11_proto_bridge_flush_notify_queue(void)
 {
-  fprintf(stderr, "[BRIDGE] flush_notify_queue\n");
   auto* srv = g_srv.load(std::memory_order_acquire);
   if (srv) srv->flushNotifyQueue();
 }
 
 extern "C" void x11_proto_bridge_queue_notify(uint32_t wid, int want_configure, int want_expose)
 {
-  fprintf(stderr, "[BRIDGE] queue_notify wid=0x%08X cfg=%d exp=%d\n",
-          wid, want_configure, want_expose);
   auto* srv = g_srv.load(std::memory_order_acquire);
   if (!srv) return;
   srv->queueNotify(wid, want_configure != 0, want_expose != 0);
