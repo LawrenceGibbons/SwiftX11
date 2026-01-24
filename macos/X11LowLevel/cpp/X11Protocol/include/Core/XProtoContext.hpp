@@ -14,7 +14,8 @@
 namespace x11 {
 
 class XProtoTransport;
-
+class ReplyWriter;
+  
 // A “view” of an X11 window needed for event emission.
 // This is intentionally NOT x11_win_t (keeps C globals isolated).
 struct WindowView {
@@ -44,6 +45,10 @@ public:
   void setTransport(XProtoTransport* t) { transport_ = t; }
   XProtoTransport& transport(); // asserts non-null
 
+  // reply sending
+  ReplyWriter& reply() { return *reply_; }
+  void setReplyWriter(ReplyWriter* r) { reply_ = r; }
+
   // ---- Window snapshot lookup wiring ----
   void setWindowLookup(WindowLookupFn fn, void* user) {
     lookup_ = fn;
@@ -56,7 +61,8 @@ public:
 
 private:
   XProtoTransport* transport_ = nullptr;
-
+  ReplyWriter* reply_ = nullptr;
+  
   WindowLookupFn lookup_ = nullptr;
   void* lookup_user_ = nullptr;
 

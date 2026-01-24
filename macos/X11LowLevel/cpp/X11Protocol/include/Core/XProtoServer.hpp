@@ -11,6 +11,7 @@
 #include "XProtoContext.hpp"
 #include "XProtoTransport.hpp"
 #include "EventOps.hpp"
+#include "ReplyWriter.hpp"
 
 namespace x11 {
 
@@ -52,6 +53,9 @@ public:
   void setTestWindow(const WindowView& w);
   void clearTestWindows();
 
+  // getter
+  ReplyWriter& replyWriter() { return reply_; }
+  
 private:
   // Context callback used when you call setWindowLookup().
   static bool lookupWindowTrampoline(uint32_t xid, WindowView* out, void* user);
@@ -65,7 +69,8 @@ private:
   XProtoContext   ctx_;
   EventOps        eventOps_;
   XProtoTransport transport_;
-
+  ReplyWriter     reply_;
+  
   // Optional injected production lookup.
   WindowLookupFn injected_lookup_ = nullptr;
   void* injected_lookup_user_ = nullptr;

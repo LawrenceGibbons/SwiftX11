@@ -1240,63 +1240,41 @@ static void handle_InternAtom(int fd, uint16_t seq, const uint8_t* payload, size
 
   uint32_t atom = atoms_intern((const char*)(payload + 4), n, only_if_exists);
 
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, 0);
-  rep[8]  = (uint8_t)(atom & 0xFF);
-  rep[9]  = (uint8_t)((atom >> 8) & 0xFF);
-  rep[10] = (uint8_t)((atom >> 16) & 0xFF);
-  rep[11] = (uint8_t)((atom >> 24) & 0xFF);
+//  uint8_t rep[32];
+//  x11_reply32_le(rep, seq, 0);
+//  rep[8]  = (uint8_t)(atom & 0xFF);
+//  rep[9]  = (uint8_t)((atom >> 8) & 0xFF);
+//  rep[10] = (uint8_t)((atom >> 16) & 0xFF);
+//  rep[11] = (uint8_t)((atom >> 24) & 0xFF);
+//  
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] xproto: REPLY op=handle_InternAtom seq=%u bytes=%zu length_words=%u\n",
+//          (unsigned)seq,
+//          (size_t)sizeof(rep),
+//          (unsigned)rd32(rep + 4));
+//  dbg_check_reply_total("InternAtom", seq, 32, rep);
+//#endif
+//  
+//  (void)x11_send_all(fd, rep, sizeof(rep));
   
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=handle_InternAtom seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-  dbg_check_reply_total("InternAtom", seq, 32, rep);
-#endif
-  
-  (void)x11_send_all(fd, rep, sizeof(rep));
+  (void)x11_proto_bridge_send_intern_atom_reply(seq, atom);
 }
 
 static void handle_GetAtomName(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
 {
-  // Request body after 4-byte header:
-  //   CARD32 atom
+  (void)fd;
   if (remain < 4) return;
-  uint32_t atom = (uint32_t)((uint32_t)payload[0]
-                          | ((uint32_t)payload[1] << 8)
-                          | ((uint32_t)payload[2] << 16)
-                          | ((uint32_t)payload[3] << 24));
 
-  size_t name_len = 0;
-  const char* name = atoms_name(atom, &name_len);
-  if (!name) { name = ""; name_len = 0; }
+  uint32_t atom = rd32(payload + 0);
 
-  const uint16_t n = (name_len > 65535u) ? 65535u : (uint16_t)name_len;
-  const uint16_t pad = (uint16_t)((n + 3u) & ~3u);
-  const uint32_t extra_words = (uint32_t)(pad / 4u);
+  size_t name_len_sz = 0;
+  const char* name = atoms_name(atom, &name_len_sz);
+  if (!name) { name = ""; name_len_sz = 0; }
 
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, extra_words);
-  // name length at bytes 8..9
-  rep[8] = (uint8_t)(n & 0xFF);
-  rep[9] = (uint8_t)((n >> 8) & 0xFF);
+  uint16_t name_len = (name_len_sz > 65535u) ? 65535u : (uint16_t)name_len_sz;
 
-#ifndef NDEBUG
-  dbg_check_reply_header32("GetAtomName", seq, rep);
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
-  if (n) (void)x11_send_all(fd, name, n);
-  if (pad > n) {
-    static const uint8_t zeros[4] = {0,0,0,0};
-    uint16_t p = (uint16_t)(pad - n);
-    while (p) {
-      uint16_t chunk = (p > 4) ? 4 : p;
-      (void)x11_send_all(fd, zeros, chunk);
-      p -= chunk;
-    }
-  }
+  (void)x11_proto_bridge_send_get_atom_name_reply(seq, name, name_len);
 }
 
 
@@ -2248,19 +2226,27 @@ static void handle_GetGeometry(int fd, uint16_t seq, const uint8_t* payload, siz
     wpx = w->w; hpx = w->h;
   }
 
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, 0);
-  wr32_le(rep + 8, root);
-  wr16_le(rep + 12, (uint16_t)x);
-  wr16_le(rep + 14, (uint16_t)y);
-  wr16_le(rep + 16, wpx);
-  wr16_le(rep + 18, hpx);
-  wr16_le(rep + 20, border);
-  wr16_le(rep + 22, 24);
-#ifndef NDEBUG
-  dbg_check_reply_total("GetGeometry", seq, 32, rep);
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
+//  uint8_t rep[32];
+//  x11_reply32_le(rep, seq, 0);
+//  wr32_le(rep + 8, root);
+//  wr16_le(rep + 12, (uint16_t)x);
+//  wr16_le(rep + 14, (uint16_t)y);
+//  wr16_le(rep + 16, wpx);
+//  wr16_le(rep + 18, hpx);
+//  wr16_le(rep + 20, border);
+//  wr16_le(rep + 22, 24);
+//#ifndef NDEBUG
+//  dbg_check_reply_total("GetGeometry", seq, 32, rep);
+//#endif
+//  (void)x11_send_all(fd, rep, sizeof(rep));
+  
+  // After computing root/x/y/wpx/hpx/border/depth:
+  (void)x11_proto_bridge_send_get_geometry_reply(seq,
+                                                 root,
+                                                 x, y,
+                                                 wpx, hpx,
+                                                 border,
+                                                 24 /*depth*/);
 }
 
 
@@ -2341,21 +2327,17 @@ static void handle_GetInputFocus(int fd, uint16_t seq)
   //  bytes 2-3: sequence
   //  bytes 4-7: length (0)
   //  bytes 8-11: focus window (XID) (we'll use root for now)
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, 0);
-  rep[1] = 0; // revertTo = None
-  wr32_le(rep + 8, X11_ROOT_XID);           // focus = root
+//  uint8_t rep[32];
+//  x11_reply32_le(rep, seq, 0);
+//  rep[1] = 0; // revertTo = None
+//  wr32_le(rep + 8, X11_ROOT_XID);           // focus = root
   
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=handle_GetInputFocus seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-  dbg_check_reply_total("GetInputFocus", seq, sizeof(rep), rep);
+  //(void)x11_send_all(fd, rep, sizeof(rep));
+  // For bring-up: revertTo=None, focus=root
+  const uint8_t revert_to = 0;          // None
+  const uint32_t focus = X11_ROOT_XID;  // root window
 
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
+  (void)x11_proto_bridge_send_get_input_focus_reply(seq, revert_to, focus);
 }
 
 // QueryTree (major = 15)

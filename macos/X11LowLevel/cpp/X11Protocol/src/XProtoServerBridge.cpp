@@ -7,6 +7,8 @@
 
 #include <atomic>
 #include <mutex>
+#include <cstddef>
+#include <cstdio>
 
 #include "XProtoServerBridge.h"
 
@@ -97,14 +99,48 @@ extern "C" void x11_proto_bridge_queue_expose_rect(uint32_t wid,
 
 extern "C" int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n)
 {
-  // Replies/handshake bytes: raw stream write to the *current* client fd.
-  // Must be called on the xproto thread (transport enforces this).
-  if (!buf || n == 0) return 1;
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+  if (!buf || n == 0) return 0;
 
+  // Must be on xproto thread; transport enforces that.
+  return srv->transport().sendReplyBytes(buf, n) ? 1 : 0;
+}
+
+extern "C" int x11_proto_bridge_send_get_geometry_reply(uint16_t seq,
+                                                        uint32_t root,
+                                                        int16_t x, int16_t y,
+                                                        uint16_t w, uint16_t h,
+                                                        uint16_t borderWidth,
+                                                        uint16_t depth)
+{
   auto* srv = g_srv.load(std::memory_order_acquire);
   if (!srv) return 0;
 
-  const bool ok = srv->transport().sendReplyBytes(buf, n);
-  return ok ? 1 : 0;
+  // Forward to the unified ReplyWriter path.
+  return srv->ctx().reply().sendGetGeometryReply(seq, root, x, y, w, h, borderWidth, depth) ? 1 : 0;
+}
+
+extern "C" int x11_proto_bridge_send_get_input_focus_reply(uint16_t seq,
+                                                           uint8_t revertTo,
+                                                           uint32_t focus)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+
+  return srv->ctx().reply().sendGetInputFocusReply(seq, revertTo, focus) ? 1 : 0;
+}
+
+
+extern "C" int x11_proto_bridge_send_intern_atom_reply(uint16_t seq, uint32_t atom) {
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+  return srv->ctx().reply().sendInternAtomReply(seq, atom) ? 1 : 0;
+}
+
+extern "C" int x11_proto_bridge_send_get_atom_name_reply(uint16_t seq, const char* name, uint16_t nameLen) {
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+  return srv->ctx().reply().sendGetAtomNameReply(seq, name, nameLen) ? 1 : 0;
 }
 

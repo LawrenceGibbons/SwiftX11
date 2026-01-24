@@ -5,6 +5,7 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
+#include "ReplyWriter.hpp"
 #include "XProtoContext.hpp"
 #include "XProtoTransport.hpp"
 

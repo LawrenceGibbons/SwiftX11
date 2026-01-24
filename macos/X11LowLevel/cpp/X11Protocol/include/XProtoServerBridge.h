@@ -37,6 +37,23 @@ void x11_proto_bridge_queue_expose_rect(uint32_t wid,
 // Returns 1 on success, 0 on failure.
 int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
 
+  
+int x11_proto_bridge_send_get_geometry_reply(uint16_t seq,
+                                             uint32_t root,
+                                             int16_t x, int16_t y,
+                                             uint16_t w, uint16_t h,
+                                             uint16_t borderWidth,
+                                             uint16_t depth);
+
+  
+int x11_proto_bridge_send_get_input_focus_reply(uint16_t seq,
+                                                uint8_t revert_to,
+                                                uint32_t focus);
+  
+  
+int x11_proto_bridge_send_intern_atom_reply(uint16_t seq, uint32_t atom);
+int x11_proto_bridge_send_get_atom_name_reply(uint16_t seq, const char* name, uint16_t nameLen);
+  
 #ifdef __cplusplus
 }
 #endif

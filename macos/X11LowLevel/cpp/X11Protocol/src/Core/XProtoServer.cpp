@@ -5,6 +5,7 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
+#include "ReplyWriter.hpp"
 #include "XProtoServer.hpp"
 
 #include <unordered_map>
@@ -19,13 +20,17 @@ XProtoServer::XProtoServer()
 : ctx_()
 , eventOps_(ctx_)
 , transport_(ctx_, eventOps_)
+, reply_(transport_)
 , impl_(new Impl())
 {
-  // Wire transport into context so EventOps can reach it if desired.
+  // Wire transport and Replywrite into context so EventOps can reach it if desired.
   ctx_.setTransport(&transport_);
-
+  ctx_.setReplyWriter(&reply_);
+  
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
+  
+  
 }
 
 void XProtoServer::setWindowLookup(WindowLookupFn fn, void* user) {
@@ -86,5 +91,7 @@ bool XProtoServer::lookupWindow(uint32_t xid, WindowView* out) {
   *out = it->second;
   return true;
 }
-
+  
+  
 } // namespace x11
+
