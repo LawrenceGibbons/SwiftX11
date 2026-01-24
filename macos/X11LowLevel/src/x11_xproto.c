@@ -2344,16 +2344,16 @@ static void handle_GetInputFocus(int fd, uint16_t seq)
 static void handle_QueryTree(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
 {
   if (remain < 4) return;
-
+  
   const uint32_t wid = rd32(payload + 0);
-
+  
   uint32_t root = X11_ROOT_XID;
   uint32_t parent = 0;
-
+  
   // Collect children for any window (not just root)
   uint32_t children[256];
   uint16_t nchildren = 0;
-
+  
   {
     x11_win_t* w = win_find(wid);
     if (wid == X11_ROOT_XID) {
@@ -2363,7 +2363,7 @@ static void handle_QueryTree(int fd, uint16_t seq, const uint8_t* payload, size_
     } else {
       parent = 0;
     }
-
+    
     // children = all windows whose parent is `wid`
     for (size_t i = 0; i < g_wins_n && nchildren < 256; i++) {
       if (g_wins[i].parent == wid) {
@@ -2371,33 +2371,10 @@ static void handle_QueryTree(int fd, uint16_t seq, const uint8_t* payload, size_
       }
     }
   }
-
-  // Reply length is extra data beyond the 32-byte reply header, in 4-byte units.
-  const uint32_t extra_words = (uint32_t)nchildren; // each child is CARD32
-
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, extra_words);
-
-  // root at bytes 8..11
-  wr32_le(rep + 8, root);
-  // parent at bytes 12..15
-  wr32_le(rep + 12, parent);
-  // nchildren at bytes 16..17 (CARD16)
-  wr16_le(rep + 16, nchildren);
-  // remaining pad bytes are already 0
-
-#ifndef NDEBUG
-  dbg_check_reply_header32("QueryTree", seq, rep);
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
-
-  // Follow with children list (CARD32[]), little-endian
+  
+  x11_proto_bridge_send_query_tree_reply_header(seq, root, parent, nchildren);
   if (nchildren) {
-    uint8_t out[256 * 4];
-    for (uint16_t i = 0; i < nchildren; i++) {
-      wr32_le(out + (size_t)i * 4u, children[i]);
-    }
-    (void)x11_send_all(fd, out, (size_t)nchildren * 4u);
+    x11_proto_bridge_send_query_tree_children(children, nchildren);
   }
 }
 
@@ -3850,25 +3827,17 @@ static void handle_QueryPointer(int fd, uint16_t seq, const uint8_t* payload, si
     winy = (int16_t)ty;
   }
 
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, 0);
-
-  rep[1] = 1; // sameScreen = true
-
-  wr32_le(rep + 8,  X11_ROOT_XID); // root
-  wr32_le(rep + 12, child);        // child
-
-  wr16_le(rep + 16, (uint16_t)fake_rx); // rootX
-  wr16_le(rep + 18, (uint16_t)fake_ry); // rootY
-  wr16_le(rep + 20, (uint16_t)winx);    // winX
-  wr16_le(rep + 22, (uint16_t)winy);    // winY
-
-  wr16_le(rep + 24, 0); // mask
-
-#ifndef NDEBUG
-  dbg_check_reply_total("QueryPointer", seq, sizeof(rep), rep);
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
+  // Send reply via C++ bridge (ReplyWriter)
+  x11_proto_bridge_send_query_pointer_reply(
+      seq,
+      /*sameScreen*/1,
+      /*root*/X11_ROOT_XID,
+      /*child*/child,
+      /*rootX*/fake_rx,
+      /*rootY*/fake_ry,
+      /*winX*/winx,
+      /*winY*/winy,
+      /*mask*/0);
 }
 
 
