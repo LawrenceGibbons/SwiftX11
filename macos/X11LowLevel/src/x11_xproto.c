@@ -4117,17 +4117,11 @@ if (major >= 128) {
 
       case 14: // GetGeometry
       case 15: // QueryTree
+      case 16: // InternAtom
+      case 17: // GetAtomName
       case 38: // QueryPointer
       case 43: // GetInputFocus
         x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
-        break;
-
-      case 16: // InternAtom
-        handle_InternAtom(cfd, seq, payload, remain, (minor != 0));
-        break;
-
-      case 17: // GetAtomName
-        handle_GetAtomName(cfd, seq, payload, remain);
         break;
 
       case 18: // ChangeProperty (no reply)

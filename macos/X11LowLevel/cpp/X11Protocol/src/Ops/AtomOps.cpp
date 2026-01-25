@@ -6,40 +6,83 @@
 //
 
 #include "AtomOps.hpp"
+#include "AtomTable.hpp"
+#include "XProtoContext.hpp"
+#include "ReplyWriter.hpp"
+#include "ByteReader.hpp"
 
-// Temporary stand-ins so this compiles before you introduce shared headers.
-// Delete these once XProtoServerState / XProtoRequestContext exist for real.
-struct XProtoServerState {};
-struct XProtoRequestContext {};
+namespace x11 {
 
-void AtomOps::handleInternAtom(int /*clientFd*/, uint16_t /*seq*/,
-                               const uint8_t* /*payload*/, std::size_t /*len*/,
-                               bool /*onlyIfExists*/) {
-  // TODO:
-  // Request body after 4-byte header:
-  //   CARD16 name_len
-  //   CARD16 pad
-  //   name bytes padded to 4
-  //
-  // Behavior:
-  // - If name already exists, return its atom id
-  // - If onlyIfExists and missing, return 0 (None)
-  // - Else allocate a new atom id (avoid 1..68 predefined collisions)
-  //
-  // Reply body (32 bytes total):
-  // - atom id in bytes 8..11 (CARD32)
+AtomOps::AtomOps(XProtoRegistrar& reg) {
+  reg.registerMajor(16, &AtomOps::onMajor, this); // InternAtom
+  reg.registerMajor(17, &AtomOps::onMajor, this); // GetAtomName
 }
 
-void AtomOps::handleGetAtomName(int /*clientFd*/, uint16_t /*seq*/,
-                                const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // Request body:
-  //   CARD32 atom
-  //
-  // Reply:
-  // - name_len at bytes 8..9 (CARD16)
-  // - extra length_words = padded_name_len / 4
-  // - then name bytes + padding to 4
-  //
-  // Missing atom => empty string is acceptable for bring-up.
+void AtomOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
+  if (!user) { dc.br.skip(dc.br.remaining()); return; }
+  static_cast<AtomOps*>(user)->handle(ctx, dc);
 }
+
+void AtomOps::handle(XProtoContext& ctx, DispatchContext& dc) {
+  switch (dc.major) {
+    case 16: handleInternAtom(ctx, dc.seq, /*onlyIfExists=*/(dc.minor != 0), dc.br); return;
+    case 17: handleGetAtomName(ctx, dc.seq, dc.br); return;
+    default:
+      dc.br.skip(dc.br.remaining());
+      ctx.tracef("[AtomOps] unexpected major=%u\n", (unsigned)dc.major);
+      return;
+  }
+}
+
+// ---- 16: InternAtom ----
+// Request body after 4-byte header:
+//   CARD16 name_len
+//   CARD16 pad
+//   name bytes (padded to 4)
+  void AtomOps::handleInternAtom(XProtoContext& ctx, uint16_t seq, uint8_t onlyIfExists, ByteReader& br) {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+
+    const uint16_t nameLen = br.readU16();
+    (void)br.readU16(); // pad
+
+    const std::size_t avail = br.remaining();
+    const std::size_t n = (nameLen < avail) ? nameLen : avail;
+
+    const uint8_t* namePtr = br.ptr();
+    br.skip(br.remaining());
+
+    const bool only = (onlyIfExists != 0);
+    uint32_t atom = 0;
+    if (n > 0 && namePtr) {
+      atom = AtomTable::instance().intern(reinterpret_cast<const char*>(namePtr), n, only);
+    } else {
+      atom = AtomTable::instance().intern("", 0, only);
+    }
+
+    (void)ctx.reply().sendInternAtomReply(seq, atom);
+  }
+
+  
+// ---- 17: GetAtomName ----
+// Request body after 4-byte header:
+//   CARD32 atom
+// Reply: 32-byte header + padded name bytes.
+//   rep[8..9] nameLen
+//   length_words = padded_name_bytes/4
+  void AtomOps::handleGetAtomName(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+
+    const uint32_t atom = br.readU32();
+    br.skip(br.remaining());
+
+    uint32_t nameLen = 0;
+    const char* name = AtomTable::instance().name(atom, &nameLen);
+
+    if (!name) { name = ""; nameLen = 0; } // defensive; name() returns "" for unknown
+    if (nameLen > 65535u) nameLen = 65535u;
+
+    (void)ctx.reply().sendGetAtomNameReply(seq, name, static_cast<uint16_t>(nameLen));
+  }
+
+
+} // namespace x11

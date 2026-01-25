@@ -6,31 +6,29 @@
 //
 
 #pragma once
-#include <cstddef>
+
 #include <cstdint>
+#include "XProtoRegistrar.hpp"
 
-// Forward declarations (real definitions will live in shared protocol headers later).
-struct XProtoServerState;
-struct XProtoRequestContext;
+namespace x11 {
 
-// AtomOps: core protocol atom name/interning.
-// Keep “atom table” ownership in state_ (or a dedicated AtomTable later),
-// but route the protocol request/response building here.
+class XProtoContext;
+class ByteReader;
+
 class AtomOps {
 public:
-  AtomOps(XProtoServerState& state, XProtoRequestContext& ctx)
-  : state_(state), ctx_(ctx) {}
-
-  // InternAtom (major = 16) — reply
-  void handleInternAtom(int clientFd, uint16_t seq,
-                        const uint8_t* payload, std::size_t len,
-                        bool onlyIfExists);
-
-  // GetAtomName (major = 17) — reply
-  void handleGetAtomName(int clientFd, uint16_t seq,
-                         const uint8_t* payload, std::size_t len);
+  explicit AtomOps(XProtoRegistrar& reg);
 
 private:
-  XProtoServerState& state_;
-  XProtoRequestContext& ctx_;
+  static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
+  void handle(XProtoContext& ctx, DispatchContext& dc);
+
+  // Major 16: InternAtom
+  void handleInternAtom(XProtoContext& ctx, uint16_t seq, uint8_t onlyIfExists, ByteReader& br);
+
+  // Major 17: GetAtomName
+  void handleGetAtomName(XProtoContext& ctx, uint16_t seq, ByteReader& br);
 };
+
+} // namespace x11
+

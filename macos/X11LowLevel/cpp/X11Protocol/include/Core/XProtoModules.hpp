@@ -13,12 +13,12 @@ namespace x11 {
   
   struct XProtoModules {
     QueryOps queryOps;
-    // AtomOps atomOps;
+    AtomOps atomOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
     : queryOps(reg)
-    //, atomOps(reg)
+    , atomOps(reg)
     {}
   };
 }
