@@ -6,38 +6,40 @@
 //
 
 #pragma once
-#include <cstddef>
+
 #include <cstdint>
 
-// Forward declarations (real definitions will live in shared protocol headers later).
-struct XProtoServerState;
-struct XProtoRequestContext;
+#include "XProtoRegistrar.hpp"
 
-// QueryOps: “query/reply-ish” core protocol requests + a few no-reply queries
-// Keep this focused on things that primarily build replies.
+namespace x11 {
+
 class QueryOps {
 public:
-  QueryOps(XProtoServerState& state, XProtoRequestContext& ctx)
-  : state_(state), ctx_(ctx) {}
-
-  // QueryExtension (major = 98) — reply
-  void handleQueryExtension(int clientFd, uint16_t seq);
-
-  // ListExtensions (major = 99) — reply
-  void handleListExtensions(int clientFd, uint16_t seq);
-
-  // QueryColors (major = 91) — reply
-  void handleQueryColors(int clientFd, uint16_t seq,
-                         const uint8_t* payload, std::size_t len);
-
-  // QueryPointer (major = 38) — reply
-  void handleQueryPointer(int clientFd, uint16_t seq,
-                          const uint8_t* payload, std::size_t len);
-
-  // GetInputFocus (major = 43) — reply
-  void handleGetInputFocus(int clientFd, uint16_t seq);
+  explicit QueryOps(XProtoRegistrar& reg);
 
 private:
-  XProtoServerState& state_;
-  XProtoRequestContext& ctx_;
+  static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
+
+  // Handles core “query” requests by major opcode:
+  // 14 GetGeometry
+  // 15 QueryTree
+  // 38 QueryPointer
+  // 43 GetInputFocus
+  void handle(XProtoContext& ctx, DispatchContext& dc);
+
+
+private:
+  // Per-op handlers (these are your C ports)
+  void handleGetGeometry(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  void handleQueryTree(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  void handleQueryPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  void handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+
+
+private:
+  // Fake pointer state (bring-up)
+  int16_t fake_rx_ = 0;
+  int16_t fake_ry_ = 0;
 };
+
+} // namespace x11

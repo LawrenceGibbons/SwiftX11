@@ -65,6 +65,18 @@ public:
     fill(rep);
     return t_.sendReplyBytes(rep.data(), rep.size());
   }  
+  
+  static inline void wr16_le(uint8_t* p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+  }
+  static inline void wr32_le(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+    p[2] = (uint8_t)((v >> 16) & 0xFF);
+    p[3] = (uint8_t)((v >> 24) & 0xFF);
+  }
+  
 private:
   XProtoTransport& t_;
 };

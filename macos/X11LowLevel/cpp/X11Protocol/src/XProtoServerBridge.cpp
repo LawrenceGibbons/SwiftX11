@@ -16,7 +16,13 @@
 
 #include "XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
 #include "XProtoWindowLookupBridge.h"
+#include "QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 
+#include "XProtoModules.hpp"
+
+
+// Modules live for the lifetime of the session.
+static std::atomic<x11::XProtoModules*> g_mods{nullptr};
 static std::mutex g_mu; // only used to serialize begin/end session
 static std::atomic<x11::XProtoServer*> g_srv{nullptr};
 
@@ -45,25 +51,42 @@ static bool c_lookup_window(uint32_t xid, x11::WindowView* out, void* /*user*/)
   return true;
 }
 
-
 extern "C" void x11_proto_bridge_begin_session(int client_fd)
 {
   std::lock_guard<std::mutex> lock(g_mu);
   if (client_fd < 0) return;
-
+  
+  // 1) Create server once per session (or reuse if you decide to support reuse).
   auto* srv = g_srv.load(std::memory_order_acquire);
   if (!srv) {
     srv = new x11::XProtoServer();
     g_srv.store(srv, std::memory_order_release);
   }
+  
+  // 2) Configure server plumbing for THIS session.
   srv->setWindowLookup(&c_lookup_window, nullptr);
   srv->attachClientFd(client_fd);
   srv->setXprotoThreadSelf();
+  
+  // 3) Create modules ONCE per session; constructors register opcode handlers into srv.
+  //    Important: create modules AFTER srv exists, because they register into it.
+  auto* mods = g_mods.load(std::memory_order_acquire);
+  if (!mods) {
+    mods = new x11::XProtoModules(*srv); // *srv is the registrar
+    g_mods.store(mods, std::memory_order_release);
+  }
 }
+
 
 extern "C" void x11_proto_bridge_end_session(void)
 {
   std::lock_guard<std::mutex> lock(g_mu);
+
+  // Destroy modules first (they may reference the server during destruction in the future).
+  auto* mods = g_mods.exchange(nullptr, std::memory_order_acq_rel);
+  delete mods;
+
+  // Then destroy the server.
   auto* srv = g_srv.exchange(nullptr, std::memory_order_acq_rel);
   delete srv;
 }
@@ -246,4 +269,10 @@ extern "C" void x11_proto_bridge_send_query_tree_children(const uint32_t* childr
   srv->transport().sendReplyBytes(out, (size_t)nchildren * 4u);
 }
 
-
+extern "C" void x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
+                                         const uint8_t* payload, size_t remain)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->dispatch(major, minor, seq, payload, remain);
+}

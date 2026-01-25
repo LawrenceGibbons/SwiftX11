@@ -607,6 +607,48 @@ static int x11_send_all_fd(int fd, const void* buf, size_t n)
   return 1;
 }
 
+#include "XProtoQueryBridge.h"
+
+int x11_xproto_query_tree(uint32_t wid,
+                          uint32_t* out_parent,
+                          uint32_t* out_children,
+                          uint32_t  max_children,
+                          uint32_t* out_nchildren)
+{
+  if (out_parent) *out_parent = 0;
+  if (out_nchildren) *out_nchildren = 0;
+
+  // Root window: parent=None
+  if (wid == X11_ROOT_XID) {
+    if (out_parent) *out_parent = 0;
+  } else {
+    x11_win_t* w = win_find(wid);
+    if (w) {
+      if (out_parent) *out_parent = w->parent;
+    } else {
+      // Unknown window
+      return 0;
+    }
+  }
+
+  if (!out_children || max_children == 0 || !out_nchildren) {
+    return 1;
+  }
+
+  uint32_t n = 0;
+  for (size_t i = 0; i < g_wins_n; i++) {
+    if (g_wins[i].parent == wid) {
+      if (n < max_children) {
+        out_children[n] = g_wins[i].xid;
+      }
+      n++;
+      if (n >= max_children) break;
+    }
+  }
+
+  *out_nchildren = n;
+  return 1;
+}
 extern int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
 
 static int x11_send_all(int fd, const void* buf, size_t n) {
@@ -2207,47 +2249,47 @@ static void handle_MapWindow(int fd, uint16_t seq, const uint8_t* payload, size_
   }
 }
 
-// get geometry (major = 14)
-static void handle_GetGeometry(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-{
-  if (remain < 4) return;
-  uint32_t drawable = rd32(payload + 0);
-
-  // Root geometry or window geometry
-  uint32_t root = X11_ROOT_XID;
-  int16_t x = 0, y = 0;
-  uint16_t wpx = 800, hpx = 600;
-  uint16_t border = 0;
-
-  x11_win_t* w = win_find(drawable);
-  if (w) {
-    root = X11_ROOT_XID;
-    x = w->x; y = w->y;
-    wpx = w->w; hpx = w->h;
-  }
-
-//  uint8_t rep[32];
-//  x11_reply32_le(rep, seq, 0);
-//  wr32_le(rep + 8, root);
-//  wr16_le(rep + 12, (uint16_t)x);
-//  wr16_le(rep + 14, (uint16_t)y);
-//  wr16_le(rep + 16, wpx);
-//  wr16_le(rep + 18, hpx);
-//  wr16_le(rep + 20, border);
-//  wr16_le(rep + 22, 24);
-//#ifndef NDEBUG
-//  dbg_check_reply_total("GetGeometry", seq, 32, rep);
-//#endif
-//  (void)x11_send_all(fd, rep, sizeof(rep));
-  
-  // After computing root/x/y/wpx/hpx/border/depth:
-  (void)x11_proto_bridge_send_get_geometry_reply(seq,
-                                                 root,
-                                                 x, y,
-                                                 wpx, hpx,
-                                                 border,
-                                                 24 /*depth*/);
-}
+//// get geometry (major = 14)
+//static void handle_GetGeometry(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 4) return;
+//  uint32_t drawable = rd32(payload + 0);
+//
+//  // Root geometry or window geometry
+//  uint32_t root = X11_ROOT_XID;
+//  int16_t x = 0, y = 0;
+//  uint16_t wpx = 800, hpx = 600;
+//  uint16_t border = 0;
+//
+//  x11_win_t* w = win_find(drawable);
+//  if (w) {
+//    root = X11_ROOT_XID;
+//    x = w->x; y = w->y;
+//    wpx = w->w; hpx = w->h;
+//  }
+//
+////  uint8_t rep[32];
+////  x11_reply32_le(rep, seq, 0);
+////  wr32_le(rep + 8, root);
+////  wr16_le(rep + 12, (uint16_t)x);
+////  wr16_le(rep + 14, (uint16_t)y);
+////  wr16_le(rep + 16, wpx);
+////  wr16_le(rep + 18, hpx);
+////  wr16_le(rep + 20, border);
+////  wr16_le(rep + 22, 24);
+////#ifndef NDEBUG
+////  dbg_check_reply_total("GetGeometry", seq, 32, rep);
+////#endif
+////  (void)x11_send_all(fd, rep, sizeof(rep));
+//  
+//  // After computing root/x/y/wpx/hpx/border/depth:
+//  (void)x11_proto_bridge_send_get_geometry_reply(seq,
+//                                                 root,
+//                                                 x, y,
+//                                                 wpx, hpx,
+//                                                 border,
+//                                                 24 /*depth*/);
+//}
 
 
 // get window attributes (major = 3)
@@ -2318,65 +2360,65 @@ static void handle_GetWindowAttributes(int fd, uint16_t seq, const uint8_t* payl
 }
 
 
-// GetInputFocus (major = 43)
-static void handle_GetInputFocus(int fd, uint16_t seq)
-{
-  // Reply format (32 bytes):
-  //  byte 0: 1 (Reply)
-  //  byte 1: revert-to (we'll use 0 = None)
-  //  bytes 2-3: sequence
-  //  bytes 4-7: length (0)
-  //  bytes 8-11: focus window (XID) (we'll use root for now)
-//  uint8_t rep[32];
-//  x11_reply32_le(rep, seq, 0);
-//  rep[1] = 0; // revertTo = None
-//  wr32_le(rep + 8, X11_ROOT_XID);           // focus = root
-  
-  //(void)x11_send_all(fd, rep, sizeof(rep));
-  // For bring-up: revertTo=None, focus=root
-  const uint8_t revert_to = 0;          // None
-  const uint32_t focus = X11_ROOT_XID;  // root window
+//// GetInputFocus (major = 43)
+//static void handle_GetInputFocus(int fd, uint16_t seq)
+//{
+//  // Reply format (32 bytes):
+//  //  byte 0: 1 (Reply)
+//  //  byte 1: revert-to (we'll use 0 = None)
+//  //  bytes 2-3: sequence
+//  //  bytes 4-7: length (0)
+//  //  bytes 8-11: focus window (XID) (we'll use root for now)
+////  uint8_t rep[32];
+////  x11_reply32_le(rep, seq, 0);
+////  rep[1] = 0; // revertTo = None
+////  wr32_le(rep + 8, X11_ROOT_XID);           // focus = root
+//  
+//  //(void)x11_send_all(fd, rep, sizeof(rep));
+//  // For bring-up: revertTo=None, focus=root
+//  const uint8_t revert_to = 0;          // None
+//  const uint32_t focus = X11_ROOT_XID;  // root window
+//
+//  (void)x11_proto_bridge_send_get_input_focus_reply(seq, revert_to, focus);
+//}
 
-  (void)x11_proto_bridge_send_get_input_focus_reply(seq, revert_to, focus);
-}
-
-// QueryTree (major = 15)
-static void handle_QueryTree(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-{
-  if (remain < 4) return;
-  
-  const uint32_t wid = rd32(payload + 0);
-  
-  uint32_t root = X11_ROOT_XID;
-  uint32_t parent = 0;
-  
-  // Collect children for any window (not just root)
-  uint32_t children[256];
-  uint16_t nchildren = 0;
-  
-  {
-    x11_win_t* w = win_find(wid);
-    if (wid == X11_ROOT_XID) {
-      parent = 0;
-    } else if (w) {
-      parent = w->parent;
-    } else {
-      parent = 0;
-    }
-    
-    // children = all windows whose parent is `wid`
-    for (size_t i = 0; i < g_wins_n && nchildren < 256; i++) {
-      if (g_wins[i].parent == wid) {
-        children[nchildren++] = g_wins[i].xid;
-      }
-    }
-  }
-  
-  x11_proto_bridge_send_query_tree_reply_header(seq, root, parent, nchildren);
-  if (nchildren) {
-    x11_proto_bridge_send_query_tree_children(children, nchildren);
-  }
-}
+//// QueryTree (major = 15)
+//static void handle_QueryTree(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 4) return;
+//  
+//  const uint32_t wid = rd32(payload + 0);
+//  
+//  uint32_t root = X11_ROOT_XID;
+//  uint32_t parent = 0;
+//  
+//  // Collect children for any window (not just root)
+//  uint32_t children[256];
+//  uint16_t nchildren = 0;
+//  
+//  {
+//    x11_win_t* w = win_find(wid);
+//    if (wid == X11_ROOT_XID) {
+//      parent = 0;
+//    } else if (w) {
+//      parent = w->parent;
+//    } else {
+//      parent = 0;
+//    }
+//    
+//    // children = all windows whose parent is `wid`
+//    for (size_t i = 0; i < g_wins_n && nchildren < 256; i++) {
+//      if (g_wins[i].parent == wid) {
+//        children[nchildren++] = g_wins[i].xid;
+//      }
+//    }
+//  }
+//  
+//  x11_proto_bridge_send_query_tree_reply_header(seq, root, parent, nchildren);
+//  if (nchildren) {
+//    x11_proto_bridge_send_query_tree_children(children, nchildren);
+//  }
+//}
 
 
 static void handle_GetProperty(int fd, uint16_t seq, uint8_t delete_flag,
@@ -3794,51 +3836,51 @@ fprintf(stderr,
 }
 
 
-// QueryPointer (major = 38 / 0x26)
-static void handle_QueryPointer(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-{
-  if (remain < 4) return;
-  const uint32_t qwin = rd32(payload + 0);
-
-  x11_win_t* w = win_find(qwin);
-
-  // Fake pointer: slowly moves in a small box (so xeyes has something to do).
-  static int16_t fake_rx = 0, fake_ry = 0;
-  fake_rx = (int16_t)((fake_rx + 1) % 200);
-  fake_ry = (int16_t)((fake_ry + 1) % 120);
-
-  uint32_t child = 0;
-  int16_t winx = 0, winy = 0;
-
-  if (w && w->mapped) {
-    child = qwin;
-
-    // Translate root -> window coords
-    int32_t tx = (int32_t)fake_rx - (int32_t)w->x;
-    int32_t ty = (int32_t)fake_ry - (int32_t)w->y;
-
-    // Clamp to window bounds (optional but nice)
-    if (tx < 0) tx = 0;
-    if (ty < 0) ty = 0;
-    if (tx > (int32_t)w->w) tx = (int32_t)w->w;
-    if (ty > (int32_t)w->h) ty = (int32_t)w->h;
-
-    winx = (int16_t)tx;
-    winy = (int16_t)ty;
-  }
-
-  // Send reply via C++ bridge (ReplyWriter)
-  x11_proto_bridge_send_query_pointer_reply(
-      seq,
-      /*sameScreen*/1,
-      /*root*/X11_ROOT_XID,
-      /*child*/child,
-      /*rootX*/fake_rx,
-      /*rootY*/fake_ry,
-      /*winX*/winx,
-      /*winY*/winy,
-      /*mask*/0);
-}
+//// QueryPointer (major = 38 / 0x26)
+//static void handle_QueryPointer(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 4) return;
+//  const uint32_t qwin = rd32(payload + 0);
+//
+//  x11_win_t* w = win_find(qwin);
+//
+//  // Fake pointer: slowly moves in a small box (so xeyes has something to do).
+//  static int16_t fake_rx = 0, fake_ry = 0;
+//  fake_rx = (int16_t)((fake_rx + 1) % 200);
+//  fake_ry = (int16_t)((fake_ry + 1) % 120);
+//
+//  uint32_t child = 0;
+//  int16_t winx = 0, winy = 0;
+//
+//  if (w && w->mapped) {
+//    child = qwin;
+//
+//    // Translate root -> window coords
+//    int32_t tx = (int32_t)fake_rx - (int32_t)w->x;
+//    int32_t ty = (int32_t)fake_ry - (int32_t)w->y;
+//
+//    // Clamp to window bounds (optional but nice)
+//    if (tx < 0) tx = 0;
+//    if (ty < 0) ty = 0;
+//    if (tx > (int32_t)w->w) tx = (int32_t)w->w;
+//    if (ty > (int32_t)w->h) ty = (int32_t)w->h;
+//
+//    winx = (int16_t)tx;
+//    winy = (int16_t)ty;
+//  }
+//
+//  // Send reply via C++ bridge (ReplyWriter)
+//  x11_proto_bridge_send_query_pointer_reply(
+//      seq,
+//      /*sameScreen*/1,
+//      /*root*/X11_ROOT_XID,
+//      /*child*/child,
+//      /*rootX*/fake_rx,
+//      /*rootY*/fake_ry,
+//      /*winX*/winx,
+//      /*winY*/winy,
+//      /*mask*/0);
+//}
 
 
 #ifndef NDEBUG
@@ -4074,11 +4116,10 @@ if (major >= 128) {
         break;
 
       case 14: // GetGeometry
-        handle_GetGeometry(cfd, seq, payload, remain);
-        break;
-
       case 15: // QueryTree
-        handle_QueryTree(cfd, seq, payload, remain);
+      case 38: // QueryPointer
+      case 43: // GetInputFocus
+        x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
         break;
 
       case 16: // InternAtom
@@ -4097,14 +4138,6 @@ if (major >= 128) {
         handle_GetProperty(cfd, seq, minor /*delete*/, payload, remain);
         break;
         
-      case 38: // QueryPointer
-        handle_QueryPointer(cfd, seq, payload, remain);
-        break;
-
-      case 43: // GetInputFocus
-        handle_GetInputFocus(cfd, seq);
-        break;
-
       case 53: // CreatePixmap (no reply)
         handle_CreatePixmap(minor /*depth*/, payload, remain);
         break;

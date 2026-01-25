@@ -5,10 +5,15 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
+#include <cstdio>
+#include <unordered_map>
+#include <exception>
+
 #include "ReplyWriter.hpp"
 #include "XProtoServer.hpp"
+#include "ByteReader.hpp"
+#include "EventOps.hpp"
 
-#include <unordered_map>
 
 namespace x11 {
 
@@ -18,21 +23,61 @@ struct XProtoServer::Impl {
 
 XProtoServer::XProtoServer()
 : ctx_()
-, eventOps_(ctx_)
-, transport_(ctx_, eventOps_)
+, eventOps_(std::make_unique<EventOps>(ctx_))
+, transport_(ctx_, *eventOps_)
 , reply_(transport_)
-, impl_(new Impl())
+, impl_(std::make_unique<Impl>())
 {
+  table_.fill(Entry{nullptr, nullptr});
+
   // Wire transport and Replywrite into context so EventOps can reach it if desired.
   ctx_.setTransport(&transport_);
   ctx_.setReplyWriter(&reply_);
   
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
-  
-  
 }
 
+x11::XProtoServer::~XProtoServer() = default;
+  
+void XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
+                            const uint8_t* payload, std::size_t remain)
+{
+  ByteReader br(payload, remain);
+  DispatchContext dc{ major, minor, seq, br };
+
+  const Entry& e = table_[major];
+  if (!e.fn) {
+    // Unknown/unported opcode: consume payload and return.
+    br.skip(br.remaining());
+    return;
+  }
+
+  try {
+    e.fn(e.user, ctx_, dc);
+  } catch (const std::exception& ex) {
+#ifndef NDEBUG
+    ctx_.tracef("[XProtoServer] dispatch exception major=%u minor=%u seq=%u: %s\n",
+                (unsigned)major, (unsigned)minor, (unsigned)seq, ex.what());
+#endif
+    // Swallow exceptions so a malformed request doesn't take down the server.
+    // Also consume remaining bytes so we stay in sync.
+    try { br.skip(br.remaining()); } catch (...) {}
+  } catch (...) {
+#ifndef NDEBUG
+    ctx_.tracef("[XProtoServer] dispatch unknown exception major=%u minor=%u seq=%u\n",
+                (unsigned)major, (unsigned)minor, (unsigned)seq);
+#endif
+    try { br.skip(br.remaining()); } catch (...) {}
+  }
+}
+
+void XProtoServer::registerMajor(uint8_t major, HandlerFn fn, void* user) {
+  table_[major].fn = fn;
+  table_[major].user = user;
+}
+  
+  
 void XProtoServer::setWindowLookup(WindowLookupFn fn, void* user) {
   injected_lookup_ = fn;
   injected_lookup_user_ = user;

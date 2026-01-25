@@ -5,15 +5,22 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
+#pragma once
 #include <cstdint>
 #include <cstddef>
+#include <array>
+#include <memory>
 
+// scaffold
 #include "XProtoContext.hpp"
 #include "XProtoTransport.hpp"
-#include "EventOps.hpp"
+#include "XProtoRegistrar.hpp"
 #include "ReplyWriter.hpp"
+#include "ByteReader.hpp"
 
 namespace x11 {
+
+  class EventOps;
 
 // Minimal "owning" object that wires Context + Transport + EventOps.
 //
@@ -25,14 +32,21 @@ namespace x11 {
 // Window lookup:
 //  - In production, you will inject a C callback that snapshots x11_win_t into WindowView.
 //  - In tests, you can populate a small in-memory map via setTestWindow().
-class XProtoServer {
+class XProtoServer : public XProtoRegistrar {
 public:
   using WindowLookupFn = x11::WindowLookupFn;
 
   XProtoServer();
-
+  ~XProtoServer();
+  
   // Inject the production lookup (C-side snapshot) and an opaque user pointer.
   void setWindowLookup(WindowLookupFn fn, void* user);
+
+  // Dispatch one decoded X11 request body into C++ ops.
+  // `seq` is the server-side request sequence number you are already tracking.
+  void registerMajor(uint8_t major, HandlerFn fn, void* user) override;
+  void dispatch(uint8_t major, uint8_t minor, uint16_t seq,
+                const uint8_t* payload, std::size_t remain);
 
   // Transport plumbing.
   void attachClientFd(int fd);
@@ -46,16 +60,13 @@ public:
   // Accessors for tests / future opcode modules.
   XProtoContext& ctx() { return ctx_; }
   XProtoTransport& transport() { return transport_; }
-  EventOps& eventOps() { return eventOps_; }
+  EventOps& eventOps() { return *eventOps_; }
 
   // ---- Test support ----
   // Populate a fake window snapshot map used when no WindowLookupFn is installed.
   void setTestWindow(const WindowView& w);
   void clearTestWindows();
 
-  // getter
-  ReplyWriter& replyWriter() { return reply_; }
-  
 private:
   // Context callback used when you call setWindowLookup().
   static bool lookupWindowTrampoline(uint32_t xid, WindowView* out, void* user);
@@ -67,10 +78,19 @@ private:
 
 private:
   XProtoContext   ctx_;
-  EventOps        eventOps_;
+
+  // opcode-family modules
+  std::unique_ptr<x11::EventOps> eventOps_;
+  
   XProtoTransport transport_;
   ReplyWriter     reply_;
   
+  struct Entry {
+    HandlerFn fn = nullptr;
+    void* user = nullptr;
+  };
+  std::array<Entry, 256> table_{};
+
   // Optional injected production lookup.
   WindowLookupFn injected_lookup_ = nullptr;
   void* injected_lookup_user_ = nullptr;
@@ -78,7 +98,8 @@ private:
   // Test-only backing store (used when injected_lookup_ == nullptr).
   // Kept in the .cpp to avoid exposing <unordered_map> in public headers.
   struct Impl;
-  Impl* impl_;
+  std::unique_ptr<Impl> impl_;
+  
 };
 
 } // namespace x11

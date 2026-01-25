@@ -88,6 +88,9 @@ int x11_proto_bridge_send_get_atom_name_reply(uint16_t seq, const char* name, ui
   void x11_proto_bridge_send_query_tree_children(const uint32_t* children,
                                                  uint16_t nchildren);
   
+  void x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
+                                const uint8_t* payload, size_t remain);
+
   
 #ifdef __cplusplus
 }

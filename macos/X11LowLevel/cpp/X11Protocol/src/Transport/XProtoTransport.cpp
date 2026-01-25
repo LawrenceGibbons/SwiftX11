@@ -117,9 +117,7 @@ void XProtoTransport::queueNotify(uint32_t wid, bool wantConfigure, bool wantExp
 }
 
 void XProtoTransport::flushNotifyQueue() {
-  ctx_.tracef("[XProtoTransport] flushNotifyQueue enter (fd=%d valid=%d onThread=%d)\n",
-              client_fd_, (int)xproto_thread_valid_,
-              (int)pthread_equal(pthread_self(), xproto_thread_));
+  
   // MUST be called only from the xproto thread.
   if (!xproto_thread_valid_) return;
   if (!pthread_equal(pthread_self(), xproto_thread_)) return;
@@ -130,11 +128,10 @@ void XProtoTransport::flushNotifyQueue() {
   std::size_t n = notifyQueue_.drain(local, kMaxPending);
 
   const uint16_t seq0 = lastSeqOr1();
-  ctx_.tracef("[XProtoTransport] flushNotifyQueue drained n=%zu seq0=%u\n",
-              n, (unsigned)seq0);
 
   if (n == 0) return;
 
+#ifndef NDEBUG
   for (size_t i=0;i<n;i++){
     ctx_.tracef("  pn[%zu] wid=0x%08X cfg=%u exp=%u rect=%u\n",
                 i, (unsigned)local[i].wid,
@@ -142,6 +139,7 @@ void XProtoTransport::flushNotifyQueue() {
                 (unsigned)local[i].want_expose,
                 (unsigned)local[i].expose_has_rect);
   }
+#endif
   // Delegate the actual per-window filtering + event emission to EventOps.
   // EventOps is expected to consult XProtoContext for window state/event masks.
   for (size_t i = 0; i < n; i++) {
