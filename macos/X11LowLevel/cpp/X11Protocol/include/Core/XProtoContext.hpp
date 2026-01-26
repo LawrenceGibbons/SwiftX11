@@ -49,7 +49,7 @@ public:
   const WindowView* window(uint32_t xid);
 
   void setWindowTable(WindowTable* wt) { window_table_ = wt; } 
-  WindowTable& windows() { return *window_table_; } // assert non-null in impl
+  WindowTable& windows();
   
 private:
   XProtoTransport* transport_ = nullptr;

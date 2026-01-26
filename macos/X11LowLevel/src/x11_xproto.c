@@ -620,15 +620,6 @@ static void enqueue_damage_window(uint32_t xid)
   // Defer damage while not ready (unmapped or not presentable).
   if (!x11_proto_bridge_window_is_ready_to_present(xid)) {
     x11_proto_bridge_window_mark_dirty(xid);
-#ifndef NDEBUG
-  int mapped=0, presentable=0, dirty=0;
-  uint32_t parent=0;
-  int owner_fd=0;
-  x11_proto_bridge_window_debug_state(xid, &parent, &mapped, &presentable, &dirty, &owner_fd);
-  fprintf(stderr,
-    "[SwiftX11] defer: xid=0x%08X parent=0x%08X mapped=%d presentable=%d dirty=%d owner_fd=%d\n",
-    (unsigned)xid, (unsigned)parent, mapped, presentable, dirty, owner_fd);
-#endif
     return;
   }
   
@@ -683,6 +674,20 @@ static int x11_send_all_fd(int fd, const void* buf, size_t n)
   return 1;
 }
 
+// in x11_xproto.c
+void x11_xproto_c_window_set_mapped(uint32_t xid, int mapped) {
+  x11_win_t* w = win_find(xid);
+  if (!w) return;
+  w->mapped = mapped ? 1 : 0;
+}
+
+// in x11_xproto.c
+void x11_xproto_c_window_set_presentable(uint32_t xid, int presentable) {
+  x11_win_t* w = win_find(xid);
+  if (!w) return;
+  w->presentable = presentable ? 1 : 0;
+}
+
 #include "XProtoQueryBridge.h"
 
 int x11_xproto_query_tree(uint32_t wid,
@@ -726,6 +731,14 @@ int x11_xproto_query_tree(uint32_t wid,
   return 1;
 }
 
+
+// Minimal bridge: keep C-side w->event_mask in sync while we migrate handlers to C++.
+void x11_xproto_c_set_window_event_mask(uint32_t xid, uint32_t event_mask)
+{
+  x11_win_t* w = win_find(xid);
+  if (!w) return;
+  w->event_mask = event_mask;
+}
 
 int x11_xproto_apply_map_window(uint32_t wid)
 {
@@ -1523,28 +1536,28 @@ static void apply_value_list_updates_for_window(x11_win_t* w, uint32_t vmask, co
   w->event_mask = cur_mask;
 }
 
-// ChangeWindowAttributes (major = 2)
-static void handle_ChangeWindowAttributes(const uint8_t* payload, size_t remain)
-{
-  // Body (after 4-byte header):
-  //   CARD32 window
-  //   CARD32 valueMask
-  //   LISTofCARD32 valueList
-  if (remain < 8) return;
-  
-  const uint32_t wid   = rd32(payload + 0);
-  const uint32_t vmask = rd32(payload + 4);
-  
-  x11_win_t* w = win_find(wid);
-  if (!w) return;
-  
-  const uint8_t* vp = payload + 8;
-  size_t vrem = remain - 8;
-  apply_value_list_updates_for_window(w, vmask, vp, vrem);
-  if (vmask & (1u << 11)) {
-    x11_proto_bridge_window_set_event_mask(wid, w->event_mask);
-  }
-}
+// // ChangeWindowAttributes (major = 2)
+// static void handle_ChangeWindowAttributes(const uint8_t* payload, size_t remain)
+// {
+//   // Body (after 4-byte header):
+//   //   CARD32 window
+//   //   CARD32 valueMask
+//   //   LISTofCARD32 valueList
+//   if (remain < 8) return;
+//   
+//   const uint32_t wid   = rd32(payload + 0);
+//   const uint32_t vmask = rd32(payload + 4);
+//   
+//   x11_win_t* w = win_find(wid);
+//   if (!w) return;
+//   
+//   const uint8_t* vp = payload + 8;
+//   size_t vrem = remain - 8;
+//   apply_value_list_updates_for_window(w, vmask, vp, vrem);
+//   if (vmask & (1u << 11)) {
+//     x11_proto_bridge_window_set_event_mask(wid, w->event_mask);
+//   }
+// }
 
 // // UnmapWindow (major = 10)
 // static void handle_UnmapWindow(int fd, const uint8_t* payload, size_t remain)
@@ -1656,7 +1669,6 @@ static void handle_DestroyWindow(int fd, const uint8_t* payload, size_t remain)
       break;
     }
   }
-  x11_proto_bridge_window_erase(wid);
   
   enqueue_destroy_window(wid);
 }
@@ -1686,6 +1698,8 @@ static void handle_ConfigureWindow(int fd, uint16_t seq, const uint8_t* payload,
   const uint8_t* vp = payload + 8;
   size_t vrem = remain - 8;
 
+  const  int16_t old_x = w->x;
+  const  int16_t old_y = w->y;
   const uint16_t old_w = w->w;
   const uint16_t old_h = w->h;
 
@@ -1720,7 +1734,7 @@ static void handle_ConfigureWindow(int fd, uint16_t seq, const uint8_t* payload,
   w->y = new_y;
   w->w = (new_w ? new_w : 1);
   w->h = (new_h ? new_h : 1);
-  if (w->x != new_x || w->y != new_y || w->w != old_w || w->h != old_h) {
+  if (w->x != old_x || w->y != old_y || w->w != old_w || w->h != old_h) {
     x11_proto_bridge_window_set_geometry(wid, w->x, w->y, w->w, w->h);
   }
   
@@ -1779,7 +1793,7 @@ static void handle_ConfigureWindow(int fd, uint16_t seq, const uint8_t* payload,
 
   // If mapped and client selected for Exposure, send another Expose.
   const int want_cfg = (w->event_mask & (1u<<17)) != 0;   // StructureNotifyMask
-  const int want_exp =  w->mapped && (w->event_mask & (1u<<15)) != 0;  // ExposureMask
+  const int want_exp = (w->event_mask & (1u<<15)) != 0;  // ExposureMask
   x11_proto_bridge_queue_notify(wid, want_cfg, want_exp);
   // if (w->mapped && (w->event_mask & (1u << 15))) { // ExposureMask = (1<<15)
   //   send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
@@ -1905,13 +1919,12 @@ fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize: xid=0x%08X %dx%d\n",
     x11_win_t* ww = win_find(wid);
     if (ww && (new_w != old_w || new_h != old_h)) {
       const int want_cfg = (ww->event_mask & (1u << 17)) ? 1 : 0; // StructureNotifyMask
-      const int want_exp = (ww->mapped && (ww->event_mask & (1u << 15))) ? 1 : 0; // ExposureMask
+      const int want_exp = (ww->event_mask & (1u << 15)) ? 1 : 0; // ExposureMask
       if (want_cfg || want_exp) {
 #ifndef NDEBUG
 fprintf(stderr,
-        "[SwiftX11] rootless_resize: QUEUE host notify wid=0x%08X cfg=%d exp=%d mapped=%d mask=0x%08X\n",
+        "[SwiftX11] rootless_resize: QUEUE host notify wid=0x%08X cfg=%d exp=%d mask=0x%08X\n",
         (unsigned)wid, want_cfg, want_exp,
-        ww ? (int)ww->mapped : -1,
         ww ? (unsigned)ww->event_mask : 0u);
 #endif
         x11_proto_bridge_queue_notify(wid, want_cfg, want_exp);
@@ -2012,7 +2025,7 @@ fprintf(stderr,
       x11_win_t* cc = win_find(c->xid);
       if (cc) {
         const int want_cfg = (cc->event_mask & (1u << 17)) ? 1 : 0; // StructureNotifyMask
-        const int want_exp = (cc->mapped && (cc->event_mask & (1u << 15))) ? 1 : 0; // ExposureMask
+        const int want_exp = (cc->event_mask & (1u << 15)) ? 1 : 0; // ExposureMask
 #ifndef NDEBUG
 fprintf(stderr,
         "[SwiftX11] rootless_resize: QUEUE child notify wid=0x%08X cfg=%d exp=%d mapped=%d mask=0x%08X parent=0x%08X\n",
@@ -4225,9 +4238,9 @@ if (major >= 128) {
           handle_CreateWindow(minor /*depth*/, payload, remain);
           break;
           
-        case 2: // ChangeWindowAttributes
-          handle_ChangeWindowAttributes(payload, remain);
-          break;
+        //case 2: // ChangeWindowAttributes
+        //  handle_ChangeWindowAttributes(payload, remain);
+        //  break;
           
         case 3: // GetWindowAttributes
           handle_GetWindowAttributes(cfd, seq, payload, remain);

@@ -9,6 +9,8 @@
 #include "QueryOps.hpp"
 #include "AtomOps.hpp"
 #include "WindowOps.hpp"
+#include "WindowAttrOps.hpp"
+
 
 namespace x11 {
   
@@ -16,12 +18,14 @@ namespace x11 {
     QueryOps  queryOps;
     AtomOps   atomOps;
     WindowOps windowOps;
+    WindowAttrOps windowAttrOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
     : queryOps(reg)
     , atomOps(reg)
     , windowOps(reg)
+    , windowAttrOps(reg)
     {}
   };
 }

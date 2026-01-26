@@ -14,11 +14,13 @@
 #include "XProtoWindowBridge.h"
 #include "XProtoWindowLookupBridge.h"
 
+// temp
+#include "x11_window_set_mapped.h"
+
 namespace x11 {
 
 WindowOps::WindowOps(XProtoRegistrar& reg) {
 //  reg.registerMajor(1,  &WindowOps::onMajor, this);  // CreateWindow
-//  reg.registerMajor(2,  &WindowOps::onMajor, this);  // ChangeWindowAttributes
 //  reg.registerMajor(4,  &WindowOps::onMajor, this);  // DestroyWindow
   reg.registerMajor(8,  &WindowOps::onMajor, this);  // MapWindow
 //  reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
@@ -34,7 +36,6 @@ void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
     case 1:  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
-    case 2:  handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
     case 4:  handleDestroyWindow(ctx, dc.seq, dc.br); return;
     case 8:  handleMapWindow(ctx, dc.seq, dc.br); return;
     case 9:  handleMapSubwindows(ctx, dc.seq, dc.br); return;
@@ -57,11 +58,6 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   // ctx.tracef("[WindowOps] CreateWindow (stub)\n");
 }
 
-void WindowOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  br.skip(br.remaining());
-  // ctx.tracef("[WindowOps] ChangeWindowAttributes (stub)\n");
-}
-
 void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
   // ctx.tracef("[WindowOps] DestroyWindow (stub)\n");
@@ -75,6 +71,8 @@ void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader
 
   // 1) Update authoritative table
   ctx.windows().setMapped(wid, true);
+  // temp
+  x11_xproto_c_window_set_mapped(wid, true);
 
   // 2) Swift-side event (existing behavior)
   x11_requests_push_map(wid);
@@ -82,8 +80,8 @@ void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader
   // 3) Expose to client *if client selected ExposureMask*
   // We don't have the C w->event_mask anymore, so query via ctx.window()
   if (const WindowView* vw = ctx.window(wid)) {
-    const bool wantExp = ((vw->event_mask & (1u<<15)) != 0);
-    const bool wantCfg = ((vw->event_mask & (1u<<17)) != 0);
+    const bool wantExp = vw->mapped && ((vw->event_mask & (1u<<15)) != 0);
+    const bool wantCfg =               ((vw->event_mask & (1u<<17)) != 0);
     if (wantExp || wantCfg) {
       ctx.transport().queueNotify(wid, wantCfg, wantExp);
     }

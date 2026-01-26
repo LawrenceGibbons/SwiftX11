@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cassert>
 
 #include "XProtoContext.hpp"
 #include "ReplyWriter.hpp"
@@ -42,10 +43,19 @@ const WindowView* XProtoContext::window(uint32_t xid) {
     if (window_table_->snapshot(xid, scratch_)) return &scratch_;
   }
 
+#ifndef NDEBUG
+  tracef("[XProtoContext] window(0x%08X) fell back to lookup_ (WindowTable miss)\n", xid);
+#endif
+
   // 2) Fallback to callback snapshot (old path)
   if (!lookup_) return nullptr;
   if (!lookup_(xid, &scratch_, lookup_user_)) return nullptr;
   return &scratch_;
+}
+
+WindowTable& XProtoContext::windows() {
+  assert(window_table_ && "XProtoContext::windows(): window_table_ not set");
+  return *window_table_;
 }
   
 } // namespace x11
