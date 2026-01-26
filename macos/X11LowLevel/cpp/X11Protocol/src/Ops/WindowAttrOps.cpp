@@ -10,6 +10,7 @@
 #include "XProtoContext.hpp"
 #include "WindowTable.hpp"
 #include "ByteReader.hpp"
+#include "ReplyWriter.hpp"
 #include "XProtoTransport.hpp"
 
 // Temp -- Update C-side mirror event_mask during transition
@@ -19,11 +20,14 @@ extern "C" {
 #include "x11_requests.h"
 }
 
+static constexpr uint32_t kRootVis   = 0x00000021u; // X11_ROOT_VIS
+static constexpr uint32_t kRootCmap  = 0x00000020u; // defaultColormap advertised
 
 namespace x11 {
 
 WindowAttrOps::WindowAttrOps(XProtoRegistrar& reg) {
   reg.registerMajor( 2, &WindowAttrOps::onMajor, this); // ChangeWindowAttributes
+  reg.registerMajor( 3, &WindowAttrOps::onMajor, this);
   reg.registerMajor(12, &WindowAttrOps::onMajor, this);  // ConfigureWindow
 
 }
@@ -35,7 +39,8 @@ void WindowAttrOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc)
 
 void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 2:  handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
+    case  2: handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
+    case  3: handleGetWindowAttributes(ctx, dc.seq, dc.br); return;
     case 12: handleConfigureWindow(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
@@ -145,6 +150,72 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
         ctx.transport().queueNotify(wid, wantCfg, wantExp);
       }
     }
+  }
+  
+  
+  void WindowAttrOps::handleGetWindowAttributes(XProtoContext& ctx, uint16_t seq, ByteReader& br)
+  {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+    const uint32_t wid = br.readU32();
+    br.skip(br.remaining());
+
+    // Prefer WindowTable snapshot
+    const WindowView* wv = ctx.window(wid);
+
+    const uint32_t eventMask = wv ? wv->event_mask : 0;
+    const uint8_t  mapState  = (wv && wv->mapped) ? 2 : 0; // Viewable=2, Unmapped=0
+
+    // Reply payload is 44 bytes total. That means:
+    // - 32-byte reply header
+    // - 12 bytes extra payload (3 * 4-byte units)
+    //
+    // Your C implementation builds all 44 bytes as a single buffer; we’ll do the same.
+    std::array<uint8_t, 44> rep{};
+    rep.fill(0);
+
+    rep[0] = 1;   // Reply
+    rep[1] = 0;   // backing-store = NotUseful
+
+    // seq
+    ReplyWriter::wr16_le(rep.data() + 2, seq);
+
+    // length_words = (44-32)/4 = 3
+    ReplyWriter::wr32_le(rep.data() + 4, 3);
+
+    // visual
+    ReplyWriter::wr32_le(rep.data() + 8, kRootVis);
+
+    // class = InputOutput (CARD16)
+    ReplyWriter::wr16_le(rep.data() + 12, 1);
+
+    // bit-gravity / win-gravity
+    rep[14] = 0; // Forget
+    rep[15] = 0; // Unmap
+
+    // backing-planes / backing-pixel
+    ReplyWriter::wr32_le(rep.data() + 16, 0);
+    ReplyWriter::wr32_le(rep.data() + 20, 0);
+
+    // save-under / map-is-installed / map-state / override-redirect
+    rep[24] = 0;        // saveUnder
+    rep[25] = 1;        // mapIsInstalled (true)
+    rep[26] = mapState; // mapState
+    rep[27] = 0;        // overrideRedirect
+
+    // colormap
+    ReplyWriter::wr32_le(rep.data() + 28, kRootCmap);
+
+    // all-event-masks / your-event-mask
+    ReplyWriter::wr32_le(rep.data() + 32, eventMask);
+    ReplyWriter::wr32_le(rep.data() + 36, eventMask);
+
+    // do-not-propagate-mask + pad
+    ReplyWriter::wr16_le(rep.data() + 40, 0);
+    ReplyWriter::wr16_le(rep.data() + 42, 0);
+
+    // IMPORTANT: this is a single 44-byte reply (not “32 + payload separately”)
+    // so just sendReplyBytes directly.
+    (void)ctx.transport().sendReplyBytes(rep.data(), rep.size());
   }
   
   

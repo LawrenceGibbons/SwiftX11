@@ -25,6 +25,9 @@ private:
   // Major  2: ChangeWindowAttributes
   void handleChangeWindowAttributes(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   
+  // Major 3: GetWindowAttributes
+  void handleGetWindowAttributes(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  
   // Major 12: ConfigureWindow
   void handleConfigureWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);
 };

@@ -1536,43 +1536,6 @@ static void apply_value_list_updates_for_window(x11_win_t* w, uint32_t vmask, co
   w->event_mask = cur_mask;
 }
 
-// // ChangeWindowAttributes (major = 2)
-// static void handle_ChangeWindowAttributes(const uint8_t* payload, size_t remain)
-// {
-//   // Body (after 4-byte header):
-//   //   CARD32 window
-//   //   CARD32 valueMask
-//   //   LISTofCARD32 valueList
-//   if (remain < 8) return;
-//   
-//   const uint32_t wid   = rd32(payload + 0);
-//   const uint32_t vmask = rd32(payload + 4);
-//   
-//   x11_win_t* w = win_find(wid);
-//   if (!w) return;
-//   
-//   const uint8_t* vp = payload + 8;
-//   size_t vrem = remain - 8;
-//   apply_value_list_updates_for_window(w, vmask, vp, vrem);
-//   if (vmask & (1u << 11)) {
-//     x11_proto_bridge_window_set_event_mask(wid, w->event_mask);
-//   }
-// }
-
-// // UnmapWindow (major = 10)
-// static void handle_UnmapWindow(int fd, const uint8_t* payload, size_t remain)
-// {
-//   (void)fd;
-//   if (remain < 4) return;
-//   uint32_t wid = rd32(payload + 0);
-//   x11_win_t* w = win_find(wid);
-//   if (!w) return;
-//   w->mapped = 0;
-//   w->dirty  = 1; // ensure next map triggers repaint
-//   
-//   // enqueue to shim
-//   enqueue_unmap_window(wid);
-// }
 
 // MapSubwindows (major = 9) — maps all children (and descendants) of a window
 static void handle_MapSubwindows(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
@@ -2391,81 +2354,6 @@ static void handle_CreateWindow(uint8_t depth, const uint8_t* payload, size_t re
 }
 
 
-//// map window (major = 8)
-//static void handle_MapWindow(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-//{
-//  if (remain < 4) return;
-//  uint32_t wid = rd32(payload + 0);
-//  x11_win_t* w = win_find(wid);
-//  if (!w) return;
-//
-//#if !defined(NDEBUG) && SWIFTX11_TRACE
-//  fprintf(stderr,
-//          "[SwiftX11] xproto: MapWindow wid=0x%08X seq=%u event_mask=0x%08X\n",
-//          (unsigned)wid, (unsigned)seq, (unsigned)w->event_mask);
-//#endif
-//
-//  // Mark mapped in xproto truth, then enqueue map once.
-//  w->mapped = 1;
-//  enqueue_map_window(wid);
-//
-//  // 3) If anything drew while unmapped, flush exactly once now,
-//  //    but only if presentable
-//  if (w->dirty  && w->presentable) {
-//    w->dirty = 0;
-//    enqueue_damage_window(wid); // now mapped, so it pushes
-//  }
-//
-////  if (w->event_mask & (1u << 15)) { // ExposureMask
-////    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
-////  }
-//  if (w->event_mask & (1u << 15)) {
-//    //send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
-//    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
-//  }
-//}
-
-//// get geometry (major = 14)
-//static void handle_GetGeometry(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-//{
-//  if (remain < 4) return;
-//  uint32_t drawable = rd32(payload + 0);
-//
-//  // Root geometry or window geometry
-//  uint32_t root = X11_ROOT_XID;
-//  int16_t x = 0, y = 0;
-//  uint16_t wpx = 800, hpx = 600;
-//  uint16_t border = 0;
-//
-//  x11_win_t* w = win_find(drawable);
-//  if (w) {
-//    root = X11_ROOT_XID;
-//    x = w->x; y = w->y;
-//    wpx = w->w; hpx = w->h;
-//  }
-//
-////  uint8_t rep[32];
-////  x11_reply32_le(rep, seq, 0);
-////  wr32_le(rep + 8, root);
-////  wr16_le(rep + 12, (uint16_t)x);
-////  wr16_le(rep + 14, (uint16_t)y);
-////  wr16_le(rep + 16, wpx);
-////  wr16_le(rep + 18, hpx);
-////  wr16_le(rep + 20, border);
-////  wr16_le(rep + 22, 24);
-////#ifndef NDEBUG
-////  dbg_check_reply_total("GetGeometry", seq, 32, rep);
-////#endif
-////  (void)x11_send_all(fd, rep, sizeof(rep));
-//  
-//  // After computing root/x/y/wpx/hpx/border/depth:
-//  (void)x11_proto_bridge_send_get_geometry_reply(seq,
-//                                                 root,
-//                                                 x, y,
-//                                                 wpx, hpx,
-//                                                 border,
-//                                                 24 /*depth*/);
-//}
 
 
 // get window attributes (major = 3)
@@ -2536,65 +2424,6 @@ static void handle_GetWindowAttributes(int fd, uint16_t seq, const uint8_t* payl
 }
 
 
-//// GetInputFocus (major = 43)
-//static void handle_GetInputFocus(int fd, uint16_t seq)
-//{
-//  // Reply format (32 bytes):
-//  //  byte 0: 1 (Reply)
-//  //  byte 1: revert-to (we'll use 0 = None)
-//  //  bytes 2-3: sequence
-//  //  bytes 4-7: length (0)
-//  //  bytes 8-11: focus window (XID) (we'll use root for now)
-////  uint8_t rep[32];
-////  x11_reply32_le(rep, seq, 0);
-////  rep[1] = 0; // revertTo = None
-////  wr32_le(rep + 8, X11_ROOT_XID);           // focus = root
-//  
-//  //(void)x11_send_all(fd, rep, sizeof(rep));
-//  // For bring-up: revertTo=None, focus=root
-//  const uint8_t revert_to = 0;          // None
-//  const uint32_t focus = X11_ROOT_XID;  // root window
-//
-//  (void)x11_proto_bridge_send_get_input_focus_reply(seq, revert_to, focus);
-//}
-
-//// QueryTree (major = 15)
-//static void handle_QueryTree(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-//{
-//  if (remain < 4) return;
-//  
-//  const uint32_t wid = rd32(payload + 0);
-//  
-//  uint32_t root = X11_ROOT_XID;
-//  uint32_t parent = 0;
-//  
-//  // Collect children for any window (not just root)
-//  uint32_t children[256];
-//  uint16_t nchildren = 0;
-//  
-//  {
-//    x11_win_t* w = win_find(wid);
-//    if (wid == X11_ROOT_XID) {
-//      parent = 0;
-//    } else if (w) {
-//      parent = w->parent;
-//    } else {
-//      parent = 0;
-//    }
-//    
-//    // children = all windows whose parent is `wid`
-//    for (size_t i = 0; i < g_wins_n && nchildren < 256; i++) {
-//      if (g_wins[i].parent == wid) {
-//        children[nchildren++] = g_wins[i].xid;
-//      }
-//    }
-//  }
-//  
-//  x11_proto_bridge_send_query_tree_reply_header(seq, root, parent, nchildren);
-//  if (nchildren) {
-//    x11_proto_bridge_send_query_tree_children(children, nchildren);
-//  }
-//}
 
 
 static void handle_GetProperty(int fd, uint16_t seq, uint8_t delete_flag,
@@ -4251,14 +4080,10 @@ if (major >= 128) {
         case 1: // CreateWindow
           handle_CreateWindow(minor /*depth*/, payload, remain);
           break;
-          
-        //case 2: // ChangeWindowAttributes
-        //  handle_ChangeWindowAttributes(payload, remain);
+                    
+        //case 3: // GetWindowAttributes
+        //  handle_GetWindowAttributes(cfd, seq, payload, remain);
         //  break;
-          
-        case 3: // GetWindowAttributes
-          handle_GetWindowAttributes(cfd, seq, payload, remain);
-          break;
           
         case 4: // DestroyWindow
           handle_DestroyWindow(cfd, payload, remain);
