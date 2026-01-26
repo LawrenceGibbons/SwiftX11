@@ -2060,6 +2060,33 @@ fprintf(stderr,
 #endif
 }
 
+void x11_xproto_apply_configure_from_cpp(uint32_t wid,
+                                         int16_t x, int16_t y,
+                                         uint16_t w, uint16_t h,
+                                         int resize_fb)
+{
+  if (wid == 0) return;
+  if (w == 0) w = 1;
+  if (h == 0) h = 1;
+
+  x11_win_t* ww = win_find(wid);
+  if (!ww) return;
+
+  const uint16_t old_w = ww->w;
+  const uint16_t old_h = ww->h;
+
+  ww->x = x;
+  ww->y = y;
+  ww->w = w;
+  ww->h = h;
+
+  if (resize_fb && (w != old_w || h != old_h)) {
+    // reuse your existing helper (it already allocs white + preserves overlap)
+    resize_window_and_fb(wid, w, h);
+    // resizing implies damage (deferred if not ready)
+    enqueue_damage_window(wid);
+  }
+}
 
 // ----------------------------------------------------------------------------
 // Minimal GC table (enough for xeyes bitmaps and simple fills)
@@ -4205,13 +4232,6 @@ void drain_requests(int cfd)
     }
     
     
-    #if !defined(NDEBUG) && SWIFTX11_TRACE_DUMP_70_71
-    if (major == 70 || major == 71) {
-      dbg_dump_req("OP70/71", major, minor, len_words, payload, remain);
-    } else if ( major == 12 ) {
-      fprintf(stderr, "[SwiftX11] DISPATCH major=%u, ConfigureWindow\n", (unsigned)major );
-    }
-    #endif
     
 //#ifndef NDEBUG
 if (major == 62 || major == 63) {
@@ -4225,12 +4245,6 @@ if (major >= 128) {
 //zThe#endif    
     // Dispatch
     int handled = x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
-#ifndef NDEBUG
-    if (major == 1 || major == 8 || major == 10) {
-      fprintf(stderr, "[SwiftX11] bridge_dispatch major=%u handled=%d\n",
-              (unsigned)major, handled);
-    }
-#endif    
     if (!handled) {
       
       switch (major) {

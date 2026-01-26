@@ -22,7 +22,11 @@ private:
   static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
+  // Major  2: ChangeWindowAttributes
   void handleChangeWindowAttributes(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  
+  // Major 12: ConfigureWindow
+  void handleConfigureWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);
 };
 
 } // namespace x11

@@ -10,14 +10,22 @@
 #include "XProtoContext.hpp"
 #include "WindowTable.hpp"
 #include "ByteReader.hpp"
+#include "XProtoTransport.hpp"
 
-// Update C-side mirror event_mask during transition
+// Temp -- Update C-side mirror event_mask during transition
 #include "XProtoServerBridge.h"
+
+extern "C" {
+#include "x11_requests.h"
+}
+
 
 namespace x11 {
 
 WindowAttrOps::WindowAttrOps(XProtoRegistrar& reg) {
-  reg.registerMajor(2, &WindowAttrOps::onMajor, this); // ChangeWindowAttributes
+  reg.registerMajor( 2, &WindowAttrOps::onMajor, this); // ChangeWindowAttributes
+  reg.registerMajor(12, &WindowAttrOps::onMajor, this);  // ConfigureWindow
+
 }
 
 void WindowAttrOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -27,7 +35,8 @@ void WindowAttrOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc)
 
 void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 2: handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
+    case 2:  handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
+    case 12: handleConfigureWindow(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowAttrOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -77,4 +86,66 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
   x11_xproto_c_set_window_event_mask(wid, cur_mask);
 }
 
+  void WindowAttrOps::handleConfigureWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+    // Body (after 4-byte header):
+    //   CARD32 window
+    //   CARD16 valueMask
+    //   CARD16 pad
+    //   LISTofCARD32 values
+    if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+
+    const uint32_t wid   = br.readU32();
+    const uint16_t vmask = br.readU16();
+    (void)br.readU16(); // pad
+
+    // Pull current values (so “partial configure” keeps the rest)
+    int16_t  x = 0, y = 0;
+    uint16_t w = 1, h = 1;
+
+    if (const WindowView* vw = ctx.window(wid)) {
+      x = vw->x;
+      y = vw->y;
+      w = vw->w ? vw->w : 1;
+      h = vw->h ? vw->h : 1;
+    }
+
+    // Values are 32-bit units in bit order 0..15
+    for (uint32_t bit = 0; bit < 16; bit++) {
+      if ((vmask & (1u << bit)) == 0) continue;
+      if (br.remaining() < 4) break;
+      const uint32_t v = br.readU32();
+
+      switch (bit) {
+        case 0: x = (int16_t)v; break;          // X
+        case 1: y = (int16_t)v; break;          // Y
+        case 2: w = (uint16_t)v; if (w == 0) w = 1; break; // Width
+        case 3: h = (uint16_t)v; if (h == 0) h = 1; break; // Height
+        default: break; // ignore others for now
+      }
+    }
+
+    // Consume any trailing bytes (defensive)
+    br.skip(br.remaining());
+
+    // Update authoritative WindowTable
+    ctx.windows().setGeometry(wid, x, y, w, h);
+    
+    // keep C canonical state in sync (this is what makes drawing correct)
+    x11_xproto_apply_configure_from_cpp(wid, x, y, w, h, /*resize_fb=*/1);
+
+
+    // Tell Swift/shim side about configure (existing behavior)
+    x11_requests_push_configure(wid, (int32_t)w, (int32_t)h);
+
+    // Queue notifies based on latest window snapshot
+    if (const WindowView* vw2 = ctx.window(wid)) {
+      const bool wantCfg = ((vw2->event_mask & (1u << 17)) != 0);
+      const bool wantExp = ((vw2->event_mask & (1u << 15)) != 0); // don’t gate on mapped here
+      if (wantCfg || wantExp) {
+        ctx.transport().queueNotify(wid, wantCfg, wantExp);
+      }
+    }
+  }
+  
+  
 } // namespace x11

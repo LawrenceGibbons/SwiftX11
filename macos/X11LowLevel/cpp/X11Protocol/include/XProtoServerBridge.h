@@ -101,6 +101,16 @@ void x11_proto_bridge_window_debug_state(uint32_t xid,
 
 void x11_xproto_c_set_window_event_mask(uint32_t xid, uint32_t event_mask);
 
+
+// Apply ConfigureWindow result to C canonical window + framebuffer.
+// resize_fb = 1 means: if w/h changed, resize framebuffer with preserve+white-fill.
+void x11_xproto_apply_configure_from_cpp(uint32_t wid,
+                                        int16_t x, int16_t y,
+                                        uint16_t w, uint16_t h,
+                                        int resize_fb);
+
+  
+  
 #ifdef __cplusplus
 }
 #endif

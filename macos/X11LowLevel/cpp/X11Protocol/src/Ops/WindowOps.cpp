@@ -25,7 +25,6 @@ WindowOps::WindowOps(XProtoRegistrar& reg) {
   reg.registerMajor(8,  &WindowOps::onMajor, this);  // MapWindow
 //  reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
   reg.registerMajor(10, &WindowOps::onMajor, this);  // UnmapWindow
-//  reg.registerMajor(12, &WindowOps::onMajor, this);  // ConfigureWindow
 }
 
 void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -40,7 +39,6 @@ void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case 8:  handleMapWindow(ctx, dc.seq, dc.br); return;
     case 9:  handleMapSubwindows(ctx, dc.seq, dc.br); return;
     case 10: handleUnmapWindow(ctx, dc.seq, dc.br); return;
-    case 12: handleConfigureWindow(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -111,9 +109,4 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   x11_requests_push_unmap(wid);
 }
   
-void WindowOps::handleConfigureWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  br.skip(br.remaining());
-  // ctx.tracef("[WindowOps] ConfigureWindow (stub)\n");
-}
-
 } // namespace x11
