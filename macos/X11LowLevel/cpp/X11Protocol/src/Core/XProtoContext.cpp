@@ -5,12 +5,13 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "ReplyWriter.hpp"
-#include "XProtoContext.hpp"
-#include "XProtoTransport.hpp"
-
 #include <cstdio>
 #include <cstdlib>
+
+#include "XProtoContext.hpp"
+#include "ReplyWriter.hpp"
+#include "XProtoTransport.hpp"
+#include "WindowTable.hpp"
 
 namespace x11 {
 
@@ -36,10 +37,15 @@ XProtoTransport& XProtoContext::transport() {
 }
 
 const WindowView* XProtoContext::window(uint32_t xid) {
+  // 1) Prefer WindowTable if installed
+  if (window_table_) {
+    if (window_table_->snapshot(xid, scratch_)) return &scratch_;
+  }
+
+  // 2) Fallback to callback snapshot (old path)
   if (!lookup_) return nullptr;
-  scratch_ = WindowView{}; // reset
   if (!lookup_(xid, &scratch_, lookup_user_)) return nullptr;
   return &scratch_;
 }
-
+  
 } // namespace x11

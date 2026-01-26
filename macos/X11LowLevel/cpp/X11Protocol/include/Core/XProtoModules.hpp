@@ -8,17 +8,20 @@
 #pragma once
 #include "QueryOps.hpp"
 #include "AtomOps.hpp"
+#include "WindowOps.hpp"
 
 namespace x11 {
   
   struct XProtoModules {
-    QueryOps queryOps;
-    AtomOps atomOps;
+    QueryOps  queryOps;
+    AtomOps   atomOps;
+    WindowOps windowOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
     : queryOps(reg)
     , atomOps(reg)
+    , windowOps(reg)
     {}
   };
 }

@@ -17,8 +17,9 @@
 #include "XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
 #include "XProtoWindowLookupBridge.h"
 #include "QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
-
+#include "WindowTable.hpp"
 #include "XProtoModules.hpp"
+#include "XProtoContext.hpp"
 
 
 // Modules live for the lifetime of the session.
@@ -28,6 +29,7 @@ static std::atomic<x11::XProtoServer*> g_srv{nullptr};
 
 static bool c_lookup_window(uint32_t xid, x11::WindowView* out, void* /*user*/)
 {
+  fprintf(stderr, "[BRIDGE] c_lookup_window xid=0x%08X\n", (unsigned)xid);
   if (!out) return false;
 
   int16_t x=0,y=0;
@@ -64,7 +66,7 @@ extern "C" void x11_proto_bridge_begin_session(int client_fd)
   }
   
   // 2) Configure server plumbing for THIS session.
-  srv->setWindowLookup(&c_lookup_window, nullptr);
+  //srv->setWindowLookup(&c_lookup_window, nullptr);
   srv->attachClientFd(client_fd);
   srv->setXprotoThreadSelf();
   
@@ -269,10 +271,110 @@ extern "C" void x11_proto_bridge_send_query_tree_children(const uint32_t* childr
   srv->transport().sendReplyBytes(out, (size_t)nchildren * 4u);
 }
 
-extern "C" void x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
+extern "C" int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                                          const uint8_t* payload, size_t remain)
 {
   auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+  return srv->dispatch(major, minor, seq, payload, remain) ? 1 : 0;
+}
+
+
+extern "C" void x11_proto_bridge_window_upsert(uint32_t xid, uint32_t parent,
+                                               int16_t x, int16_t y,
+                                               uint16_t w, uint16_t h,
+                                               uint32_t event_mask,
+                                               int owner_fd)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
   if (!srv) return;
-  srv->dispatch(major, minor, seq, payload, remain);
+  srv->ctx().windows().upsert(xid, parent, x, y, w, h, event_mask, owner_fd);
+}
+
+extern "C" void x11_proto_bridge_window_erase(uint32_t xid)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().windows().erase(xid);
+}
+
+extern "C" void x11_proto_bridge_window_set_mapped(uint32_t xid, int mapped)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().windows().setMapped(xid, mapped != 0);
+}
+
+extern "C" void x11_proto_bridge_window_set_presentable(uint32_t xid, int presentable)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().windows().setPresentable(xid, presentable != 0);
+}
+
+extern "C" void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t event_mask)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().windows().setEventMask(xid, event_mask);
+  fprintf(stderr, "[BRIDGE] set_event_mask xid=0x%08X mask=0x%08X\n", xid, event_mask);
+}
+
+extern "C" void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().windows().setGeometry(xid, x, y, w, h);
+}
+
+extern "C" int x11_proto_bridge_window_is_ready_to_present(uint32_t xid)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+  srv->ctx().windows().isReadyToPresent(xid);
+  return srv->ctx().windows().isReadyToPresent(xid) ? 1 : 0;
+}
+
+extern "C" void x11_proto_bridge_window_mark_dirty(uint32_t xid)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().windows().markDirty(xid);
+}
+
+extern "C" int x11_proto_bridge_window_consume_dirty_if_ready(uint32_t xid)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return 0;
+  return srv->ctx().windows().consumeDirtyIfReady(xid) ? 1 : 0;
+}
+
+extern "C" void x11_proto_bridge_window_debug_state(uint32_t xid,
+                                                    uint32_t* out_parent,
+                                                    int* out_mapped,
+                                                    int* out_presentable,
+                                                    int* out_dirty,
+                                                    int* out_owner_fd)
+{
+  if (out_parent)      *out_parent = 0;
+  if (out_mapped)      *out_mapped = 0;
+  if (out_presentable) *out_presentable = 0;
+  if (out_dirty)       *out_dirty = 0;
+  if (out_owner_fd)    *out_owner_fd = -1;
+
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+
+  x11::WindowView vw{};
+  if (!srv->ctx().windows().snapshot(xid, vw)) {
+    // fallback to old callback snapshot if you want:
+    // if (!srv->ctx().snapshotViaCallback(xid, vw)) return;
+    return;
+  }
+
+  if (out_parent)      *out_parent = vw.parent_xid;     // see note below
+  if (out_mapped)      *out_mapped = vw.mapped ? 1 : 0;
+  if (out_presentable) *out_presentable = vw.presentable ? 1 : 0; // see note below
+  if (out_dirty)       *out_dirty = vw.dirty ? 1 : 0;             // see note below
+  if (out_owner_fd)    *out_owner_fd = vw.owner_fd;
 }

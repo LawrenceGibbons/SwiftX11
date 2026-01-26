@@ -1,86 +1,121 @@
-//
 //  WindowOps.cpp
 //  X11LowLevel
 //
-//  Created by Lawrence Gibbons on 1/19/26.
+//  Created by Lawrence Gibbons on 1/24/26.
 //
 
 #include "WindowOps.hpp"
 
-// Temporary stand-ins so this compiles before you introduce shared headers.
-// Delete these once XProtoServerState / XProtoRequestContext exist for real.
-struct XProtoServerState {};
-struct XProtoRequestContext {};
+#include "XProtoContext.hpp"
+#include "ByteReader.hpp"
+#include "XProtoTransport.hpp"
+#include "WindowTable.hpp"
+#include "x11_requests.h"
+#include "XProtoWindowBridge.h"
+#include "XProtoWindowLookupBridge.h"
 
-void WindowOps::handleCreateWindow(uint8_t /*depth*/,
-                                   const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - parse CreateWindow fixed fields (wid, parent, x/y, w/h, visual, valueMask)
-  // - allocate window slot + backing store in xproto state
-  // - record parent_xid, owner_fd, event_mask from value-list (CWEventMask)
-  // - enqueue create request to shim (or push X11_EV_WINDOW_CREATE in unified event path)
+namespace x11 {
+
+WindowOps::WindowOps(XProtoRegistrar& reg) {
+//  reg.registerMajor(1,  &WindowOps::onMajor, this);  // CreateWindow
+//  reg.registerMajor(2,  &WindowOps::onMajor, this);  // ChangeWindowAttributes
+//  reg.registerMajor(4,  &WindowOps::onMajor, this);  // DestroyWindow
+  reg.registerMajor(8,  &WindowOps::onMajor, this);  // MapWindow
+//  reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
+  reg.registerMajor(10, &WindowOps::onMajor, this);  // UnmapWindow
+//  reg.registerMajor(12, &WindowOps::onMajor, this);  // ConfigureWindow
 }
 
-void WindowOps::handleChangeWindowAttributes(const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - parse wid, valueMask, value-list
-  // - apply CWEventMask (and later CWBackPixel/CWColormap/etc.)
+void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
+  if (!user) { dc.br.skip(dc.br.remaining()); return; }
+  static_cast<WindowOps*>(user)->handle(ctx, dc);
 }
 
-void WindowOps::handleGetWindowAttributes(int /*clientFd*/, uint16_t /*seq*/,
-                                          const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - reply with mapState, event masks, visual, colormap, etc.
-  // - keep reply building centralized (ctx helpers)
+void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
+  switch (dc.major) {
+    case 1:  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
+    case 2:  handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
+    case 4:  handleDestroyWindow(ctx, dc.seq, dc.br); return;
+    case 8:  handleMapWindow(ctx, dc.seq, dc.br); return;
+    case 9:  handleMapSubwindows(ctx, dc.seq, dc.br); return;
+    case 10: handleUnmapWindow(ctx, dc.seq, dc.br); return;
+    case 12: handleConfigureWindow(ctx, dc.seq, dc.br); return;
+    default:
+      dc.br.skip(dc.br.remaining());
+      ctx.tracef("[WindowOps] unexpected major=%u\n", (unsigned)dc.major);
+      return;
+  }
 }
 
-void WindowOps::handleDestroyWindow(const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - remove window from xproto state, free backing store
-  // - enqueue destroy request to shim and/or emit destroy event
+// ---- STUBS ----
+// For now, just consume the request body so clients keep going.
+// We’ll port each handler one-by-one from x11_xproto.c, keeping C authoritative
+// until we’re ready to move window state into C++.
+
+void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br) {
+  br.skip(br.remaining());
+  // ctx.tracef("[WindowOps] CreateWindow (stub)\n");
 }
 
-void WindowOps::handleMapWindow(int /*clientFd*/, uint16_t /*seq*/,
-                                const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - mark mapped=1 in xproto truth
-  // - enqueue MAP to shim
-  // - if window has pending dirty content and is presentable, enqueue damage
-  // - if ExposureMask selected, send Expose event (queued, not written cross-thread)
+void WindowOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  br.skip(br.remaining());
+  // ctx.tracef("[WindowOps] ChangeWindowAttributes (stub)\n");
 }
 
-void WindowOps::handleMapSubwindows(int /*clientFd*/, uint16_t /*seq*/,
-                                    const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - walk subtree; mark children mapped
-  // - enqueue MAP for each
-  // - Expose per child if requested
+void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  br.skip(br.remaining());
+  // ctx.tracef("[WindowOps] DestroyWindow (stub)\n");
 }
 
-void WindowOps::handleUnmapWindow(const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - mark mapped=0; defer damage until re-map
-  // - enqueue UNMAP to shim
+void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Request body: CARD32 window
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t wid = br.readU32();
+  br.skip(br.remaining());
+
+  // 1) Update authoritative table
+  ctx.windows().setMapped(wid, true);
+
+  // 2) Swift-side event (existing behavior)
+  x11_requests_push_map(wid);
+
+  // 3) Expose to client *if client selected ExposureMask*
+  // We don't have the C w->event_mask anymore, so query via ctx.window()
+  if (const WindowView* vw = ctx.window(wid)) {
+    const bool wantExp = ((vw->event_mask & (1u<<15)) != 0);
+    const bool wantCfg = ((vw->event_mask & (1u<<17)) != 0);
+    if (wantExp || wantCfg) {
+      ctx.transport().queueNotify(wid, wantCfg, wantExp);
+    }
+  }
+
+  // 4) If drawing happened before map/presentable, flush once now
+  if (ctx.windows().consumeDirtyIfReady(wid)) {
+    x11_requests_push_damage(wid);
+  }
 }
 
-void WindowOps::handleConfigureWindow(int /*clientFd*/, uint16_t /*seq*/,
-                                      const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - parse vmask+values; apply x/y/w/h
-  // - if size changes: resize backing store (preserve overlap)
-  // - enqueue CONFIGURE to shim
-  // - if StructureNotifyMask: queue ConfigureNotify
-  // - if ExposureMask and mapped: queue Expose
+void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  br.skip(br.remaining());
+  // ctx.tracef("[WindowOps] MapSubwindows (stub)\n");
 }
 
-void WindowOps::handleGetGeometry(int /*clientFd*/, uint16_t /*seq*/,
-                                  const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - reply with root, x/y, w/h, borderWidth, depth
+void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t wid = br.readU32();
+  br.skip(br.remaining());
+
+  ctx.windows().setMapped(wid, false);
+
+  // ensure it will repaint after next map/presentable
+  ctx.windows().markDirty(wid);
+
+  x11_requests_push_unmap(wid);
+}
+  
+void WindowOps::handleConfigureWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  br.skip(br.remaining());
+  // ctx.tracef("[WindowOps] ConfigureWindow (stub)\n");
 }
 
-void WindowOps::handleQueryTree(int /*clientFd*/, uint16_t /*seq*/,
-                                const uint8_t* /*payload*/, std::size_t /*len*/) {
-  // TODO:
-  // - reply with root, parent, list of children
-}
+} // namespace x11

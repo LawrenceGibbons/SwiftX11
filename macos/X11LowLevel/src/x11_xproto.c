@@ -425,6 +425,35 @@ static ssize_t win_add(uint32_t xid)
   return (ssize_t)idx;
 }
 
+
+#ifndef NDEBUG
+static void dbg_dump_windows_brief(const char* tag, uint32_t target_xid) {
+  fprintf(stderr, "[SwiftX11][SNAP] %s: target=0x%08X g_wins_n=%zu\n",
+          tag, (unsigned)target_xid, g_wins_n);
+
+  // Dump up to first 64 windows for sanity.
+  size_t limit = g_wins_n < 64 ? g_wins_n : 64;
+  for (size_t i = 0; i < limit; i++) {
+    const x11_win_t* w = &g_wins[i];
+    if (!w->xid) continue;
+
+    fprintf(stderr,
+            "[SwiftX11][SNAP]   i=%zu xid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u mapped=%u presentable=%u dirty=%u owner_fd=%d mask=0x%08X\n",
+            i,
+            (unsigned)w->xid,
+            (unsigned)w->parent,
+            (int)w->x, (int)w->y,
+            (unsigned)w->w, (unsigned)w->h,
+            (unsigned)w->mapped,
+            (unsigned)w->presentable,
+            (unsigned)w->dirty,
+            (int)w->owner_fd,
+            (unsigned)w->event_mask);
+  }
+}
+#endif
+
+
 int x11_xproto_snapshot_window_view(uint32_t xid,
                                    int16_t* out_x,
                                    int16_t* out_y,
@@ -434,16 +463,68 @@ int x11_xproto_snapshot_window_view(uint32_t xid,
                                    int* out_mapped,
                                    int* out_owner_fd)
 {
-  x11_win_t* w = win_find(xid);
-  if (!w) return 0;
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11][SNAP] ENTER xid=0x%08X\n", (unsigned)xid);
+#endif
+  const x11_win_t* found = NULL;
+  size_t found_i = (size_t)-1;
 
-  if (out_x) *out_x = w->x;
-  if (out_y) *out_y = w->y;
-  if (out_w) *out_w = w->w;
-  if (out_h) *out_h = w->h;
-  if (out_event_mask) *out_event_mask = w->event_mask;
-  if (out_mapped) *out_mapped = (int)w->mapped;
-  if (out_owner_fd) *out_owner_fd = w->owner_fd;
+  // Scan g_wins[] linearly (don’t call win_find yet; we want to verify it)
+  for (size_t i = 0; i < g_wins_n; i++) {
+    const x11_win_t* w = &g_wins[i];
+    if (w->xid == xid) {
+      found = w;
+      found_i = i;
+      break;
+    }
+  }
+
+  if (!found) {
+#ifndef NDEBUG
+    fprintf(stderr, "[SwiftX11][SNAP] NOT FOUND xid=0x%08X\n", (unsigned)xid);
+    dbg_dump_windows_brief("NOT_FOUND_DUMP", xid);
+
+    // Also try to find “neighbors”: host/child patterns
+    // (This is helpful if you know host is xid-1 or parent is 0x1000000A, etc.)
+#endif
+    return 0;
+  }
+
+#ifndef NDEBUG
+  fprintf(stderr, "[SwiftX11][SNAP] FOUND xid=0x%08X at i=%zu parent=0x%08X owner_fd=%d mapped=%u presentable=%u dirty=%u mask=0x%08X wh=%ux%u\n",
+          (unsigned)xid,
+          found_i,
+          (unsigned)found->parent,
+          (int)found->owner_fd,
+          (unsigned)found->mapped,
+          (unsigned)found->presentable,
+          (unsigned)found->dirty,
+          (unsigned)found->event_mask,
+          (unsigned)found->w,
+          (unsigned)found->h);
+#endif
+
+  // Fill outputs (use found-> fields)
+  if (out_x) *out_x = found->x;
+  if (out_y) *out_y = found->y;
+  if (out_w) *out_w = found->w;
+  if (out_h) *out_h = found->h;
+  if (out_event_mask) *out_event_mask = found->event_mask;
+  if (out_mapped) *out_mapped = found->mapped ? 1 : 0;
+  if (out_owner_fd) *out_owner_fd = found->owner_fd;
+
+//  x11_win_t* w = win_find(xid);
+//  if (!w) {    
+//    return 0;
+//  }
+//  
+//  if (out_x) *out_x = w->x;
+//  if (out_y) *out_y = w->y;
+//  if (out_w) *out_w = w->w;
+//  if (out_h) *out_h = w->h;
+//  if (out_event_mask) *out_event_mask = w->event_mask;
+//  if (out_mapped) *out_mapped = (int)w->mapped;
+//  if (out_owner_fd) *out_owner_fd = w->owner_fd;
   return 1;
 }
 
@@ -536,27 +617,22 @@ fprintf(stderr, "[SwiftX11] xproto: copy_window_bgra ENTER xid=0x%08X out_bytes=
 
 static void enqueue_damage_window(uint32_t xid)
 {
-  // Defer damage while unmapped.
-  // Clients often draw before MapWindow; if we deliver DAMAGE before CREATE/MAP
-  // reaches the shim, the shim may later create/clear and overwrite (flash->white).
-  x11_win_t* w = win_find(xid);
-  if (w && !w->mapped) {
-    w->dirty = 1;
-  #ifndef NDEBUG
-    fprintf(stderr, "[SwiftX11] enqueue_damage_window: xid=0x%08X deferred (unmapped)\n", (unsigned)xid);
-  #endif
+  // Defer damage while not ready (unmapped or not presentable).
+  if (!x11_proto_bridge_window_is_ready_to_present(xid)) {
+    x11_proto_bridge_window_mark_dirty(xid);
+#ifndef NDEBUG
+  int mapped=0, presentable=0, dirty=0;
+  uint32_t parent=0;
+  int owner_fd=0;
+  x11_proto_bridge_window_debug_state(xid, &parent, &mapped, &presentable, &dirty, &owner_fd);
+  fprintf(stderr,
+    "[SwiftX11] defer: xid=0x%08X parent=0x%08X mapped=%d presentable=%d dirty=%d owner_fd=%d\n",
+    (unsigned)xid, (unsigned)parent, mapped, presentable, dirty, owner_fd);
+#endif
     return;
   }
   
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] enqueue_damage_window: xid=0x%08X -> x11_requests_push_damage\n",
-          (unsigned)xid);
-#endif
   int ok = x11_requests_push_damage(xid);
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] enqueue_damage_window: xid=0x%08X push_ok=%d\n",
-          (unsigned)xid, ok);
-#endif
 }
 
 // Record the xproto client thread so other threads can detect "not on xproto thread".
@@ -649,6 +725,40 @@ int x11_xproto_query_tree(uint32_t wid,
   *out_nchildren = n;
   return 1;
 }
+
+
+int x11_xproto_apply_map_window(uint32_t wid)
+{
+  if (wid == 0) return 0;
+  x11_win_t* w = win_find(wid);
+  if (!w) return 0;
+
+  // Match old handle_MapWindow behavior:
+  w->mapped = 1;
+  enqueue_map_window(wid);
+
+  // If anything drew while unmapped, flush exactly once now,
+  // but only if presentable.
+  if (w->dirty && w->presentable) {
+    w->dirty = 0;
+    enqueue_damage_window(wid);
+  }
+
+  return 1;
+}
+
+
+// x11_xproto.c
+int x11_xproto_window_set_mapped(uint32_t wid, int mapped)
+{
+  x11_win_t* w = win_find(wid);
+  if (!w) return 0;
+  w->mapped = mapped ? 1 : 0;
+  if (!mapped) w->dirty = 1; // matches your existing behavior
+  return 1;
+}
+
+
 extern int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
 
 static int x11_send_all(int fd, const void* buf, size_t n) {
@@ -1421,32 +1531,35 @@ static void handle_ChangeWindowAttributes(const uint8_t* payload, size_t remain)
   //   CARD32 valueMask
   //   LISTofCARD32 valueList
   if (remain < 8) return;
-
+  
   const uint32_t wid   = rd32(payload + 0);
   const uint32_t vmask = rd32(payload + 4);
-
+  
   x11_win_t* w = win_find(wid);
   if (!w) return;
-
+  
   const uint8_t* vp = payload + 8;
   size_t vrem = remain - 8;
   apply_value_list_updates_for_window(w, vmask, vp, vrem);
+  if (vmask & (1u << 11)) {
+    x11_proto_bridge_window_set_event_mask(wid, w->event_mask);
+  }
 }
 
-// UnmapWindow (major = 10)
-static void handle_UnmapWindow(int fd, const uint8_t* payload, size_t remain)
-{
-  (void)fd;
-  if (remain < 4) return;
-  uint32_t wid = rd32(payload + 0);
-  x11_win_t* w = win_find(wid);
-  if (!w) return;
-  w->mapped = 0;
-  w->dirty  = 1; // ensure next map triggers repaint
-  
-  // enqueue to shim
-  enqueue_unmap_window(wid);
-}
+// // UnmapWindow (major = 10)
+// static void handle_UnmapWindow(int fd, const uint8_t* payload, size_t remain)
+// {
+//   (void)fd;
+//   if (remain < 4) return;
+//   uint32_t wid = rd32(payload + 0);
+//   x11_win_t* w = win_find(wid);
+//   if (!w) return;
+//   w->mapped = 0;
+//   w->dirty  = 1; // ensure next map triggers repaint
+//   
+//   // enqueue to shim
+//   enqueue_unmap_window(wid);
+// }
 
 // MapSubwindows (major = 9) — maps all children (and descendants) of a window
 static void handle_MapSubwindows(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
@@ -1472,6 +1585,7 @@ static void handle_MapSubwindows(int fd, uint16_t seq, const uint8_t* payload, s
       // as a descendant of the target.
       if (ch->parent == parent) {
         ch->mapped = 1;
+        x11_proto_bridge_window_set_mapped(ch->xid, 1);
         changed = true;
       } else {
         x11_win_t* p = win_find(ch->parent);
@@ -1482,6 +1596,7 @@ static void handle_MapSubwindows(int fd, uint16_t seq, const uint8_t* payload, s
           // Since we are iterating until convergence and only start by mapping
           // direct children of `parent`, this is safe.
           ch->mapped = 1;
+          x11_proto_bridge_window_set_mapped(ch->xid, 1);
           changed = true;
         }
       }
@@ -1523,6 +1638,7 @@ static void handle_DestroyWindow(int fd, const uint8_t* payload, size_t remain)
   for (size_t i = 0; i < g_wins_n; i++) {
     if (g_wins[i].xid == wid) {
 
+      x11_proto_bridge_window_erase(wid);
       // free framebuffer for this slot
       if (g_framebuffers[i].pixels) {
         free(g_framebuffers[i].pixels);
@@ -1540,7 +1656,8 @@ static void handle_DestroyWindow(int fd, const uint8_t* payload, size_t remain)
       break;
     }
   }
-
+  x11_proto_bridge_window_erase(wid);
+  
   enqueue_destroy_window(wid);
 }
 
@@ -1603,7 +1720,10 @@ static void handle_ConfigureWindow(int fd, uint16_t seq, const uint8_t* payload,
   w->y = new_y;
   w->w = (new_w ? new_w : 1);
   w->h = (new_h ? new_h : 1);
-
+  if (w->x != new_x || w->y != new_y || w->w != old_w || w->h != old_h) {
+    x11_proto_bridge_window_set_geometry(wid, w->x, w->y, w->w, w->h);
+  }
+  
 #ifndef NDEBUG
   fprintf(stderr, "[SwiftX11] handle_ConfigureWindow (new): xid=0x%08X %dx%d\n",
         (unsigned)wid, (int)w->w, (int)w->h);
@@ -1775,7 +1895,9 @@ fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize: xid=0x%08X %dx%d\n",
   
   // Resize the top-level window + framebuffer.
   resize_window_and_fb(wid, new_w, new_h);
-
+  // Keep C++ authoritative WindowTable in sync
+  x11_proto_bridge_window_set_geometry(wid, w->x, w->y, new_w, new_h);
+  
   // Notify the owning client that geometry changed, so it can recompute & redraw.
   // IMPORTANT: do NOT write to the client socket from this thread.
   // Queue the notifications and let the xproto thread flush them.
@@ -1879,7 +2001,12 @@ fprintf(stderr,
 
     // Resize backing FB (and update w/h) using the shared helper.
     resize_window_and_fb(c->xid, cw1, ch1);
-
+    x11_proto_bridge_window_set_geometry(c->xid, c->x, c->y, cw1, ch1);
+    fprintf(stderr, "[SwiftX11] rootless_resize: resized child xid=0x%08X fb now %ux%u\n",
+            (unsigned)c->xid,
+            (unsigned)g_framebuffers[win_index(c->xid)].width,
+            (unsigned)g_framebuffers[win_index(c->xid)].height);
+    
     // Notify client on xproto thread.
     {
       x11_win_t* cc = win_find(c->xid);
@@ -2171,7 +2298,6 @@ static void handle_CreateWindow(uint8_t depth, const uint8_t* payload, size_t re
   fb->width  = (uint32_t)w->w;
   fb->height = (uint32_t)w->h;
 
-  const size_t npix = (size_t)fb->width * (size_t)fb->height;
   fb->pixels = (uint32_t*)malloc((size_t)fb->width * (size_t)fb->height * sizeof(uint32_t));
   if (fb->pixels) {
     const size_t npx = (size_t)fb->width * (size_t)fb->height;
@@ -2202,6 +2328,16 @@ static void handle_CreateWindow(uint8_t depth, const uint8_t* payload, size_t re
     w->event_mask = cur_mask;
   }
 
+  x11_proto_bridge_window_upsert(wid, parent, x, y, w->w, w->h, w->event_mask, g_current_client_fd);
+  // Mirror initial lifecycle state into WindowTable.
+  x11_proto_bridge_window_set_mapped(wid, 0);
+  x11_proto_bridge_window_set_presentable(wid, 0);
+
+  // If we allocated/cleared the FB, we consider it "dirty" until map+presentable flushes it.
+  if (w->dirty) {
+    x11_proto_bridge_window_mark_dirty(wid);
+  }
+  
   // enqueue to shim
   enqueue_create_window(wid, parent, w->x, w->y, w->w, w->h, w->event_mask);
 
@@ -2215,39 +2351,39 @@ static void handle_CreateWindow(uint8_t depth, const uint8_t* payload, size_t re
 }
 
 
-// map window (major = 8)
-static void handle_MapWindow(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-{
-  if (remain < 4) return;
-  uint32_t wid = rd32(payload + 0);
-  x11_win_t* w = win_find(wid);
-  if (!w) return;
-
-#if !defined(NDEBUG) && SWIFTX11_TRACE
-  fprintf(stderr,
-          "[SwiftX11] xproto: MapWindow wid=0x%08X seq=%u event_mask=0x%08X\n",
-          (unsigned)wid, (unsigned)seq, (unsigned)w->event_mask);
-#endif
-
-  // Mark mapped in xproto truth, then enqueue map once.
-  w->mapped = 1;
-  enqueue_map_window(wid);
-
-  // 3) If anything drew while unmapped, flush exactly once now,
-  //    but only if presentable
-  if (w->dirty  && w->presentable) {
-    w->dirty = 0;
-    enqueue_damage_window(wid); // now mapped, so it pushes
-  }
-
-//  if (w->event_mask & (1u << 15)) { // ExposureMask
+//// map window (major = 8)
+//static void handle_MapWindow(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 4) return;
+//  uint32_t wid = rd32(payload + 0);
+//  x11_win_t* w = win_find(wid);
+//  if (!w) return;
+//
+//#if !defined(NDEBUG) && SWIFTX11_TRACE
+//  fprintf(stderr,
+//          "[SwiftX11] xproto: MapWindow wid=0x%08X seq=%u event_mask=0x%08X\n",
+//          (unsigned)wid, (unsigned)seq, (unsigned)w->event_mask);
+//#endif
+//
+//  // Mark mapped in xproto truth, then enqueue map once.
+//  w->mapped = 1;
+//  enqueue_map_window(wid);
+//
+//  // 3) If anything drew while unmapped, flush exactly once now,
+//  //    but only if presentable
+//  if (w->dirty  && w->presentable) {
+//    w->dirty = 0;
+//    enqueue_damage_window(wid); // now mapped, so it pushes
+//  }
+//
+////  if (w->event_mask & (1u << 15)) { // ExposureMask
+////    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
+////  }
+//  if (w->event_mask & (1u << 15)) {
+//    //send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
 //    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
 //  }
-  if (w->event_mask & (1u << 15)) {
-    //send_Expose(fd, seq, wid, 0, 0, w->w, w->h, 0);
-    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
-  }
-}
+//}
 
 //// get geometry (major = 14)
 //static void handle_GetGeometry(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
@@ -3966,21 +4102,14 @@ static void handle_ClearArea(int fd, uint16_t seq, uint8_t exposures,
 void x11_xproto_set_window_presentable(uint32_t xid)
 {
   if (xid == 0) return;
-
+  
   x11_win_t* w = win_find(xid);
   if (!w) return;
-
-  w->presentable = 1;
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] xproto: WINDOW_PRESENTABLE xid=0x%08X mapped=%d dirty=%d\n",
-          (unsigned)xid, (int)w->mapped, (int)w->dirty);
-#endif
-
-  // If we already got drawing while not presentable/mapped, flush now.
-  if (w->mapped && w->dirty) {
-    w->dirty = 0;
-    enqueue_damage_window(xid); // uses your existing mapped/presentable deferral rules
+  
+  x11_proto_bridge_window_set_presentable(xid, 1);
+  
+  if (x11_proto_bridge_window_consume_dirty_if_ready(xid)) {
+    enqueue_damage_window(xid);
   }
 }
 
@@ -4082,124 +4211,118 @@ if (major >= 128) {
 }
 //zThe#endif    
     // Dispatch
-    switch (major) {
-      case 1: // CreateWindow
-        handle_CreateWindow(minor /*depth*/, payload, remain);
-        break;
-
-      case 2: // ChangeWindowAttributes
-        handle_ChangeWindowAttributes(payload, remain);
-        break;
-
-      case 3: // GetWindowAttributes
-        handle_GetWindowAttributes(cfd, seq, payload, remain);
-        break;
-
-      case 4: // DestroyWindow
-        handle_DestroyWindow(cfd, payload, remain);
-        break;
-
-      case 8: // MapWindow
-        handle_MapWindow(cfd, seq, payload, remain);
-        break;
-
-      case 9: // MapSubwindows
-        handle_MapSubwindows(cfd, seq, payload, remain);
-        break;
-
-      case 10: // UnmapWindow
-        handle_UnmapWindow(cfd, payload, remain);
-        break;
-
-      case 12: // ConfigureWindow
-        handle_ConfigureWindow(cfd, seq, payload, remain);
-        break;
-
-      case 14: // GetGeometry
-      case 15: // QueryTree
-      case 16: // InternAtom
-      case 17: // GetAtomName
-      case 38: // QueryPointer
-      case 43: // GetInputFocus
-        x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
-        break;
-
-      case 18: // ChangeProperty (no reply)
-        handle_ChangeProperty(minor /*mode*/, payload, remain);
-        break;
-        
-      case 20: // GetProperty
-        handle_GetProperty(cfd, seq, minor /*delete*/, payload, remain);
-        break;
-        
-      case 53: // CreatePixmap (no reply)
-        handle_CreatePixmap(minor /*depth*/, payload, remain);
-        break;
-
-      case 54: // FreePixmap (no reply)
-        handle_FreePixmap(payload, remain);
-        break;
-
-      case 55: // CreateGC (no reply)
-        handle_CreateGC(cfd, seq, payload, remain );
-        break;
-      case 56: // ChangeGC (no reply)
-        handle_ChangeGC(payload, remain);
-        break;
-
-      case 60: // FreeGC (no reply)
-        handle_FreeGC(payload, remain);
-        break;
-
-      case 61: // ClearArea (no reply; may generate Expose)
-        handle_ClearArea(cfd, seq, minor /*exposures*/, payload, remain);
-        break;
-
-      case 62: // CopyArea (no reply)
-        handle_CopyArea(payload, remain);
-        break;
-
-      case 63: // CopyPlane (no reply)
-        handle_CopyPlane(payload, remain);
-        break;
-        
-      case 68: // PolyArc (no reply)
-        handle_PolyArc(cfd, seq, payload, remain);
-        break;
-        
-      case 70: // PolyFillRectangle
-        handle_PolyFillRectangle(cfd, seq, payload, remain);
-        break;
-        
-      case 71: // PolyFillArc (no reply)
-        handle_PolyFillArc(cfd, seq, payload, remain);
-        break;
-        
-      case 72: // PutImage (no reply)
-        handle_PutImage(minor /*format*/, payload, remain);
-        break;
-        
-      case 91: // QueryColors
-        handle_QueryColors(cfd, seq, payload, remain);
-        break;
-
-      case 98: // QueryExtension
-        handle_QueryExtension(cfd, seq);
-        break;
-
-      case 99: // ListExtensions
-        handle_ListExtensions(cfd, seq);
-        break;
-
-      default:
-      #ifndef NDEBUG
-        fprintf(stderr,
-                "[SwiftX11] xproto: UNHANDLED major=%u minor=%u len_words=%u remain=%zu\n******************************************************************************************\n",
-                (unsigned)major, (unsigned)minor, (unsigned)len_words, remain);
-      #endif
-        break;
+    int handled = x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
+#ifndef NDEBUG
+    if (major == 1 || major == 8 || major == 10) {
+      fprintf(stderr, "[SwiftX11] bridge_dispatch major=%u handled=%d\n",
+              (unsigned)major, handled);
     }
-
+#endif    
+    if (!handled) {
+      
+      switch (major) {
+        case 1: // CreateWindow
+          handle_CreateWindow(minor /*depth*/, payload, remain);
+          break;
+          
+        case 2: // ChangeWindowAttributes
+          handle_ChangeWindowAttributes(payload, remain);
+          break;
+          
+        case 3: // GetWindowAttributes
+          handle_GetWindowAttributes(cfd, seq, payload, remain);
+          break;
+          
+        case 4: // DestroyWindow
+          handle_DestroyWindow(cfd, payload, remain);
+          break;
+          
+          
+        case 9: // MapSubwindows
+          handle_MapSubwindows(cfd, seq, payload, remain);
+          break;
+          
+        case 12: // ConfigureWindow
+          handle_ConfigureWindow(cfd, seq, payload, remain);
+          break;
+          
+        case 18: // ChangeProperty (no reply)
+          handle_ChangeProperty(minor /*mode*/, payload, remain);
+          break;
+          
+        case 20: // GetProperty
+          handle_GetProperty(cfd, seq, minor /*delete*/, payload, remain);
+          break;
+          
+        case 53: // CreatePixmap (no reply)
+          handle_CreatePixmap(minor /*depth*/, payload, remain);
+          break;
+          
+        case 54: // FreePixmap (no reply)
+          handle_FreePixmap(payload, remain);
+          break;
+          
+        case 55: // CreateGC (no reply)
+          handle_CreateGC(cfd, seq, payload, remain );
+          break;
+        case 56: // ChangeGC (no reply)
+          handle_ChangeGC(payload, remain);
+          break;
+          
+        case 60: // FreeGC (no reply)
+          handle_FreeGC(payload, remain);
+          break;
+          
+        case 61: // ClearArea (no reply; may generate Expose)
+          handle_ClearArea(cfd, seq, minor /*exposures*/, payload, remain);
+          break;
+          
+        case 62: // CopyArea (no reply)
+          handle_CopyArea(payload, remain);
+          break;
+          
+        case 63: // CopyPlane (no reply)
+          handle_CopyPlane(payload, remain);
+          break;
+          
+        case 68: // PolyArc (no reply)
+          handle_PolyArc(cfd, seq, payload, remain);
+          break;
+          
+        case 70: // PolyFillRectangle
+          handle_PolyFillRectangle(cfd, seq, payload, remain);
+          break;
+          
+        case 71: // PolyFillArc (no reply)
+          handle_PolyFillArc(cfd, seq, payload, remain);
+          break;
+          
+        case 72: // PutImage (no reply)
+          handle_PutImage(minor /*format*/, payload, remain);
+          break;
+          
+        case 91: // QueryColors
+          handle_QueryColors(cfd, seq, payload, remain);
+          break;
+          
+        case 98: // QueryExtension
+          handle_QueryExtension(cfd, seq);
+          break;
+          
+        case 99: // ListExtensions
+          handle_ListExtensions(cfd, seq);
+          break;
+          
+        default:
+#ifndef NDEBUG
+          fprintf(stderr,
+                  "[SwiftX11] xproto: UNHANDLED major=%u minor=%u len_words=%u remain=%zu\n******************************************************************************************\n",
+                  (unsigned)major, (unsigned)minor, (unsigned)len_words, remain);
+#endif
+          break;
+      }
+    }
+    
     // Flush again after handling a request so synthetic events don't backlog behind traffic.
     x11_proto_bridge_flush_notify_queue();
     //flush_notify_queue(cfd);
@@ -4220,6 +4343,7 @@ if (major >= 128) {
     for (size_t i = 0; i < g_wins_n; ) {
       if (g_wins[i].owner_fd == cfd) {
         uint32_t wid = g_wins[i].xid;
+        x11_proto_bridge_window_erase(wid);
 
         prop_delete_all_for_window(wid);
 

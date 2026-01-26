@@ -17,6 +17,7 @@
 #include "XProtoRegistrar.hpp"
 #include "ReplyWriter.hpp"
 #include "ByteReader.hpp"
+#include "WindowTable.hpp"
 
 namespace x11 {
 
@@ -45,7 +46,7 @@ public:
   // Dispatch one decoded X11 request body into C++ ops.
   // `seq` is the server-side request sequence number you are already tracking.
   void registerMajor(uint8_t major, HandlerFn fn, void* user) override;
-  void dispatch(uint8_t major, uint8_t minor, uint16_t seq,
+  int  dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                 const uint8_t* payload, std::size_t remain);
 
   // Transport plumbing.
@@ -77,6 +78,7 @@ private:
   bool lookupWindow(uint32_t xid, WindowView* out);
 
 private:
+  WindowTable windows_;
   XProtoContext   ctx_;
 
   // opcode-family modules
