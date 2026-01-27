@@ -59,11 +59,11 @@ int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                                 const uint8_t* payload, size_t remain);
 
   
-void x11_proto_bridge_window_upsert(uint32_t xid, uint32_t parent,
-                                   int16_t x, int16_t y,
-                                   uint16_t w, uint16_t h,
-                                   uint32_t event_mask,
-                                   int owner_fd);
+//void x11_proto_bridge_window_upsert(uint32_t xid, uint32_t parent,
+//                                   int16_t x, int16_t y,
+//                                   uint16_t w, uint16_t h,
+//                                   uint32_t event_mask,
+//                                   int owner_fd);
 
 void x11_proto_bridge_window_erase(uint32_t xid);
 

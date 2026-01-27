@@ -11,16 +11,19 @@
 #include "XProtoTransport.hpp"
 #include "WindowTable.hpp"
 #include "x11_requests.h"
-#include "XProtoWindowBridge.h"
-#include "XProtoWindowLookupBridge.h"
+
 
 // temp
 #include "x11_window_set_mapped.h"
+#include "XProtoWindowBridge.h"
+#include "XProtoWindowLookupBridge.h"
+#include "XProtoWindowCBridge.h"
+#include <cstdio>   // snprintf
 
 namespace x11 {
 
 WindowOps::WindowOps(XProtoRegistrar& reg) {
-//  reg.registerMajor(1,  &WindowOps::onMajor, this);  // CreateWindow
+  reg.registerMajor(1,  &WindowOps::onMajor, this);  // CreateWindow
 //  reg.registerMajor(4,  &WindowOps::onMajor, this);  // DestroyWindow
   reg.registerMajor(8,  &WindowOps::onMajor, this);  // MapWindow
 //  reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
@@ -51,11 +54,63 @@ void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 // We’ll port each handler one-by-one from x11_xproto.c, keeping C authoritative
 // until we’re ready to move window state into C++.
 
-void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br) {
-  br.skip(br.remaining());
-  // ctx.tracef("[WindowOps] CreateWindow (stub)\n");
-}
+void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br)
+{
+  // Matches C: remain < 28 guard (but here br is already the "remain" region)
+  if (br.remaining() < 28) { br.skip(br.remaining()); return; }
 
+  const uint32_t wid    = br.readU32();
+  const uint32_t parent = br.readU32();
+  const int16_t  x      = (int16_t)br.readU16();
+  const int16_t  y      = (int16_t)br.readU16();
+  uint16_t wpx          = br.readU16();
+  uint16_t hpx          = br.readU16();
+
+  (void)br.readU16(); // borderWidth
+  (void)br.readU16(); // class
+  (void)br.readU32(); // visual
+  const uint32_t vmask = br.readU32();
+
+  // Parse value-list for CWEventMask (bit 11), same as your C code.
+  uint32_t event_mask = 0;
+  if (vmask & (1u << 11)) {
+    for (uint32_t bit = 0; bit < 32; bit++) {
+      if (!(vmask & (1u << bit))) continue;
+      if (br.remaining() < 4) break;
+      const uint32_t val = br.readU32();
+      if (bit == 11) event_mask = val;
+    }
+  } else {
+    // Still must consume any remaining value list/padding
+    // (Some clients include extra padding; safest is to just skip remaining.)
+  }
+
+  // Consume any extra trailing bytes/padding
+  br.skip(br.remaining());
+
+  // Update authoritative WindowTable (C++ side)
+  const int owner_fd = ctx.transport().clientFd();
+  ctx.windows().upsert(wid, parent, x, y, (wpx ? wpx : 1), (hpx ? hpx : 1), event_mask, owner_fd);
+  ctx.windows().setMapped(wid, false);
+  ctx.windows().setPresentable(wid, false);
+
+  // Allocate/refresh C-side slot+FB
+  int dirty = 0;
+  if (!x11_xproto_c_create_window_slot(wid, parent, x, y, wpx, hpx, event_mask, owner_fd, &dirty)) {
+    ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
+    return;
+  }
+  if (dirty) ctx.windows().markDirty(wid);
+
+  // Enqueue Swift window creation (same behavior as enqueue_create_window)
+  // NOTE: If enqueue_create_window is C-static, call the request queue directly.
+  // This matches your existing enqueue_create_window() implementation.
+  char title[64];
+  snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
+  x11_requests_push_create(wid, parent, title, (int32_t)(wpx ? wpx : 1), (int32_t)(hpx ? hpx : 1));
+}
+  
+  
 void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
   // ctx.tracef("[WindowOps] DestroyWindow (stub)\n");

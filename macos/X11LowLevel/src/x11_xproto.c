@@ -33,14 +33,14 @@ static const char* atoms_name(uint32_t atom, size_t* out_len);
 // -----------------------------------------------------------------------------
 // enqueue requests to be consumed by x11_shim (via x11_requests_* queue)
 // -----------------------------------------------------------------------------
-static void enqueue_create_window(uint32_t xid, uint32_t parent, int16_t x, int16_t y,
-                                  uint16_t w, uint16_t h, uint32_t event_mask)
-{
-  (void)parent; (void)x; (void)y; (void)event_mask;
-  char title[64];
-  snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)xid);
-  (void)x11_requests_push_create(xid, parent, title, (int32_t)w, (int32_t)h);
-}
+//static void enqueue_create_window(uint32_t xid, uint32_t parent, int16_t x, int16_t y,
+//                                  uint16_t w, uint16_t h, uint32_t event_mask)
+//{
+//  (void)parent; (void)x; (void)y; (void)event_mask;
+//  char title[64];
+//  snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)xid);
+//  (void)x11_requests_push_create(xid, parent, title, (int32_t)w, (int32_t)h);
+//}
 
 static void enqueue_destroy_window(uint32_t xid)
 {
@@ -674,6 +674,65 @@ static int x11_send_all_fd(int fd, const void* buf, size_t n)
   return 1;
 }
 
+#include "XProtoWindowCBridge.h" // add near other includes
+
+int x11_xproto_c_create_window_slot(uint32_t wid,
+                                   uint32_t parent,
+                                   int16_t x,
+                                   int16_t y,
+                                   uint16_t wpx,
+                                   uint16_t hpx,
+                                   uint32_t event_mask,
+                                   int owner_fd,
+                                   int* out_dirty)
+{
+  if (out_dirty) *out_dirty = 0;
+  if (wid == 0) return 0;
+
+  // Create or overwrite (idempotent-ish), keep alignment g_wins[] <-> g_framebuffers[].
+  ssize_t idx = win_index(wid);
+  if (idx < 0) idx = win_add(wid);
+  if (idx < 0) return 0;
+
+  x11_win_t* w = &g_wins[(size_t)idx];
+
+  // Mirror exactly what handle_CreateWindow used to do
+  w->parent      = parent;
+  w->x           = x;
+  w->y           = y;
+  w->w           = (wpx ? wpx : 1);
+  w->h           = (hpx ? hpx : 1);
+  w->mapped      = 0;
+  w->dirty       = 0;
+  w->event_mask  = event_mask;
+  w->presentable = 0;
+  w->owner_fd    = owner_fd;
+
+  // Initialize/re-init framebuffer at SAME index.
+  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
+
+  if (fb->pixels) {
+    free(fb->pixels);
+    fb->pixels = NULL;
+  }
+
+  fb->width  = (uint32_t)w->w;
+  fb->height = (uint32_t)w->h;
+
+  fb->pixels = (uint32_t*)malloc((size_t)fb->width * (size_t)fb->height * sizeof(uint32_t));
+  if (fb->pixels) {
+    const size_t npx = (size_t)fb->width * (size_t)fb->height;
+    for (size_t i = 0; i < npx; i++) fb->pixels[i] = 0xFFFFFFFFu;
+    w->dirty = 1;
+    if (out_dirty) *out_dirty = 1;
+  } else {
+    fb->width = 0;
+    fb->height = 0;
+    return 0; // safest: fail hard if FB alloc fails
+  }
+
+  return 1;
+}
 // in x11_xproto.c
 void x11_xproto_c_window_set_mapped(uint32_t xid, int mapped) {
   x11_win_t* w = win_find(xid);
@@ -1581,6 +1640,7 @@ static void handle_MapSubwindows(int fd, uint16_t seq, const uint8_t* payload, s
 #endif
         // enqueue to shim
         enqueue_map_window(ch->xid);
+        x11_proto_bridge_window_set_mapped(ch->xid, 1);
         
         if (ch->dirty) {
           ch->dirty = 0;
@@ -2246,110 +2306,110 @@ static void handle_FreeGC(const uint8_t* payload, size_t remain)
 }
 
 // create window (major = 1)
-static void handle_CreateWindow(uint8_t depth, const uint8_t* payload, size_t remain)
-{
-  // CreateWindow request body (after 4-byte header) begins with:
-  // 4: wid
-  // 4: parent
-  // 2: x
-  // 2: y
-  // 2: width
-  // 2: height
-  // 2: borderWidth
-  // 2: class
-  // 4: visual
-  // 4: valueMask
-  // then value-list (optional)
-  if (remain < 28) return;
-
-  uint32_t wid    = rd32(payload + 0);
-  uint32_t parent = rd32(payload + 4);
-  int16_t  x      = (int16_t)rd16(payload + 8);
-  int16_t  y      = (int16_t)rd16(payload + 10);
-  uint16_t wpx    = rd16(payload + 12);
-  uint16_t hpx    = rd16(payload + 14);
-  uint32_t vmask  = rd32(payload + 24);
-
-  // Create or overwrite (idempotent-ish for now), but always resolve an index so
-  // g_wins[] and g_framebuffers[] stay aligned.
-  ssize_t idx = win_index(wid);
-  if (idx < 0) idx = win_add(wid);
-  if (idx < 0) return;
-
-  x11_win_t* w = &g_wins[(size_t)idx];
-
-  w->parent      = parent;
-  w->x           = x; w->y = y;
-  w->w           = (wpx ? wpx : 1);
-  w->h           = (hpx ? hpx : 1);
-  w->mapped      = 0;
-  w->dirty       = 0;
-  w->event_mask  = 0;
-  w->presentable = 0;
-  w->owner_fd    = g_current_client_fd;
-
-  // Initialize (or re-initialize) framebuffer for this window at the SAME index.
-  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-
-  if (fb->pixels) {
-    free(fb->pixels);
-    fb->pixels = NULL;
-  }
-
-  fb->width  = (uint32_t)w->w;
-  fb->height = (uint32_t)w->h;
-
-  fb->pixels = (uint32_t*)malloc((size_t)fb->width * (size_t)fb->height * sizeof(uint32_t));
-  if (fb->pixels) {
-    const size_t npx = (size_t)fb->width * (size_t)fb->height;
-    for (size_t i = 0; i < npx; i++) fb->pixels[i] = 0xFFFFFFFFu;
-    w->dirty = 1;
-  } else {
-    fb->width = 0;
-    fb->height = 0;
-  }
-  
-  // If valueMask includes CWEventMask (bit 11) we should read it from value-list.
-  // valueMask bits are defined by X11; CWEventMask = (1<<11).
-  // value-list starts immediately after the fixed portion (28 bytes).
-  if (vmask & (1u << 11)) {
-    // value-list is 32-bit items in the order of bits set.
-    // For Phase A: we only care about CWEventMask, so we can scan in-order.
-    const uint8_t* vp = payload + 28;
-    size_t vrem = remain - 28;
-    uint32_t cur_mask = 0;
-
-    for (uint32_t bit = 0; bit < 32; bit++) {
-      if (!(vmask & (1u << bit))) continue;
-      if (vrem < 4) break;
-      uint32_t val = rd32(vp);
-      if (bit == 11) cur_mask = val; // CWEventMask
-      vp += 4; vrem -= 4;
-    }
-    w->event_mask = cur_mask;
-  }
-
-  x11_proto_bridge_window_upsert(wid, parent, x, y, w->w, w->h, w->event_mask, g_current_client_fd);
-  // Mirror initial lifecycle state into WindowTable.
-  x11_proto_bridge_window_set_mapped(wid, 0);
-  x11_proto_bridge_window_set_presentable(wid, 0);
-
-  // If we allocated/cleared the FB, we consider it "dirty" until map+presentable flushes it.
-  if (w->dirty) {
-    x11_proto_bridge_window_mark_dirty(wid);
-  }
-  
-  // enqueue to shim
-  enqueue_create_window(wid, parent, w->x, w->y, w->w, w->h, w->event_mask);
-
-#if !defined(NDEBUG) && SWIFTX11_TRACE
-  fprintf(stderr,
-          "[SwiftX11] xproto: CreateWindow wid=0x%08X parent=0x%08X vmask=0x%08X event_mask=0x%08X\n",
-          (unsigned)wid, (unsigned)parent, (unsigned)vmask, (unsigned)w->event_mask);
-#endif
-
-  (void)depth;
-}
+//static void handle_CreateWindow(uint8_t depth, const uint8_t* payload, size_t remain)
+//{
+//  // CreateWindow request body (after 4-byte header) begins with:
+//  // 4: wid
+//  // 4: parent
+//  // 2: x
+//  // 2: y
+//  // 2: width
+//  // 2: height
+//  // 2: borderWidth
+//  // 2: class
+//  // 4: visual
+//  // 4: valueMask
+//  // then value-list (optional)
+//  if (remain < 28) return;
+//
+//  uint32_t wid    = rd32(payload + 0);
+//  uint32_t parent = rd32(payload + 4);
+//  int16_t  x      = (int16_t)rd16(payload + 8);
+//  int16_t  y      = (int16_t)rd16(payload + 10);
+//  uint16_t wpx    = rd16(payload + 12);
+//  uint16_t hpx    = rd16(payload + 14);
+//  uint32_t vmask  = rd32(payload + 24);
+//
+//  // Create or overwrite (idempotent-ish for now), but always resolve an index so
+//  // g_wins[] and g_framebuffers[] stay aligned.
+//  ssize_t idx = win_index(wid);
+//  if (idx < 0) idx = win_add(wid);
+//  if (idx < 0) return;
+//
+//  x11_win_t* w = &g_wins[(size_t)idx];
+//
+//  w->parent      = parent;
+//  w->x           = x; w->y = y;
+//  w->w           = (wpx ? wpx : 1);
+//  w->h           = (hpx ? hpx : 1);
+//  w->mapped      = 0;
+//  w->dirty       = 0;
+//  w->event_mask  = 0;
+//  w->presentable = 0;
+//  w->owner_fd    = g_current_client_fd;
+//
+//  // Initialize (or re-initialize) framebuffer for this window at the SAME index.
+//  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
+//
+//  if (fb->pixels) {
+//    free(fb->pixels);
+//    fb->pixels = NULL;
+//  }
+//
+//  fb->width  = (uint32_t)w->w;
+//  fb->height = (uint32_t)w->h;
+//
+//  fb->pixels = (uint32_t*)malloc((size_t)fb->width * (size_t)fb->height * sizeof(uint32_t));
+//  if (fb->pixels) {
+//    const size_t npx = (size_t)fb->width * (size_t)fb->height;
+//    for (size_t i = 0; i < npx; i++) fb->pixels[i] = 0xFFFFFFFFu;
+//    w->dirty = 1;
+//  } else {
+//    fb->width = 0;
+//    fb->height = 0;
+//  }
+//  
+//  // If valueMask includes CWEventMask (bit 11) we should read it from value-list.
+//  // valueMask bits are defined by X11; CWEventMask = (1<<11).
+//  // value-list starts immediately after the fixed portion (28 bytes).
+//  if (vmask & (1u << 11)) {
+//    // value-list is 32-bit items in the order of bits set.
+//    // For Phase A: we only care about CWEventMask, so we can scan in-order.
+//    const uint8_t* vp = payload + 28;
+//    size_t vrem = remain - 28;
+//    uint32_t cur_mask = 0;
+//
+//    for (uint32_t bit = 0; bit < 32; bit++) {
+//      if (!(vmask & (1u << bit))) continue;
+//      if (vrem < 4) break;
+//      uint32_t val = rd32(vp);
+//      if (bit == 11) cur_mask = val; // CWEventMask
+//      vp += 4; vrem -= 4;
+//    }
+//    w->event_mask = cur_mask;
+//  }
+//
+//  x11_proto_bridge_window_upsert(wid, parent, x, y, w->w, w->h, w->event_mask, g_current_client_fd);
+//  // Mirror initial lifecycle state into WindowTable.
+//  x11_proto_bridge_window_set_mapped(wid, 0);
+//  x11_proto_bridge_window_set_presentable(wid, 0);
+//
+//  // If we allocated/cleared the FB, we consider it "dirty" until map+presentable flushes it.
+//  if (w->dirty) {
+//    x11_proto_bridge_window_mark_dirty(wid);
+//  }
+//  
+//  // enqueue to shim
+//  enqueue_create_window(wid, parent, w->x, w->y, w->w, w->h, w->event_mask);
+//
+//#if !defined(NDEBUG) && SWIFTX11_TRACE
+//  fprintf(stderr,
+//          "[SwiftX11] xproto: CreateWindow wid=0x%08X parent=0x%08X vmask=0x%08X event_mask=0x%08X\n",
+//          (unsigned)wid, (unsigned)parent, (unsigned)vmask, (unsigned)w->event_mask);
+//#endif
+//
+//  (void)depth;
+//}
 
 
 
@@ -2419,200 +2479,6 @@ static void handle_GetWindowAttributes(int fd, uint16_t seq, const uint8_t* payl
 #endif
   
   (void)x11_send_all(fd, rep, sizeof(rep));
-}
-
-
-
-
-static void handle_GetProperty(int fd, uint16_t seq, uint8_t delete_flag,
-                               const uint8_t* payload, size_t remain)
-{
-  // GetProperty request body after 4-byte header (20 bytes):
-  //   CARD32 window
-  //   CARD32 property
-  //   CARD32 type
-  //   CARD32 longOffset   (in 4-byte units)
-  //   CARD32 longLength   (in 4-byte units)
-  if (remain < 20) return;
-
-  const uint32_t wid        = rd32(payload + 0);
-  const uint32_t prop_atom  = rd32(payload + 4);
-  const uint32_t req_type   = rd32(payload + 8);
-  const uint32_t long_off   = rd32(payload + 12);
-  const uint32_t long_len   = rd32(payload + 16);
-
-  x11_prop_t* p = prop_find(wid, prop_atom);
-
-  // Default reply: “no such property” (format=0, type=None, everything else 0).
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, 0);
-  rep[1] = 0; // format
-
-  if (!p || p->format == 0 || p->nbytes == 0 || !p->data) {
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=handle_GetProperty (no such property) seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-    dbg_check_reply_total("GetProperty (1st)", seq, sizeof(rep), rep);
-#endif
-    (void)x11_send_all(fd, rep, sizeof(rep));
-    return;
-  }
-
-  // If client requested a specific type (nonzero) and it doesn't match, return empty.
-  if (req_type != 0 && p->type != req_type) {
-  #ifndef NDEBUG
-    fprintf(stderr,
-            "[SwiftX11] xproto: REPLY op=handle_GetProperty (specific type doesn't match) seq=%u bytes=%zu length_words=%u\n",
-            (unsigned)seq,
-            (size_t)sizeof(rep),
-            (unsigned)rd32(rep + 4));
-    dbg_check_reply_header32("GetProperty", seq, rep);
-#endif
-    (void)x11_send_all(fd, rep, sizeof(rep));
-    return;
-  }
-
-  // Validate format.
-  const uint8_t fmt = p->format;
-  uint32_t unit_bytes = 0;
-  if (fmt == 8)  unit_bytes = 1;
-  if (fmt == 16) unit_bytes = 2;
-  if (fmt == 32) unit_bytes = 4;
-  if (unit_bytes == 0) {
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=handle_GetProperty (unit_bytes=0) seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-    dbg_check_reply_header32("GetProperty", seq, rep);
-#endif
-    (void)x11_send_all(fd, rep, sizeof(rep));
-    return;
-  }
-
-  const uint32_t total_bytes = p->nbytes;
-
-  // Offset/length are expressed in 4-byte units regardless of format.
-  // Use 64-bit math to avoid overflow.
-  const uint64_t byte_off64  = (uint64_t)long_off * 4ull;
-  const uint64_t max_bytes64 = (uint64_t)long_len * 4ull;
-
-  uint32_t send_off = (byte_off64 >= (uint64_t)total_bytes) ? total_bytes : (uint32_t)byte_off64;
-  uint32_t remain_bytes = total_bytes - send_off;
-
-  // longLength==0 means “return zero bytes” (still must report bytesAfter correctly).
-  uint32_t send_bytes = remain_bytes;
-  if (max_bytes64 < (uint64_t)send_bytes) send_bytes = (uint32_t)max_bytes64;
-
-  // For 16/32 formats, be defensive: only return whole items.
-  if (unit_bytes > 1) {
-    send_bytes -= (send_bytes % unit_bytes);
-  }
-
-  // bytesAfter is the number of bytes remaining in the property after the portion returned.
-  const uint32_t bytes_after = remain_bytes - send_bytes;
-
-  // nItems is in units of format.
-  uint32_t nitems = 0;
-  if (send_bytes && unit_bytes) nitems = send_bytes / unit_bytes;
-
-  // Pad reply data to 4 bytes; reply length counts 4-byte units after the 32-byte header.
-  const uint32_t pad_bytes   = (uint32_t)((send_bytes + 3u) & ~3u);
-  const uint32_t extra_words = pad_bytes / 4u;
-
-  x11_reply32_le(rep, seq, extra_words);
-  rep[1] = fmt;                 // format
-  wr32_le(rep + 8, p->type);
-  wr32_le(rep + 12, bytes_after);
-  wr32_le(rep + 16, nitems);
-  
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=handle_GetProperty (after pad reply to 4 bytes) seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-  dbg_check_reply_header32("GetProperty", seq, rep);
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=handle_GetProperty (in if send_bytes) seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-#endif
-  if (send_bytes) {
-    (void)x11_send_all(fd, p->data + send_off, send_bytes);
-  }
-
-  if (pad_bytes > send_bytes) {
-    static const uint8_t zeros[4] = {0,0,0,0};
-    uint32_t pad = pad_bytes - send_bytes;
-    while (pad) {
-      uint32_t chunk = (pad > 4u) ? 4u : pad;
-      (void)x11_send_all(fd, zeros, chunk);
-      pad -= chunk;
-    }
-  }
-
-  // Delete property if requested and we returned the entire property starting at offset 0.
-  if (delete_flag && long_off == 0 && send_bytes == total_bytes) {
-    prop_delete(wid, prop_atom);
-  }
-}
-
-// ChangeProperty (major = 18) -- no reply
-static void handle_ChangeProperty(uint8_t mode, const uint8_t* payload, size_t remain)
-{
-  // Body after 4-byte header:
-  //   CARD32 window
-  //   CARD32 property
-  //   CARD32 type
-  //   CARD8  format (8/16/32)
-  //   3      pad
-  //   CARD32 nUnits
-  //   LISTofBYTE data (padded to 4)
-  if (remain < 20) return;
-
-  const uint32_t wid    = rd32(payload + 0);
-  const uint32_t atom   = rd32(payload + 4);
-  const uint32_t type   = rd32(payload + 8);
-  const uint8_t  fmt    = payload[12];
-  const uint32_t nunits = rd32(payload + 16);
-
-  uint32_t unit_bytes = 0;
-  if (fmt == 8)  unit_bytes = 1;
-  if (fmt == 16) unit_bytes = 2;
-  if (fmt == 32) unit_bytes = 4;
-  if (unit_bytes == 0) return;
-
-  // Compute byte count safely.
-  const uint64_t data_bytes_64 = (uint64_t)nunits * (uint64_t)unit_bytes;
-  if (data_bytes_64 > 0xFFFFFFFFu) return;
-  const uint32_t data_bytes = (uint32_t)data_bytes_64;
-
-  // The request may include trailing padding to 4 bytes; remain includes that padding.
-  if (remain < 20u + (size_t)data_bytes) return;
-
-  const uint8_t* data = payload + 20;
-  
-  // enqueue to shim (best-effort: only for title-related properties)
-  enqueue_maybe_set_title(wid, atom, type, fmt, data, data_bytes);  
-  // mode (from request header byte1):
-  //   0 = Replace, 1 = Prepend, 2 = Append
-  if (mode == 1) {
-    prop_prepend_append(wid, atom, type, fmt, data, data_bytes, 0 /*append*/);
-  } else if (mode == 2) {
-    prop_prepend_append(wid, atom, type, fmt, data, data_bytes, 1 /*append*/);
-  } else {
-    prop_set_bytes(wid, atom, type, fmt, data, data_bytes);
-  }
 }
 
 
@@ -4028,9 +3894,9 @@ if (major >= 128) {
     if (!handled) {
       
       switch (major) {
-        case 1: // CreateWindow
-          handle_CreateWindow(minor /*depth*/, payload, remain);
-          break;
+        //case 1: // CreateWindow
+        //  handle_CreateWindow(minor /*depth*/, payload, remain);
+        //  break;
                     
         //case 3: // GetWindowAttributes
         //  handle_GetWindowAttributes(cfd, seq, payload, remain);
@@ -4049,14 +3915,6 @@ if (major >= 128) {
           handle_ConfigureWindow(cfd, seq, payload, remain);
           break;
           
-       // case 18: // ChangeProperty (no reply)
-       //   handle_ChangeProperty(minor /*mode*/, payload, remain);
-       //   break;
-       //   
-       // case 20: // GetProperty
-       //   handle_GetProperty(cfd, seq, minor /*delete*/, payload, remain);
-       //   break;
-       //   
         case 53: // CreatePixmap (no reply)
           handle_CreatePixmap(minor /*depth*/, payload, remain);
           break;
