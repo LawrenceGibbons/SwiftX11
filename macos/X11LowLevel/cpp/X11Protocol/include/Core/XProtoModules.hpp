@@ -10,7 +10,7 @@
 #include "AtomOps.hpp"
 #include "WindowOps.hpp"
 #include "WindowAttrOps.hpp"
-
+#include "PropOps.hpp"
 
 namespace x11 {
   
@@ -19,6 +19,7 @@ namespace x11 {
     AtomOps   atomOps;
     WindowOps windowOps;
     WindowAttrOps windowAttrOps;
+    PropOps propOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
@@ -26,6 +27,7 @@ namespace x11 {
     , atomOps(reg)
     , windowOps(reg)
     , windowAttrOps(reg)
+    , propOps(reg)
     {}
   };
 }

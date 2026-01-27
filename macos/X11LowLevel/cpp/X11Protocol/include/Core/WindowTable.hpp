@@ -56,6 +56,13 @@ public:
                   int* out_presentable,
                   int* out_dirty,
                   int* out_owner_fd) const;
+  
+  // QueryTree helper (core X11 major=15)
+  bool queryTree(uint32_t wid,
+                 uint32_t* outParent,
+                 uint32_t* outChildren,
+                 uint32_t  maxChildren,
+                 uint32_t* outNChildren) const;
 
 private:
   struct WindowState {

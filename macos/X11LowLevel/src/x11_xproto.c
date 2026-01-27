@@ -688,48 +688,46 @@ void x11_xproto_c_window_set_presentable(uint32_t xid, int presentable) {
   w->presentable = presentable ? 1 : 0;
 }
 
-#include "XProtoQueryBridge.h"
-
-int x11_xproto_query_tree(uint32_t wid,
-                          uint32_t* out_parent,
-                          uint32_t* out_children,
-                          uint32_t  max_children,
-                          uint32_t* out_nchildren)
-{
-  if (out_parent) *out_parent = 0;
-  if (out_nchildren) *out_nchildren = 0;
-
-  // Root window: parent=None
-  if (wid == X11_ROOT_XID) {
-    if (out_parent) *out_parent = 0;
-  } else {
-    x11_win_t* w = win_find(wid);
-    if (w) {
-      if (out_parent) *out_parent = w->parent;
-    } else {
-      // Unknown window
-      return 0;
-    }
-  }
-
-  if (!out_children || max_children == 0 || !out_nchildren) {
-    return 1;
-  }
-
-  uint32_t n = 0;
-  for (size_t i = 0; i < g_wins_n; i++) {
-    if (g_wins[i].parent == wid) {
-      if (n < max_children) {
-        out_children[n] = g_wins[i].xid;
-      }
-      n++;
-      if (n >= max_children) break;
-    }
-  }
-
-  *out_nchildren = n;
-  return 1;
-}
+//int x11_xproto_query_tree(uint32_t wid,
+//                          uint32_t* out_parent,
+//                          uint32_t* out_children,
+//                          uint32_t  max_children,
+//                          uint32_t* out_nchildren)
+//{
+//  if (out_parent) *out_parent = 0;
+//  if (out_nchildren) *out_nchildren = 0;
+//
+//  // Root window: parent=None
+//  if (wid == X11_ROOT_XID) {
+//    if (out_parent) *out_parent = 0;
+//  } else {
+//    x11_win_t* w = win_find(wid);
+//    if (w) {
+//      if (out_parent) *out_parent = w->parent;
+//    } else {
+//      // Unknown window
+//      return 0;
+//    }
+//  }
+//
+//  if (!out_children || max_children == 0 || !out_nchildren) {
+//    return 1;
+//  }
+//
+//  uint32_t n = 0;
+//  for (size_t i = 0; i < g_wins_n; i++) {
+//    if (g_wins[i].parent == wid) {
+//      if (n < max_children) {
+//        out_children[n] = g_wins[i].xid;
+//      }
+//      n++;
+//      if (n >= max_children) break;
+//    }
+//  }
+//
+//  *out_nchildren = n;
+//  return 1;
+//}
 
 
 // Minimal bridge: keep C-side w->event_mask in sync while we migrate handlers to C++.
@@ -3841,53 +3839,6 @@ fprintf(stderr,
 }
 
 
-//// QueryPointer (major = 38 / 0x26)
-//static void handle_QueryPointer(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-//{
-//  if (remain < 4) return;
-//  const uint32_t qwin = rd32(payload + 0);
-//
-//  x11_win_t* w = win_find(qwin);
-//
-//  // Fake pointer: slowly moves in a small box (so xeyes has something to do).
-//  static int16_t fake_rx = 0, fake_ry = 0;
-//  fake_rx = (int16_t)((fake_rx + 1) % 200);
-//  fake_ry = (int16_t)((fake_ry + 1) % 120);
-//
-//  uint32_t child = 0;
-//  int16_t winx = 0, winy = 0;
-//
-//  if (w && w->mapped) {
-//    child = qwin;
-//
-//    // Translate root -> window coords
-//    int32_t tx = (int32_t)fake_rx - (int32_t)w->x;
-//    int32_t ty = (int32_t)fake_ry - (int32_t)w->y;
-//
-//    // Clamp to window bounds (optional but nice)
-//    if (tx < 0) tx = 0;
-//    if (ty < 0) ty = 0;
-//    if (tx > (int32_t)w->w) tx = (int32_t)w->w;
-//    if (ty > (int32_t)w->h) ty = (int32_t)w->h;
-//
-//    winx = (int16_t)tx;
-//    winy = (int16_t)ty;
-//  }
-//
-//  // Send reply via C++ bridge (ReplyWriter)
-//  x11_proto_bridge_send_query_pointer_reply(
-//      seq,
-//      /*sameScreen*/1,
-//      /*root*/X11_ROOT_XID,
-//      /*child*/child,
-//      /*rootX*/fake_rx,
-//      /*rootY*/fake_ry,
-//      /*winX*/winx,
-//      /*winY*/winy,
-//      /*mask*/0);
-//}
-
-
 #ifndef NDEBUG
 static void dbg_dump_req(const char* tag,
                          uint8_t major, uint8_t minor, uint16_t len_words,
@@ -4098,14 +4049,14 @@ if (major >= 128) {
           handle_ConfigureWindow(cfd, seq, payload, remain);
           break;
           
-        case 18: // ChangeProperty (no reply)
-          handle_ChangeProperty(minor /*mode*/, payload, remain);
-          break;
-          
-        case 20: // GetProperty
-          handle_GetProperty(cfd, seq, minor /*delete*/, payload, remain);
-          break;
-          
+       // case 18: // ChangeProperty (no reply)
+       //   handle_ChangeProperty(minor /*mode*/, payload, remain);
+       //   break;
+       //   
+       // case 20: // GetProperty
+       //   handle_GetProperty(cfd, seq, minor /*delete*/, payload, remain);
+       //   break;
+       //   
         case 53: // CreatePixmap (no reply)
           handle_CreatePixmap(minor /*depth*/, payload, remain);
           break;

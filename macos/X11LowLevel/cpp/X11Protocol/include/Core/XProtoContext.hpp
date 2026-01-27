@@ -49,8 +49,13 @@ public:
   const WindowView* window(uint32_t xid);
 
   void setWindowTable(WindowTable* wt) { window_table_ = wt; } 
-  WindowTable& windows();
   
+  // Read-only access (queries, snapshots, QueryOps, etc.)
+  const WindowTable& windows() const;
+  
+  // Mutating access (CreateWindow, ConfigureWindow, Map/Unmap, etc.)
+  WindowTable& windows();
+
 private:
   XProtoTransport* transport_ = nullptr;
   ReplyWriter* reply_ = nullptr;

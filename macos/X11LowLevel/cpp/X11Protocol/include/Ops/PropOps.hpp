@@ -5,28 +5,29 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
+// PropOps.hpp
 #pragma once
-#include <cstddef>
+
 #include <cstdint>
+#include <cstddef>
 
-// Forward declarations (real definitions will live in shared protocol headers later).
-struct XProtoServerState;
-struct XProtoRequestContext;
+#include "XProtoRegistrar.hpp"
 
-// PropOps: ChangeProperty / GetProperty
+namespace x11 {
+
+class XProtoContext;
+class ByteReader;
+
 class PropOps {
 public:
-  PropOps(XProtoServerState& state, XProtoRequestContext& ctx)
-  : state_(state), ctx_(ctx) {}
-
-  // ChangeProperty (major = 18) — no reply
-  void handleChangeProperty(uint8_t mode, const uint8_t* payload, std::size_t len);
-
-  // GetProperty (major = 20) — reply
-  void handleGetProperty(int clientFd, uint16_t seq, uint8_t deleteFlag,
-                         const uint8_t* payload, std::size_t len);
+  explicit PropOps(XProtoRegistrar& reg);
 
 private:
-  XProtoServerState& state_;
-  XProtoRequestContext& ctx_;
+  static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
+  void handle(XProtoContext& ctx, DispatchContext& dc);
+
+  void handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mode, ByteReader& br);
+  void handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t deleteFlag, ByteReader& br);
 };
+
+} // namespace x11

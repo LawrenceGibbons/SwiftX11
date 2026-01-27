@@ -217,4 +217,46 @@ void WindowTable::setGeometry(uint32_t xid,
 }
   
   
+bool WindowTable::queryTree(uint32_t wid,
+                            uint32_t* outParent,
+                            uint32_t* outChildren,
+                            uint32_t  maxChildren,
+                            uint32_t* outNChildren) const
+{
+  if (outParent) *outParent = 0;
+  if (outNChildren) *outNChildren = 0;
+  if (!outChildren || maxChildren == 0) {
+    // still return parent even if no child buffer
+    std::lock_guard<std::mutex> lock(mu_);
+    const WindowState* st = findLocked(wid);
+    if (outParent) *outParent = st ? st->parent : 0;
+    return st != nullptr;
+  }
+
+  std::lock_guard<std::mutex> lock(mu_);
+
+  // Parent:
+  const WindowState* st = findLocked(wid);
+  if (!st) {
+    // X11 behavior for unknown wid varies; for bring-up, just "not found"
+    return false;
+  }
+  if (outParent) *outParent = st->parent;
+
+  // Children:
+  uint32_t n = 0;
+  for (const auto& kv : map_) {
+    const WindowState& ch = kv.second;
+    if (ch.parent == wid) {
+      if (n < maxChildren) outChildren[n] = ch.xid;
+      n++;
+      if (n >= maxChildren) break; // cap like your old code
+    }
+  }
+
+  if (outNChildren) *outNChildren = n;
+  return true;
+}
+  
+  
 } // namespace x11

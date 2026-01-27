@@ -30,7 +30,6 @@ private:
 
 private:
   // Per-op handlers (these are your C ports)
-  void handleGetGeometry(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleQueryTree(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleQueryPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br);

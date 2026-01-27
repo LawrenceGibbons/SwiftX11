@@ -9,21 +9,15 @@
 
 #include "QueryOps.hpp"
 #include "XProtoContext.hpp"
+#include "WindowTable.hpp"
 #include "ReplyWriter.hpp"
 #include "ByteReader.hpp"
+#include "XConstants.hpp"
 
-// C bridge for hierarchy queries (implemented in x11_xproto.c)
-#include "XProtoQueryBridge.h"
 
 namespace x11 {
     
-  static constexpr uint32_t kRootXid = 0x00000001u;
-  static constexpr uint16_t kRootW   = 800;
-  static constexpr uint16_t kRootH   = 600;
-  static constexpr uint16_t kDepth   = 24;
-  
   QueryOps::QueryOps(XProtoRegistrar& reg) {
-    reg.registerMajor(14, &QueryOps::onMajor, this); // GetGeometry
     reg.registerMajor(15, &QueryOps::onMajor, this); // QueryTree
     reg.registerMajor(38, &QueryOps::onMajor, this); // QueryPointer
     reg.registerMajor(43, &QueryOps::onMajor, this); // GetInputFocus
@@ -36,7 +30,6 @@ namespace x11 {
 
   void QueryOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     switch (dc.major) {
-      case 14: handleGetGeometry(ctx, dc.seq, dc.br); return;
       case 15: handleQueryTree(ctx, dc.seq, dc.br); return;
       case 38: handleQueryPointer(ctx, dc.seq, dc.br); return;
       case 43: handleGetInputFocus(ctx, dc.seq, dc.br); return;
@@ -47,29 +40,7 @@ namespace x11 {
     }
   }
   
-  // ---- 14: GetGeometry ----
-  void QueryOps::handleGetGeometry(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
-    // Request: CARD32 drawable
-    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
-    const uint32_t drawable = br.readU32();
-    br.skip(br.remaining());
-    
-    uint32_t root = kRootXid;
-    int16_t  x = 0, y = 0;
-    uint16_t w = kRootW, h = kRootH;
-    uint16_t border = 0;
-    
-    // If drawable is a known window, return its geometry.
-    if (const WindowView* vw = ctx.window(drawable)) {
-      x = vw->x;
-      y = vw->y;
-      w = vw->w;
-      h = vw->h;
-    }
-    
-    // Use ReplyWriter helper (already in your code)
-    (void)ctx.reply().sendGetGeometryReply(seq, root, x, y, w, h, border, kDepth);
-  }
+
   
   // ---- 43: GetInputFocus ----
   void QueryOps::handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
@@ -136,46 +107,41 @@ namespace x11 {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
     const uint32_t wid = br.readU32();
     br.skip(br.remaining());
-    
+
+    // root is always constant in your server
+    static constexpr uint32_t kRootXid = 0x00000001u;
+
     uint32_t parent = 0;
     uint32_t children[256];
     uint32_t nchildren = 0;
-    
-    // Ask C side to compute parent + children from the authoritative g_wins[]
-    const int ok = x11_xproto_query_tree(wid, &parent, children, 256, &nchildren);
-    
+
+    // Use authoritative WindowTable (no C bridge)
+    bool ok = ctx.windows().queryTree(wid, &parent, children, 256, &nchildren);
     if (!ok) {
       parent = 0;
       nchildren = 0;
     }
-    
-    if (nchildren > 256) nchildren = 256;
+
     const uint32_t extra_words = nchildren; // each child is CARD32
-    
-    // Build + send 32-byte reply header
+
+    // Reply header (32 bytes)
     const bool okHdr = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      // length_words at bytes 4..7
-      ReplyWriter::wr32_le(rep.data() + 4, extra_words);
-      
-      // root at 8..11
-      ReplyWriter::wr32_le(rep.data() + 8, kRootXid);
-      
-      // parent at 12..15
-      ReplyWriter::wr32_le(rep.data() + 12, parent);
-      
-      // nchildren at 16..17 (CARD16)
+      ReplyWriter::wr32_le(rep.data() + 4, extra_words);   // length_words
+      ReplyWriter::wr32_le(rep.data() + 8, kRootXid);      // root
+      ReplyWriter::wr32_le(rep.data() + 12, parent);       // parent
       ReplyWriter::wr16_le(rep.data() + 16, (uint16_t)nchildren);
     });
-    
     if (!okHdr) return;
-    
-    // Follow with children list (CARD32[]), already 4-byte aligned
+
+    // Children payload: CARD32[] little-endian
     if (nchildren) {
       uint8_t out[256 * 4];
       for (uint32_t i = 0; i < nchildren; i++) {
         ReplyWriter::wr32_le(out + (size_t)i * 4u, children[i]);
       }
+      // Already 4-byte aligned, so sendReplyBytes is fine (no padding needed)
       (void)ctx.transport().sendReplyBytes(out, (std::size_t)nchildren * 4u);
     }
-  } 
+  }
+  
 } // namespace x11

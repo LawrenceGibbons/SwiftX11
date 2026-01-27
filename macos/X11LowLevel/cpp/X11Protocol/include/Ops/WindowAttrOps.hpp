@@ -30,6 +30,10 @@ private:
   
   // Major 12: ConfigureWindow
   void handleConfigureWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  
+  // Major 14: GetGeometry
+  void handleGetGeometry(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+
 };
 
 } // namespace x11

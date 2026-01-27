@@ -55,23 +55,7 @@ int x11_proto_bridge_send_intern_atom_reply(uint16_t seq, uint32_t atom);
 int x11_proto_bridge_send_get_atom_name_reply(uint16_t seq, const char* name, uint16_t nameLen);
   
   
-//  void x11_proto_bridge_send_query_pointer_reply(uint16_t seq,
-//                                                 uint8_t sameScreen,
-//                                                 uint32_t root,
-//                                                 uint32_t child,
-//                                                 int16_t rootX, int16_t rootY,
-//                                                 int16_t winX, int16_t winY,
-//                                                 uint16_t mask);
-
-//  void x11_proto_bridge_send_query_tree_reply_header(uint16_t seq,
-//                                                     uint32_t root,
-//                                                     uint32_t parent,
-//                                                     uint16_t nchildren);
-
-//  void x11_proto_bridge_send_query_tree_children(const uint32_t* children,
-//                                                 uint16_t nchildren);
-  
-  int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
+int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                                 const uint8_t* payload, size_t remain);
 
   

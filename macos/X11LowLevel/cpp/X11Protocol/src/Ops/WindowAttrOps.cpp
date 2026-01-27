@@ -12,6 +12,7 @@
 #include "ByteReader.hpp"
 #include "ReplyWriter.hpp"
 #include "XProtoTransport.hpp"
+#include "XConstants.hpp"
 
 // Temp -- Update C-side mirror event_mask during transition
 #include "XProtoServerBridge.h"
@@ -29,6 +30,7 @@ WindowAttrOps::WindowAttrOps(XProtoRegistrar& reg) {
   reg.registerMajor( 2, &WindowAttrOps::onMajor, this); // ChangeWindowAttributes
   reg.registerMajor( 3, &WindowAttrOps::onMajor, this);
   reg.registerMajor(12, &WindowAttrOps::onMajor, this);  // ConfigureWindow
+  reg.registerMajor(14, &WindowAttrOps::onMajor, this);  // GetGeometry
 
 }
 
@@ -42,6 +44,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case  2: handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
     case  3: handleGetWindowAttributes(ctx, dc.seq, dc.br); return;
     case 12: handleConfigureWindow(ctx, dc.seq, dc.br); return;
+    case 14: handleGetGeometry(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowAttrOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -216,6 +219,32 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
     // IMPORTANT: this is a single 44-byte reply (not “32 + payload separately”)
     // so just sendReplyBytes directly.
     (void)ctx.transport().sendReplyBytes(rep.data(), rep.size());
+  }
+  
+  
+  
+  // ---- 14: GetGeometry ----
+  void WindowAttrOps::handleGetGeometry(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+    // Request: CARD32 drawable
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+    const uint32_t drawable = br.readU32();
+    br.skip(br.remaining());
+    
+    uint32_t root = kRootXid;
+    int16_t  x = 0, y = 0;
+    uint16_t w = kRootW, h = kRootH;
+    uint16_t border = 0;
+    
+    // If drawable is a known window, return its geometry.
+    if (const WindowView* vw = ctx.window(drawable)) {
+      x = vw->x;
+      y = vw->y;
+      w = vw->w;
+      h = vw->h;
+    }
+    
+    // Use ReplyWriter helper (already in your code)
+    (void)ctx.reply().sendGetGeometryReply(seq, root, x, y, w, h, border, kDepth);
   }
   
   

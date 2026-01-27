@@ -53,9 +53,14 @@ const WindowView* XProtoContext::window(uint32_t xid) {
   return &scratch_;
 }
 
-WindowTable& XProtoContext::windows() {
+const WindowTable& XProtoContext::windows() const {
   assert(window_table_ && "XProtoContext::windows(): window_table_ not set");
   return *window_table_;
 }
   
+WindowTable& XProtoContext::windows() {
+  assert(window_table_ && "XProtoContext::windows(): window_table_ not set");
+  return *window_table_;
+}
+    
 } // namespace x11
