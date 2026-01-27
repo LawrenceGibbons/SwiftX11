@@ -24,7 +24,7 @@ namespace x11 {
 
 WindowOps::WindowOps(XProtoRegistrar& reg) {
   reg.registerMajor(1,  &WindowOps::onMajor, this);  // CreateWindow
-//  reg.registerMajor(4,  &WindowOps::onMajor, this);  // DestroyWindow
+  reg.registerMajor(4,  &WindowOps::onMajor, this);  // DestroyWindow
   reg.registerMajor(8,  &WindowOps::onMajor, this);  // MapWindow
   reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
   reg.registerMajor(10, &WindowOps::onMajor, this);  // UnmapWindow
@@ -112,10 +112,26 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   
   
 void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Request body: CARD32 window
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t wid = br.readU32();
   br.skip(br.remaining());
-  // ctx.tracef("[WindowOps] DestroyWindow (stub)\n");
-}
 
+  if (wid == 0) return;
+
+  // 1) Authoritative C++ state
+  ctx.windows().erase(wid);
+
+  // 2) C-side cleanup of legacy state (framebuffers, props, g_wins) — transitional
+  // This should free the legacy fb/pixmaps/props that are still owned by x11_xproto.c
+  x11_xproto_bridge_destroy_window_legacy(wid);
+
+  // 3) Swift/UI teardown event path (existing behavior)
+  // This queues X11_REQ_DESTROY -> shim -> Swift close
+  x11_requests_push_destroy(wid);
+}
+  
+  
 void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   // Request body: CARD32 window
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }

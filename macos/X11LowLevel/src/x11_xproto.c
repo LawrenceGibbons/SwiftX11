@@ -733,6 +733,41 @@ int x11_xproto_c_create_window_slot(uint32_t wid,
 
   return 1;
 }
+
+
+void x11_xproto_bridge_destroy_window_legacy(uint32_t wid)
+{
+  if (wid == 0) return;
+
+  // Mirror your existing handle_DestroyWindow logic:
+  for (size_t i = 0; i < g_wins_n; i++) {
+    if (g_wins[i].xid == wid) {
+
+      // delete properties
+      prop_delete_all_for_window(wid);
+
+      // free framebuffer for this slot
+      if (g_framebuffers[i].pixels) {
+        free(g_framebuffers[i].pixels);
+        g_framebuffers[i].pixels = NULL;
+      }
+
+      // swap-with-last, keep aligned
+      size_t last = g_wins_n - 1;
+      if (i != last) {
+        g_wins[i] = g_wins[last];
+        g_framebuffers[i] = g_framebuffers[last];
+      }
+      g_wins_n--;
+      break;
+    }
+  }
+
+  // NOTE: do NOT call enqueue_destroy_window() here anymore.
+  // C++ owns that now via x11_requests_push_destroy() (or enqueue_destroy_window if you prefer).
+}
+
+
 // in x11_xproto.c
 void x11_xproto_c_window_set_mapped(uint32_t xid, int mapped) {
   x11_win_t* w = win_find(xid);
@@ -1662,37 +1697,37 @@ static void handle_MapSubwindows(int fd, uint16_t seq, const uint8_t* payload, s
 #endif
 }
 
-// DestroyWindow (major = 4)
-static void handle_DestroyWindow(int fd, const uint8_t* payload, size_t remain)
-{
-  (void)fd;
-  if (remain < 4) return;
-  uint32_t wid = rd32(payload + 0);
-
-  for (size_t i = 0; i < g_wins_n; i++) {
-    if (g_wins[i].xid == wid) {
-
-      x11_proto_bridge_window_erase(wid);
-      // free framebuffer for this slot
-      if (g_framebuffers[i].pixels) {
-        free(g_framebuffers[i].pixels);
-        g_framebuffers[i].pixels = NULL;
-      }
-
-      // swap-with-last, keeping framebuffers aligned
-      size_t last = g_wins_n - 1;
-      if (i != last) {
-        g_wins[i] = g_wins[last];
-        g_framebuffers[i] = g_framebuffers[last];
-      }
-
-      g_wins_n--;
-      break;
-    }
-  }
-  
-  enqueue_destroy_window(wid);
-}
+//// DestroyWindow (major = 4)
+//static void handle_DestroyWindow(int fd, const uint8_t* payload, size_t remain)
+//{
+//  (void)fd;
+//  if (remain < 4) return;
+//  uint32_t wid = rd32(payload + 0);
+//
+//  for (size_t i = 0; i < g_wins_n; i++) {
+//    if (g_wins[i].xid == wid) {
+//
+//      x11_proto_bridge_window_erase(wid);
+//      // free framebuffer for this slot
+//      if (g_framebuffers[i].pixels) {
+//        free(g_framebuffers[i].pixels);
+//        g_framebuffers[i].pixels = NULL;
+//      }
+//
+//      // swap-with-last, keeping framebuffers aligned
+//      size_t last = g_wins_n - 1;
+//      if (i != last) {
+//        g_wins[i] = g_wins[last];
+//        g_framebuffers[i] = g_framebuffers[last];
+//      }
+//
+//      g_wins_n--;
+//      break;
+//    }
+//  }
+//  
+//  enqueue_destroy_window(wid);
+//}
 
 
 // ConfigureWindow (major = 12)
@@ -3902,9 +3937,9 @@ if (major >= 128) {
         //  handle_GetWindowAttributes(cfd, seq, payload, remain);
         //  break;
           
-        case 4: // DestroyWindow
-          handle_DestroyWindow(cfd, payload, remain);
-          break;
+        //case 4: // DestroyWindow
+        //  handle_DestroyWindow(cfd, payload, remain);
+        //  break;
           
           
         //case 9: // MapSubwindows

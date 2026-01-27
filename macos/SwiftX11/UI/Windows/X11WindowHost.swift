@@ -89,6 +89,8 @@ final class X11View: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private var applyingDrawableSize = false
+  
     private func scheduleDrawableSizeUpdate(_ size: CGSize) {
         pendingDrawableSize = size
         guard !drawableSizeUpdateScheduled else { return }
@@ -101,12 +103,15 @@ final class X11View: NSView {
             guard let size = self.pendingDrawableSize else { return }
             self.pendingDrawableSize = nil
   
-            // Only apply if it actually changed.
+            guard !self.applyingDrawableSize else { return }
+            self.applyingDrawableSize = true
+            defer { self.applyingDrawableSize = false }
+  
             if mv.drawableSize != size {
                 mv.drawableSize = size
             }
         }
-    }
+    }  
   
     override func layout() {
         super.layout()

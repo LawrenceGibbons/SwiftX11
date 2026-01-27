@@ -93,8 +93,10 @@ final class WindowRegistry {
         }
         
         // Cocoa -> X11
-        x11_post_focus_event(xid, true)
-        x11_post_window_raise(xid)
+        DispatchQueue.main.async {
+          x11_post_focus_event(xid, true)
+          x11_post_window_raise(xid)
+        }
       }
     }
     toks.append(didBecomeKey)
@@ -110,30 +112,52 @@ final class WindowRegistry {
     }
     toks.append(didResignKey)
     
+    //let didMini = center.addObserver(
+    //  forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main
+    //) { _ in
+    //  MainActor.assumeIsolated {
+    //    // Prevent feedback loop when unmap came from X11 -> Swift.
+    //    if self.consumeSuppressUnmapFromCocoa(xid: xid) {
+    //      return
+    //    }
+    //    // Cocoa -> X11
+    //    x11_client_unmap_window(xid)
+    //  }
+    //}
     let didMini = center.addObserver(
       forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main
-    ) { _ in
+    ) { [weak self] _ in
+      guard let self else { return }
       MainActor.assumeIsolated {
-        // Prevent feedback loop when unmap came from X11 -> Swift.
-        if self.consumeSuppressUnmapFromCocoa(xid: xid) {
-          return
+        if self.consumeSuppressUnmapFromCocoa(xid: xid) { return }
+        DispatchQueue.main.async {
+          x11_client_unmap_window(xid)
         }
-        // Cocoa -> X11
-        x11_client_unmap_window(xid)
       }
     }
     toks.append(didMini)
     
+    //let didDeMini = center.addObserver(
+    //  forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main
+    //) { _ in
+    //  MainActor.assumeIsolated {
+    //    // Prevent feedback loop when map came from X11 -> Swift.
+    //    if self.consumeSuppressMapFromCocoa(xid: xid) {
+    //      return
+    //    }
+    //    // Cocoa -> X11
+    //    x11_client_map_window(xid)
+    //  }
+    //}
     let didDeMini = center.addObserver(
       forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main
-    ) { _ in
+    ) { [weak self] _ in
+      guard let self else { return }
       MainActor.assumeIsolated {
-        // Prevent feedback loop when map came from X11 -> Swift.
-        if self.consumeSuppressMapFromCocoa(xid: xid) {
-          return
+        if self.consumeSuppressMapFromCocoa(xid: xid) { return }
+        DispatchQueue.main.async {
+          x11_client_map_window(xid)
         }
-        // Cocoa -> X11
-        x11_client_map_window(xid)
       }
     }
     toks.append(didDeMini)

@@ -74,9 +74,12 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   
   func windowDidEndLiveResize(_ notification: Notification) {
     assert(Thread.isMainThread)
-    // Force an immediate final repaint at the final size
-    windowDidResize(notification)
-    WindowRegistry.shared.flushRepaintNow(xid: xid)
+
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.windowDidResize(notification)
+      WindowRegistry.shared.flushRepaintNow(xid: self.xid)
+    }
   }
   
   private func currentMouseLocationInContentPixels() -> (x: Int32, y: Int32) {
