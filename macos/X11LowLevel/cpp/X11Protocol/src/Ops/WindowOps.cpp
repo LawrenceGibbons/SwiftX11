@@ -26,7 +26,7 @@ WindowOps::WindowOps(XProtoRegistrar& reg) {
   reg.registerMajor(1,  &WindowOps::onMajor, this);  // CreateWindow
 //  reg.registerMajor(4,  &WindowOps::onMajor, this);  // DestroyWindow
   reg.registerMajor(8,  &WindowOps::onMajor, this);  // MapWindow
-//  reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
+  reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
   reg.registerMajor(10, &WindowOps::onMajor, this);  // UnmapWindow
 }
 
@@ -147,10 +147,40 @@ void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader
 }
 
 void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t parent = br.readU32();
   br.skip(br.remaining());
-  // ctx.tracef("[WindowOps] MapSubwindows (stub)\n");
-}
 
+  // Map all descendants (not including the parent itself)
+  auto desc = ctx.windows().descendantsOf(parent);
+  for (uint32_t xid : desc) {
+    // Skip if already mapped
+    const WindowView* before = ctx.window(xid);
+    if (before && before->mapped) continue;
+
+    // 1) Authoritative state
+    ctx.windows().setMapped(xid, true);
+
+    // 2) Swift side map event (rootless visibility)
+    x11_requests_push_map(xid);
+
+    // 3) Expose/ConfigureNotify to client if selected
+    if (const WindowView* vw = ctx.window(xid)) {
+      const bool wantExp = ((vw->event_mask & (1u << 15)) != 0); // ExposureMask
+      const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
+      if (wantExp || wantCfg) {
+        ctx.transport().queueNotify(xid, wantCfg, wantExp);
+      }
+    }
+
+    // 4) If it drew before being ready-to-present, flush once now
+    if (ctx.windows().consumeDirtyIfReady(xid)) {
+      x11_requests_push_damage(xid);
+    }
+  }
+}
+  
+  
 void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t wid = br.readU32();

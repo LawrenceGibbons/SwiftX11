@@ -3907,9 +3907,9 @@ if (major >= 128) {
           break;
           
           
-        case 9: // MapSubwindows
-          handle_MapSubwindows(cfd, seq, payload, remain);
-          break;
+        //case 9: // MapSubwindows
+        //  handle_MapSubwindows(cfd, seq, payload, remain);
+        //  break;
           
         case 12: // ConfigureWindow
           handle_ConfigureWindow(cfd, seq, payload, remain);

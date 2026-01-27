@@ -258,5 +258,31 @@ bool WindowTable::queryTree(uint32_t wid,
   return true;
 }
   
+
+std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
+  std::vector<uint32_t> out;
+  if (root == 0) return out;
+
+  std::lock_guard<std::mutex> lock(mu_);
+  if (map_.find(root) == map_.end()) return out;
+
+  // BFS over parent links
+  std::vector<uint32_t> queue;
+  queue.push_back(root);
+
+  while (!queue.empty()) {
+    uint32_t p = queue.back();
+    queue.pop_back();
+
+    for (const auto& kv : map_) {
+      const WindowState& st = kv.second;
+      if (st.parent == p) {
+        out.push_back(st.xid);
+        queue.push_back(st.xid);
+      }
+    }
+  }
+  return out;
+}
   
 } // namespace x11

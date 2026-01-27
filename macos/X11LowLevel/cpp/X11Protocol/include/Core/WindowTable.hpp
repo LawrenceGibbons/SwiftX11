@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <mutex>
-
+#include <vector>
 
 namespace x11 {
 
@@ -63,6 +63,10 @@ public:
                  uint32_t* outChildren,
                  uint32_t  maxChildren,
                  uint32_t* outNChildren) const;
+
+  // tracking subwindows
+  std::vector<uint32_t> descendantsOf(uint32_t root) const;
+
 
 private:
   struct WindowState {
