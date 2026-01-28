@@ -11,6 +11,7 @@
 #include "WindowOps.hpp"
 #include "WindowAttrOps.hpp"
 #include "PropOps.hpp"
+#include "GCOps.hpp"
 
 namespace x11 {
   
@@ -20,6 +21,7 @@ namespace x11 {
     WindowOps windowOps;
     WindowAttrOps windowAttrOps;
     PropOps propOps;
+    GCOps gcOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
@@ -28,6 +30,7 @@ namespace x11 {
     , windowOps(reg)
     , windowAttrOps(reg)
     , propOps(reg)
+    , gcOps(reg)
     {}
   };
 }

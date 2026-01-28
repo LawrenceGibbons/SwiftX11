@@ -540,6 +540,13 @@ final class WindowRegistry {
     win.makeKeyAndOrderFront(nil)
   }
   
+  private func sendConfigureAsync(xid: UInt32, w: Int32, h: Int32) {
+    let w = max(1, w)
+    let h = max(1, h)
+    DispatchQueue.main.async {
+      x11_client_configure_window(xid, w, h)
+    }
+  }
   
   func windowResized(xid: UInt32, sizePoints _: CGSize, sizePixels: CGSize, scale _: CGFloat) {
     if shouldSuppressResizeFromCocoa(xid: xid) {
@@ -558,7 +565,7 @@ final class WindowRegistry {
       repaintWorkItemByXid[xid]?.cancel()
       repaintWorkItemByXid.removeValue(forKey: xid)
       
-      x11_client_configure_window(xid, w, h)
+      sendConfigureAsync(xid:xid, w:w, h:h)
       return
     }
     
@@ -572,7 +579,7 @@ final class WindowRegistry {
       
       self.lastRepaintTimeByXid[xid] = CACurrentMediaTime()
       
-      x11_client_configure_window(xid, sz.w, sz.h)
+      sendConfigureAsync(xid:xid, w:sz.w, h:sz.h)
     }
     repaintWorkItemByXid[xid] = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
@@ -603,7 +610,7 @@ final class WindowRegistry {
     guard let sz = latestPixelSizeByXid[xid] else { return }
     
     // Client-style request: configure implies damage + wakeup on the server.
-    x11_client_configure_window(xid, sz.w, sz.h)
+    sendConfigureAsync(xid:xid, w:sz.w, h:sz.h)
   }
   
   func closeAll() {
@@ -651,7 +658,7 @@ final class WindowRegistry {
         let scale = win.backingScaleFactor
         let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
         let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-        x11_client_configure_window(xid, wPx, hPx)
+        sendConfigureAsync(xid:xid, w:wPx, h:hPx)
       }
     }
   }

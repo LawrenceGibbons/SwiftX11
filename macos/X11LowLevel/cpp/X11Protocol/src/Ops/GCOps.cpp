@@ -1,133 +1,108 @@
-//
-//  GCOps.cpp
-//  X11LowLevel
-//
-//  Created by Lawrence Gibbons on 1/19/26.
-//
-
 #include "GCOps.hpp"
 
-// You’ll replace these with your real infrastructure types as your skeleton firms up.
-#include <cstdio>
+#include "XProtoContext.hpp"
+#include "ByteReader.hpp"
+#include "GCTable.hpp"
 
 namespace x11 {
 
-// Minimal placeholder “reader” expectations:
-// - br.readU32(), br.readI16(), br.readU16(), br.skip(n)
-// - br.remaining()
-//
-// If your ByteReader API differs, adjust the calls in one place here.
-class ByteReader {
-public:
-  uint32_t readU32();
-  uint16_t readU16();
-  int16_t  readI16();
-  void     skip(size_t n);
-  std::size_t   remaining() const;
-};
+GCOps::GCOps(XProtoRegistrar& reg) {
+  reg.registerMajor(55, &GCOps::onMajor, this); // CreateGC
+  reg.registerMajor(56, &GCOps::onMajor, this); // ChangeGC
+  reg.registerMajor(60, &GCOps::onMajor, this); // FreeGC
+}
 
-// Minimal placeholder “context” expectations:
-// - ctx.tracef(...)
-// - ctx.gcStore() / ctx.state() etc (later)
-class XProtoContext {
-public:
-  void tracef(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
-};
+void GCOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
+  if (!user) { dc.br.skip(dc.br.remaining()); return; }
+  static_cast<GCOps*>(user)->handle(ctx, dc);
+}
 
-void GCOps::handle(uint8_t majorOpcode, uint8_t minorOpcode, ByteReader& br) {
-  switch (majorOpcode) {
-    case 55: handleCreateGC(minorOpcode, br); break;
-    case 56: handleChangeGC(minorOpcode, br); break;
-    case 60: handleFreeGC(minorOpcode, br); break;
+void GCOps::handle(XProtoContext& ctx, DispatchContext& dc) {
+  switch (dc.major) {
+    case 55: handleCreateGC(ctx, dc.seq, dc.br); return;
+    case 56: handleChangeGC(ctx, dc.seq, dc.br); return;
+    case 60: handleFreeGC(ctx, dc.seq, dc.br); return;
     default:
-      // Not ours; caller shouldn't route here for other opcodes.
-      ctx_.tracef("[GCOps] unexpected major=%u (minor=%u)\n",
-                  (unsigned)majorOpcode, (unsigned)minorOpcode);
-      // Best effort: consume nothing.
-      break;
+      dc.br.skip(dc.br.remaining());
+      ctx.tracef("[GCOps] unexpected major=%u\n", (unsigned)dc.major);
+      return;
   }
 }
 
-void GCOps::handleCreateGC(uint8_t /*minorOpcode*/, ByteReader& br) {
-  // X11 CreateGC request body (after 4-byte header):
+// Keep your bring-up mapping rules.
+uint32_t GCOps::mapPixelToARGB(uint32_t val) {
+  if (val == 0) return 0xFF000000u;
+  if (val == 1) return 0xFFFFFFFFu;
+  return 0xFF000000u | (val & 0x00FFFFFFu);
+}
+
+// Parse value list in increasing bit order.
+// We only care about bit 2 (GCForeground) and bit 3 (GCBackground),
+// but we must still CONSUME all provided values to keep the stream aligned.
+void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, uint32_t& io_fg, uint32_t& io_bg) {
+  for (uint32_t bit = 0; bit < 32; bit++) {
+    if ((vmask & (1u << bit)) == 0) continue;
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+    const uint32_t val = br.readU32();
+    if (bit == 2) io_fg = mapPixelToARGB(val);
+    else if (bit == 3) io_bg = mapPixelToARGB(val);
+  }
+}
+
+// major 55 CreateGC
+void GCOps::handleCreateGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Body:
   //   CARD32 gc
   //   CARD32 drawable
   //   CARD32 valueMask
   //   LISTofCARD32 values
-  if (br.remaining() < 12) {
-    ctx_.tracef("[GCOps] CreateGC: short body (%zu)\n", br.remaining());
-    // In a strict server we’d send BadLength, but for bring-up we just bail.
-    return;
-  }
+  if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
-  const uint32_t gcXid     = br.readU32();
-  const uint32_t drawable  = br.readU32();
-  const uint32_t valueMask = br.readU32();
+  const uint32_t gcXid    = br.readU32();
+  (void)br.readU32(); // drawable (unused)
+  const uint32_t vmask    = br.readU32();
 
-  ctx_.tracef("[GCOps] CreateGC gc=0x%08X drawable=0x%08X vmask=0x%08X (stub)\n",
-              gcXid, drawable, valueMask);
+  auto st = GCTable::instance().getOrCreate(gcXid);
+  applyValueMask(vmask, br, st.fg, st.bg);
+  // Consume any trailing padding (CreateGC has no fixed padding, but callers may pass more bytes)
+  br.skip(br.remaining());
 
-  // TODO: allocate/overwrite GC object in GCStore.
-  // TODO: parse value list (foreground/background, lineWidth, fillStyle...).
-  skipValueList(valueMask, br);
+  GCTable::instance().upsert(st);
+
+  // Optional debug:
+  // ctx.tracef("[GCOps] CreateGC gc=0x%08X fg=0x%08X bg=0x%08X vmask=0x%08X\n",
+  //            (unsigned)gcXid, (unsigned)st.fg, (unsigned)st.bg, (unsigned)vmask);
 }
 
-void GCOps::handleChangeGC(uint8_t /*minorOpcode*/, ByteReader& br) {
-  // X11 ChangeGC request body:
+// major 56 ChangeGC
+void GCOps::handleChangeGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Body:
   //   CARD32 gc
   //   CARD32 valueMask
   //   LISTofCARD32 values
-  if (br.remaining() < 8) {
-    ctx_.tracef("[GCOps] ChangeGC: short body (%zu)\n", br.remaining());
-    return;
-  }
-
-  const uint32_t gcXid     = br.readU32();
-  const uint32_t valueMask = br.readU32();
-
-  ctx_.tracef("[GCOps] ChangeGC gc=0x%08X vmask=0x%08X (stub)\n", gcXid, valueMask);
-
-  // TODO: lookup GC object; apply value list updates.
-  skipValueList(valueMask, br);
-}
-
-void GCOps::handleFreeGC(uint8_t /*minorOpcode*/, ByteReader& br) {
-  // X11 FreeGC request body:
-  //   CARD32 gc
-  if (br.remaining() < 4) {
-    ctx_.tracef("[GCOps] FreeGC: short body (%zu)\n", br.remaining());
-    return;
-  }
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
   const uint32_t gcXid = br.readU32();
-  ctx_.tracef("[GCOps] FreeGC gc=0x%08X (stub)\n", gcXid);
+  const uint32_t vmask = br.readU32();
 
-  // TODO: delete GC object from GCStore.
+  auto st = GCTable::instance().getOrCreate(gcXid);
+  applyValueMask(vmask, br, st.fg, st.bg);
+  br.skip(br.remaining());
+
+  GCTable::instance().upsert(st);
+
+  // ctx.tracef("[GCOps] ChangeGC gc=0x%08X fg=0x%08X bg=0x%08X vmask=0x%08X\n",
+  //            (unsigned)gcXid, (unsigned)st.fg, (unsigned)st.bg, (unsigned)vmask);
 }
 
-void GCOps::skipValueList(uint32_t valueMask, ByteReader& br) {
-  // Each set bit in valueMask corresponds to one CARD32 in the value list,
-  // in increasing bit order.
-  // For now we don’t interpret it — we just consume it.
-  //
-  // Count bits set in 32-bit mask.
-  uint32_t n = 0;
-  uint32_t m = valueMask;
-  while (m) {
-    m &= (m - 1);
-    n++;
-  }
+// major 60 FreeGC
+void GCOps::handleFreeGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t gcXid = br.readU32();
+  br.skip(br.remaining());
 
-  const std::size_t bytes = (size_t)n * 4u;
-  if (br.remaining() < bytes) {
-    ctx_.tracef("[GCOps] skipValueList: wanted %zu bytes but only %zu remain\n",
-                bytes, br.remaining());
-    // Consume whatever remains to keep stream moving.
-    br.skip(br.remaining());
-    return;
-  }
-
-  br.skip(bytes);
+  GCTable::instance().erase(gcXid);
+  // ctx.tracef("[GCOps] FreeGC gc=0x%08X\n", (unsigned)gcXid);
 }
 
 } // namespace x11

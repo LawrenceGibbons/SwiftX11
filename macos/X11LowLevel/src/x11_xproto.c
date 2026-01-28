@@ -26,6 +26,7 @@
 #include "x11_requests.h"
 #include "XProtoConnectionWrapper.h"
 #include "XProtoServerBridge.h"
+#include "XProtoGCBridge.hpp"
 
 // Forward decls (used by enqueue helpers near top of file)
 static const char* atoms_name(uint32_t atom, size_t* out_len);
@@ -2147,304 +2148,199 @@ void x11_xproto_apply_configure_from_cpp(uint32_t wid,
 // ----------------------------------------------------------------------------
 // Minimal GC table (enough for xeyes bitmaps and simple fills)
 // ----------------------------------------------------------------------------
-typedef struct {
-  uint32_t xid;
-  uint32_t fg; // ARGB
-  uint32_t bg; // ARGB
-} x11_gc_t;
+// typedef struct {
+//   uint32_t xid;
+//   uint32_t fg; // ARGB
+//   uint32_t bg; // ARGB
+// } x11_gc_t;
 
 // NOTE: For bring-up we keep a tiny fixed-size table.
-static x11_gc_t g_gcs[256];
-static size_t   g_gcs_n = 0;
-
-static ssize_t gc_index(uint32_t xid)
-{
-  for (size_t i = 0; i < g_gcs_n; i++) {
-    if (g_gcs[i].xid == xid) return (ssize_t)i;
-  }
-  return -1;
-}
-
-static x11_gc_t* gc_find(uint32_t xid)
-{
-  const ssize_t idx = gc_index(xid);
-  return (idx >= 0) ? &g_gcs[(size_t)idx] : NULL;
-}
-
-static x11_gc_t* gc_alloc_or_get(uint32_t xid)
-{
-  if (xid == 0) return NULL;
-  x11_gc_t* g = gc_find(xid);
-  if (g) return g;
-  if (g_gcs_n >= (sizeof(g_gcs) / sizeof(g_gcs[0]))) return NULL;
-  g = &g_gcs[g_gcs_n++];
-  g->xid = xid;
-  // Default GC colors: X11 defaults are implementation-defined; for bring-up
-  // we pick black fg and white bg so 1bpp masks look correct.
-  g->fg = 0xFF000000u;
-  g->bg = 0xFFFFFFFFu;
-  return g;
-}
-
-static void gc_free(uint32_t xid)
-{
-  const ssize_t idx = gc_index(xid);
-  if (idx < 0) return;
-  const size_t last = g_gcs_n - 1;
-  if ((size_t)idx != last) {
-    g_gcs[(size_t)idx] = g_gcs[last];
-  }
-  g_gcs_n--;
-}
-
-// CreateGC (major = 55) -- no reply
-static void handle_CreateGC(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-{
-  (void)fd;
-  (void)seq;
-
-  // Body after 4-byte header:
-  //   CARD32 gc
-  //   CARD32 drawable
-  //   CARD32 valueMask
-  //   LISTofCARD32 values
-  if (remain < 12) return;
-
-  const uint32_t gc_xid    = rd32(payload + 0);
-  const uint32_t drawable  = rd32(payload + 4);
-  const uint32_t vmask     = rd32(payload + 8);
-
-  x11_gc_t* g = gc_alloc_or_get(gc_xid);
-  if (!g) return;
-
-  // Parse values in order of bits set in vmask.
-  // We only care about Foreground (bit 2) and Background (bit 3).
-  const uint8_t* vp = payload + 12;
-  size_t vrem = remain - 12;
-
-  uint32_t new_fg = g->fg;
-  uint32_t new_bg = g->bg;
-
-  for (uint32_t bit = 0; bit < 32; bit++) {
-    if (!(vmask & (1u << bit))) continue;
-    if (vrem < 4) break;
-    uint32_t val = rd32(vp);
-
-    // X11 GC components (core):
-    //   2 = GCForeground, 3 = GCBackground
-    if (bit == 2) {
-      // Pixel value; we don't have colormaps, but xeyes generally uses 0/1
-      // for monochrome bitmaps. Map 0->black, nonzero->white is NOT correct
-      // in general; instead, we keep raw pixel in low 24 bits as RGB.
-      // For bring-up, treat 0 as black, 1 as white.
-      if (val == 0) new_fg = 0xFF000000u;
-      else if (val == 1) new_fg = 0xFFFFFFFFu;
-      else new_fg = 0xFF000000u | (val & 0x00FFFFFFu);
-    } else if (bit == 3) {
-      if (val == 0) new_bg = 0xFF000000u;
-      else if (val == 1) new_bg = 0xFFFFFFFFu;
-      else new_bg = 0xFF000000u | (val & 0x00FFFFFFu);
-    }
-
-    vp += 4;
-    vrem -= 4;
-  }
-
-  g->fg = new_fg;
-  g->bg = new_bg;
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] CreateGC: gc=0x%08X drawable=0x%08X vmask=0x%08X fg=0x%08X bg=0x%08X (gcs_n=%zu)\n",
-          (unsigned)gc_xid,
-          (unsigned)drawable,
-          (unsigned)vmask,
-          (unsigned)g->fg,
-          (unsigned)g->bg,
-          g_gcs_n);
-#endif
-}
-
-// ChangeGC (major = 56) -- no reply
-static void handle_ChangeGC(const uint8_t* payload, size_t remain)
-{
-  // Body after 4-byte header:
-  //   CARD32 gc
-  //   CARD32 valueMask
-  //   LISTofCARD32 values
-  if (remain < 8) return;
-
-  const uint32_t gc_xid = rd32(payload + 0);
-  const uint32_t vmask  = rd32(payload + 4);
-
-  x11_gc_t* g = gc_find(gc_xid);
-  if (!g) return;
-
-  const uint8_t* vp = payload + 8;
-  size_t vrem = remain - 8;
-
-  uint32_t new_fg = g->fg;
-  uint32_t new_bg = g->bg;
-
-  for (uint32_t bit = 0; bit < 32; bit++) {
-    if (!(vmask & (1u << bit))) continue;
-    if (vrem < 4) break;
-    uint32_t val = rd32(vp);
-
-    // X11 GC components (core):
-    //   2 = GCForeground, 3 = GCBackground
-    if (bit == 2) {
-      if (val == 0) new_fg = 0xFF000000u;
-      else if (val == 1) new_fg = 0xFFFFFFFFu;
-      else new_fg = 0xFF000000u | (val & 0x00FFFFFFu);
-    } else if (bit == 3) {
-      if (val == 0) new_bg = 0xFF000000u;
-      else if (val == 1) new_bg = 0xFFFFFFFFu;
-      else new_bg = 0xFF000000u | (val & 0x00FFFFFFu);
-    }
-
-    vp += 4;
-    vrem -= 4;
-  }
-
-  g->fg = new_fg;
-  g->bg = new_bg;
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] ChangeGC: gc=0x%08X vmask=0x%08X fg=0x%08X bg=0x%08X\n",
-          (unsigned)gc_xid,
-          (unsigned)vmask,
-          (unsigned)g->fg,
-          (unsigned)g->bg);
-#endif
-}
-
-// FreeGC (major = 60) -- no reply
-static void handle_FreeGC(const uint8_t* payload, size_t remain)
-{
-  // Body after 4-byte header:
-  //   CARD32 gc
-  if (remain < 4) return;
-
-  const uint32_t gc = rd32(payload + 0);
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] FreeGC: gc=0x%08X (before gcs_n=%zu)\n", (unsigned)gc, g_gcs_n);
-#endif
-
-  gc_free(gc);
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] FreeGC: gc=0x%08X (after gcs_n=%zu)\n", (unsigned)gc, g_gcs_n);
-#endif
-}
-
-// create window (major = 1)
-//static void handle_CreateWindow(uint8_t depth, const uint8_t* payload, size_t remain)
+//static x11_gc_t g_gcs[256];
+//static size_t   g_gcs_n = 0;
+//
+//static ssize_t gc_index(uint32_t xid)
 //{
-//  // CreateWindow request body (after 4-byte header) begins with:
-//  // 4: wid
-//  // 4: parent
-//  // 2: x
-//  // 2: y
-//  // 2: width
-//  // 2: height
-//  // 2: borderWidth
-//  // 2: class
-//  // 4: visual
-//  // 4: valueMask
-//  // then value-list (optional)
-//  if (remain < 28) return;
+//  for (size_t i = 0; i < g_gcs_n; i++) {
+//    if (g_gcs[i].xid == xid) return (ssize_t)i;
+//  }
+//  return -1;
+//}
 //
-//  uint32_t wid    = rd32(payload + 0);
-//  uint32_t parent = rd32(payload + 4);
-//  int16_t  x      = (int16_t)rd16(payload + 8);
-//  int16_t  y      = (int16_t)rd16(payload + 10);
-//  uint16_t wpx    = rd16(payload + 12);
-//  uint16_t hpx    = rd16(payload + 14);
-//  uint32_t vmask  = rd32(payload + 24);
+//static x11_gc_t* gc_find(uint32_t xid)
+//{
+//  const ssize_t idx = gc_index(xid);
+//  return (idx >= 0) ? &g_gcs[(size_t)idx] : NULL;
+//}
 //
-//  // Create or overwrite (idempotent-ish for now), but always resolve an index so
-//  // g_wins[] and g_framebuffers[] stay aligned.
-//  ssize_t idx = win_index(wid);
-//  if (idx < 0) idx = win_add(wid);
+//static x11_gc_t* gc_alloc_or_get(uint32_t xid)
+//{
+//  if (xid == 0) return NULL;
+//  x11_gc_t* g = gc_find(xid);
+//  if (g) return g;
+//  if (g_gcs_n >= (sizeof(g_gcs) / sizeof(g_gcs[0]))) return NULL;
+//  g = &g_gcs[g_gcs_n++];
+//  g->xid = xid;
+//  // Default GC colors: X11 defaults are implementation-defined; for bring-up
+//  // we pick black fg and white bg so 1bpp masks look correct.
+//  g->fg = 0xFF000000u;
+//  g->bg = 0xFFFFFFFFu;
+//  return g;
+//}
+
+//static void gc_free(uint32_t xid)
+//{
+//  const ssize_t idx = gc_index(xid);
 //  if (idx < 0) return;
-//
-//  x11_win_t* w = &g_wins[(size_t)idx];
-//
-//  w->parent      = parent;
-//  w->x           = x; w->y = y;
-//  w->w           = (wpx ? wpx : 1);
-//  w->h           = (hpx ? hpx : 1);
-//  w->mapped      = 0;
-//  w->dirty       = 0;
-//  w->event_mask  = 0;
-//  w->presentable = 0;
-//  w->owner_fd    = g_current_client_fd;
-//
-//  // Initialize (or re-initialize) framebuffer for this window at the SAME index.
-//  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-//
-//  if (fb->pixels) {
-//    free(fb->pixels);
-//    fb->pixels = NULL;
+//  const size_t last = g_gcs_n - 1;
+//  if ((size_t)idx != last) {
+//    g_gcs[(size_t)idx] = g_gcs[last];
 //  }
+//  g_gcs_n--;
+//}
+
+//// CreateGC (major = 55) -- no reply
+//static void handle_CreateGC(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
+//{
+//  (void)fd;
+//  (void)seq;
 //
-//  fb->width  = (uint32_t)w->w;
-//  fb->height = (uint32_t)w->h;
+//  // Body after 4-byte header:
+//  //   CARD32 gc
+//  //   CARD32 drawable
+//  //   CARD32 valueMask
+//  //   LISTofCARD32 values
+//  if (remain < 12) return;
 //
-//  fb->pixels = (uint32_t*)malloc((size_t)fb->width * (size_t)fb->height * sizeof(uint32_t));
-//  if (fb->pixels) {
-//    const size_t npx = (size_t)fb->width * (size_t)fb->height;
-//    for (size_t i = 0; i < npx; i++) fb->pixels[i] = 0xFFFFFFFFu;
-//    w->dirty = 1;
-//  } else {
-//    fb->width = 0;
-//    fb->height = 0;
-//  }
-//  
-//  // If valueMask includes CWEventMask (bit 11) we should read it from value-list.
-//  // valueMask bits are defined by X11; CWEventMask = (1<<11).
-//  // value-list starts immediately after the fixed portion (28 bytes).
-//  if (vmask & (1u << 11)) {
-//    // value-list is 32-bit items in the order of bits set.
-//    // For Phase A: we only care about CWEventMask, so we can scan in-order.
-//    const uint8_t* vp = payload + 28;
-//    size_t vrem = remain - 28;
-//    uint32_t cur_mask = 0;
+//  const uint32_t gc_xid    = rd32(payload + 0);
+//  const uint32_t drawable  = rd32(payload + 4);
+//  const uint32_t vmask     = rd32(payload + 8);
 //
-//    for (uint32_t bit = 0; bit < 32; bit++) {
-//      if (!(vmask & (1u << bit))) continue;
-//      if (vrem < 4) break;
-//      uint32_t val = rd32(vp);
-//      if (bit == 11) cur_mask = val; // CWEventMask
-//      vp += 4; vrem -= 4;
+//  x11_gc_t* g = gc_alloc_or_get(gc_xid);
+//  if (!g) return;
+//
+//  // Parse values in order of bits set in vmask.
+//  // We only care about Foreground (bit 2) and Background (bit 3).
+//  const uint8_t* vp = payload + 12;
+//  size_t vrem = remain - 12;
+//
+//  uint32_t new_fg = g->fg;
+//  uint32_t new_bg = g->bg;
+//
+//  for (uint32_t bit = 0; bit < 32; bit++) {
+//    if (!(vmask & (1u << bit))) continue;
+//    if (vrem < 4) break;
+//    uint32_t val = rd32(vp);
+//
+//    // X11 GC components (core):
+//    //   2 = GCForeground, 3 = GCBackground
+//    if (bit == 2) {
+//      // Pixel value; we don't have colormaps, but xeyes generally uses 0/1
+//      // for monochrome bitmaps. Map 0->black, nonzero->white is NOT correct
+//      // in general; instead, we keep raw pixel in low 24 bits as RGB.
+//      // For bring-up, treat 0 as black, 1 as white.
+//      if (val == 0) new_fg = 0xFF000000u;
+//      else if (val == 1) new_fg = 0xFFFFFFFFu;
+//      else new_fg = 0xFF000000u | (val & 0x00FFFFFFu);
+//    } else if (bit == 3) {
+//      if (val == 0) new_bg = 0xFF000000u;
+//      else if (val == 1) new_bg = 0xFFFFFFFFu;
+//      else new_bg = 0xFF000000u | (val & 0x00FFFFFFu);
 //    }
-//    w->event_mask = cur_mask;
+//
+//    vp += 4;
+//    vrem -= 4;
 //  }
 //
-//  x11_proto_bridge_window_upsert(wid, parent, x, y, w->w, w->h, w->event_mask, g_current_client_fd);
-//  // Mirror initial lifecycle state into WindowTable.
-//  x11_proto_bridge_window_set_mapped(wid, 0);
-//  x11_proto_bridge_window_set_presentable(wid, 0);
+//  g->fg = new_fg;
+//  g->bg = new_bg;
 //
-//  // If we allocated/cleared the FB, we consider it "dirty" until map+presentable flushes it.
-//  if (w->dirty) {
-//    x11_proto_bridge_window_mark_dirty(wid);
-//  }
-//  
-//  // enqueue to shim
-//  enqueue_create_window(wid, parent, w->x, w->y, w->w, w->h, w->event_mask);
-//
-//#if !defined(NDEBUG) && SWIFTX11_TRACE
+//#ifndef NDEBUG
 //  fprintf(stderr,
-//          "[SwiftX11] xproto: CreateWindow wid=0x%08X parent=0x%08X vmask=0x%08X event_mask=0x%08X\n",
-//          (unsigned)wid, (unsigned)parent, (unsigned)vmask, (unsigned)w->event_mask);
+//          "[SwiftX11] CreateGC: gc=0x%08X drawable=0x%08X vmask=0x%08X fg=0x%08X bg=0x%08X (gcs_n=%zu)\n",
+//          (unsigned)gc_xid,
+//          (unsigned)drawable,
+//          (unsigned)vmask,
+//          (unsigned)g->fg,
+//          (unsigned)g->bg,
+//          g_gcs_n);
+//#endif
+//}
+//
+//// ChangeGC (major = 56) -- no reply
+//static void handle_ChangeGC(const uint8_t* payload, size_t remain)
+//{
+//  // Body after 4-byte header:
+//  //   CARD32 gc
+//  //   CARD32 valueMask
+//  //   LISTofCARD32 values
+//  if (remain < 8) return;
+//
+//  const uint32_t gc_xid = rd32(payload + 0);
+//  const uint32_t vmask  = rd32(payload + 4);
+//
+//  x11_gc_t* g = gc_find(gc_xid);
+//  if (!g) return;
+//
+//  const uint8_t* vp = payload + 8;
+//  size_t vrem = remain - 8;
+//
+//  uint32_t new_fg = g->fg;
+//  uint32_t new_bg = g->bg;
+//
+//  for (uint32_t bit = 0; bit < 32; bit++) {
+//    if (!(vmask & (1u << bit))) continue;
+//    if (vrem < 4) break;
+//    uint32_t val = rd32(vp);
+//
+//    // X11 GC components (core):
+//    //   2 = GCForeground, 3 = GCBackground
+//    if (bit == 2) {
+//      if (val == 0) new_fg = 0xFF000000u;
+//      else if (val == 1) new_fg = 0xFFFFFFFFu;
+//      else new_fg = 0xFF000000u | (val & 0x00FFFFFFu);
+//    } else if (bit == 3) {
+//      if (val == 0) new_bg = 0xFF000000u;
+//      else if (val == 1) new_bg = 0xFFFFFFFFu;
+//      else new_bg = 0xFF000000u | (val & 0x00FFFFFFu);
+//    }
+//
+//    vp += 4;
+//    vrem -= 4;
+//  }
+//
+//  g->fg = new_fg;
+//  g->bg = new_bg;
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] ChangeGC: gc=0x%08X vmask=0x%08X fg=0x%08X bg=0x%08X\n",
+//          (unsigned)gc_xid,
+//          (unsigned)vmask,
+//          (unsigned)g->fg,
+//          (unsigned)g->bg);
+//#endif
+//}
+//
+//// FreeGC (major = 60) -- no reply
+//static void handle_FreeGC(const uint8_t* payload, size_t remain)
+//{
+//  // Body after 4-byte header:
+//  //   CARD32 gc
+//  if (remain < 4) return;
+//
+//  const uint32_t gc = rd32(payload + 0);
+//
+//#ifndef NDEBUG
+//  fprintf(stderr, "[SwiftX11] FreeGC: gc=0x%08X (before gcs_n=%zu)\n", (unsigned)gc, g_gcs_n);
 //#endif
 //
-//  (void)depth;
+//  gc_free(gc);
+//
+//#ifndef NDEBUG
+//  fprintf(stderr, "[SwiftX11] FreeGC: gc=0x%08X (after gcs_n=%zu)\n", (unsigned)gc, g_gcs_n);
+//#endif
 //}
+
 
 
 
@@ -2685,15 +2581,19 @@ static void handle_CopyArea(const uint8_t* payload, size_t remain)
 #endif
 #ifndef NDEBUG
   {
-    x11_gc_t* g = gc_find(gc);
+    uint32_t fg = 0xFF000000u;
+    uint32_t bg = 0xFFFFFFFFu;
+    const int found = x11_proto_bridge_gc_get(gc, &fg, &bg);
+
     fprintf(stderr,
             "[SwiftX11] CopyArea: gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X\n",
             (unsigned)gc,
-            g ? 1 : 0,
-            (unsigned)(g ? g->fg : 0),
-            (unsigned)(g ? g->bg : 0));
+            found ? 1 : 0,
+            (unsigned)fg,
+            (unsigned)bg);
   }
 #endif
+
   if (wpx == 0 || hpx == 0) return;
 
   // Resolve src buffer (window fb or pixmap)
@@ -2916,15 +2816,11 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
           dst_is_window ? "window" : "pixmap", dstW, dstH);
 #endif
 
-  // GC mapping (minimal): use GC fg/bg if available.
+  // GC mapping (authoritative in C++): pull fg/bg via bridge.
   uint32_t fg = 0xFF000000u; // default black
   uint32_t bg = 0xFFFFFFFFu; // default white
-  {
-    x11_gc_t* g = gc_find(gc);
-    if (g) {
-      fg = g->fg;
-      bg = g->bg;
-    }
+  (void)x11_proto_bridge_gc_get(gc, &fg, &bg);
+
 #ifndef NDEBUG
   fprintf(stderr,
     "[SwiftX11] CopyPlane: src=0x%08X(%s) dst=0x%08X(%s) src_depth1=%d fg=0x%08X bg=0x%08X\n",
@@ -2933,8 +2829,7 @@ static void handle_CopyPlane(const uint8_t* payload, size_t remain)
     src_pm_depth1,
     (unsigned)fg, (unsigned)bg);
 #endif
-  }
-
+  
   // Interpret source as 1-bit using our current storage convention:
   // PutImage(depth=1) expands bits into black/white pixels.
   size_t on_px = 0;
@@ -3018,17 +2913,19 @@ static void handle_PolyArc(int fd, uint16_t seq,
   {
     const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
     const size_t narcs = list_bytes / 12u;
-    x11_gc_t* g = gc_find(gc_id);
+    uint32_t dbg_fg = 0xFF000000u;
+    uint32_t dbg_bg = 0xFFFFFFFFu;
+    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
+
     fprintf(stderr,
             "[SwiftX11] PolyArc: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X narcs=%zu remain=%zu\n",
             (unsigned)drawable,
             (unsigned)gc_id,
-            g ? 1 : 0,
-            (unsigned)(g ? g->fg : 0),
-            (unsigned)(g ? g->bg : 0),
+            dbg_found ? 1 : 0,
+            (unsigned)dbg_fg,
+            (unsigned)dbg_bg,
             narcs,
-            remain);
-  }
+            remain);  }
 #endif
 
   // Resolve destination buffer (window fb OR pixmap)
@@ -3041,13 +2938,11 @@ static void handle_PolyArc(int fd, uint16_t seq,
   const size_t narcs = list_bytes / 12u;
   if (narcs == 0) return;
 
-  // GC foreground (default black)
+  // GC foreground (authoritative in C++): pull fg via bridge.
   uint32_t fg_color = 0xFF000000u;
-  {
-    x11_gc_t* g = gc_find(gc_id);
-    if (g) fg_color = g->fg;
-  }
-
+  uint32_t tmp_bg   = 0xFFFFFFFFu;
+  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
+  
   const uint8_t* arcs = payload + 8;
 
   for (size_t ai = 0; ai < narcs; ai++) {
@@ -3141,14 +3036,17 @@ static void handle_PolyFillRectangle(int fd, uint16_t seq,
   {
     const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
     const size_t nrects = list_bytes / 8u;
-    x11_gc_t* g = gc_find(gc_id);
+    uint32_t dbg_fg = 0xFF000000u;
+    uint32_t dbg_bg = 0xFFFFFFFFu;
+    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
+
     fprintf(stderr,
             "[SwiftX11] PolyFillRectangle: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X nrects=%zu remain=%zu\n",
             (unsigned)drawable,
             (unsigned)gc_id,
-            g ? 1 : 0,
-            (unsigned)(g ? g->fg : 0),
-            (unsigned)(g ? g->bg : 0),
+            dbg_found ? 1 : 0,
+            (unsigned)dbg_fg,
+            (unsigned)dbg_bg,
             nrects,
             remain);
   }
@@ -3160,13 +3058,11 @@ static void handle_PolyFillRectangle(int fd, uint16_t seq,
   bool dst_is_window = false;
   if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
 
-  // GC foreground (default black)
+  // GC foreground (authoritative in C++): pull fg via bridge.
   uint32_t fg_color = 0xFF000000u;
-  {
-    x11_gc_t* g = gc_find(gc_id);
-    if (g) fg_color = g->fg;
-  }
-
+  uint32_t tmp_bg   = 0xFFFFFFFFu;
+  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
+  
   // Each rectangle is 8 bytes: x, y, width, height
   const uint8_t* rects = payload + 8;
   size_t nrects = (remain - 8) / 8;
@@ -3230,17 +3126,19 @@ static void handle_PolyFillArc(int fd, uint16_t seq,
   {
     const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
     const size_t narcs = list_bytes / 12u;
-    x11_gc_t* g = gc_find(gc_id);
+    uint32_t dbg_fg = 0xFF000000u;
+    uint32_t dbg_bg = 0xFFFFFFFFu;
+    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
+
     fprintf(stderr,
             "[SwiftX11] PolyFillArc: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X narcs=%zu remain=%zu\n",
             (unsigned)drawable,
             (unsigned)gc_id,
-            g ? 1 : 0,
-            (unsigned)(g ? g->fg : 0),
-            (unsigned)(g ? g->bg : 0),
+            dbg_found ? 1 : 0,
+            (unsigned)dbg_fg,
+            (unsigned)dbg_bg,
             narcs,
-            remain);
-  }
+            remain);  }
 #endif
 
   // Resolve destination buffer (window fb OR pixmap)
@@ -3253,13 +3151,11 @@ static void handle_PolyFillArc(int fd, uint16_t seq,
   const size_t narcs = list_bytes / 12u;
   if (narcs == 0) return;
 
-  // GC foreground (default black)
+  // GC foreground (authoritative in C++): pull fg via bridge.
   uint32_t fg_color = 0xFF000000u;
-  {
-    x11_gc_t* g = gc_find(gc_id);
-    if (g) fg_color = g->fg;
-  }
-
+  uint32_t tmp_bg   = 0xFFFFFFFFu;
+  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
+  
   const uint8_t* arcs = payload + 8;
 
   for (size_t ai = 0; ai < narcs; ai++) {
@@ -3478,27 +3374,6 @@ static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remai
   }
 
 #ifndef NDEBUG
-  // Keep this fairly quiet by default; you can flip SWIFTX11_TRACE to 1.
-  if (SWIFTX11_TRACE) {
-    x11_gc_t* g = gc_find(gc);
-    fprintf(stderr,
-            "[SwiftX11] PutImage: format=%u drawable=0x%08X gc=0x%08X gc_found=%d dst_kind=%s w=%u h=%u dst=(%d,%d) leftPad=%u depth=%u src_len=%zu\n",
-            (unsigned)format,
-            (unsigned)drawable,
-            (unsigned)gc,
-            g ? 1 : 0,
-            dst_is_window ? "window" : "pixmap",
-            (unsigned)width,
-            (unsigned)height,
-            (int)dst_x,
-            (int)dst_y,
-            (unsigned)leftPad,
-            (unsigned)depth,
-            src_len);
-  }
-#endif
-
-#ifndef NDEBUG
 fprintf(stderr,
   "[SwiftX11] PutImage dst_kind=%s pm=%p pm_depth=%d depth1=%d dstStride=%u dstWH=%ux%u\n",
   dst_is_window ? "window" : "pixmap",
@@ -3565,18 +3440,16 @@ fprintf(stderr,
           src_len);
 #endif
     
-    // Use GC fg/bg if present; otherwise default to black/white.
+    // Use GC fg/bg (authoritative in C++); otherwise default to black/white.
     uint32_t on_color  = 0xFF000000u;
     uint32_t off_color = 0xFFFFFFFFu;
+
     if (!dst_is_window && dst_pm && dst_pm->depth == 1) {
+      // depth-1 pixmap storage: packed bits, not colors
       on_color  = 1u;
       off_color = 0u;
     } else {
-      x11_gc_t* g = gc_find(gc);
-      if (g) { 
-        on_color = g->fg; 
-        off_color = g->bg; 
-      }
+      (void)x11_proto_bridge_gc_get(gc, &on_color, &off_color);
     }
     
     size_t on_bits = 0;
@@ -3946,9 +3819,9 @@ if (major >= 128) {
         //  handle_MapSubwindows(cfd, seq, payload, remain);
         //  break;
           
-        case 12: // ConfigureWindow
-          handle_ConfigureWindow(cfd, seq, payload, remain);
-          break;
+        //case 12: // ConfigureWindow
+        //  handle_ConfigureWindow(cfd, seq, payload, remain);
+        //  break;
           
         case 53: // CreatePixmap (no reply)
           handle_CreatePixmap(minor /*depth*/, payload, remain);
@@ -3958,16 +3831,16 @@ if (major >= 128) {
           handle_FreePixmap(payload, remain);
           break;
           
-        case 55: // CreateGC (no reply)
-          handle_CreateGC(cfd, seq, payload, remain );
-          break;
-        case 56: // ChangeGC (no reply)
-          handle_ChangeGC(payload, remain);
-          break;
-          
-        case 60: // FreeGC (no reply)
-          handle_FreeGC(payload, remain);
-          break;
+        //case 55: // CreateGC (no reply)
+        //  handle_CreateGC(cfd, seq, payload, remain );
+        //  break;
+        //case 56: // ChangeGC (no reply)
+        //  handle_ChangeGC(payload, remain);
+        //  break;
+        //  
+        //case 60: // FreeGC (no reply)
+        //  handle_FreeGC(payload, remain);
+        //  break;
           
         case 61: // ClearArea (no reply; may generate Expose)
           handle_ClearArea(cfd, seq, minor /*exposures*/, payload, remain);

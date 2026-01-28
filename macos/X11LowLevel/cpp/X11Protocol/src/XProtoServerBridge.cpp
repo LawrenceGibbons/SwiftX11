@@ -21,7 +21,8 @@
 #include "XProtoModules.hpp"
 #include "XProtoContext.hpp"
 #include "x11_window_set_mapped.h"
-
+#include "GCTable.hpp"
+#include "XProtoGCBridge.hpp"
 
 // Modules live for the lifetime of the session.
 static std::atomic<x11::XProtoModules*> g_mods{nullptr};
