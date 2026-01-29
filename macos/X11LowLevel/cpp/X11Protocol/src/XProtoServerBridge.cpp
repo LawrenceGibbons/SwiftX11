@@ -278,3 +278,18 @@ extern "C" void x11_proto_bridge_window_debug_state(uint32_t xid,
   if (out_dirty)       *out_dirty = vw.dirty ? 1 : 0;             // see note below
   if (out_owner_fd)    *out_owner_fd = vw.owner_fd;
 }
+
+extern "C" void x11_proto_bridge_pixmap_create(uint32_t pid, uint8_t depth, uint16_t w, uint16_t h)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().pixmaps().createPixmap(pid, depth, w, h);
+}
+
+extern "C" void x11_proto_bridge_pixmap_free(uint32_t pid)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+  srv->ctx().pixmaps().freePixmap(pid);
+}
+

@@ -2487,69 +2487,96 @@ static int resolve_drawable_pixels_rw(uint32_t drawable,
 
 
 // CreatePixmap (major = 53) -- no reply
+//static void handle_CreatePixmap(uint8_t depth, const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 12) return;
+//
+//  const uint32_t pid = rd32(payload + 0);
+//  // const uint32_t drawable = rd32(payload + 4); // unused for bring-up
+//  const uint16_t wpx = rd16(payload + 8);
+//  const uint16_t hpx = rd16(payload + 10);
+//
+//  if (pid == 0) return;
+//
+//  ssize_t idx = pix_alloc(pid);
+//  if (idx < 0) return;
+//
+//  x11_pixmap_t *p = &g_pixmaps[(size_t)idx];
+//
+//  p->depth  = depth;
+//  p->width  = (wpx ? wpx : 1);
+//  p->height = (hpx ? hpx : 1);
+//
+//  // Reset any previous storage.
+//  free(p->pixels);
+//  free(p->bits);
+//  p->pixels = NULL;
+//  p->bits = NULL;
+//  p->stride_bytes = 0;
+//
+//  if (p->depth == 1) {
+//    // Packed bitmap, scanlines padded to 32 bits.
+//    p->stride_bytes = (uint32_t)(((p->width + 31u) & ~31u) >> 3); // /8
+//    const size_t nbytes = (size_t)p->stride_bytes * (size_t)p->height;
+//
+//    p->bits = (uint8_t*)malloc(nbytes);
+//    if (!p->bits) {
+//      p->width = p->height = 0;
+//      p->stride_bytes = 0;
+//      return;
+//    }
+//
+//    // Initialize to 0 bits (background/off)
+//    memset(p->bits, 0, nbytes);
+//  } else {
+//    // 32-bit pixels.
+//    const size_t npx = (size_t)p->width * (size_t)p->height;
+//    p->pixels = (uint32_t*)malloc(npx * sizeof(uint32_t));
+//    if (!p->pixels) {
+//      p->width = p->height = 0;
+//      return;
+//    }
+//
+//    // White background
+//    for (size_t i = 0; i < npx; i++) p->pixels[i] = 0xFFFFFFFFu;
+//  }
+//}
+//
+//
+//// FreePixmap (major = 54) -- no reply
+//static void handle_FreePixmap(const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 4) return;
+//  const uint32_t pid = rd32(payload + 0);
+//  if (pid == 0) return;
+//  pix_free(pid);
+//}
+
 static void handle_CreatePixmap(uint8_t depth, const uint8_t* payload, size_t remain)
 {
   if (remain < 12) return;
 
   const uint32_t pid = rd32(payload + 0);
-  // const uint32_t drawable = rd32(payload + 4); // unused for bring-up
   const uint16_t wpx = rd16(payload + 8);
   const uint16_t hpx = rd16(payload + 10);
-
   if (pid == 0) return;
 
-  ssize_t idx = pix_alloc(pid);
-  if (idx < 0) return;
+  // ---- keep C-side arrays for now ONLY if other C ops still depend on them ----
+  // But: for “C++ authoritative pixmaps”, call into PixmapTable here.
+  const uint16_t w = (wpx ? wpx : 1);
+  const uint16_t h = (hpx ? hpx : 1);
 
-  x11_pixmap_t *p = &g_pixmaps[(size_t)idx];
-
-  p->depth  = depth;
-  p->width  = (wpx ? wpx : 1);
-  p->height = (hpx ? hpx : 1);
-
-  // Reset any previous storage.
-  free(p->pixels);
-  free(p->bits);
-  p->pixels = NULL;
-  p->bits = NULL;
-  p->stride_bytes = 0;
-
-  if (p->depth == 1) {
-    // Packed bitmap, scanlines padded to 32 bits.
-    p->stride_bytes = (uint32_t)(((p->width + 31u) & ~31u) >> 3); // /8
-    const size_t nbytes = (size_t)p->stride_bytes * (size_t)p->height;
-
-    p->bits = (uint8_t*)malloc(nbytes);
-    if (!p->bits) {
-      p->width = p->height = 0;
-      p->stride_bytes = 0;
-      return;
-    }
-
-    // Initialize to 0 bits (background/off)
-    memset(p->bits, 0, nbytes);
-  } else {
-    // 32-bit pixels.
-    const size_t npx = (size_t)p->width * (size_t)p->height;
-    p->pixels = (uint32_t*)malloc(npx * sizeof(uint32_t));
-    if (!p->pixels) {
-      p->width = p->height = 0;
-      return;
-    }
-
-    // White background
-    for (size_t i = 0; i < npx; i++) p->pixels[i] = 0xFFFFFFFFu;
-  }
+  x11_proto_bridge_pixmap_create(pid, depth, w, h);
 }
 
 
-// FreePixmap (major = 54) -- no reply
 static void handle_FreePixmap(const uint8_t* payload, size_t remain)
 {
   if (remain < 4) return;
   const uint32_t pid = rd32(payload + 0);
   if (pid == 0) return;
-  pix_free(pid);
+
+  x11_proto_bridge_pixmap_free(pid);
 }
 
 

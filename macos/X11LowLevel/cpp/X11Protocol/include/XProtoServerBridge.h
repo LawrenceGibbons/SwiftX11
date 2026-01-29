@@ -94,6 +94,9 @@ void x11_xproto_apply_configure_from_cpp(uint32_t wid,
                                         int resize_fb);
 
   
+void x11_proto_bridge_pixmap_create(uint32_t pid, uint8_t depth, uint16_t w, uint16_t h);
+void x11_proto_bridge_pixmap_free(uint32_t pid);
+
   
 #ifdef __cplusplus
 }

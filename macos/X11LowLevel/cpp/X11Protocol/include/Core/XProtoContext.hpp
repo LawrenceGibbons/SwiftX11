@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstdarg>
+#include <cassert>
 
 #include "WindowView.hpp"
 
@@ -18,9 +19,8 @@ namespace x11 {
 class XProtoTransport;
 class ReplyWriter;
 class WindowTable;
+class PixmapTable;
   
-// Option A: XProtoContext provides what EventOps needs via callbacks.
-// (C world owns the truth; C++ asks for a snapshot.)
 using WindowLookupFn = bool (*)(uint32_t xid, WindowView* out, void* user);
 
 class XProtoContext {
@@ -55,6 +55,13 @@ public:
   
   // Mutating access (CreateWindow, ConfigureWindow, Map/Unmap, etc.)
   WindowTable& windows();
+  
+  void setPixmapTable(PixmapTable* pt) { pixmap_table_ = pt; }
+  
+  PixmapTable& pixmaps() { assert(pixmap_table_); return *pixmap_table_; }
+  
+  const PixmapTable& pixmaps() const { assert(pixmap_table_); return *pixmap_table_; }
+  
 
 private:
   XProtoTransport* transport_ = nullptr;
@@ -67,6 +74,9 @@ private:
 
   // scratch storage to avoid allocations
   WindowView scratch_{};
+  
+  // pixel maps
+  PixmapTable* pixmap_table_ = nullptr;
 };
 
 } // namespace x11

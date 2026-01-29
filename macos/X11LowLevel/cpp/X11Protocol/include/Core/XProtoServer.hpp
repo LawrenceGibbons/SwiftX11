@@ -18,6 +18,7 @@
 #include "ReplyWriter.hpp"
 #include "ByteReader.hpp"
 #include "WindowTable.hpp"
+#include "PixmapTable.hpp"
 
 namespace x11 {
 
@@ -79,6 +80,7 @@ private:
 
 private:
   WindowTable windows_;
+  PixmapTable pixmapTable_;
   XProtoContext   ctx_;
 
   // opcode-family modules

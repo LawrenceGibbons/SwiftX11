@@ -34,6 +34,7 @@ XProtoServer::XProtoServer()
   ctx_.setTransport(&transport_);
   ctx_.setReplyWriter(&reply_);
   ctx_.setWindowTable(&windows_);
+  ctx_.setPixmapTable(&pixmapTable_);
   
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
