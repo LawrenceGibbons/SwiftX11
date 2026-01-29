@@ -102,6 +102,8 @@ final class X11DebugInspectorWindowController {
 
     let w = NSWindow(contentViewController: hosting)
     w.title = "SwiftX11 Inspector"
+    print("[WIN] setContentSize about to run in X11DebugInspectorWindowController")
+
     w.setContentSize(NSSize(width: 540, height: 420))
     w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
     w.isReleasedWhenClosed = false

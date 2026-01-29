@@ -65,6 +65,15 @@ void WindowTable::upsert(uint32_t xid, uint32_t parent,
   st.serial++;
 }
 
+  
+bool WindowTable::exists(uint32_t xid) const {
+  if (xid == 0) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  return map_.find(xid) != map_.end();
+}  
+  
+  
+  
 bool WindowTable::erase(uint32_t xid) {
   std::lock_guard<std::mutex> lock(mu_);
   return map_.erase(xid) != 0;

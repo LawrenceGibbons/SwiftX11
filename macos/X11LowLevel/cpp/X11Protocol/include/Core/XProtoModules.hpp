@@ -12,16 +12,18 @@
 #include "WindowAttrOps.hpp"
 #include "PropOps.hpp"
 #include "GCOps.hpp"
+#include "DrawOps.hpp"
 
 namespace x11 {
   
   struct XProtoModules {
-    QueryOps  queryOps;
-    AtomOps   atomOps;
-    WindowOps windowOps;
+    QueryOps      queryOps;
+    AtomOps       atomOps;
+    WindowOps     windowOps;
     WindowAttrOps windowAttrOps;
-    PropOps propOps;
-    GCOps gcOps;
+    PropOps       propOps;
+    GCOps         gcOps;
+    DrawOps       drawOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
@@ -31,6 +33,7 @@ namespace x11 {
     , windowAttrOps(reg)
     , propOps(reg)
     , gcOps(reg)
+    , drawOps(reg)
     {}
   };
 }

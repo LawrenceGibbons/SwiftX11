@@ -107,14 +107,32 @@ final class X11View: NSView {
             self.applyingDrawableSize = true
             defer { self.applyingDrawableSize = false }
   
+          logIfInLayout( "In scheduleDrawableSizeUpdate (size: \(size))", view:self)
             if mv.drawableSize != size {
-                mv.drawableSize = size
+              print("[MTK] drawableSize about to set xid=\(xid) size=\(size) window=\(String(describing: mv.window))")
+              mv.drawableSize = size
+                //mv.drawableSize = size
             }
         }
     }  
   
+  
+    final class ThreadLocalInt {
+        private let key = "SwiftX11.layoutDepthTLS.\(UUID().uuidString)"
+        var value: Int {
+            get { Thread.current.threadDictionary[key] as? Int ?? 0 }
+            set { Thread.current.threadDictionary[key] = newValue }
+        }
+    }
+    private static var layoutDepthTLS = ThreadLocalInt()
+
+    private var inLayout: Bool { Self.layoutDepthTLS.value > 0 }
+
     override func layout() {
+        Self.layoutDepthTLS.value += 1
+        defer { Self.layoutDepthTLS.value -= 1 }
         super.layout()
+
         imageLayer?.frame = bounds
         mtkView?.frame = bounds
       
@@ -133,23 +151,136 @@ final class X11View: NSView {
           }
         }
     }
+  
+  final class LayoutLogGate {
+      static let shared = LayoutLogGate()
+      private var lastTick = 0
+
+      func shouldLog() -> Bool {
+          let tick = CFRunLoopGetCurrent().hashValue
+          if tick == lastTick { return false }
+          lastTick = tick
+          return true
+      }
+  }
+
+  func logIfInLayout(_ label: String, view: X11View?) {
+    if view == nil {
+      print("[LAYOUT?] \(label) (view=nil)")
+      return
+    }
+
+      guard let view, view.inLayout else { return }
+      guard LayoutLogGate.shared.shouldLog() else { return }
+
+      print("⚠️ [SwiftX11] \(label) called during layout")
+      Thread.callStackSymbols.prefix(25).forEach { print($0) }
+  }
+  
+    final class LogOncePerTick {
+        static let shared = LogOncePerTick()
+        private var lastTick = 0
+        private var lastLabel: String?
+  
+        func shouldLog(_ label: String) -> Bool {
+            let tick = CFRunLoopGetCurrent().hashValue // cheap-ish “tick-ish” marker
+            if tick == lastTick, lastLabel == label { return false }
+            lastTick = tick
+            lastLabel = label
+            return true
+        }
+    }
+  
+    private var pendingMakeFirstResponder = false
+  
+    private func requestFirstResponderCoalesced() {
+        guard !pendingMakeFirstResponder else { return }
+        pendingMakeFirstResponder = true
+  
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingMakeFirstResponder = false
+  
+            guard let win = self.window else { return }
+  
+            // Only attempt if we’re not already first responder.
+            if win.firstResponder !== self {
+                logIfInLayout("About to makeFirstResponder for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self)
+              print("[FRSTRESP] abiout to makeFirstResponder window=\(String(describing: self.window))")
+
+                win.makeFirstResponder(self)
+            }
+        }
+    }  
+//    override func viewDidMoveToWindow() {
+//        super.viewDidMoveToWindow()
+//        window?.acceptsMouseMovedEvents = true
+//        requestFirstResponderCoalesced()
+//        isPointerInside = false
+//      
+//        // Defer to next runloop turn (avoids “already being laid out” warnings)
+//        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(_refreshTrackingAreas), object: nil)
+//        perform(#selector(_refreshTrackingAreas), with: nil, afterDelay: 0.0)
+//    }
+  
+  
+    private var attachSettleScheduled = false
+    private weak var lastKnownWindow: NSWindow?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.acceptsMouseMovedEvents = true
-        window?.makeFirstResponder(self)
-        isPointerInside = false
-      
-        // Defer to next runloop turn (avoids “already being laid out” warnings)
-        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(_refreshTrackingAreas), object: nil)
-        perform(#selector(_refreshTrackingAreas), with: nil, afterDelay: 0.0)
+  
+        // Prevent re-running attach logic for the same window repeatedly.
+        let w = self.window
+        if lastKnownWindow === w, attachSettleScheduled {
+            return
+        }
+        lastKnownWindow = w
+  
+        scheduleAttachSettle()
     }
+  
+    private func scheduleAttachSettle() {
+        guard !attachSettleScheduled else { return }
+        attachSettleScheduled = true
+  
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.attachSettleScheduled = false
+  
+            // All “attach-time” mutating work happens here, never inside viewDidMoveToWindow.
+            self.window?.acceptsMouseMovedEvents = true
+  
+            // Don’t set responder synchronously on attach; coalesce.
+            self.requestFirstResponderCoalesced()
+  
+            // Don’t refresh tracking areas synchronously on attach; coalesce.
+            self.requestTrackingRefreshCoalesced()
+        }
+    }
+  
+
+    private var trackingRefreshScheduled = false
+  
+    private func requestTrackingRefreshCoalesced() {
+        guard !trackingRefreshScheduled else { return }
+        trackingRefreshScheduled = true
+  
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.trackingRefreshScheduled = false
+            self._refreshTrackingAreas()
+        }
+    }
+
   
     @objc private func _refreshTrackingAreas() {
         refreshTrackingArea()
     }
   
     override func updateTrackingAreas() {
+      logIfInLayout("updateTrackingAreas()", view: self)
+
         super.updateTrackingAreas()
         refreshTrackingArea()
     }  
@@ -299,6 +430,7 @@ final class X11View: NSView {
       let hF = bounds.size.height * scale
       if wF > 0, hF > 0 {
           let ds = CGSize(width: floor(wF), height: floor(hF))
+        print("[MTK] drawableSize about to set xid=\(view.xid) size=\(ds) window=\(String(describing: view.window))")
           view.drawableSize = ds
           del.mtkView(view, drawableSizeWillChange: ds)   // force presentable notification
       }
@@ -309,6 +441,8 @@ final class X11View: NSView {
     }
 
     private func refreshTrackingArea() {
+      logIfInLayout("refreshTrackingArea (usingMetal=\(usingMetal))", view: self)
+
         if let trackingArea {
             trackingHost?.removeTrackingArea(trackingArea)
             self.trackingArea = nil
@@ -424,7 +558,7 @@ private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
 
 override func mouseDown(with event: NSEvent) {
   lastInsideForSyntheticCrossing = true
-  self.window?.makeFirstResponder(self)
+  requestFirstResponderCoalesced()
   buttonMask |= bitForButton(1)
   sendButton(true, button: 1, event)
 }
@@ -437,7 +571,7 @@ override func mouseUp(with event: NSEvent) {
 
 override func rightMouseDown(with event: NSEvent) {
   lastInsideForSyntheticCrossing = true
-  self.window?.makeFirstResponder(self)
+  requestFirstResponderCoalesced()
   buttonMask |= bitForButton(3)
   sendButton(true, button: 3, event)
 }
@@ -448,7 +582,7 @@ override func rightMouseUp(with event: NSEvent) {
 }
 
 override func otherMouseDown(with event: NSEvent) {
-  self.window?.makeFirstResponder(self)
+  requestFirstResponderCoalesced()
   lastInsideForSyntheticCrossing = true
 
   // NSEvent.buttonNumber is 0-based; X11 uses 1-based
@@ -624,3 +758,8 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   }
 }
 
+extension X11View {
+  static func logIfInLayout(_ label: String, view: X11View?) {
+    view?.logIfInLayout(label, view: view)
+  }
+}

@@ -189,10 +189,13 @@ final class WindowRegistry {
 
     // If we're closing or don't have a host window controller, do nothing.
     guard !closingXids.contains(host) else { return }
-    guard let win = windows[host]?.window else { return }
+    guard let controller = windows[host],
+          let win = controller.window else { return }
 
     // Mark mapped so damage can schedule presents again.
     mappedXids.insert(host)
+
+    X11View.logIfInLayout("mapWindow: orderFront host=0x\(String(host, radix: 16))", view: controller.x11View)
 
     // Prevent feedback loop when map came from X11 -> Swift.
     suppressNextMapFromCocoa.insert(host)
@@ -224,6 +227,8 @@ final class WindowRegistry {
     pendingPresentByXid.remove(host)
     repaintWorkItemByXid[host]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: host)
+
+    X11View.logIfInLayout("unmapWindow: orderOut host=0x\(String(host, radix: 16))", view: controller.x11View)
 
     suppressNextUnmapFromCocoa.insert(host)
     controller.window?.orderOut(nil)
@@ -377,6 +382,8 @@ final class WindowRegistry {
     defer { closingXids.remove(xid) }
 
     guard let controller = windows.removeValue(forKey: xid) else { return }
+    X11View.logIfInLayout("destroy: controller.close xid=0x\(String(xid, radix: 16))", view: controller.x11View)
+
     controller.close()
   }
   
@@ -532,11 +539,16 @@ final class WindowRegistry {
   }
   
   func raiseWindow(xid: UInt32) {
+    let host = topLevelAncestor(of: xid)
+
     guard let controller = windows[xid], let win = controller.window else { return }
     
+    X11View.logIfInLayout("raiseWindow: makeKeyAndOrderFront host=0x\(String(host, radix: 16))", view: controller.x11View)
+
     // Suppress the next didBecomeKey notification since we're causing it.
     suppressNextRaiseFromCocoa.insert(xid)
-    
+    print("[MAKEKEY] abiout to makeKeyAndOrderFront window=\(String(describing: win))")
+
     win.makeKeyAndOrderFront(nil)
   }
   
@@ -587,7 +599,9 @@ final class WindowRegistry {
   
   @MainActor
   func applyX11Resize(xid: UInt32, wPx: Int32, hPx: Int32) {
-    guard let controller = windows[xid], let win = controller.window else { return }
+    guard let controller = windows[xid], 
+          let win = controller.window,
+    let view = controller.x11View else { return }
     
     // Mark that the next Cocoa resize callback is "caused by us"
     suppressNextResizeFromCocoa.insert(xid)
@@ -600,6 +614,11 @@ final class WindowRegistry {
     let cur = win.contentLayoutRect.size
     if abs(cur.width - wPoints) < 0.5, abs(cur.height - hPoints) < 0.5 { return }
     
+    view.logIfInLayout("applyX11Resize(xid=0x\(String(xid, radix:16)))", view: view)
+    
+    X11View.logIfInLayout("applyX11Resize: setContentSize xid=0x\(String(xid, radix: 16)) -> \(wPoints)x\(hPoints)pt", view: controller.x11View)
+
+    print("[WIN] setContentSize about to run xid=0x\(String(xid, radix:16)) size=\(wPoints)x\(hPoints) window=\(String(describing: win))")
     win.setContentSize(NSSize(width: wPoints, height: hPoints))
   }
   

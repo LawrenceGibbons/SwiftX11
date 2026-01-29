@@ -29,6 +29,8 @@ public:
 
   bool erase(uint32_t xid);
 
+  bool exists(uint32_t xid) const;
+  
   void setMapped(uint32_t xid, bool mapped);
   void setPresentable(uint32_t xid, bool presentable);
   void markDirty(uint32_t xid);

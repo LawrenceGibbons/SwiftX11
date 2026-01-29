@@ -5,6 +5,7 @@ import X11LowLevel
 final class X11WindowController: NSWindowController, NSWindowDelegate {
   private(set) var x11View: X11View?
   private let xid: UInt32
+  private let viewHolder = X11ViewHolder()
   
   var logAppend: ((String) -> Void)?
   var shouldLogQueueStats: (() -> Bool)?
@@ -12,17 +13,18 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   init(xid: UInt32, title: String, width: Int, height: Int, useMetal: Bool) {
     self.xid = xid
     
-    let viewHolder = X11ViewHolder()
+    let holder = viewHolder
+    
     let host = X11WindowHost(useMetal: useMetal) { view in
       view.xid = xid
-      viewHolder.view = view
+      holder.view = view
     }
     let hosting = NSHostingController(rootView: host)
     
     let window = NSWindow(contentViewController: hosting)
     window.isRestorable = false
     window.title = title.isEmpty ? "SwiftX11 Window" : title
-    window.setContentSize(NSSize(width: width, height: height))
+    //window.setContentSize(NSSize(width: width, height: height))
     window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
     window.isReleasedWhenClosed = false
     
@@ -33,7 +35,15 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       self?.x11View = v
     }
 
-    window.setContentSize(NSSize(width: width, height: height))
+    //window.setContentSize(NSSize(width: width, height: height))
+    DispatchQueue.main.async { [weak self, weak window] in
+      guard let self, let window else { return }
+
+      self.x11View?.logIfInLayout("About to setContentSize(\(width)x\(height)) for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self.x11View)
+      print("[WIN] setContentSize about to run in X11WindowController xid=0x\(String(xid, radix:16)) size=\(width)x\(height) window=\(String(describing: window))")
+      window.setContentSize(NSSize(width: width, height: height))
+      self.x11View?.logIfInLayout("Did setContentSize(\(width)x\(height)) for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self.x11View)
+    }
     window.acceptsMouseMovedEvents = true
     window.delegate = self
   }

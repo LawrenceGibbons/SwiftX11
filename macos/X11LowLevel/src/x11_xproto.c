@@ -3320,324 +3320,324 @@ static void handle_PolyFillArc(int fd, uint16_t seq,
 // Notes:
 //  - We advertise LSBFirst + bitmapScanlinePad=32 in SetupSuccess, so many clients will follow that.
 //  - leftPad is honored for XYPixmap/1bpp.
-static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remain)
-{
-  // Body after 4-byte request header:
-  //   CARD32 drawable
-  //   CARD32 gc
-  //   CARD16 width
-  //   CARD16 height
-  //   INT16  dstX
-  //   INT16  dstY
-  //   CARD8  leftPad
-  //   CARD8  depth
-  //   CARD8  pad0
-  //   CARD8  pad1
-  //   LISTofBYTE data
-  if (remain < 20) return;
-
-  const uint32_t drawable = rd32(payload + 0);
-  const uint32_t gc       = rd32(payload + 4);
-
-  const uint16_t width  = rd16(payload + 8);
-  const uint16_t height = rd16(payload + 10);
-  const int16_t  dst_x  = (int16_t)rd16(payload + 12);
-  const int16_t  dst_y  = (int16_t)rd16(payload + 14);
-
-  const uint8_t leftPad = payload[16];
-  const uint8_t depth   = payload[17];
-
-  if (width == 0 || height == 0) return;
-
-  const uint8_t* src = payload + 20;
-  const size_t src_len = remain - 20;
-
-  // Resolve destination buffer: window framebuffer OR pixmap.
-  uint32_t* dstPixels = NULL;
-  uint32_t dstW = 0, dstH = 0;
-  bool dst_is_window = false;
-  x11_pixmap_t* dst_pm = NULL;
-  uint8_t*  dstBits = NULL;
-  uint32_t  dstStrideBytes = 0;
-  int       dst_pm_depth1 = 0;
-
-  {
-    x11_win_t* w = win_find(drawable);
-    if (w) {
-      const ssize_t idx = win_index(drawable);
-      if (idx < 0) return;
-      x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-      if (!fb->pixels || fb->width == 0 || fb->height == 0) return;
-      dstPixels = fb->pixels;
-      dstW = fb->width;
-      dstH = fb->height;
-      dst_is_window = true;
-      dst_pm = NULL;   // optional but explicit
-    } else {
-      const ssize_t pidx = pix_index(drawable);
-      if (pidx < 0) return;
-      x11_pixmap_t* pm = &g_pixmaps[(size_t)pidx];
-      if (pm->width == 0 || pm->height == 0) return;
-
-      dstW = pm->width;
-      dstH = pm->height;
-      dst_is_window = false;
-      dst_pm = pm;
-
-      if (pm->depth == 1) {
-        if (!pm->bits || pm->stride_bytes == 0) return;
-        dst_pm_depth1 = 1;
-        dstBits = pm->bits;
-        dstStrideBytes = pm->stride_bytes;
-        dstPixels = NULL;
-      } else {
-        if (!pm->pixels) return;
-        dst_pm_depth1 = 0;
-        dstPixels = pm->pixels;
-        dstBits = NULL;
-        dstStrideBytes = 0;
-      }
-    }
-  }
-
-#ifndef NDEBUG
-fprintf(stderr,
-  "[SwiftX11] PutImage dst_kind=%s pm=%p pm_depth=%d depth1=%d dstStride=%u dstWH=%ux%u\n",
-  dst_is_window ? "window" : "pixmap",
-  (void*)dst_pm,
-  dst_pm ? (int)dst_pm->depth : -1,
-  dst_pm_depth1,
-  (unsigned)dstStrideBytes,
-  (unsigned)dstW, (unsigned)dstH);
-#endif
-  
-  // -------------------------------------------------------------------------
-  // Case A: XYPixmap, depth=1 (this is the key path for xeyes)
-  // -------------------------------------------------------------------------
-  // XYPixmap packs bits into scanlines; scanlines are padded to bitmapScanlinePad.
-  // For depth=1 there is only one plane.
-  //
-  // We advertised:
-  //   bitmapBitOrder   = LSBFirst
-  //   bitmapScanlinePad= 32
-  // so we assume bit0 is the leftmost pixel within each byte.
-  // If a client uses MSBFirst anyway, flip the bit-indexing easily.
-  const int BIT_ORDER_LSB_FIRST = 1; // matches SetupSuccess we send
-  const uint32_t BITMAP_PAD = 32;    // matches SetupSuccess we send
-
-  if (format == 1) {
-    if (depth != 1) {
-#ifndef NDEBUG
-      if (SWIFTX11_TRACE) {
-        fprintf(stderr, "[SwiftX11] PutImage: XYPixmap unsupported depth=%u (only depth=1 implemented)\n", (unsigned)depth);
-      }
-#endif
-      return;
-    }
-
-    // Compute stride:
-    // Bits per scanline = leftPad + width.
-    // Round up to BITMAP_PAD bits, then convert to bytes.
-    const uint32_t bits_per_line = (uint32_t)leftPad + (uint32_t)width;
-    const uint32_t padded_bits   = (bits_per_line + (BITMAP_PAD - 1u)) & ~(BITMAP_PAD - 1u);
-    const size_t stride_bytes    = (size_t)(padded_bits / 8u);
-
-    // Total bytes = stride * height (depth=1 plane)
-    if (height != 0 && stride_bytes > (SIZE_MAX / (size_t)height)) return;
-    const size_t need = stride_bytes * (size_t)height;
-    if (src_len < need) {
-#ifndef NDEBUG
-      fprintf(stderr, "[SwiftX11] PutImage: XYPixmap depth=1 not enough data src_len=%zu need=%zu (stride=%zu h=%u)\n",
-              src_len, need, stride_bytes, (unsigned)height);
-#endif
-      return;
-    }
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] PutImage(XYPixmap d=1): drawable=0x%08X gc=0x%08X w=%u h=%u dst=(%d,%d) leftPad=%u stride=%zu need=%zu src_len=%zu\n",
-          (unsigned)drawable,
-          (unsigned)gc,
-          (unsigned)width,
-          (unsigned)height,
-          (int)dst_x,
-          (int)dst_y,
-          (unsigned)leftPad,
-          stride_bytes,
-          need,
-          src_len);
-#endif
-    
-    // Use GC fg/bg (authoritative in C++); otherwise default to black/white.
-    uint32_t on_color  = 0xFF000000u;
-    uint32_t off_color = 0xFFFFFFFFu;
-
-    if (!dst_is_window && dst_pm && dst_pm->depth == 1) {
-      // depth-1 pixmap storage: packed bits, not colors
-      on_color  = 1u;
-      off_color = 0u;
-    } else {
-      (void)x11_proto_bridge_gc_get(gc, &on_color, &off_color);
-    }
-    
-    size_t on_bits = 0;
-    for (uint32_t y = 0; y < (uint32_t)height; y++) {
-      const int32_t dy = (int32_t)dst_y + (int32_t)y;
-      if (dy < 0 || (uint32_t)dy >= dstH) continue;
-
-      const uint8_t* srow = src + (size_t)y * stride_bytes;
-
-      for (uint32_t x = 0; x < (uint32_t)width; x++) {
-        const int32_t dx = (int32_t)dst_x + (int32_t)x;
-        if (dx < 0 || (uint32_t)dx >= dstW) continue;
-
-        // Bit index within the scanline:
-        const uint32_t bit = (uint32_t)leftPad + x;
-        const uint32_t byte_i = bit >> 3;
-        const uint32_t bit_i  = bit & 7u;
-
-        const uint8_t b = srow[byte_i];
-        const uint32_t mask = BIT_ORDER_LSB_FIRST ? (1u << bit_i) : (1u << (7u - bit_i));
-        const uint32_t on = (b & (uint8_t)mask) ? 1u : 0u;
-        on_bits += (size_t)on;
-        
-        if (dst_pm_depth1) {
-          // Store into packed depth-1 pixmap bits.
-          // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
-          const uint32_t dxu = (uint32_t)dx;
-          const uint32_t dyu = (uint32_t)dy;
-
-          const uint32_t byte_x = dxu >> 3;
-          const uint32_t bit_x  = dxu & 7u;
-
-          const uint32_t dbit = BIT_ORDER_LSB_FIRST ? bit_x : (7u - bit_x);
-          const size_t dbyte =
-            (size_t)dyu * (size_t)dstStrideBytes + (size_t)byte_x;          const uint8_t dmask = (uint8_t)(1u << dbit);
-
-          if (on) dstBits[dbyte] |= dmask;
-          else    dstBits[dbyte] &= (uint8_t)~dmask;
-        } else {
-          // Store into 32bpp window/pixmap pixels.
-          dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? on_color : off_color;
-        }
-      }
-    }
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] PutImage(XYPixmap d=1): wrote on_bits=%zu of %zu dst_kind=%s\n",
-          on_bits,
-          (size_t)width * (size_t)height,
-          dst_is_window ? "window" : "pixmap");
-
-  if (!dst_is_window && dst_pm && dst_pm->depth == 1) {
-    // depth-1 pixmap: sample first byte of packed bits
-    uint8_t b0 = (dst_pm->bits && dst_pm->stride_bytes && dst_pm->height) ? dst_pm->bits[0] : 0;
-    fprintf(stderr, "[SwiftX11] PutImage: depth1 pixmap sample bits[0]=0x%02X\n", (unsigned)b0);
-  } else if (dstPixels) {
-    // window or depth>1 pixmap: 32-bit pixels
-    const uint32_t p0 = dstPixels[0];
-    fprintf(stderr, "[SwiftX11] PutImage: sample p0=0x%08X\n", (unsigned)p0);
-  } else {
-    fprintf(stderr, "[SwiftX11] PutImage: sample skipped (no dstPixels)\n");
-  }
-#endif
-    
-    // Damage: if drawable is a window, present it; if pixmap, don't.
-    // The pixmap will be copied into a window via CopyArea, which will damage the window.
-    if (dst_is_window) enqueue_damage_window(drawable);
-    return;
-  }
-
-  // -------------------------------------------------------------------------
-  // Case B: ZPixmap, depth=24/32 (best-effort)
-  // -------------------------------------------------------------------------
-  if (format != 2) {
-#ifndef NDEBUG
-    if (SWIFTX11_TRACE) fprintf(stderr, "[SwiftX11] PutImage: ignoring unsupported format=%u\n", (unsigned)format);
-#endif
-    return;
-  }
-
-  if (!(depth == 24 || depth == 32)) {
-#ifndef NDEBUG
-    if (SWIFTX11_TRACE) fprintf(stderr, "[SwiftX11] PutImage: ZPixmap unsupported depth=%u\n", (unsigned)depth);
-#endif
-    return;
-  }
-
-  // Determine which layout the client sent.
-  // Many clients with depth=24 send packed 24bpp (3 bytes/pixel) with 32-bit padded scanlines.
-  // Some send 32bpp (4 bytes/pixel).
-  const size_t stride_24 = (size_t)(((uint32_t)width * 24u + 31u) / 32u) * 4u; // 24bpp padded to 32 bits
-  const size_t stride_32 = (size_t)(((uint32_t)width * 32u + 31u) / 32u) * 4u; // 32bpp padded to 32 bits
-
-  if (height != 0 && stride_24 > (SIZE_MAX / (size_t)height)) return;
-  if (height != 0 && stride_32 > (SIZE_MAX / (size_t)height)) return;
-
-  const size_t need_24 = stride_24 * (size_t)height;
-  const size_t need_32 = stride_32 * (size_t)height;
-
-  int use32 = 0;
-  size_t stride = 0;
-
-  // Prefer the interpretation that fits the provided buffer.
-  // If both fit, prefer 32bpp.
-  if (src_len >= need_32) {
-    use32 = 1;
-    stride = stride_32;
-  } else if (src_len >= need_24) {
-    use32 = 0;
-    stride = stride_24;
-  } else {
-#ifndef NDEBUG
-    fprintf(stderr,
-            "[SwiftX11] PutImage: ZPixmap not enough data src_len=%zu need32=%zu need24=%zu\n",
-            src_len, need_32, need_24);
-#endif
-    return;
-  }
-
-#ifndef NDEBUG
-  if (SWIFTX11_TRACE) {
-    fprintf(stderr, "[SwiftX11] PutImage: ZPixmap accepted layout=%s stride=%zu\n", use32 ? "32bpp" : "24bpp", stride);
-  }
-#endif
-
-  // Copy into our destination pixels.
-  // We treat incoming pixel order as little-endian B,G,R,(X).
-  for (uint32_t y = 0; y < (uint32_t)height; y++) {
-    const int32_t dy = (int32_t)dst_y + (int32_t)y;
-    if (dy < 0 || (uint32_t)dy >= dstH) continue;
-
-    const uint8_t* srow = src + (size_t)y * stride;
-
-    for (uint32_t x = 0; x < (uint32_t)width; x++) {
-      const int32_t dx = (int32_t)dst_x + (int32_t)x;
-      if (dx < 0 || (uint32_t)dx >= dstW) continue;
-
-      uint8_t b = 0, g = 0, r = 0;
-      if (use32) {
-        const size_t o = (size_t)x * 4u;
-        b = srow[o + 0u];
-        g = srow[o + 1u];
-        r = srow[o + 2u];
-      } else {
-        const size_t o = (size_t)x * 3u;
-        b = srow[o + 0u];
-        g = srow[o + 1u];
-        r = srow[o + 2u];
-      }
-
-      const uint32_t pix =
-          (uint32_t)b | ((uint32_t)g << 8) | ((uint32_t)r << 16) | (0xFFu << 24);
-
-      dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = pix;
-    }
-  }
-
-  // If this is a window, present. If it is a pixmap, let CopyArea present later.
-  if (dst_is_window) enqueue_damage_window(drawable);
-}
+//static void handle_PutImage(uint8_t format, const uint8_t* payload, size_t remain)
+//{
+//  // Body after 4-byte request header:
+//  //   CARD32 drawable
+//  //   CARD32 gc
+//  //   CARD16 width
+//  //   CARD16 height
+//  //   INT16  dstX
+//  //   INT16  dstY
+//  //   CARD8  leftPad
+//  //   CARD8  depth
+//  //   CARD8  pad0
+//  //   CARD8  pad1
+//  //   LISTofBYTE data
+//  if (remain < 20) return;
+//
+//  const uint32_t drawable = rd32(payload + 0);
+//  const uint32_t gc       = rd32(payload + 4);
+//
+//  const uint16_t width  = rd16(payload + 8);
+//  const uint16_t height = rd16(payload + 10);
+//  const int16_t  dst_x  = (int16_t)rd16(payload + 12);
+//  const int16_t  dst_y  = (int16_t)rd16(payload + 14);
+//
+//  const uint8_t leftPad = payload[16];
+//  const uint8_t depth   = payload[17];
+//
+//  if (width == 0 || height == 0) return;
+//
+//  const uint8_t* src = payload + 20;
+//  const size_t src_len = remain - 20;
+//
+//  // Resolve destination buffer: window framebuffer OR pixmap.
+//  uint32_t* dstPixels = NULL;
+//  uint32_t dstW = 0, dstH = 0;
+//  bool dst_is_window = false;
+//  x11_pixmap_t* dst_pm = NULL;
+//  uint8_t*  dstBits = NULL;
+//  uint32_t  dstStrideBytes = 0;
+//  int       dst_pm_depth1 = 0;
+//
+//  {
+//    x11_win_t* w = win_find(drawable);
+//    if (w) {
+//      const ssize_t idx = win_index(drawable);
+//      if (idx < 0) return;
+//      x11_fb_t* fb = &g_framebuffers[(size_t)idx];
+//      if (!fb->pixels || fb->width == 0 || fb->height == 0) return;
+//      dstPixels = fb->pixels;
+//      dstW = fb->width;
+//      dstH = fb->height;
+//      dst_is_window = true;
+//      dst_pm = NULL;   // optional but explicit
+//    } else {
+//      const ssize_t pidx = pix_index(drawable);
+//      if (pidx < 0) return;
+//      x11_pixmap_t* pm = &g_pixmaps[(size_t)pidx];
+//      if (pm->width == 0 || pm->height == 0) return;
+//
+//      dstW = pm->width;
+//      dstH = pm->height;
+//      dst_is_window = false;
+//      dst_pm = pm;
+//
+//      if (pm->depth == 1) {
+//        if (!pm->bits || pm->stride_bytes == 0) return;
+//        dst_pm_depth1 = 1;
+//        dstBits = pm->bits;
+//        dstStrideBytes = pm->stride_bytes;
+//        dstPixels = NULL;
+//      } else {
+//        if (!pm->pixels) return;
+//        dst_pm_depth1 = 0;
+//        dstPixels = pm->pixels;
+//        dstBits = NULL;
+//        dstStrideBytes = 0;
+//      }
+//    }
+//  }
+//
+//#ifndef NDEBUG
+//fprintf(stderr,
+//  "[SwiftX11] PutImage dst_kind=%s pm=%p pm_depth=%d depth1=%d dstStride=%u dstWH=%ux%u\n",
+//  dst_is_window ? "window" : "pixmap",
+//  (void*)dst_pm,
+//  dst_pm ? (int)dst_pm->depth : -1,
+//  dst_pm_depth1,
+//  (unsigned)dstStrideBytes,
+//  (unsigned)dstW, (unsigned)dstH);
+//#endif
+//  
+//  // -------------------------------------------------------------------------
+//  // Case A: XYPixmap, depth=1 (this is the key path for xeyes)
+//  // -------------------------------------------------------------------------
+//  // XYPixmap packs bits into scanlines; scanlines are padded to bitmapScanlinePad.
+//  // For depth=1 there is only one plane.
+//  //
+//  // We advertised:
+//  //   bitmapBitOrder   = LSBFirst
+//  //   bitmapScanlinePad= 32
+//  // so we assume bit0 is the leftmost pixel within each byte.
+//  // If a client uses MSBFirst anyway, flip the bit-indexing easily.
+//  const int BIT_ORDER_LSB_FIRST = 1; // matches SetupSuccess we send
+//  const uint32_t BITMAP_PAD = 32;    // matches SetupSuccess we send
+//
+//  if (format == 1) {
+//    if (depth != 1) {
+//#ifndef NDEBUG
+//      if (SWIFTX11_TRACE) {
+//        fprintf(stderr, "[SwiftX11] PutImage: XYPixmap unsupported depth=%u (only depth=1 implemented)\n", (unsigned)depth);
+//      }
+//#endif
+//      return;
+//    }
+//
+//    // Compute stride:
+//    // Bits per scanline = leftPad + width.
+//    // Round up to BITMAP_PAD bits, then convert to bytes.
+//    const uint32_t bits_per_line = (uint32_t)leftPad + (uint32_t)width;
+//    const uint32_t padded_bits   = (bits_per_line + (BITMAP_PAD - 1u)) & ~(BITMAP_PAD - 1u);
+//    const size_t stride_bytes    = (size_t)(padded_bits / 8u);
+//
+//    // Total bytes = stride * height (depth=1 plane)
+//    if (height != 0 && stride_bytes > (SIZE_MAX / (size_t)height)) return;
+//    const size_t need = stride_bytes * (size_t)height;
+//    if (src_len < need) {
+//#ifndef NDEBUG
+//      fprintf(stderr, "[SwiftX11] PutImage: XYPixmap depth=1 not enough data src_len=%zu need=%zu (stride=%zu h=%u)\n",
+//              src_len, need, stride_bytes, (unsigned)height);
+//#endif
+//      return;
+//    }
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] PutImage(XYPixmap d=1): drawable=0x%08X gc=0x%08X w=%u h=%u dst=(%d,%d) leftPad=%u stride=%zu need=%zu src_len=%zu\n",
+//          (unsigned)drawable,
+//          (unsigned)gc,
+//          (unsigned)width,
+//          (unsigned)height,
+//          (int)dst_x,
+//          (int)dst_y,
+//          (unsigned)leftPad,
+//          stride_bytes,
+//          need,
+//          src_len);
+//#endif
+//    
+//    // Use GC fg/bg (authoritative in C++); otherwise default to black/white.
+//    uint32_t on_color  = 0xFF000000u;
+//    uint32_t off_color = 0xFFFFFFFFu;
+//
+//    if (!dst_is_window && dst_pm && dst_pm->depth == 1) {
+//      // depth-1 pixmap storage: packed bits, not colors
+//      on_color  = 1u;
+//      off_color = 0u;
+//    } else {
+//      (void)x11_proto_bridge_gc_get(gc, &on_color, &off_color);
+//    }
+//    
+//    size_t on_bits = 0;
+//    for (uint32_t y = 0; y < (uint32_t)height; y++) {
+//      const int32_t dy = (int32_t)dst_y + (int32_t)y;
+//      if (dy < 0 || (uint32_t)dy >= dstH) continue;
+//
+//      const uint8_t* srow = src + (size_t)y * stride_bytes;
+//
+//      for (uint32_t x = 0; x < (uint32_t)width; x++) {
+//        const int32_t dx = (int32_t)dst_x + (int32_t)x;
+//        if (dx < 0 || (uint32_t)dx >= dstW) continue;
+//
+//        // Bit index within the scanline:
+//        const uint32_t bit = (uint32_t)leftPad + x;
+//        const uint32_t byte_i = bit >> 3;
+//        const uint32_t bit_i  = bit & 7u;
+//
+//        const uint8_t b = srow[byte_i];
+//        const uint32_t mask = BIT_ORDER_LSB_FIRST ? (1u << bit_i) : (1u << (7u - bit_i));
+//        const uint32_t on = (b & (uint8_t)mask) ? 1u : 0u;
+//        on_bits += (size_t)on;
+//        
+//        if (dst_pm_depth1) {
+//          // Store into packed depth-1 pixmap bits.
+//          // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
+//          const uint32_t dxu = (uint32_t)dx;
+//          const uint32_t dyu = (uint32_t)dy;
+//
+//          const uint32_t byte_x = dxu >> 3;
+//          const uint32_t bit_x  = dxu & 7u;
+//
+//          const uint32_t dbit = BIT_ORDER_LSB_FIRST ? bit_x : (7u - bit_x);
+//          const size_t dbyte =
+//            (size_t)dyu * (size_t)dstStrideBytes + (size_t)byte_x;          const uint8_t dmask = (uint8_t)(1u << dbit);
+//
+//          if (on) dstBits[dbyte] |= dmask;
+//          else    dstBits[dbyte] &= (uint8_t)~dmask;
+//        } else {
+//          // Store into 32bpp window/pixmap pixels.
+//          dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? on_color : off_color;
+//        }
+//      }
+//    }
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] PutImage(XYPixmap d=1): wrote on_bits=%zu of %zu dst_kind=%s\n",
+//          on_bits,
+//          (size_t)width * (size_t)height,
+//          dst_is_window ? "window" : "pixmap");
+//
+//  if (!dst_is_window && dst_pm && dst_pm->depth == 1) {
+//    // depth-1 pixmap: sample first byte of packed bits
+//    uint8_t b0 = (dst_pm->bits && dst_pm->stride_bytes && dst_pm->height) ? dst_pm->bits[0] : 0;
+//    fprintf(stderr, "[SwiftX11] PutImage: depth1 pixmap sample bits[0]=0x%02X\n", (unsigned)b0);
+//  } else if (dstPixels) {
+//    // window or depth>1 pixmap: 32-bit pixels
+//    const uint32_t p0 = dstPixels[0];
+//    fprintf(stderr, "[SwiftX11] PutImage: sample p0=0x%08X\n", (unsigned)p0);
+//  } else {
+//    fprintf(stderr, "[SwiftX11] PutImage: sample skipped (no dstPixels)\n");
+//  }
+//#endif
+//    
+//    // Damage: if drawable is a window, present it; if pixmap, don't.
+//    // The pixmap will be copied into a window via CopyArea, which will damage the window.
+//    if (dst_is_window) enqueue_damage_window(drawable);
+//    return;
+//  }
+//
+//  // -------------------------------------------------------------------------
+//  // Case B: ZPixmap, depth=24/32 (best-effort)
+//  // -------------------------------------------------------------------------
+//  if (format != 2) {
+//#ifndef NDEBUG
+//    if (SWIFTX11_TRACE) fprintf(stderr, "[SwiftX11] PutImage: ignoring unsupported format=%u\n", (unsigned)format);
+//#endif
+//    return;
+//  }
+//
+//  if (!(depth == 24 || depth == 32)) {
+//#ifndef NDEBUG
+//    if (SWIFTX11_TRACE) fprintf(stderr, "[SwiftX11] PutImage: ZPixmap unsupported depth=%u\n", (unsigned)depth);
+//#endif
+//    return;
+//  }
+//
+//  // Determine which layout the client sent.
+//  // Many clients with depth=24 send packed 24bpp (3 bytes/pixel) with 32-bit padded scanlines.
+//  // Some send 32bpp (4 bytes/pixel).
+//  const size_t stride_24 = (size_t)(((uint32_t)width * 24u + 31u) / 32u) * 4u; // 24bpp padded to 32 bits
+//  const size_t stride_32 = (size_t)(((uint32_t)width * 32u + 31u) / 32u) * 4u; // 32bpp padded to 32 bits
+//
+//  if (height != 0 && stride_24 > (SIZE_MAX / (size_t)height)) return;
+//  if (height != 0 && stride_32 > (SIZE_MAX / (size_t)height)) return;
+//
+//  const size_t need_24 = stride_24 * (size_t)height;
+//  const size_t need_32 = stride_32 * (size_t)height;
+//
+//  int use32 = 0;
+//  size_t stride = 0;
+//
+//  // Prefer the interpretation that fits the provided buffer.
+//  // If both fit, prefer 32bpp.
+//  if (src_len >= need_32) {
+//    use32 = 1;
+//    stride = stride_32;
+//  } else if (src_len >= need_24) {
+//    use32 = 0;
+//    stride = stride_24;
+//  } else {
+//#ifndef NDEBUG
+//    fprintf(stderr,
+//            "[SwiftX11] PutImage: ZPixmap not enough data src_len=%zu need32=%zu need24=%zu\n",
+//            src_len, need_32, need_24);
+//#endif
+//    return;
+//  }
+//
+//#ifndef NDEBUG
+//  if (SWIFTX11_TRACE) {
+//    fprintf(stderr, "[SwiftX11] PutImage: ZPixmap accepted layout=%s stride=%zu\n", use32 ? "32bpp" : "24bpp", stride);
+//  }
+//#endif
+//
+//  // Copy into our destination pixels.
+//  // We treat incoming pixel order as little-endian B,G,R,(X).
+//  for (uint32_t y = 0; y < (uint32_t)height; y++) {
+//    const int32_t dy = (int32_t)dst_y + (int32_t)y;
+//    if (dy < 0 || (uint32_t)dy >= dstH) continue;
+//
+//    const uint8_t* srow = src + (size_t)y * stride;
+//
+//    for (uint32_t x = 0; x < (uint32_t)width; x++) {
+//      const int32_t dx = (int32_t)dst_x + (int32_t)x;
+//      if (dx < 0 || (uint32_t)dx >= dstW) continue;
+//
+//      uint8_t b = 0, g = 0, r = 0;
+//      if (use32) {
+//        const size_t o = (size_t)x * 4u;
+//        b = srow[o + 0u];
+//        g = srow[o + 1u];
+//        r = srow[o + 2u];
+//      } else {
+//        const size_t o = (size_t)x * 3u;
+//        b = srow[o + 0u];
+//        g = srow[o + 1u];
+//        r = srow[o + 2u];
+//      }
+//
+//      const uint32_t pix =
+//          (uint32_t)b | ((uint32_t)g << 8) | ((uint32_t)r << 16) | (0xFFu << 24);
+//
+//      dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = pix;
+//    }
+//  }
+//
+//  // If this is a window, present. If it is a pixmap, let CopyArea present later.
+//  if (dst_is_window) enqueue_damage_window(drawable);
+//}
 
 
 #ifndef NDEBUG
@@ -3893,9 +3893,9 @@ if (major >= 128) {
           handle_PolyFillArc(cfd, seq, payload, remain);
           break;
           
-        case 72: // PutImage (no reply)
-          handle_PutImage(minor /*format*/, payload, remain);
-          break;
+        // case 72: // PutImage (no reply)
+        //   handle_PutImage(minor /*format*/, payload, remain);
+        //   break;
           
         case 91: // QueryColors
           handle_QueryColors(cfd, seq, payload, remain);
