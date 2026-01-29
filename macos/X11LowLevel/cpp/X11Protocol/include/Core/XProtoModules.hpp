@@ -13,6 +13,7 @@
 #include "PropOps.hpp"
 #include "GCOps.hpp"
 #include "DrawOps.hpp"
+#include "PixmapOps.hpp"
 
 namespace x11 {
   
@@ -24,6 +25,7 @@ namespace x11 {
     PropOps       propOps;
     GCOps         gcOps;
     DrawOps       drawOps;
+    PixmapOps     pixmapOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
@@ -34,6 +36,7 @@ namespace x11 {
     , propOps(reg)
     , gcOps(reg)
     , drawOps(reg)
+    , pixmapOps(reg)
     {}
   };
 }

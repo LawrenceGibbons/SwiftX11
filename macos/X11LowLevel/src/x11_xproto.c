@@ -2552,32 +2552,32 @@ static int resolve_drawable_pixels_rw(uint32_t drawable,
 //  pix_free(pid);
 //}
 
-static void handle_CreatePixmap(uint8_t depth, const uint8_t* payload, size_t remain)
-{
-  if (remain < 12) return;
+//static void handle_CreatePixmap(uint8_t depth, const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 12) return;
+//
+//  const uint32_t pid = rd32(payload + 0);
+//  const uint16_t wpx = rd16(payload + 8);
+//  const uint16_t hpx = rd16(payload + 10);
+//  if (pid == 0) return;
+//
+//  // ---- keep C-side arrays for now ONLY if other C ops still depend on them ----
+//  // But: for “C++ authoritative pixmaps”, call into PixmapTable here.
+//  const uint16_t w = (wpx ? wpx : 1);
+//  const uint16_t h = (hpx ? hpx : 1);
+//
+//  x11_proto_bridge_pixmap_create(pid, depth, w, h);
+//}
 
-  const uint32_t pid = rd32(payload + 0);
-  const uint16_t wpx = rd16(payload + 8);
-  const uint16_t hpx = rd16(payload + 10);
-  if (pid == 0) return;
 
-  // ---- keep C-side arrays for now ONLY if other C ops still depend on them ----
-  // But: for “C++ authoritative pixmaps”, call into PixmapTable here.
-  const uint16_t w = (wpx ? wpx : 1);
-  const uint16_t h = (hpx ? hpx : 1);
-
-  x11_proto_bridge_pixmap_create(pid, depth, w, h);
-}
-
-
-static void handle_FreePixmap(const uint8_t* payload, size_t remain)
-{
-  if (remain < 4) return;
-  const uint32_t pid = rd32(payload + 0);
-  if (pid == 0) return;
-
-  x11_proto_bridge_pixmap_free(pid);
-}
+// static void handle_FreePixmap(const uint8_t* payload, size_t remain)
+// {
+//   if (remain < 4) return;
+//   const uint32_t pid = rd32(payload + 0);
+//   if (pid == 0) return;
+// 
+//   x11_proto_bridge_pixmap_free(pid);
+// }
 
 
 // CopyArea (major = 62) -- no reply
@@ -3829,57 +3829,26 @@ if (major >= 128) {
     if (!handled) {
       
       switch (major) {
-        //case 1: // CreateWindow
-        //  handle_CreateWindow(minor /*depth*/, payload, remain);
-        //  break;
-                    
-        //case 3: // GetWindowAttributes
-        //  handle_GetWindowAttributes(cfd, seq, payload, remain);
-        //  break;
           
-        //case 4: // DestroyWindow
-        //  handle_DestroyWindow(cfd, payload, remain);
-        //  break;
-          
-          
-        //case 9: // MapSubwindows
-        //  handle_MapSubwindows(cfd, seq, payload, remain);
-        //  break;
-          
-        //case 12: // ConfigureWindow
-        //  handle_ConfigureWindow(cfd, seq, payload, remain);
-        //  break;
-          
-        case 53: // CreatePixmap (no reply)
-          handle_CreatePixmap(minor /*depth*/, payload, remain);
-          break;
-          
-        case 54: // FreePixmap (no reply)
-          handle_FreePixmap(payload, remain);
-          break;
-          
-        //case 55: // CreateGC (no reply)
-        //  handle_CreateGC(cfd, seq, payload, remain );
-        //  break;
-        //case 56: // ChangeGC (no reply)
-        //  handle_ChangeGC(payload, remain);
+        //case 53: // CreatePixmap (no reply)
+        //  handle_CreatePixmap(minor /*depth*/, payload, remain);
         //  break;
         //  
-        //case 60: // FreeGC (no reply)
-        //  handle_FreeGC(payload, remain);
+        //case 54: // FreePixmap (no reply)
+        //  handle_FreePixmap(payload, remain);
         //  break;
           
         case 61: // ClearArea (no reply; may generate Expose)
           handle_ClearArea(cfd, seq, minor /*exposures*/, payload, remain);
           break;
           
-        case 62: // CopyArea (no reply)
-          handle_CopyArea(payload, remain);
-          break;
-          
-        case 63: // CopyPlane (no reply)
-          handle_CopyPlane(payload, remain);
-          break;
+        //case 62: // CopyArea (no reply)
+        //  handle_CopyArea(payload, remain);
+        //  break;
+        //  
+        //case 63: // CopyPlane (no reply)
+        //  handle_CopyPlane(payload, remain);
+        //  break;
           
         case 68: // PolyArc (no reply)
           handle_PolyArc(cfd, seq, payload, remain);
