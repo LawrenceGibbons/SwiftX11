@@ -97,6 +97,19 @@ void x11_xproto_apply_configure_from_cpp(uint32_t wid,
 void x11_proto_bridge_pixmap_create(uint32_t pid, uint8_t depth, uint16_t w, uint16_t h);
 void x11_proto_bridge_pixmap_free(uint32_t pid);
 
+  // Returns 1 on success, 0 on failure.
+  // outPixels is a pointer to the window framebuffer (ARGB/BGRA as you currently store it),
+  // outW/outH are pixel dimensions.
+  int x11_xproto_window_fb_rw(uint32_t xid,
+                              uint32_t** outPixels,
+                              uint32_t* outW,
+                              uint32_t* outH);
+
+  // Call the exact same damage gating as the old C draw ops.
+  void x11_xproto_enqueue_damage(uint32_t xid);
+
+
+
   
 #ifdef __cplusplus
 }

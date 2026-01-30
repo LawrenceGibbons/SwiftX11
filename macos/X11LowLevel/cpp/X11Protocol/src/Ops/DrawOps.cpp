@@ -14,6 +14,10 @@
 #include "ByteReader.hpp"
 #include "PixmapTable.hpp"   // adjust include path to your project
 #include "WindowTable.hpp"
+#include "GCTable.hpp"
+
+// temporary
+#include "XProtoServerBridge.h"
 
 namespace x11 {
 
@@ -21,7 +25,7 @@ static constexpr uint32_t kBitmapScanlinePadBits = 32;   // matches SetupSuccess
 static constexpr bool     kBitmapBitOrderLSBFirst = true;
 
 DrawOps::DrawOps(XProtoRegistrar& reg) {
-  //reg.registerMajor(62, &DrawOps::onMajor, this); // CopyArea
+  reg.registerMajor(62, &DrawOps::onMajor, this); // CopyArea
   //reg.registerMajor(63, &DrawOps::onMajor, this); // CopyPlane
   reg.registerMajor(72, &DrawOps::onMajor, this); // PutImage
 }
@@ -48,6 +52,83 @@ uint32_t DrawOps::computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits) {
   const uint32_t paddedBits  = (bitsPerLine + (kBitmapScanlinePadBits - 1u)) & ~(kBitmapScanlinePadBits - 1u);
   return paddedBits / 8u;
 }
+  
+  
+  struct DrawableRW {
+    bool is_window = false;
+
+    // 32bpp destination
+    uint32_t* pixels32 = nullptr;
+
+    // 1bpp destination
+    uint8_t* bits1 = nullptr;
+    uint32_t stride_bytes = 0;
+
+    uint32_t w = 0;
+    uint32_t h = 0;
+  };
+
+  static bool resolveDrawableRW(XProtoContext& ctx,
+                                uint32_t drawable,
+                                DrawableRW& out)
+  {
+    // ----------------------------
+    // 1) Pixmap (C++ authoritative)
+    // ----------------------------
+    {
+      uint16_t w16 = 0, h16 = 0;
+
+      if (uint32_t* px = ctx.pixmaps().mutablePixels(drawable, &w16, &h16)) {
+        out.is_window = false;
+        out.pixels32 = px;
+        out.bits1 = nullptr;
+        out.stride_bytes = 0;
+        out.w = w16;
+        out.h = h16;
+        return true;
+      }
+
+      uint32_t stride = 0;
+      if (uint8_t* bits = ctx.pixmaps().mutableBits(drawable, &w16, &h16, &stride)) {
+        out.is_window = false;
+        out.pixels32 = nullptr;
+        out.bits1 = bits;
+        out.stride_bytes = stride;
+        out.w = w16;
+        out.h = h16;
+        return true;
+      }
+    }
+
+    // -----------------------------------
+    // 2) Window framebuffer (C-side store)
+    // -----------------------------------
+    {
+      uint32_t* px = nullptr;
+      uint32_t w = 0, h = 0;
+
+      if (x11_xproto_window_fb_rw(drawable, &px, &w, &h)) {
+        out.is_window = true;
+        out.pixels32 = px;
+        out.bits1 = nullptr;
+        out.stride_bytes = 0;
+        out.w = w;
+        out.h = h;
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  
+  static inline int clampi(int v, int lo, int hi) {
+    return (v < lo) ? lo : (v > hi) ? hi : v;
+  }
+
+  
+  
+  
 
 // -----------------------------
 // PutImage (major 72)
@@ -154,20 +235,294 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   (void)need;
 }
 
-// -----------------------------
-// CopyArea (major 62) -- stub for now
-// -----------------------------
-void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  ctx.tracef("[DrawOps] CopyArea: stub (skipping %zu)\n", br.remaining());
-  br.skip(br.remaining());
-}
 
+  
+// -----------------------------
+// CopyArea (major 62)
+// -----------------------------
+  void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+    // Body after 4-byte header (24 bytes):
+    //   CARD32 src
+    //   CARD32 dst
+    //   CARD32 gc      (ignored for now; CopyArea is raw pixel copy)
+    //   INT16  srcX
+    //   INT16  srcY
+    //   INT16  dstX
+    //   INT16  dstY
+    //   CARD16 w
+    //   CARD16 h
+    if (br.remaining() < 24) { br.skip(br.remaining()); return; }
+
+    const uint32_t src = br.readU32();
+    const uint32_t dst = br.readU32();
+    (void)br.readU32(); // gc
+
+    const int16_t srcX = (int16_t)br.readU16();
+    const int16_t srcY = (int16_t)br.readU16();
+    const int16_t dstX = (int16_t)br.readU16();
+    const int16_t dstY = (int16_t)br.readU16();
+
+    const uint16_t wpx = br.readU16();
+    const uint16_t hpx = br.readU16();
+    br.skip(br.remaining());
+
+    if (wpx == 0 || hpx == 0) return;
+
+    // ------------------------------------------------------------
+    // Resolve source drawable -> read-only pixel pointer + dimensions
+    // ------------------------------------------------------------
+    const uint32_t* srcPixels = nullptr;
+    int srcW = 0, srcH = 0;
+
+    // 1) Window source => C framebuffer
+    if (ctx.windows().exists(src)) {
+      uint32_t* wPixels = nullptr;
+      uint32_t wW = 0, wH = 0;
+      if (!x11_xproto_window_fb_rw(src, &wPixels, &wW, &wH) || !wPixels) return;
+      srcPixels = wPixels;
+      srcW = (int)wW;
+      srcH = (int)wH;
+    } else {
+      // 2) Pixmap source => C++ PixmapTable
+      PixmapView pv{};
+      if (!ctx.pixmaps().snapshot(src, pv)) return;
+      if (pv.depth == 1) return;              // CopyArea is not used for 1bpp masks (CopyPlane is)
+      if (!pv.pixels) return;
+      srcPixels = pv.pixels;
+      srcW = (int)pv.w;
+      srcH = (int)pv.h;
+    }
+
+    // ------------------------------------------------------------
+    // Resolve destination drawable -> writable pixel pointer + dimensions
+    // ------------------------------------------------------------
+    uint32_t* dstPixels = nullptr;
+    int dstW = 0, dstH = 0;
+    bool dstIsWindow = false;
+
+    if (ctx.windows().exists(dst)) {
+      uint32_t* wPixels = nullptr;
+      uint32_t wW = 0, wH = 0;
+      if (!x11_xproto_window_fb_rw(dst, &wPixels, &wW, &wH) || !wPixels) return;
+      dstPixels = wPixels;
+      dstW = (int)wW;
+      dstH = (int)wH;
+      dstIsWindow = true;
+    } else {
+      uint16_t pw = 0, ph = 0;
+      dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
+      if (!dstPixels) return;
+      dstW = (int)pw;
+      dstH = (int)ph;
+      dstIsWindow = false;
+    }
+
+    // ------------------------------------------------------------
+    // Blit with clamp (same as your C implementation)
+    // ------------------------------------------------------------
+    for (int yy = 0; yy < (int)hpx; yy++) {
+      const int sy = (int)srcY + yy;
+      const int dy = (int)dstY + yy;
+      if ((unsigned)sy >= (unsigned)srcH) continue;
+      if ((unsigned)dy >= (unsigned)dstH) continue;
+
+      for (int xx = 0; xx < (int)wpx; xx++) {
+        const int sx = (int)srcX + xx;
+        const int dx = (int)dstX + xx;
+        if ((unsigned)sx >= (unsigned)srcW) continue;
+        if ((unsigned)dx >= (unsigned)dstW) continue;
+
+        dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] =
+          srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Damage only if destination is a window (pixmaps present when copied into a window)
+    // ------------------------------------------------------------
+    if (dstIsWindow) {
+      x11_xproto_enqueue_damage(dst);
+    }
+  }
 // -----------------------------
 // CopyPlane (major 63) -- stub for now
 // -----------------------------
-void DrawOps::handleCopyPlane(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  ctx.tracef("[DrawOps] CopyPlane: stub (skipping %zu)\n", br.remaining());
-  br.skip(br.remaining());
-}
+  void DrawOps::handleCopyPlane(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br)
+  {
+    // Body after 4-byte header (28 bytes):
+    //   CARD32 srcDrawable
+    //   CARD32 dstDrawable
+    //   CARD32 gc
+    //   INT16  srcX
+    //   INT16  srcY
+    //   INT16  dstX
+    //   INT16  dstY
+    //   CARD16 width
+    //   CARD16 height
+    //   CARD32 bitPlane
+    if (br.remaining() < 28) { br.skip(br.remaining()); return; }
 
+    const uint32_t src = br.readU32();
+    const uint32_t dst = br.readU32();
+    const uint32_t gc  = br.readU32();
+
+    const int16_t srcX = (int16_t)br.readU16();
+    const int16_t srcY = (int16_t)br.readU16();
+    const int16_t dstX = (int16_t)br.readU16();
+    const int16_t dstY = (int16_t)br.readU16();
+
+    const uint16_t wpx = br.readU16();
+    const uint16_t hpx = br.readU16();
+
+    const uint32_t bitPlane = br.readU32();
+    br.skip(br.remaining());
+
+    if (wpx == 0 || hpx == 0) return;
+
+    // Minimal: only support plane 1 (the usual for depth-1 pixmaps).
+    if (bitPlane != 1u) return;
+
+    // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
+    const bool BIT_ORDER_LSB_FIRST = true;
+
+    // ------------------------------------------------------------
+    // Resolve GC fg/bg
+    // ------------------------------------------------------------
+    uint32_t fg = 0xFF000000u;
+    uint32_t bg = 0xFFFFFFFFu;
+
+    GCState gst{};
+    if (GCTable::instance().find(gc, gst)) {
+      fg = gst.fg;
+      bg = gst.bg;
+    }
+    // else keep defaults
+    
+    // ------------------------------------------------------------
+    // Resolve src as either:
+    //  - depth-1 pixmap bits, OR
+    //  - 32bpp pixels (window FB or depth>1 pixmap)
+    // ------------------------------------------------------------
+    const uint32_t* srcPixels = nullptr;
+    const uint8_t*  srcBits   = nullptr;
+    int srcW = 0, srcH = 0;
+    uint32_t srcStrideBytes = 0;
+    bool srcDepth1 = false;
+
+    if (ctx.windows().exists(src)) {
+      uint32_t* wPix = nullptr;
+      uint32_t wW = 0, wH = 0;
+      if (!x11_xproto_window_fb_rw(src, &wPix, &wW, &wH) || !wPix) return;
+      srcPixels = wPix;
+      srcW = (int)wW;
+      srcH = (int)wH;
+      srcDepth1 = false;
+    } else {
+      PixmapView pv{};
+      if (!ctx.pixmaps().snapshot(src, pv)) return;
+      srcW = (int)pv.w;
+      srcH = (int)pv.h;
+
+      if (pv.depth == 1) {
+        if (!pv.bits || pv.stride_bytes == 0) return;
+        srcBits = pv.bits;
+        srcStrideBytes = pv.stride_bytes;
+        srcDepth1 = true;
+      } else {
+        if (!pv.pixels) return;
+        srcPixels = pv.pixels;
+        srcDepth1 = false;
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Resolve dst as either:
+    //  - depth-1 pixmap bits, OR
+    //  - 32bpp pixels (window FB or depth>1 pixmap)
+    // ------------------------------------------------------------
+    uint32_t* dstPixels = nullptr;
+    uint8_t*  dstBits   = nullptr;
+    int dstW = 0, dstH = 0;
+    uint32_t dstStrideBytes = 0;
+    bool dstDepth1 = false;
+    bool dstIsWindow = false;
+
+    if (ctx.windows().exists(dst)) {
+      uint32_t* wPix = nullptr;
+      uint32_t wW = 0, wH = 0;
+      if (!x11_xproto_window_fb_rw(dst, &wPix, &wW, &wH) || !wPix) return;
+      dstPixels = wPix;
+      dstW = (int)wW;
+      dstH = (int)wH;
+      dstDepth1 = false;
+      dstIsWindow = true;
+    } else {
+      // try depth-1 bits first
+      uint16_t pw = 0, ph = 0;
+      uint32_t stride = 0;
+      if (uint8_t* bits = ctx.pixmaps().mutableBits(dst, &pw, &ph, &stride)) {
+        dstBits = bits;
+        dstW = (int)pw;
+        dstH = (int)ph;
+        dstStrideBytes = stride;
+        dstDepth1 = true;
+        dstIsWindow = false;
+      } else {
+        uint16_t pw2 = 0, ph2 = 0;
+        uint32_t* pix = ctx.pixmaps().mutablePixels(dst, &pw2, &ph2);
+        if (!pix) return;
+        dstPixels = pix;
+        dstW = (int)pw2;
+        dstH = (int)ph2;
+        dstDepth1 = false;
+        dstIsWindow = false;
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Raster loop: interpret src as 1-bit plane and write to dst:
+    //  - if dstDepth1: write packed bit
+    //  - else: write fg/bg pixels
+    // ------------------------------------------------------------
+    for (int yy = 0; yy < (int)hpx; yy++) {
+      const int sy = (int)srcY + yy;
+      const int dy = (int)dstY + yy;
+      if ((unsigned)sy >= (unsigned)srcH) continue;
+      if ((unsigned)dy >= (unsigned)dstH) continue;
+
+      for (int xx = 0; xx < (int)wpx; xx++) {
+        const int sx = (int)srcX + xx;
+        const int dx = (int)dstX + xx;
+        if ((unsigned)sx >= (unsigned)srcW) continue;
+        if ((unsigned)dx >= (unsigned)dstW) continue;
+
+        int on = 0;
+
+        if (srcDepth1) {
+          const size_t byteIndex = (size_t)sy * (size_t)srcStrideBytes + ((size_t)sx >> 3);
+          const int bitInByte = BIT_ORDER_LSB_FIRST ? (sx & 7) : (7 - (sx & 7));
+          on = (srcBits[byteIndex] >> bitInByte) & 1;
+        } else {
+          // bring-up heuristic: treat non-white as “on”
+          const uint32_t sp = srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
+          on = (sp != 0xFFFFFFFFu);
+        }
+
+        if (dstDepth1) {
+          const size_t dByteIndex = (size_t)dy * (size_t)dstStrideBytes + ((size_t)dx >> 3);
+          const int dBitInByte = BIT_ORDER_LSB_FIRST ? (dx & 7) : (7 - (dx & 7));
+          const uint8_t mask = (uint8_t)(1u << dBitInByte);
+          if (on) dstBits[dByteIndex] |= mask;
+          else    dstBits[dByteIndex] &= (uint8_t)~mask;
+        } else {
+          dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? fg : bg;
+        }
+      }
+    }
+
+    // Damage only if destination is a window.
+    if (dstIsWindow) {
+      x11_xproto_enqueue_damage(dst);
+    }
+  }
 } // namespace x11

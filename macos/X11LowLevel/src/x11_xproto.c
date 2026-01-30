@@ -735,6 +735,35 @@ int x11_xproto_c_create_window_slot(uint32_t wid,
   return 1;
 }
 
+// Writable window FB pointer + dimensions
+int x11_xproto_window_fb_rw(uint32_t xid,
+                            uint32_t** outPixels,
+                            uint32_t* outW,
+                            uint32_t* outH)
+{
+  if (outPixels) *outPixels = NULL;
+  if (outW) *outW = 0;
+  if (outH) *outH = 0;
+
+  const ssize_t idx = win_index(xid);
+  if (idx < 0) return 0;
+
+  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
+  if (!fb->pixels || fb->width == 0 || fb->height == 0) return 0;
+
+  if (outPixels) *outPixels = fb->pixels;
+  if (outW) *outW = fb->width;
+  if (outH) *outH = fb->height;
+  return 1;
+}
+
+// Use the existing deferral logic (mapped/presentable gating) in C
+void x11_xproto_enqueue_damage(uint32_t xid)
+{
+  enqueue_damage_window(xid);
+}
+
+
 
 void x11_xproto_bridge_destroy_window_legacy(uint32_t wid)
 {

@@ -23,7 +23,6 @@ int x11_xproto_apply_map_window(uint32_t wid);
 // Sets g_wins[xid].mapped=0 and returns 1 if window existed, else 0.
 int x11_xproto_window_set_mapped(uint32_t wid, int mapped);
 
-  
 
 #ifdef __cplusplus
 }
