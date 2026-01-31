@@ -28,7 +28,7 @@ static constexpr bool     kBitmapBitOrderLSBFirst = true;
 
 DrawOps::DrawOps(XProtoRegistrar& reg) {
   reg.registerMajor(62, &DrawOps::onMajor, this); // CopyArea
-  //reg.registerMajor(63, &DrawOps::onMajor, this); // CopyPlane
+  reg.registerMajor(63, &DrawOps::onMajor, this); // CopyPlane
   reg.registerMajor(72, &DrawOps::onMajor, this); // PutImage
 }
 
@@ -210,33 +210,41 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const uint32_t* srcPixels = nullptr;
     int srcW = 0, srcH = 0;
 
+    const bool srcIsWin = ctx.windows().exists(src);
+    const bool srcIsPix = ctx.pixmaps().exists(src);
+
     // 1) Window source => C framebuffer
-    if (ctx.windows().exists(src)) {
+    if (srcIsWin) {
       uint32_t* wPixels = nullptr;
       uint32_t wW = 0, wH = 0;
       if (!x11_xproto_window_fb_rw(src, &wPixels, &wW, &wH) || !wPixels) return;
       srcPixels = wPixels;
       srcW = (int)wW;
       srcH = (int)wH;
-    } else {
       // 2) Pixmap source => C++ PixmapTable
+    } else if (srcIsPix) {
       PixmapView pv{};
       if (!ctx.pixmaps().snapshot(src, pv)) return;
-      if (pv.depth == 1) return;              // CopyArea is not used for 1bpp masks (CopyPlane is)
+      if (pv.depth == 1) return;              // CopyArea not for depth-1 masks
       if (!pv.pixels) return;
       srcPixels = pv.pixels;
       srcW = (int)pv.w;
       srcH = (int)pv.h;
+    } else {
+      return; // unknown drawable
     }
-
+    
     // ------------------------------------------------------------
     // Resolve destination drawable -> writable pixel pointer + dimensions
     // ------------------------------------------------------------
     uint32_t* dstPixels = nullptr;
     int dstW = 0, dstH = 0;
+    const bool dstIsWin = ctx.windows().exists(dst);
+    const bool dstIsPix = ctx.pixmaps().exists(dst);
+
     bool dstIsWindow = false;
 
-    if (ctx.windows().exists(dst)) {
+    if (dstIsWin) {
       uint32_t* wPixels = nullptr;
       uint32_t wW = 0, wH = 0;
       if (!x11_xproto_window_fb_rw(dst, &wPixels, &wW, &wH) || !wPixels) return;
@@ -244,15 +252,17 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       dstW = (int)wW;
       dstH = (int)wH;
       dstIsWindow = true;
-    } else {
+    } else if (dstIsPix) {
       uint16_t pw = 0, ph = 0;
       dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
       if (!dstPixels) return;
       dstW = (int)pw;
       dstH = (int)ph;
       dstIsWindow = false;
+    } else {
+      return; // unknown drawable
     }
-
+    
     // ------------------------------------------------------------
     // Blit with clamp (same as your C implementation)
     // ------------------------------------------------------------
@@ -280,8 +290,11 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       x11_xproto_enqueue_damage(dst);
     }
   }
+  
+  
+  
 // -----------------------------
-// CopyPlane (major 63) -- stub for now
+// CopyPlane (major 63)
 // -----------------------------
   void DrawOps::handleCopyPlane(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br)
   {
@@ -345,7 +358,10 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     uint32_t srcStrideBytes = 0;
     bool srcDepth1 = false;
 
-    if (ctx.windows().exists(src)) {
+    const bool srcIsWin = ctx.windows().exists(src);
+    const bool srcIsPix = ctx.pixmaps().exists(src);
+
+    if (srcIsWin) {
       uint32_t* wPix = nullptr;
       uint32_t wW = 0, wH = 0;
       if (!x11_xproto_window_fb_rw(src, &wPix, &wW, &wH) || !wPix) return;
@@ -353,7 +369,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       srcW = (int)wW;
       srcH = (int)wH;
       srcDepth1 = false;
-    } else {
+    } else if (srcIsPix) {
       PixmapView pv{};
       if (!ctx.pixmaps().snapshot(src, pv)) return;
       srcW = (int)pv.w;
@@ -369,8 +385,15 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
         srcPixels = pv.pixels;
         srcDepth1 = false;
       }
+    } else {
+      return;
     }
-
+    
+    // Bring-up correctness: CopyPlane is expected from depth-1 pixmaps.
+    // If the source isn't depth-1, do nothing (better than wrong masks).
+    if (!srcDepth1) return;
+    
+    
     // ------------------------------------------------------------
     // Resolve dst as either:
     //  - depth-1 pixmap bits, OR
@@ -439,11 +462,10 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
           const int bitInByte = BIT_ORDER_LSB_FIRST ? (sx & 7) : (7 - (sx & 7));
           on = (srcBits[byteIndex] >> bitInByte) & 1;
         } else {
-          // bring-up heuristic: treat non-white as “on”
-          const uint32_t sp = srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
-          on = (sp != 0xFFFFFFFFu);
+          // unreachable because we return above if !srcDepth1
+          on = 0;
         }
-
+        
         if (dstDepth1) {
           const size_t dByteIndex = (size_t)dy * (size_t)dstStrideBytes + ((size_t)dx >> 3);
           const int dBitInByte = BIT_ORDER_LSB_FIRST ? (dx & 7) : (7 - (dx & 7));

@@ -34,3 +34,17 @@ private:
 };
 
 } // namespace x11
+
+
+extern "C" {
+// Returns 1 on success, 0 on failure.
+// outPixels points at the window framebuffer (32bpp), outW/outH are pixel dims.
+int x11_xproto_window_fb_rw(uint32_t xid,
+                            uint32_t** outPixels,
+                            uint32_t* outW,
+                            uint32_t* outH);
+
+// Call the exact same damage gating as old C draw ops.
+void x11_xproto_enqueue_damage(uint32_t xid);
+  
+} // extern "C"

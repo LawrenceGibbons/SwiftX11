@@ -2609,341 +2609,341 @@ static int resolve_drawable_pixels_rw(uint32_t drawable,
 // }
 
 
-// CopyArea (major = 62) -- no reply
-static void handle_CopyArea(const uint8_t* payload, size_t remain)
-{
-  if (remain < 24) return;
-
-  const uint32_t src = rd32(payload + 0);
-  const uint32_t dst = rd32(payload + 4);
-  const uint32_t gc  = rd32(payload + 8);
-
-  const int16_t srcX = (int16_t)rd16(payload + 12);
-  const int16_t srcY = (int16_t)rd16(payload + 14);
-  const int16_t dstX = (int16_t)rd16(payload + 16);
-  const int16_t dstY = (int16_t)rd16(payload + 18);
-
-  const uint16_t wpx = rd16(payload + 20);
-  const uint16_t hpx = rd16(payload + 22);
-
-#ifndef NDEBUG
-  fprintf(stderr,
-        "[SwiftX11] CopyArea: src=0x%08X dst=0x%08X srcXY=(%d,%d) dstXY=(%d,%d) wh=(%u,%u) remain=%zu\n",
-        (unsigned)src, (unsigned)dst,
-        (int)srcX, (int)srcY,
-        (int)dstX, (int)dstY,
-        (unsigned)wpx, (unsigned)hpx,
-        remain);
-#endif
-#ifndef NDEBUG
-  {
-    uint32_t fg = 0xFF000000u;
-    uint32_t bg = 0xFFFFFFFFu;
-    const int found = x11_proto_bridge_gc_get(gc, &fg, &bg);
-
-    fprintf(stderr,
-            "[SwiftX11] CopyArea: gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X\n",
-            (unsigned)gc,
-            found ? 1 : 0,
-            (unsigned)fg,
-            (unsigned)bg);
-  }
-#endif
-
-  if (wpx == 0 || hpx == 0) return;
-
-  // Resolve src buffer (window fb or pixmap)
-  const uint32_t *srcPixels = NULL;
-  int srcW = 0, srcH = 0;
-  {
-    x11_win_t *sw = win_find(src);
-    if (sw) {
-      ssize_t sidx = win_index(src);
-      if (sidx < 0) return;
-      x11_fb_t *sfb = &g_framebuffers[(size_t)sidx];
-      if (!sfb->pixels) return;
-      srcPixels = sfb->pixels;
-      srcW = (int)sfb->width;
-      srcH = (int)sfb->height;
-    } else {
-      ssize_t pidx = pix_index(src);
-      if (pidx < 0) return;
-      x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
-      if (!pm->pixels) return;
-      srcPixels = pm->pixels;
-      srcW = (int)pm->width;
-      srcH = (int)pm->height;
-    }
-  }
-#ifndef NDEBUG
-  fprintf(stderr,
-        "[SwiftX11] CopyArea: src_kind=%s srcWH=(%d,%d)\n",
-        win_find(src) ? "window" : "pixmap",
-        srcW, srcH);
-#endif
-  // Resolve dst buffer (window fb or pixmap)
-  uint32_t *dstPixels = NULL;
-  uint32_t dstW = 0, dstH = 0;
-  bool dst_is_window = false;
-  if (!resolve_drawable_pixels_rw(dst, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
-#ifndef NDEBUG
-  fprintf(stderr,
-        "[SwiftX11] CopyArea: dst_kind=%s dstWH=(%u,%u) -> enqueue_damage_window(0x%08X)\n",
-        dst_is_window ? "window" : "pixmap",
-        (unsigned)dstW, (unsigned)dstH, (unsigned)dst);
-#endif
-  
-  // Minimal blit: per-pixel copy with clamp.
-  for (int yy = 0; yy < (int)hpx; yy++) {
-    int sy = (int)srcY + yy;
-    int dy = (int)dstY + yy;
-    if (sy < 0 || sy >= srcH) continue;
-    if (dy < 0 || dy >= (int)dstH) continue;
-
-    for (int xx = 0; xx < (int)wpx; xx++) {
-      int sx = (int)srcX + xx;
-      int dx = (int)dstX + xx;
-      if (sx < 0 || sx >= srcW) continue;
-      if (dx < 0 || dx >= (int)dstW) continue;
-
-      dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] =
-        srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
-    }
-  }
-
-  // Present it (only windows are presentable; pixmaps are presented when copied into a window)
-  if (dst_is_window) {
-    enqueue_damage_window(dst);
-  }
-}
-
+//// CopyArea (major = 62) -- no reply
+//static void handle_CopyArea(const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 24) return;
+//
+//  const uint32_t src = rd32(payload + 0);
+//  const uint32_t dst = rd32(payload + 4);
+//  const uint32_t gc  = rd32(payload + 8);
+//
+//  const int16_t srcX = (int16_t)rd16(payload + 12);
+//  const int16_t srcY = (int16_t)rd16(payload + 14);
+//  const int16_t dstX = (int16_t)rd16(payload + 16);
+//  const int16_t dstY = (int16_t)rd16(payload + 18);
+//
+//  const uint16_t wpx = rd16(payload + 20);
+//  const uint16_t hpx = rd16(payload + 22);
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//        "[SwiftX11] CopyArea: src=0x%08X dst=0x%08X srcXY=(%d,%d) dstXY=(%d,%d) wh=(%u,%u) remain=%zu\n",
+//        (unsigned)src, (unsigned)dst,
+//        (int)srcX, (int)srcY,
+//        (int)dstX, (int)dstY,
+//        (unsigned)wpx, (unsigned)hpx,
+//        remain);
+//#endif
+//#ifndef NDEBUG
+//  {
+//    uint32_t fg = 0xFF000000u;
+//    uint32_t bg = 0xFFFFFFFFu;
+//    const int found = x11_proto_bridge_gc_get(gc, &fg, &bg);
+//
+//    fprintf(stderr,
+//            "[SwiftX11] CopyArea: gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X\n",
+//            (unsigned)gc,
+//            found ? 1 : 0,
+//            (unsigned)fg,
+//            (unsigned)bg);
+//  }
+//#endif
+//
+//  if (wpx == 0 || hpx == 0) return;
+//
+//  // Resolve src buffer (window fb or pixmap)
+//  const uint32_t *srcPixels = NULL;
+//  int srcW = 0, srcH = 0;
+//  {
+//    x11_win_t *sw = win_find(src);
+//    if (sw) {
+//      ssize_t sidx = win_index(src);
+//      if (sidx < 0) return;
+//      x11_fb_t *sfb = &g_framebuffers[(size_t)sidx];
+//      if (!sfb->pixels) return;
+//      srcPixels = sfb->pixels;
+//      srcW = (int)sfb->width;
+//      srcH = (int)sfb->height;
+//    } else {
+//      ssize_t pidx = pix_index(src);
+//      if (pidx < 0) return;
+//      x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
+//      if (!pm->pixels) return;
+//      srcPixels = pm->pixels;
+//      srcW = (int)pm->width;
+//      srcH = (int)pm->height;
+//    }
+//  }
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//        "[SwiftX11] CopyArea: src_kind=%s srcWH=(%d,%d)\n",
+//        win_find(src) ? "window" : "pixmap",
+//        srcW, srcH);
+//#endif
+//  // Resolve dst buffer (window fb or pixmap)
+//  uint32_t *dstPixels = NULL;
+//  uint32_t dstW = 0, dstH = 0;
+//  bool dst_is_window = false;
+//  if (!resolve_drawable_pixels_rw(dst, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//        "[SwiftX11] CopyArea: dst_kind=%s dstWH=(%u,%u) -> enqueue_damage_window(0x%08X)\n",
+//        dst_is_window ? "window" : "pixmap",
+//        (unsigned)dstW, (unsigned)dstH, (unsigned)dst);
+//#endif
+//  
+//  // Minimal blit: per-pixel copy with clamp.
+//  for (int yy = 0; yy < (int)hpx; yy++) {
+//    int sy = (int)srcY + yy;
+//    int dy = (int)dstY + yy;
+//    if (sy < 0 || sy >= srcH) continue;
+//    if (dy < 0 || dy >= (int)dstH) continue;
+//
+//    for (int xx = 0; xx < (int)wpx; xx++) {
+//      int sx = (int)srcX + xx;
+//      int dx = (int)dstX + xx;
+//      if (sx < 0 || sx >= srcW) continue;
+//      if (dx < 0 || dx >= (int)dstW) continue;
+//
+//      dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] =
+//        srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
+//    }
+//  }
+//
+//  // Present it (only windows are presentable; pixmaps are presented when copied into a window)
+//  if (dst_is_window) {
+//    enqueue_damage_window(dst);
+//  }
+//}
+//
 // CopyPlane (major = 63) -- no reply
 // Minimal implementation for bring-up (used by xeyes for 1bpp masks/bitmaps).
 // Copies a 1-bit plane from src drawable to dst drawable using a simple fg/bg mapping.
 // For now we ignore GC and use:
 //   1-bit -> opaque black
 //   0-bit -> opaque white
-static void handle_CopyPlane(const uint8_t* payload, size_t remain)
-{
-  // Body after 4-byte header:
-  //   CARD32 srcDrawable
-  //   CARD32 dstDrawable
-  //   CARD32 gc
-  //   INT16  srcX
-  //   INT16  srcY
-  //   INT16  dstX
-  //   INT16  dstY
-  //   CARD16 width
-  //   CARD16 height
-  //   CARD32 bitPlane
-  if (remain < 28) return;
-
-  const uint32_t src = rd32(payload + 0);
-  const uint32_t dst = rd32(payload + 4);
-  const uint32_t gc  = rd32(payload + 8);
-
-  const int16_t srcX = (int16_t)rd16(payload + 12);
-  const int16_t srcY = (int16_t)rd16(payload + 14);
-  const int16_t dstX = (int16_t)rd16(payload + 16);
-  const int16_t dstY = (int16_t)rd16(payload + 18);
-
-  const uint16_t wpx = rd16(payload + 20);
-  const uint16_t hpx = rd16(payload + 22);
-
-  const uint32_t bitPlane = rd32(payload + 24);
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] CopyPlane: src=0x%08X dst=0x%08X srcXY=(%d,%d) dstXY=(%d,%d) wh=(%u,%u) bitPlane=0x%08X remain=%zu\n",
-          (unsigned)src, (unsigned)dst,
-          (int)srcX, (int)srcY,
-          (int)dstX, (int)dstY,
-          (unsigned)wpx, (unsigned)hpx,
-          (unsigned)bitPlane,
-          remain);
-#endif
-
-  if (wpx == 0 || hpx == 0) return;
-
-  // Minimal: only support plane 1 (the usual for depth-1 pixmaps).
-  if (bitPlane != 1u) {
-#ifndef NDEBUG
-    fprintf(stderr, "[SwiftX11] CopyPlane: ignoring bitPlane=0x%08X (only 0x00000001 supported)\n",
-            (unsigned)bitPlane);
-#endif
-    return;
-  }
-
-  // CopyPlane: X11 bitmapBitOrder handling.
-  // We advertise LSBFirst in SetupSuccess, so keep that consistent here.
-  const int BIT_ORDER_LSB_FIRST = 1;
-  
-  // Resolve src buffer (window fb or pixmap)
-  const uint32_t *srcPixels = NULL;   // for window FB or non-1 pixmap
-  const uint8_t  *srcBits   = NULL;   // for depth-1 pixmap
-  int srcW = 0, srcH = 0;
-  int src_pm_depth1 = 0;
-  uint32_t src_stride_bytes = 0;
-
-  {
-    x11_win_t *sw = win_find(src);
-    if (sw) {
-      src_pm_depth1 = 0;
-      const ssize_t sidx = win_index(src);
-      if (sidx < 0) return;
-      const x11_fb_t *sfb = &g_framebuffers[(size_t)sidx];
-      if (!sfb->pixels) return;
-      srcPixels = sfb->pixels;
-      srcW = (int)sfb->width;
-      srcH = (int)sfb->height;
-    } else {
-      const ssize_t pidx = pix_index(src);
-      if (pidx < 0) return;
-      const x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
-      if (pm->width == 0 || pm->height == 0) return;
-
-      if (pm->depth == 1) {
-        if (!pm->bits || pm->stride_bytes == 0) return;
-        src_pm_depth1 = 1;
-        srcBits = pm->bits;
-        src_stride_bytes = pm->stride_bytes;
-        srcW = (int)pm->width;
-        srcH = (int)pm->height;
-      } else {
-        if (!pm->pixels) return;
-        src_pm_depth1 = 0;
-        srcPixels = pm->pixels;
-        srcW = (int)pm->width;
-        srcH = (int)pm->height;
-      }
-    }
-  }
-
-  // Resolve dst buffer (window fb or pixmap)
-  uint32_t *dstPixels = NULL;
-  int dstW = 0, dstH = 0;
-  bool dst_is_window = false;
-  uint8_t *dstBits = NULL;
-  uint32_t dst_stride_bytes = 0;
-  int dst_pm_depth1 = 0;
-  {
-    x11_win_t *dw = win_find(dst);
-    if (dw) {
-      const ssize_t didx = win_index(dst);
-      if (didx < 0) return;
-      x11_fb_t *dfb = &g_framebuffers[(size_t)didx];
-      if (!dfb->pixels) return;
-      dstPixels = dfb->pixels;
-      dstW = (int)dfb->width;
-      dstH = (int)dfb->height;
-      dst_is_window = true;
-    } else {
-      const ssize_t pidx = pix_index(dst);
-      if (pidx < 0) return;
-      x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
-      if (pm->width == 0 || pm->height == 0) return;
-
-      dstW = (int)pm->width;
-      dstH = (int)pm->height;
-      dst_is_window = false;
-
-      if (pm->depth == 1) {
-        // depth-1 destination: packed bits
-        if (!pm->bits || pm->stride_bytes == 0) return;
-        dst_pm_depth1 = 1;
-        dstBits = pm->bits;
-        dst_stride_bytes = pm->stride_bytes;
-        dstPixels = NULL;
-      } else {
-        // 32bpp destination
-        if (!pm->pixels) return;
-        dst_pm_depth1 = 0;
-        dstPixels = pm->pixels;
-        dstBits = NULL;
-        dst_stride_bytes = 0;
-      }
-    }
-  }
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] CopyPlane: src_kind=%s srcWH=(%d,%d) dst_kind=%s dstWH=(%d,%d)\n",
-          win_find(src) ? "window" : "pixmap", srcW, srcH,
-          dst_is_window ? "window" : "pixmap", dstW, dstH);
-#endif
-
-  // GC mapping (authoritative in C++): pull fg/bg via bridge.
-  uint32_t fg = 0xFF000000u; // default black
-  uint32_t bg = 0xFFFFFFFFu; // default white
-  (void)x11_proto_bridge_gc_get(gc, &fg, &bg);
-
-#ifndef NDEBUG
-  fprintf(stderr,
-    "[SwiftX11] CopyPlane: src=0x%08X(%s) dst=0x%08X(%s) src_depth1=%d fg=0x%08X bg=0x%08X\n",
-    (unsigned)src, win_find(src) ? "win" : "pix",
-    (unsigned)dst, win_find(dst) ? "win" : "pix",
-    src_pm_depth1,
-    (unsigned)fg, (unsigned)bg);
-#endif
-  
-  // Interpret source as 1-bit using our current storage convention:
-  // PutImage(depth=1) expands bits into black/white pixels.
-  size_t on_px = 0;
-  for (int yy = 0; yy < (int)hpx; yy++) {
-    int sy = (int)srcY + yy;
-    int dy = (int)dstY + yy;
-    if (sy < 0 || sy >= srcH) continue;
-    if (dy < 0 || dy >= dstH) continue;
-
-    for (int xx = 0; xx < (int)wpx; xx++) {
-      int sx = (int)srcX + xx;
-      int dx = (int)dstX + xx;
-      if (sx < 0 || sx >= srcW) continue;
-      if (dx < 0 || dx >= dstW) continue;
-
-      int on = 0;
-
-      if (src_pm_depth1) {
-        const size_t byte_index =
-          (size_t)sy * (size_t)src_stride_bytes + ((size_t)sx >> 3);
-
-        const int bit_in_byte = BIT_ORDER_LSB_FIRST ? (sx & 7) : (7 - (sx & 7));
-        on = (srcBits[byte_index] >> bit_in_byte) & 1;
-      } else {
-        const uint32_t sp =
-          srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
-        on = (sp != 0xFFFFFFFFu);
-      }
-      
-      if (on) on_px++;
-
-      if (dst_pm_depth1) {
-        // Store 1-bit result into packed bitmap (set/clear a bit).
-        const size_t dbyte_index =
-          (size_t)dy * (size_t)dst_stride_bytes + ((size_t)dx >> 3);
-        const int dbit_in_byte = BIT_ORDER_LSB_FIRST ? (dx & 7) : (7 - (dx & 7));
-        const uint8_t dmask = (uint8_t)(1u << dbit_in_byte);
-
-        if (on) dstBits[dbyte_index] |= dmask;
-        else    dstBits[dbyte_index] &= (uint8_t)~dmask;
-      } else {
-        // 32bpp destination
-        dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? fg : bg;
-      }
-    }
-  }
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] CopyPlane: done on_px=%zu of %u dst_kind=%s\n",
-          on_px,
-          (unsigned)((uint32_t)wpx * (uint32_t)hpx),
-          dst_is_window ? "window" : "pixmap");
-#endif
-  
-  if (dst_is_window) {
-    enqueue_damage_window(dst);
-  }
-}
+//static void handle_CopyPlane(const uint8_t* payload, size_t remain)
+//{
+//  // Body after 4-byte header:
+//  //   CARD32 srcDrawable
+//  //   CARD32 dstDrawable
+//  //   CARD32 gc
+//  //   INT16  srcX
+//  //   INT16  srcY
+//  //   INT16  dstX
+//  //   INT16  dstY
+//  //   CARD16 width
+//  //   CARD16 height
+//  //   CARD32 bitPlane
+//  if (remain < 28) return;
+//
+//  const uint32_t src = rd32(payload + 0);
+//  const uint32_t dst = rd32(payload + 4);
+//  const uint32_t gc  = rd32(payload + 8);
+//
+//  const int16_t srcX = (int16_t)rd16(payload + 12);
+//  const int16_t srcY = (int16_t)rd16(payload + 14);
+//  const int16_t dstX = (int16_t)rd16(payload + 16);
+//  const int16_t dstY = (int16_t)rd16(payload + 18);
+//
+//  const uint16_t wpx = rd16(payload + 20);
+//  const uint16_t hpx = rd16(payload + 22);
+//
+//  const uint32_t bitPlane = rd32(payload + 24);
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] CopyPlane: src=0x%08X dst=0x%08X srcXY=(%d,%d) dstXY=(%d,%d) wh=(%u,%u) bitPlane=0x%08X remain=%zu\n",
+//          (unsigned)src, (unsigned)dst,
+//          (int)srcX, (int)srcY,
+//          (int)dstX, (int)dstY,
+//          (unsigned)wpx, (unsigned)hpx,
+//          (unsigned)bitPlane,
+//          remain);
+//#endif
+//
+//  if (wpx == 0 || hpx == 0) return;
+//
+//  // Minimal: only support plane 1 (the usual for depth-1 pixmaps).
+//  if (bitPlane != 1u) {
+//#ifndef NDEBUG
+//    fprintf(stderr, "[SwiftX11] CopyPlane: ignoring bitPlane=0x%08X (only 0x00000001 supported)\n",
+//            (unsigned)bitPlane);
+//#endif
+//    return;
+//  }
+//
+//  // CopyPlane: X11 bitmapBitOrder handling.
+//  // We advertise LSBFirst in SetupSuccess, so keep that consistent here.
+//  const int BIT_ORDER_LSB_FIRST = 1;
+//  
+//  // Resolve src buffer (window fb or pixmap)
+//  const uint32_t *srcPixels = NULL;   // for window FB or non-1 pixmap
+//  const uint8_t  *srcBits   = NULL;   // for depth-1 pixmap
+//  int srcW = 0, srcH = 0;
+//  int src_pm_depth1 = 0;
+//  uint32_t src_stride_bytes = 0;
+//
+//  {
+//    x11_win_t *sw = win_find(src);
+//    if (sw) {
+//      src_pm_depth1 = 0;
+//      const ssize_t sidx = win_index(src);
+//      if (sidx < 0) return;
+//      const x11_fb_t *sfb = &g_framebuffers[(size_t)sidx];
+//      if (!sfb->pixels) return;
+//      srcPixels = sfb->pixels;
+//      srcW = (int)sfb->width;
+//      srcH = (int)sfb->height;
+//    } else {
+//      const ssize_t pidx = pix_index(src);
+//      if (pidx < 0) return;
+//      const x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
+//      if (pm->width == 0 || pm->height == 0) return;
+//
+//      if (pm->depth == 1) {
+//        if (!pm->bits || pm->stride_bytes == 0) return;
+//        src_pm_depth1 = 1;
+//        srcBits = pm->bits;
+//        src_stride_bytes = pm->stride_bytes;
+//        srcW = (int)pm->width;
+//        srcH = (int)pm->height;
+//      } else {
+//        if (!pm->pixels) return;
+//        src_pm_depth1 = 0;
+//        srcPixels = pm->pixels;
+//        srcW = (int)pm->width;
+//        srcH = (int)pm->height;
+//      }
+//    }
+//  }
+//
+//  // Resolve dst buffer (window fb or pixmap)
+//  uint32_t *dstPixels = NULL;
+//  int dstW = 0, dstH = 0;
+//  bool dst_is_window = false;
+//  uint8_t *dstBits = NULL;
+//  uint32_t dst_stride_bytes = 0;
+//  int dst_pm_depth1 = 0;
+//  {
+//    x11_win_t *dw = win_find(dst);
+//    if (dw) {
+//      const ssize_t didx = win_index(dst);
+//      if (didx < 0) return;
+//      x11_fb_t *dfb = &g_framebuffers[(size_t)didx];
+//      if (!dfb->pixels) return;
+//      dstPixels = dfb->pixels;
+//      dstW = (int)dfb->width;
+//      dstH = (int)dfb->height;
+//      dst_is_window = true;
+//    } else {
+//      const ssize_t pidx = pix_index(dst);
+//      if (pidx < 0) return;
+//      x11_pixmap_t *pm = &g_pixmaps[(size_t)pidx];
+//      if (pm->width == 0 || pm->height == 0) return;
+//
+//      dstW = (int)pm->width;
+//      dstH = (int)pm->height;
+//      dst_is_window = false;
+//
+//      if (pm->depth == 1) {
+//        // depth-1 destination: packed bits
+//        if (!pm->bits || pm->stride_bytes == 0) return;
+//        dst_pm_depth1 = 1;
+//        dstBits = pm->bits;
+//        dst_stride_bytes = pm->stride_bytes;
+//        dstPixels = NULL;
+//      } else {
+//        // 32bpp destination
+//        if (!pm->pixels) return;
+//        dst_pm_depth1 = 0;
+//        dstPixels = pm->pixels;
+//        dstBits = NULL;
+//        dst_stride_bytes = 0;
+//      }
+//    }
+//  }
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] CopyPlane: src_kind=%s srcWH=(%d,%d) dst_kind=%s dstWH=(%d,%d)\n",
+//          win_find(src) ? "window" : "pixmap", srcW, srcH,
+//          dst_is_window ? "window" : "pixmap", dstW, dstH);
+//#endif
+//
+//  // GC mapping (authoritative in C++): pull fg/bg via bridge.
+//  uint32_t fg = 0xFF000000u; // default black
+//  uint32_t bg = 0xFFFFFFFFu; // default white
+//  (void)x11_proto_bridge_gc_get(gc, &fg, &bg);
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//    "[SwiftX11] CopyPlane: src=0x%08X(%s) dst=0x%08X(%s) src_depth1=%d fg=0x%08X bg=0x%08X\n",
+//    (unsigned)src, win_find(src) ? "win" : "pix",
+//    (unsigned)dst, win_find(dst) ? "win" : "pix",
+//    src_pm_depth1,
+//    (unsigned)fg, (unsigned)bg);
+//#endif
+//  
+//  // Interpret source as 1-bit using our current storage convention:
+//  // PutImage(depth=1) expands bits into black/white pixels.
+//  size_t on_px = 0;
+//  for (int yy = 0; yy < (int)hpx; yy++) {
+//    int sy = (int)srcY + yy;
+//    int dy = (int)dstY + yy;
+//    if (sy < 0 || sy >= srcH) continue;
+//    if (dy < 0 || dy >= dstH) continue;
+//
+//    for (int xx = 0; xx < (int)wpx; xx++) {
+//      int sx = (int)srcX + xx;
+//      int dx = (int)dstX + xx;
+//      if (sx < 0 || sx >= srcW) continue;
+//      if (dx < 0 || dx >= dstW) continue;
+//
+//      int on = 0;
+//
+//      if (src_pm_depth1) {
+//        const size_t byte_index =
+//          (size_t)sy * (size_t)src_stride_bytes + ((size_t)sx >> 3);
+//
+//        const int bit_in_byte = BIT_ORDER_LSB_FIRST ? (sx & 7) : (7 - (sx & 7));
+//        on = (srcBits[byte_index] >> bit_in_byte) & 1;
+//      } else {
+//        const uint32_t sp =
+//          srcPixels[(size_t)sy * (size_t)srcW + (size_t)sx];
+//        on = (sp != 0xFFFFFFFFu);
+//      }
+//      
+//      if (on) on_px++;
+//
+//      if (dst_pm_depth1) {
+//        // Store 1-bit result into packed bitmap (set/clear a bit).
+//        const size_t dbyte_index =
+//          (size_t)dy * (size_t)dst_stride_bytes + ((size_t)dx >> 3);
+//        const int dbit_in_byte = BIT_ORDER_LSB_FIRST ? (dx & 7) : (7 - (dx & 7));
+//        const uint8_t dmask = (uint8_t)(1u << dbit_in_byte);
+//
+//        if (on) dstBits[dbyte_index] |= dmask;
+//        else    dstBits[dbyte_index] &= (uint8_t)~dmask;
+//      } else {
+//        // 32bpp destination
+//        dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? fg : bg;
+//      }
+//    }
+//  }
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] CopyPlane: done on_px=%zu of %u dst_kind=%s\n",
+//          on_px,
+//          (unsigned)((uint32_t)wpx * (uint32_t)hpx),
+//          dst_is_window ? "window" : "pixmap");
+//#endif
+//  
+//  if (dst_is_window) {
+//    enqueue_damage_window(dst);
+//  }
+//}
 
 
 // PolyArc (major = 68) -- no reply
