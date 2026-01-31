@@ -6,28 +6,30 @@
 //
 
 #pragma once
-#include <cstddef>
+
 #include <cstdint>
+#include "XProtoRegistrar.hpp"
 
-// Forward declarations (real definitions will live in shared protocol headers later).
-struct XProtoServerState;
-struct XProtoRequestContext;
+namespace x11 {
 
-// ShapeOps: PolyFillRectangle / PolyFillArc
+class XProtoContext;
+class ByteReader;
+
+// Shape / raster ops:
+//   68 PolyArc
+//   70 PolyFillRectangle (stub for now)
+//   71 PolyFillArc
 class ShapeOps {
 public:
-  ShapeOps(XProtoServerState& state, XProtoRequestContext& ctx)
-  : state_(state), ctx_(ctx) {}
-
-  // PolyFillRectangle (major = 70) — no reply
-  void handlePolyFillRectangle(int clientFd, uint16_t seq,
-                               const uint8_t* payload, std::size_t len);
-
-  // PolyFillArc (major = 71) — no reply
-  void handlePolyFillArc(int clientFd, uint16_t seq,
-                         const uint8_t* payload, std::size_t len);
+  explicit ShapeOps(XProtoRegistrar& reg);
 
 private:
-  XProtoServerState& state_;
-  XProtoRequestContext& ctx_;
+  static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
+  void handle(XProtoContext& ctx, DispatchContext& dc);
+
+  void handlePolyArc(XProtoContext& ctx, uint16_t seq, ByteReader& br);        // 68
+  void handlePolyFillRectangle(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 70 (stub)
+  void handlePolyFillArc(XProtoContext& ctx, uint16_t seq, ByteReader& br);    // 71
 };
+
+} // namespace x11

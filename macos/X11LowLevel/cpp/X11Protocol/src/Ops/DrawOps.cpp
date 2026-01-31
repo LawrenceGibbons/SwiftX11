@@ -15,6 +15,8 @@
 #include "PixmapTable.hpp"   // adjust include path to your project
 #include "WindowTable.hpp"
 #include "GCTable.hpp"
+#include "DrawableRW.hpp"
+#include "DrawOps.hpp"
 
 // temporary
 #include "XProtoServerBridge.h"
@@ -54,72 +56,6 @@ uint32_t DrawOps::computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits) {
 }
   
   
-  struct DrawableRW {
-    bool is_window = false;
-
-    // 32bpp destination
-    uint32_t* pixels32 = nullptr;
-
-    // 1bpp destination
-    uint8_t* bits1 = nullptr;
-    uint32_t stride_bytes = 0;
-
-    uint32_t w = 0;
-    uint32_t h = 0;
-  };
-
-  static bool resolveDrawableRW(XProtoContext& ctx,
-                                uint32_t drawable,
-                                DrawableRW& out)
-  {
-    // ----------------------------
-    // 1) Pixmap (C++ authoritative)
-    // ----------------------------
-    {
-      uint16_t w16 = 0, h16 = 0;
-
-      if (uint32_t* px = ctx.pixmaps().mutablePixels(drawable, &w16, &h16)) {
-        out.is_window = false;
-        out.pixels32 = px;
-        out.bits1 = nullptr;
-        out.stride_bytes = 0;
-        out.w = w16;
-        out.h = h16;
-        return true;
-      }
-
-      uint32_t stride = 0;
-      if (uint8_t* bits = ctx.pixmaps().mutableBits(drawable, &w16, &h16, &stride)) {
-        out.is_window = false;
-        out.pixels32 = nullptr;
-        out.bits1 = bits;
-        out.stride_bytes = stride;
-        out.w = w16;
-        out.h = h16;
-        return true;
-      }
-    }
-
-    // -----------------------------------
-    // 2) Window framebuffer (C-side store)
-    // -----------------------------------
-    {
-      uint32_t* px = nullptr;
-      uint32_t w = 0, h = 0;
-
-      if (x11_xproto_window_fb_rw(drawable, &px, &w, &h)) {
-        out.is_window = true;
-        out.pixels32 = px;
-        out.bits1 = nullptr;
-        out.stride_bytes = 0;
-        out.w = w;
-        out.h = h;
-        return true;
-      }
-    }
-
-    return false;
-  }
 
   
   static inline int clampi(int v, int lo, int hi) {
