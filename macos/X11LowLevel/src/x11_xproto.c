@@ -2950,390 +2950,390 @@ static int resolve_drawable_pixels_rw(uint32_t drawable,
 // Minimal stroke implementation (xeyes uses this for eye outlines).
 // Draws a ~1px outline of each ellipse/arc using GC foreground.
 // Angle clipping is honored for non-full arcs.
-static void handle_PolyArc(int fd, uint16_t seq,
-                           const uint8_t* payload, size_t remain)
-{
-  (void)fd;
-  (void)seq;
+//static void handle_PolyArc(int fd, uint16_t seq,
+//                           const uint8_t* payload, size_t remain)
+//{
+//  (void)fd;
+//  (void)seq;
+//
+//  // Body after 4-byte header:
+//  //   CARD32 drawable
+//  //   CARD32 gc
+//  //   LISTofxArc arcs (each 12 bytes)
+//  if (remain < 8) return;
+//
+//  const uint32_t drawable = rd32(payload + 0);
+//  const uint32_t gc_id    = rd32(payload + 4);
+//
+//#ifndef NDEBUG
+//  {
+//    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
+//    const size_t narcs = list_bytes / 12u;
+//    uint32_t dbg_fg = 0xFF000000u;
+//    uint32_t dbg_bg = 0xFFFFFFFFu;
+//    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
+//
+//    fprintf(stderr,
+//            "[SwiftX11] PolyArc: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X narcs=%zu remain=%zu\n",
+//            (unsigned)drawable,
+//            (unsigned)gc_id,
+//            dbg_found ? 1 : 0,
+//            (unsigned)dbg_fg,
+//            (unsigned)dbg_bg,
+//            narcs,
+//            remain);  }
+//#endif
+//
+//  // Resolve destination buffer (window fb OR pixmap)
+//  uint32_t *dstPixels = NULL;
+//  uint32_t dstW = 0, dstH = 0;
+//  bool dst_is_window = false;
+//  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
+//
+//  const size_t list_bytes = remain - 8u;
+//  const size_t narcs = list_bytes / 12u;
+//  if (narcs == 0) return;
+//
+//  // GC foreground (authoritative in C++): pull fg via bridge.
+//  uint32_t fg_color = 0xFF000000u;
+//  uint32_t tmp_bg   = 0xFFFFFFFFu;
+//  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
+//  
+//  const uint8_t* arcs = payload + 8;
+//
+//  for (size_t ai = 0; ai < narcs; ai++) {
+//    const uint8_t* ap = arcs + ai * 12u;
+//
+//    // xArc is: INT16 x, INT16 y, CARD16 width, CARD16 height, INT16 angle1, INT16 angle2
+//    const int16_t  ax = (int16_t)rd16(ap + 0);
+//    const int16_t  ay = (int16_t)rd16(ap + 2);
+//    const uint16_t aw = rd16(ap + 4);
+//    const uint16_t ah = rd16(ap + 6);
+//    const int16_t  a1 = (int16_t)rd16(ap + 8);
+//    const int16_t  a2 = (int16_t)rd16(ap + 10);
+//
+//    if (aw == 0 || ah == 0) continue;
+//
+//    // X11 angles are in 1/64 degrees
+//    const float start_deg  = (float)a1 / 64.0f;
+//    const float extent_deg = (float)a2 / 64.0f;
+//
+//    const float abs_extent = fabsf(extent_deg);
+//    const int full_ellipse = (abs_extent >= (360.0f - (1.0f / 64.0f)));
+//
+//    // Ellipse center/radii
+//    const float rx = (float)aw * 0.5f;
+//    const float ry = (float)ah * 0.5f;
+//    if (rx <= 0.0f || ry <= 0.0f) continue;
+//
+//    const float cx = (float)ax + rx;
+//    const float cy = (float)ay + ry;
+//
+//    // Clamp bounding box
+//    int x0 = ax;
+//    int y0 = ay;
+//    int x1 = ax + (int)aw; // exclusive
+//    int y1 = ay + (int)ah; // exclusive
+//    if (x0 < 0) x0 = 0;
+//    if (y0 < 0) y0 = 0;
+//    if (x1 > (int)dstW)  x1 = (int)dstW;
+//    if (y1 > (int)dstH)  y1 = (int)dstH;
+//    if (x0 >= x1 || y0 >= y1) continue;
+//
+//    // A thin band around the ellipse boundary.
+//    // Use epsilon in normalized space so thickness is ~1 pixel.
+//    const float eps = fmaxf(1.0f / fmaxf(rx, 1.0f), 1.0f / fmaxf(ry, 1.0f));
+//
+//    for (int py = y0; py < y1; py++) {
+//      const float ny = ((float)py + 0.5f - cy) / ry;
+//
+//      for (int px = x0; px < x1; px++) {
+//        const float nx = ((float)px + 0.5f - cx) / rx;
+//        const float d2 = nx*nx + ny*ny;
+//
+//        // Keep only pixels near boundary
+//        const float dist = fabsf(d2 - 1.0f);
+//        if (dist > eps) continue;
+//
+//        if (!full_ellipse) {
+//          const float dx = (float)px + 0.5f - cx;
+//          const float dy = (float)py + 0.5f - cy;
+//          float theta = atan2f(-dy, dx) * (180.0f / (float)M_PI);
+//          theta = norm360(theta);
+//          if (!angle_in_arc(theta, start_deg, extent_deg)) continue;
+//        }
+//
+//        dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg_color;
+//      }
+//    }
+//  }
+//
+//  if (dst_is_window) {
+//    enqueue_damage_window(drawable);
+//  }
+//}
 
-  // Body after 4-byte header:
-  //   CARD32 drawable
-  //   CARD32 gc
-  //   LISTofxArc arcs (each 12 bytes)
-  if (remain < 8) return;
 
-  const uint32_t drawable = rd32(payload + 0);
-  const uint32_t gc_id    = rd32(payload + 4);
-
-#ifndef NDEBUG
-  {
-    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
-    const size_t narcs = list_bytes / 12u;
-    uint32_t dbg_fg = 0xFF000000u;
-    uint32_t dbg_bg = 0xFFFFFFFFu;
-    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
-
-    fprintf(stderr,
-            "[SwiftX11] PolyArc: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X narcs=%zu remain=%zu\n",
-            (unsigned)drawable,
-            (unsigned)gc_id,
-            dbg_found ? 1 : 0,
-            (unsigned)dbg_fg,
-            (unsigned)dbg_bg,
-            narcs,
-            remain);  }
-#endif
-
-  // Resolve destination buffer (window fb OR pixmap)
-  uint32_t *dstPixels = NULL;
-  uint32_t dstW = 0, dstH = 0;
-  bool dst_is_window = false;
-  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
-
-  const size_t list_bytes = remain - 8u;
-  const size_t narcs = list_bytes / 12u;
-  if (narcs == 0) return;
-
-  // GC foreground (authoritative in C++): pull fg via bridge.
-  uint32_t fg_color = 0xFF000000u;
-  uint32_t tmp_bg   = 0xFFFFFFFFu;
-  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
-  
-  const uint8_t* arcs = payload + 8;
-
-  for (size_t ai = 0; ai < narcs; ai++) {
-    const uint8_t* ap = arcs + ai * 12u;
-
-    // xArc is: INT16 x, INT16 y, CARD16 width, CARD16 height, INT16 angle1, INT16 angle2
-    const int16_t  ax = (int16_t)rd16(ap + 0);
-    const int16_t  ay = (int16_t)rd16(ap + 2);
-    const uint16_t aw = rd16(ap + 4);
-    const uint16_t ah = rd16(ap + 6);
-    const int16_t  a1 = (int16_t)rd16(ap + 8);
-    const int16_t  a2 = (int16_t)rd16(ap + 10);
-
-    if (aw == 0 || ah == 0) continue;
-
-    // X11 angles are in 1/64 degrees
-    const float start_deg  = (float)a1 / 64.0f;
-    const float extent_deg = (float)a2 / 64.0f;
-
-    const float abs_extent = fabsf(extent_deg);
-    const int full_ellipse = (abs_extent >= (360.0f - (1.0f / 64.0f)));
-
-    // Ellipse center/radii
-    const float rx = (float)aw * 0.5f;
-    const float ry = (float)ah * 0.5f;
-    if (rx <= 0.0f || ry <= 0.0f) continue;
-
-    const float cx = (float)ax + rx;
-    const float cy = (float)ay + ry;
-
-    // Clamp bounding box
-    int x0 = ax;
-    int y0 = ay;
-    int x1 = ax + (int)aw; // exclusive
-    int y1 = ay + (int)ah; // exclusive
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > (int)dstW)  x1 = (int)dstW;
-    if (y1 > (int)dstH)  y1 = (int)dstH;
-    if (x0 >= x1 || y0 >= y1) continue;
-
-    // A thin band around the ellipse boundary.
-    // Use epsilon in normalized space so thickness is ~1 pixel.
-    const float eps = fmaxf(1.0f / fmaxf(rx, 1.0f), 1.0f / fmaxf(ry, 1.0f));
-
-    for (int py = y0; py < y1; py++) {
-      const float ny = ((float)py + 0.5f - cy) / ry;
-
-      for (int px = x0; px < x1; px++) {
-        const float nx = ((float)px + 0.5f - cx) / rx;
-        const float d2 = nx*nx + ny*ny;
-
-        // Keep only pixels near boundary
-        const float dist = fabsf(d2 - 1.0f);
-        if (dist > eps) continue;
-
-        if (!full_ellipse) {
-          const float dx = (float)px + 0.5f - cx;
-          const float dy = (float)py + 0.5f - cy;
-          float theta = atan2f(-dy, dx) * (180.0f / (float)M_PI);
-          theta = norm360(theta);
-          if (!angle_in_arc(theta, start_deg, extent_deg)) continue;
-        }
-
-        dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg_color;
-      }
-    }
-  }
-
-  if (dst_is_window) {
-    enqueue_damage_window(drawable);
-  }
-}
-
-
-// PolyFillRectangle (major = 70)
-static void handle_PolyFillRectangle(int fd, uint16_t seq,
-                                     const uint8_t* payload, size_t remain)
-{
-  // Body after 4-byte header:
-  //   CARD32 drawable
-  //   CARD32 gc
-  //   LISTofxRectangle rectangles (each 8 bytes)
-  if (remain < 8) return;
-
-  uint32_t drawable = rd32(payload + 0);
-  uint32_t gc_id    = rd32(payload + 4);
-
-#ifndef NDEBUG
-  size_t dbg_written = 0;
-  {
-    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
-    const size_t nrects = list_bytes / 8u;
-    uint32_t dbg_fg = 0xFF000000u;
-    uint32_t dbg_bg = 0xFFFFFFFFu;
-    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
-
-    fprintf(stderr,
-            "[SwiftX11] PolyFillRectangle: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X nrects=%zu remain=%zu\n",
-            (unsigned)drawable,
-            (unsigned)gc_id,
-            dbg_found ? 1 : 0,
-            (unsigned)dbg_fg,
-            (unsigned)dbg_bg,
-            nrects,
-            remain);
-  }
-#endif
-
-  // Resolve destination buffer (window fb OR pixmap)
-  uint32_t *dstPixels = NULL;
-  uint32_t dstW = 0, dstH = 0;
-  bool dst_is_window = false;
-  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
-
-  // GC foreground (authoritative in C++): pull fg via bridge.
-  uint32_t fg_color = 0xFF000000u;
-  uint32_t tmp_bg   = 0xFFFFFFFFu;
-  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
-  
-  // Each rectangle is 8 bytes: x, y, width, height
-  const uint8_t* rects = payload + 8;
-  size_t nrects = (remain - 8) / 8;
-
-  for (size_t ri = 0; ri < nrects; ri++) {
-    int16_t x = (int16_t)rd16(rects + ri*8 + 0);
-    int16_t y = (int16_t)rd16(rects + ri*8 + 2);
-    uint16_t w_px = rd16(rects + ri*8 + 4);
-    uint16_t h_px = rd16(rects + ri*8 + 6);
-
-    for (int yy = 0; yy < h_px; yy++) {
-      int row = y + yy;
-      if (row < 0 || (uint32_t)row >= dstH) continue;
-      for (int xx = 0; xx < w_px; xx++) {
-        int col = x + xx;
-        if (col < 0 || (uint32_t)col >= dstW) continue;
-        const size_t idxp = (size_t)row * (size_t)dstW + (size_t)col;
-        if (dstPixels[idxp] != fg_color) {
-          dstPixels[idxp] = fg_color;
-#ifndef NDEBUG
-          dbg_written++;
-#endif
-        }
-      }
-    }
-  }
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] PolyFillRectangle: wrote_pixels=%zu (fg=0x%08X)\n",
-          dbg_written, (unsigned)fg_color);
-#endif
-
-  // Notify UI shim only if the drawable is a window.
-  if (dst_is_window) {
-    enqueue_damage_window(drawable);
-  }
-}
+//// PolyFillRectangle (major = 70)
+//static void handle_PolyFillRectangle(int fd, uint16_t seq,
+//                                     const uint8_t* payload, size_t remain)
+//{
+//  // Body after 4-byte header:
+//  //   CARD32 drawable
+//  //   CARD32 gc
+//  //   LISTofxRectangle rectangles (each 8 bytes)
+//  if (remain < 8) return;
+//
+//  uint32_t drawable = rd32(payload + 0);
+//  uint32_t gc_id    = rd32(payload + 4);
+//
+//#ifndef NDEBUG
+//  size_t dbg_written = 0;
+//  {
+//    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
+//    const size_t nrects = list_bytes / 8u;
+//    uint32_t dbg_fg = 0xFF000000u;
+//    uint32_t dbg_bg = 0xFFFFFFFFu;
+//    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
+//
+//    fprintf(stderr,
+//            "[SwiftX11] PolyFillRectangle: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X nrects=%zu remain=%zu\n",
+//            (unsigned)drawable,
+//            (unsigned)gc_id,
+//            dbg_found ? 1 : 0,
+//            (unsigned)dbg_fg,
+//            (unsigned)dbg_bg,
+//            nrects,
+//            remain);
+//  }
+//#endif
+//
+//  // Resolve destination buffer (window fb OR pixmap)
+//  uint32_t *dstPixels = NULL;
+//  uint32_t dstW = 0, dstH = 0;
+//  bool dst_is_window = false;
+//  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
+//
+//  // GC foreground (authoritative in C++): pull fg via bridge.
+//  uint32_t fg_color = 0xFF000000u;
+//  uint32_t tmp_bg   = 0xFFFFFFFFu;
+//  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
+//  
+//  // Each rectangle is 8 bytes: x, y, width, height
+//  const uint8_t* rects = payload + 8;
+//  size_t nrects = (remain - 8) / 8;
+//
+//  for (size_t ri = 0; ri < nrects; ri++) {
+//    int16_t x = (int16_t)rd16(rects + ri*8 + 0);
+//    int16_t y = (int16_t)rd16(rects + ri*8 + 2);
+//    uint16_t w_px = rd16(rects + ri*8 + 4);
+//    uint16_t h_px = rd16(rects + ri*8 + 6);
+//
+//    for (int yy = 0; yy < h_px; yy++) {
+//      int row = y + yy;
+//      if (row < 0 || (uint32_t)row >= dstH) continue;
+//      for (int xx = 0; xx < w_px; xx++) {
+//        int col = x + xx;
+//        if (col < 0 || (uint32_t)col >= dstW) continue;
+//        const size_t idxp = (size_t)row * (size_t)dstW + (size_t)col;
+//        if (dstPixels[idxp] != fg_color) {
+//          dstPixels[idxp] = fg_color;
+//#ifndef NDEBUG
+//          dbg_written++;
+//#endif
+//        }
+//      }
+//    }
+//  }
+//
+//#ifndef NDEBUG
+//  fprintf(stderr, "[SwiftX11] PolyFillRectangle: wrote_pixels=%zu (fg=0x%08X)\n",
+//          dbg_written, (unsigned)fg_color);
+//#endif
+//
+//  // Notify UI shim only if the drawable is a window.
+//  if (dst_is_window) {
+//    enqueue_damage_window(drawable);
+//  }
+//}
 
 
 // PolyFillArc (major = 71) -- no reply
-static void handle_PolyFillArc(int fd, uint16_t seq,
-                               const uint8_t* payload, size_t remain)
-{
-  (void)fd;
-  (void)seq;
-
-  // Body after 4-byte header:
-  //   CARD32 drawable
-  //   CARD32 gc
-  //   LISTofxArc arcs (each 12 bytes)
-  if (remain < 8) return;
-
-  const uint32_t drawable = rd32(payload + 0);
-  const uint32_t gc_id    = rd32(payload + 4);
-  (void)gc_id;
-
-#ifndef NDEBUG
-  size_t dbg_written = 0;
-  size_t dbg_inside = 0;
-  size_t dbg_angle_reject = 0;
-  {
-    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
-    const size_t narcs = list_bytes / 12u;
-    uint32_t dbg_fg = 0xFF000000u;
-    uint32_t dbg_bg = 0xFFFFFFFFu;
-    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
-
-    fprintf(stderr,
-            "[SwiftX11] PolyFillArc: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X narcs=%zu remain=%zu\n",
-            (unsigned)drawable,
-            (unsigned)gc_id,
-            dbg_found ? 1 : 0,
-            (unsigned)dbg_fg,
-            (unsigned)dbg_bg,
-            narcs,
-            remain);  }
-#endif
-
-  // Resolve destination buffer (window fb OR pixmap)
-  uint32_t *dstPixels = NULL;
-  uint32_t dstW = 0, dstH = 0;
-  bool dst_is_window = false;
-  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
-
-  const size_t list_bytes = remain - 8u;
-  const size_t narcs = list_bytes / 12u;
-  if (narcs == 0) return;
-
-  // GC foreground (authoritative in C++): pull fg via bridge.
-  uint32_t fg_color = 0xFF000000u;
-  uint32_t tmp_bg   = 0xFFFFFFFFu;
-  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
-  
-  const uint8_t* arcs = payload + 8;
-
-  for (size_t ai = 0; ai < narcs; ai++) {
-    const uint8_t* ap = arcs + ai * 12u;
-
-    // xArc is: INT16 x, INT16 y, CARD16 width, CARD16 height, INT16 angle1, INT16 angle2
-    const int16_t  ax = (int16_t)rd16(ap + 0);
-    const int16_t  ay = (int16_t)rd16(ap + 2);
-    const uint16_t aw = rd16(ap + 4);
-    const uint16_t ah = rd16(ap + 6);
-    const int16_t  a1 = (int16_t)rd16(ap + 8);
-    const int16_t  a2 = (int16_t)rd16(ap + 10);
-#ifndef NDEBUG
-    fprintf(stderr,
-            "[SwiftX11]   Arc[%zu]: xy=(%d,%d) wh=(%u,%u) a1=%d a2=%d\n",
-            ai,
-            (int)ax, (int)ay,
-            (unsigned)aw, (unsigned)ah,
-            (int)a1, (int)a2);
-#endif
-    if (aw == 0 || ah == 0) continue;
-
-    // X11 angles are in 1/64 degrees
-    const float start_deg  = (float)a1 / 64.0f;
-    const float extent_deg = (float)a2 / 64.0f;
-
-    // Treat ~full-circle extents as “fill entire ellipse”
-    const float abs_extent = fabsf(extent_deg);
-    // X11 uses degrees*64. Treat anything within 1/64 degree of a full circle as full.
-    const int full_ellipse = (abs_extent >= (360.0f - (1.0f / 64.0f)));
-
-    // Ellipse center/radii (float for coverage & angle math)
-    const float rx = (float)aw * 0.5f;
-    const float ry = (float)ah * 0.5f;
-    if (rx <= 0.0f || ry <= 0.0f) continue;
-
-    const float cx = (float)ax + rx;
-    const float cy = (float)ay + ry;
-
-    // Clamp bounding box to framebuffer
-    int x0 = ax;
-    int y0 = ay;
-    int x1 = ax + (int)aw; // exclusive
-    int y1 = ay + (int)ah; // exclusive
-
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > (int)dstW)  x1 = (int)dstW;
-    if (y1 > (int)dstH) y1 = (int)dstH;
-
-    if (x0 >= x1 || y0 >= y1) continue;
-
-#ifndef NDEBUG
-    fprintf(stderr,
-            "[SwiftX11]   Arc[%zu] bbox=(%d,%d)..(%d,%d) fb=%ux%u full=%d start=%.2f extent=%.2f\n",
-            ai, x0, y0, x1, y1, (unsigned)dstW, (unsigned)dstH,
-            full_ellipse, (double)start_deg, (double)extent_deg);
-#endif
-#ifndef NDEBUG
-    {
-      int sx = (int)cx;
-      int sy = (int)cy;
-      if (sx >= 0 && sy >= 0 && sx < (int)dstW && sy < (int)dstH) {
-        uint32_t sp = dstPixels[(size_t)sy * (size_t)dstW + (size_t)sx];
-        fprintf(stderr, "[SwiftX11]   Arc[%zu] sample@center (%d,%d) before=0x%08X\n",
-                ai, sx, sy, (unsigned)sp);
-      }
-    }
-#endif
-
-    // Rasterize: test ellipse + optional angle wedge
-    for (int py = y0; py < y1; py++) {
-      // sample at pixel center
-      const float yf = ((float)py + 0.5f - cy) / ry;
-
-      for (int px = x0; px < x1; px++) {
-        const float xf = ((float)px + 0.5f - cx) / rx;
-
-        // inside ellipse?
-        const float d2 = xf*xf + yf*yf;
-        if (d2 > 1.0f) continue;
-#ifndef NDEBUG
-        dbg_inside++;
-#endif
-
-        if (!full_ellipse) {
-          // Compute angle in X11 convention:
-          // +x is 0 degrees; CCW positive.
-          // Since framebuffer Y grows downward, use -(dy) to convert to math coords.
-          const float dx = (float)px + 0.5f - cx;
-          const float dy = (float)py + 0.5f - cy;
-
-          float theta = atan2f(-dy, dx) * (180.0f / (float)M_PI);
-          theta = norm360(theta);
-
-          if (!angle_in_arc(theta, start_deg, extent_deg)) {
-#ifndef NDEBUG
-            dbg_angle_reject++;
-#endif
-            continue;
-          }
-        }
-
-        const size_t idxp = (size_t)py * (size_t)dstW + (size_t)px;
-#ifndef NDEBUG
-        if (dstPixels[idxp] != fg_color) dbg_written++;
-#endif
-        dstPixels[idxp] = fg_color;
-      }
-    }
-  }
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] PolyFillArc: changed_pixels=%zu inside_ellipse=%zu angle_reject=%zu (fg=0x%08X)\n",
-          dbg_written, dbg_inside, dbg_angle_reject, (unsigned)fg_color);
-#endif
-
-  if (dst_is_window) {
-    enqueue_damage_window(drawable);
-  }
-}
+//static void handle_PolyFillArc(int fd, uint16_t seq,
+//                               const uint8_t* payload, size_t remain)
+//{
+//  (void)fd;
+//  (void)seq;
+//
+//  // Body after 4-byte header:
+//  //   CARD32 drawable
+//  //   CARD32 gc
+//  //   LISTofxArc arcs (each 12 bytes)
+//  if (remain < 8) return;
+//
+//  const uint32_t drawable = rd32(payload + 0);
+//  const uint32_t gc_id    = rd32(payload + 4);
+//  (void)gc_id;
+//
+//#ifndef NDEBUG
+//  size_t dbg_written = 0;
+//  size_t dbg_inside = 0;
+//  size_t dbg_angle_reject = 0;
+//  {
+//    const size_t list_bytes = (remain >= 8u) ? (remain - 8u) : 0u;
+//    const size_t narcs = list_bytes / 12u;
+//    uint32_t dbg_fg = 0xFF000000u;
+//    uint32_t dbg_bg = 0xFFFFFFFFu;
+//    const int dbg_found = x11_proto_bridge_gc_get(gc_id, &dbg_fg, &dbg_bg);
+//
+//    fprintf(stderr,
+//            "[SwiftX11] PolyFillArc: drawable=0x%08X gc=0x%08X gc_found=%d fg=0x%08X bg=0x%08X narcs=%zu remain=%zu\n",
+//            (unsigned)drawable,
+//            (unsigned)gc_id,
+//            dbg_found ? 1 : 0,
+//            (unsigned)dbg_fg,
+//            (unsigned)dbg_bg,
+//            narcs,
+//            remain);  }
+//#endif
+//
+//  // Resolve destination buffer (window fb OR pixmap)
+//  uint32_t *dstPixels = NULL;
+//  uint32_t dstW = 0, dstH = 0;
+//  bool dst_is_window = false;
+//  if (!resolve_drawable_pixels_rw(drawable, &dstPixels, &dstW, &dstH, &dst_is_window)) return;
+//
+//  const size_t list_bytes = remain - 8u;
+//  const size_t narcs = list_bytes / 12u;
+//  if (narcs == 0) return;
+//
+//  // GC foreground (authoritative in C++): pull fg via bridge.
+//  uint32_t fg_color = 0xFF000000u;
+//  uint32_t tmp_bg   = 0xFFFFFFFFu;
+//  (void)x11_proto_bridge_gc_get(gc_id, &fg_color, &tmp_bg);
+//  
+//  const uint8_t* arcs = payload + 8;
+//
+//  for (size_t ai = 0; ai < narcs; ai++) {
+//    const uint8_t* ap = arcs + ai * 12u;
+//
+//    // xArc is: INT16 x, INT16 y, CARD16 width, CARD16 height, INT16 angle1, INT16 angle2
+//    const int16_t  ax = (int16_t)rd16(ap + 0);
+//    const int16_t  ay = (int16_t)rd16(ap + 2);
+//    const uint16_t aw = rd16(ap + 4);
+//    const uint16_t ah = rd16(ap + 6);
+//    const int16_t  a1 = (int16_t)rd16(ap + 8);
+//    const int16_t  a2 = (int16_t)rd16(ap + 10);
+//#ifndef NDEBUG
+//    fprintf(stderr,
+//            "[SwiftX11]   Arc[%zu]: xy=(%d,%d) wh=(%u,%u) a1=%d a2=%d\n",
+//            ai,
+//            (int)ax, (int)ay,
+//            (unsigned)aw, (unsigned)ah,
+//            (int)a1, (int)a2);
+//#endif
+//    if (aw == 0 || ah == 0) continue;
+//
+//    // X11 angles are in 1/64 degrees
+//    const float start_deg  = (float)a1 / 64.0f;
+//    const float extent_deg = (float)a2 / 64.0f;
+//
+//    // Treat ~full-circle extents as “fill entire ellipse”
+//    const float abs_extent = fabsf(extent_deg);
+//    // X11 uses degrees*64. Treat anything within 1/64 degree of a full circle as full.
+//    const int full_ellipse = (abs_extent >= (360.0f - (1.0f / 64.0f)));
+//
+//    // Ellipse center/radii (float for coverage & angle math)
+//    const float rx = (float)aw * 0.5f;
+//    const float ry = (float)ah * 0.5f;
+//    if (rx <= 0.0f || ry <= 0.0f) continue;
+//
+//    const float cx = (float)ax + rx;
+//    const float cy = (float)ay + ry;
+//
+//    // Clamp bounding box to framebuffer
+//    int x0 = ax;
+//    int y0 = ay;
+//    int x1 = ax + (int)aw; // exclusive
+//    int y1 = ay + (int)ah; // exclusive
+//
+//    if (x0 < 0) x0 = 0;
+//    if (y0 < 0) y0 = 0;
+//    if (x1 > (int)dstW)  x1 = (int)dstW;
+//    if (y1 > (int)dstH) y1 = (int)dstH;
+//
+//    if (x0 >= x1 || y0 >= y1) continue;
+//
+//#ifndef NDEBUG
+//    fprintf(stderr,
+//            "[SwiftX11]   Arc[%zu] bbox=(%d,%d)..(%d,%d) fb=%ux%u full=%d start=%.2f extent=%.2f\n",
+//            ai, x0, y0, x1, y1, (unsigned)dstW, (unsigned)dstH,
+//            full_ellipse, (double)start_deg, (double)extent_deg);
+//#endif
+//#ifndef NDEBUG
+//    {
+//      int sx = (int)cx;
+//      int sy = (int)cy;
+//      if (sx >= 0 && sy >= 0 && sx < (int)dstW && sy < (int)dstH) {
+//        uint32_t sp = dstPixels[(size_t)sy * (size_t)dstW + (size_t)sx];
+//        fprintf(stderr, "[SwiftX11]   Arc[%zu] sample@center (%d,%d) before=0x%08X\n",
+//                ai, sx, sy, (unsigned)sp);
+//      }
+//    }
+//#endif
+//
+//    // Rasterize: test ellipse + optional angle wedge
+//    for (int py = y0; py < y1; py++) {
+//      // sample at pixel center
+//      const float yf = ((float)py + 0.5f - cy) / ry;
+//
+//      for (int px = x0; px < x1; px++) {
+//        const float xf = ((float)px + 0.5f - cx) / rx;
+//
+//        // inside ellipse?
+//        const float d2 = xf*xf + yf*yf;
+//        if (d2 > 1.0f) continue;
+//#ifndef NDEBUG
+//        dbg_inside++;
+//#endif
+//
+//        if (!full_ellipse) {
+//          // Compute angle in X11 convention:
+//          // +x is 0 degrees; CCW positive.
+//          // Since framebuffer Y grows downward, use -(dy) to convert to math coords.
+//          const float dx = (float)px + 0.5f - cx;
+//          const float dy = (float)py + 0.5f - cy;
+//
+//          float theta = atan2f(-dy, dx) * (180.0f / (float)M_PI);
+//          theta = norm360(theta);
+//
+//          if (!angle_in_arc(theta, start_deg, extent_deg)) {
+//#ifndef NDEBUG
+//            dbg_angle_reject++;
+//#endif
+//            continue;
+//          }
+//        }
+//
+//        const size_t idxp = (size_t)py * (size_t)dstW + (size_t)px;
+//#ifndef NDEBUG
+//        if (dstPixels[idxp] != fg_color) dbg_written++;
+//#endif
+//        dstPixels[idxp] = fg_color;
+//      }
+//    }
+//  }
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] PolyFillArc: changed_pixels=%zu inside_ellipse=%zu angle_reject=%zu (fg=0x%08X)\n",
+//          dbg_written, dbg_inside, dbg_angle_reject, (unsigned)fg_color);
+//#endif
+//
+//  if (dst_is_window) {
+//    enqueue_damage_window(drawable);
+//  }
+//}
 
 
 
@@ -3353,67 +3353,67 @@ static void dbg_dump_req(const char* tag,
 #endif
 
 
-// ClearArea (major = 61) -- no reply, but may generate Expose events if exposures==true
-static void handle_ClearArea(int fd, uint16_t seq, uint8_t exposures,
-                            const uint8_t* payload, size_t remain)
-{
-  if (remain < 12) return;
-
-  const uint32_t wid = rd32(payload + 0);
-  const int16_t  x   = (int16_t)rd16(payload + 4);
-  const int16_t  y   = (int16_t)rd16(payload + 6);
-  const uint16_t wpx = rd16(payload + 8);
-  const uint16_t hpx = rd16(payload + 10);
-
-  x11_win_t* w = win_find(wid);
-  if (!w) return;
-
-  const ssize_t idx = win_index(wid);
-  if (idx < 0) return;
-
-  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-  if (!fb->pixels) return;
-
-  // X11 semantics: width/height == 0 means “to the bottom/right edge”
-  int x0 = (int)x;
-  int y0 = (int)y;
-
-  int x1 = (wpx == 0) ? (int)fb->width  : (x0 + (int)wpx);
-  int y1 = (hpx == 0) ? (int)fb->height : (y0 + (int)hpx);
-
-  // Clamp
-  if (x0 < 0) x0 = 0;
-  if (y0 < 0) y0 = 0;
-  if (x1 > (int)fb->width)  x1 = (int)fb->width;
-  if (y1 > (int)fb->height) y1 = (int)fb->height;
-
-  if (x0 < x1 && y0 < y1) {
-    const uint32_t bg = 0xFFFFFFFFu; // opaque white background (minimal)
-    for (int yy = y0; yy < y1; yy++) {
-      uint32_t* row = fb->pixels + (size_t)yy * (size_t)fb->width;
-      for (int xx = x0; xx < x1; xx++) {
-        row[xx] = bg;
-      }
-    }
-
-    // Mark window damaged (so your shim presents updated pixels)
-    enqueue_damage_window(wid);
-  }
-
-  // If exposures==true and the client selected ExposureMask, send Expose
-//  if (exposures && w->mapped && (w->event_mask & (1u << 15))) {
-//    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
+//// ClearArea (major = 61) -- no reply, but may generate Expose events if exposures==true
+//static void handle_ClearArea(int fd, uint16_t seq, uint8_t exposures,
+//                            const uint8_t* payload, size_t remain)
+//{
+//  if (remain < 12) return;
+//
+//  const uint32_t wid = rd32(payload + 0);
+//  const int16_t  x   = (int16_t)rd16(payload + 4);
+//  const int16_t  y   = (int16_t)rd16(payload + 6);
+//  const uint16_t wpx = rd16(payload + 8);
+//  const uint16_t hpx = rd16(payload + 10);
+//
+//  x11_win_t* w = win_find(wid);
+//  if (!w) return;
+//
+//  const ssize_t idx = win_index(wid);
+//  if (idx < 0) return;
+//
+//  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
+//  if (!fb->pixels) return;
+//
+//  // X11 semantics: width/height == 0 means “to the bottom/right edge”
+//  int x0 = (int)x;
+//  int y0 = (int)y;
+//
+//  int x1 = (wpx == 0) ? (int)fb->width  : (x0 + (int)wpx);
+//  int y1 = (hpx == 0) ? (int)fb->height : (y0 + (int)hpx);
+//
+//  // Clamp
+//  if (x0 < 0) x0 = 0;
+//  if (y0 < 0) y0 = 0;
+//  if (x1 > (int)fb->width)  x1 = (int)fb->width;
+//  if (y1 > (int)fb->height) y1 = (int)fb->height;
+//
+//  if (x0 < x1 && y0 < y1) {
+//    const uint32_t bg = 0xFFFFFFFFu; // opaque white background (minimal)
+//    for (int yy = y0; yy < y1; yy++) {
+//      uint32_t* row = fb->pixels + (size_t)yy * (size_t)fb->width;
+//      for (int xx = x0; xx < x1; xx++) {
+//        row[xx] = bg;
+//      }
+//    }
+//
+//    // Mark window damaged (so your shim presents updated pixels)
+//    enqueue_damage_window(wid);
 //  }
-  if (exposures && w->mapped && (w->event_mask & (1u << 15))) {
-    // Expose wants unsigned coords; clamp to 0
-    uint16_t ex = (x0 < 0) ? 0u : (uint16_t)x0;
-    uint16_t ey = (y0 < 0) ? 0u : (uint16_t)y0;
-    uint16_t ew = (uint16_t)(x1 - x0);
-    uint16_t eh = (uint16_t)(y1 - y0);
-    //send_Expose(fd, seq, wid, ex, ey, ew, eh, 0);
-    x11_proto_bridge_queue_expose_rect(wid, ex, ey, ew, eh, 0);
-  }
-}
+//
+//  // If exposures==true and the client selected ExposureMask, send Expose
+////  if (exposures && w->mapped && (w->event_mask & (1u << 15))) {
+////    x11_proto_bridge_queue_notify(wid, 0 /*want_cfg*/, 1 /*want_exp*/);
+////  }
+//  if (exposures && w->mapped && (w->event_mask & (1u << 15))) {
+//    // Expose wants unsigned coords; clamp to 0
+//    uint16_t ex = (x0 < 0) ? 0u : (uint16_t)x0;
+//    uint16_t ey = (y0 < 0) ? 0u : (uint16_t)y0;
+//    uint16_t ew = (uint16_t)(x1 - x0);
+//    uint16_t eh = (uint16_t)(y1 - y0);
+//    //send_Expose(fd, seq, wid, ex, ey, ew, eh, 0);
+//    x11_proto_bridge_queue_expose_rect(wid, ex, ey, ew, eh, 0);
+//  }
+//}
 
 // ----------------------------------------------------------------------------
 // Swift-side server to X11
@@ -3528,9 +3528,9 @@ if (major >= 128) {
       
       switch (major) {
           
-        case 61: // ClearArea (no reply; may generate Expose)
-          handle_ClearArea(cfd, seq, minor /*exposures*/, payload, remain);
-          break;
+        //case 61: // ClearArea (no reply; may generate Expose)
+        //  handle_ClearArea(cfd, seq, minor /*exposures*/, payload, remain);
+        //  break;
                     
         //case 68: // PolyArc (no reply)
         //  handle_PolyArc(cfd, seq, payload, remain);

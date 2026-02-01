@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "XProtoContext.hpp"
+#include "XProtoTransport.hpp"
 #include "ByteReader.hpp"
 #include "PixmapTable.hpp"   // adjust include path to your project
 #include "WindowTable.hpp"
@@ -27,6 +28,7 @@ static constexpr uint32_t kBitmapScanlinePadBits = 32;   // matches SetupSuccess
 static constexpr bool     kBitmapBitOrderLSBFirst = true;
 
 DrawOps::DrawOps(XProtoRegistrar& reg) {
+  reg.registerMajor(61, &DrawOps::onMajor, this); // ClearArea
   reg.registerMajor(62, &DrawOps::onMajor, this); // CopyArea
   reg.registerMajor(63, &DrawOps::onMajor, this); // CopyPlane
   reg.registerMajor(72, &DrawOps::onMajor, this); // PutImage
@@ -39,9 +41,10 @@ void DrawOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void DrawOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 72: handlePutImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
+    case 61: handleClearArea(ctx, dc.seq, dc.minor /*exposures*/, dc.br); return;
     case 62: handleCopyArea(ctx, dc.seq, dc.br); return;
     case 63: handleCopyPlane(ctx, dc.seq, dc.br); return;
+    case 72: handlePutImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[DrawOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -483,4 +486,77 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       x11_xproto_enqueue_damage(dst);
     }
   }
+  
+  
+  void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t /*seq*/, uint8_t exposures, ByteReader& br)
+  {
+    // Body after 4-byte header (12 bytes):
+    //   CARD32 window
+    //   INT16  x
+    //   INT16  y
+    //   CARD16 width
+    //   CARD16 height
+    if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+
+    const uint32_t wid = br.readU32();
+    const int16_t  x   = (int16_t)br.readU16();
+    const int16_t  y   = (int16_t)br.readU16();
+    const uint16_t wpx = br.readU16();
+    const uint16_t hpx = br.readU16();
+    br.skip(br.remaining());
+
+    if (wid == 0) return;
+
+    // ClearArea targets WINDOW only (bring-up).
+    if (!ctx.windows().exists(wid)) return;
+
+    // Get window framebuffer (C-side storage)
+    uint32_t* pixels = nullptr;
+    uint32_t fbW = 0, fbH = 0;
+    if (!x11_xproto_window_fb_rw(wid, &pixels, &fbW, &fbH) || !pixels || fbW == 0 || fbH == 0) return;
+
+    // X11 semantics: width/height == 0 means “to the right/bottom edge”
+    int x0 = (int)x;
+    int y0 = (int)y;
+
+    int x1 = (wpx == 0) ? (int)fbW : (x0 + (int)wpx);
+    int y1 = (hpx == 0) ? (int)fbH : (y0 + (int)hpx);
+
+    // Clamp
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)fbW) x1 = (int)fbW;
+    if (y1 > (int)fbH) y1 = (int)fbH;
+
+    if (x0 >= x1 || y0 >= y1) return;
+
+    // Bring-up background: opaque white (matches your existing C behavior).
+    const uint32_t bg = 0xFFFFFFFFu;
+
+    for (int yy = y0; yy < y1; yy++) {
+      uint32_t* row = pixels + (size_t)yy * (size_t)fbW;
+      for (int xx = x0; xx < x1; xx++) {
+        row[xx] = bg;
+      }
+    }
+
+    // Damage -> present
+    x11_xproto_enqueue_damage(wid);
+
+    // Optional Expose event (only if client asked for exposures and selected ExposureMask)
+    if (exposures) {
+      if (const WindowView* vw = ctx.window(wid)) {
+        const bool wantsExpose = vw->mapped && ((vw->event_mask & (1u << 15)) != 0);
+        if (wantsExpose) {
+          // Count=0 for bring-up (matches prior behavior)
+          ctx.transport().queueExposeRect(wid,
+                                         (uint16_t)x0, (uint16_t)y0,
+                                         (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
+                                         0);
+        }
+      }
+    }
+  }
+  
+  
 } // namespace x11
