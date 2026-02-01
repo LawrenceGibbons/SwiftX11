@@ -124,7 +124,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 
   // 2) C-side cleanup of legacy state (framebuffers, props, g_wins) — transitional
   // This should free the legacy fb/pixmaps/props that are still owned by x11_xproto.c
-  x11_xproto_bridge_destroy_window_legacy(wid);
+  x11_backend_fb_destroy(wid);
 
   // 3) Swift/UI teardown event path (existing behavior)
   // This queues X11_REQ_DESTROY -> shim -> Swift close

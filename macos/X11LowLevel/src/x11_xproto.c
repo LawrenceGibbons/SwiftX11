@@ -139,19 +139,6 @@ static x11_win_t g_wins[256];
 static x11_fb_t g_framebuffers[256]; // parallel to g_wins
 static size_t g_wins_n = 0;
 
-typedef struct {
-  uint32_t wid;
-  uint32_t atom;
-  uint32_t type;
-  uint8_t  format;   // 8/16/32
-  uint8_t  _pad0[3];
-  uint32_t nbytes;
-  uint8_t* data;
-} x11_prop_t;
-
-static x11_prop_t g_props[512];
-static size_t g_props_n = 0;
-
 static uint32_t rd32(const uint8_t* p){ return (uint32_t)(p[0] | (p[1]<<8) | (p[2]<<16) | (p[3]<<24)); }
 
 static void wr16_le(uint8_t* p, uint16_t v)
@@ -166,20 +153,6 @@ static void wr32_le(uint8_t* p, uint32_t v)
   p[1] = (uint8_t)((v >> 8) & 0xFF);
   p[2] = (uint8_t)((v >> 16) & 0xFF);
   p[3] = (uint8_t)((v >> 24) & 0xFF);
-}
-
-static void prop_delete_all_for_window(uint32_t wid)
-{
-  size_t i = 0;
-  while (i < g_props_n) {
-    if (g_props[i].wid == wid) {
-      free(g_props[i].data);
-      g_props[i] = g_props[g_props_n - 1];
-      g_props_n--;
-      continue; // re-check swapped entry
-    }
-    i++;
-  }
 }
 
 
@@ -595,36 +568,27 @@ void x11_xproto_enqueue_damage(uint32_t xid)
 
 
 
-void x11_xproto_bridge_destroy_window_legacy(uint32_t wid)
+// C-side backing store cleanup only.
+void x11_backend_fb_destroy(uint32_t wid)
 {
   if (wid == 0) return;
 
-  // Mirror your existing handle_DestroyWindow logic:
   for (size_t i = 0; i < g_wins_n; i++) {
     if (g_wins[i].xid == wid) {
-
-      // delete properties
-      prop_delete_all_for_window(wid);
-
-      // free framebuffer for this slot
       if (g_framebuffers[i].pixels) {
         free(g_framebuffers[i].pixels);
         g_framebuffers[i].pixels = NULL;
       }
 
-      // swap-with-last, keep aligned
       size_t last = g_wins_n - 1;
       if (i != last) {
         g_wins[i] = g_wins[last];
         g_framebuffers[i] = g_framebuffers[last];
       }
       g_wins_n--;
-      break;
+      return;
     }
   }
-
-  // NOTE: do NOT call enqueue_destroy_window() here anymore.
-  // C++ owns that now via x11_requests_push_destroy() (or enqueue_destroy_window if you prefer).
 }
 
 
@@ -971,112 +935,6 @@ typedef struct {
 // Request handlers
 // ----------------------------------------------------------------------------
 
-static void handle_QueryExtension(int fd, uint16_t seq)
-{
-  // Reply: present=0, no opcodes/events/errors
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, 0);
-  rep[1]  = 0; // present?
-  rep[8]  = 0; // major_opcode
-  rep[9]  = 0; // first_event
-  rep[10] = 0; // first_error
-  
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=handle_QueryExtension seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-  dbg_check_reply_total("QueryExtension", seq, 32, rep);
-#endif
-  
-  (void)x11_send_all(fd, rep, sizeof(rep));
-}
-
-static void handle_ListExtensions(int fd, uint16_t seq)
-{
-  // Reply: nExtensions=0, length=0
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, 0);
-  rep[1] = 0; // nExtensions
-#ifndef NDEBUG
-  dbg_check_reply_total("ListExtensions", seq, 32, rep);
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
-}
-
-
-// QueryColors (major = 91)
-//static void handle_QueryColors(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-//{
-//  // Body after 4-byte header:
-//  //   CARD32 colormap
-//  //   LISTofCARD32 pixels
-//  // Reply returns a LISTofxrgb where xrgb is 8 bytes:
-//  //   CARD16 red, CARD16 green, CARD16 blue, CARD16 pad
-//  // (No pixel field in the reply; pixel list is already in the request.)
-//  if (remain < 4) return;
-//
-//  // Number of pixels is implied by request length.
-//  uint16_t ncolors = (uint16_t)((remain - 4u) / 4u);
-//  if (ncolors > 1024) ncolors = 1024;
-//
-//  // Each xrgb is 8 bytes = 2 words.
-//  const uint32_t extra_words = (uint32_t)ncolors * 2u;
-//
-//  uint8_t rep[32];
-//  x11_reply32_le(rep, seq, extra_words);
-//
-//  // Reply: bytes 8..9 = nColors (CARD16)
-//  rep[8] = (uint8_t)(ncolors & 0xFF);
-//  rep[9] = (uint8_t)((ncolors >> 8) & 0xFF);
-//
-//#if !defined(NDEBUG) && SWIFTX11_TRACE
-//  fprintf(stderr, "[SwiftX11] xproto: QueryColors nColors=%u extra_words=%u remain=%zu\n",
-//          (unsigned)ncolors, (unsigned)extra_words, remain);
-//#endif
-//
-//#ifndef NDEBUG
-//  fprintf(stderr,
-//          "[SwiftX11] xproto: REPLY op=QueryColors (first x11_send_all) seq=%u bytes=%zu length_words=%u\n",
-//          (unsigned)seq,
-//          (size_t)sizeof(rep),
-//          (unsigned)rd32(rep + 4));
-//  dbg_check_reply_header32("QueryColors", seq, rep);
-//#endif
-//  (void)x11_send_all(fd, rep, sizeof(rep));
-//
-//  // Minimal colormap behavior for bring-up:
-//  // Treat pixel==0 as black, and any nonzero pixel as white.
-//  for (uint16_t i = 0; i < ncolors; i++) {
-//    const uint32_t pix = rd32(payload + 4u + (size_t)i * 4u);
-//
-//    // xrgb: CARD16 red, green, blue, pad
-//    uint8_t out[8];
-//    if (pix == 0) {
-//      // black
-//      out[0] = out[1] = 0;
-//      out[2] = out[3] = 0;
-//      out[4] = out[5] = 0;
-//    } else {
-//      // white
-//      out[0] = out[1] = 0xFF;
-//      out[2] = out[3] = 0xFF;
-//      out[4] = out[5] = 0xFF;
-//    }
-//    out[6] = 0;
-//    out[7] = 0;
-//
-//    (void)x11_send_all(fd, out, sizeof(out));
-//  }
-//#ifndef NDEBUG
-//size_t total_sent = 32u + (size_t)ncolors * 8u;
-//dbg_check_reply_total("QueryColors(total)", seq, total_sent, rep);
-//fprintf(stderr, "[SwiftX11] xproto: REPLY TOTAL op=QueryColors seq=%u total_sent=%zu\n",
-//        (unsigned)seq, total_sent);
-//#endif
-//  
-//}
 
 
 static void resize_window_and_fb(uint32_t wid, uint16_t new_w, uint16_t new_h)
@@ -1481,18 +1339,6 @@ if (major >= 128) {
       
       switch (major) {
                     
-        //case 91: // QueryColors
-        //  handle_QueryColors(cfd, seq, payload, remain);
-        //  break;
-          
-       // case 98: // QueryExtension
-       //   handle_QueryExtension(cfd, seq);
-       //   break;
-       //   
-       // case 99: // ListExtensions
-       //   handle_ListExtensions(cfd, seq);
-       //   break;
-          
         default:
 #ifndef NDEBUG
           fprintf(stderr,
@@ -1524,8 +1370,6 @@ if (major >= 128) {
       if (g_wins[i].owner_fd == cfd) {
         uint32_t wid = g_wins[i].xid;
         x11_proto_bridge_window_erase(wid);
-
-        prop_delete_all_for_window(wid);
 
         // free framebuffer
         if (g_framebuffers[i].pixels) {

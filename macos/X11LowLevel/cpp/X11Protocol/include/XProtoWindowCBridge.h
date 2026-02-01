@@ -25,7 +25,7 @@ int x11_xproto_c_create_window_slot(uint32_t wid,
                                    int owner_fd,
                                    int* out_dirty /* optional, may be NULL */);
 
-void x11_xproto_bridge_destroy_window_legacy(uint32_t wid);
+void x11_backend_fb_destroy(uint32_t wid);
 
 #ifdef __cplusplus
 }
