@@ -19,6 +19,9 @@
 #include "DrawableRW.hpp"
 #include "DrawOps.hpp"
 
+// bridging
+#include "X11BackendFBBridge.h"
+
 // temporary
 #include "XProtoServerBridge.h"
 

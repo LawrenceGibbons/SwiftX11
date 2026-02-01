@@ -25,6 +25,7 @@ private:
   // 15 QueryTree
   // 38 QueryPointer
   // 43 GetInputFocus
+  // 91 QueryColors
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
 
@@ -33,7 +34,7 @@ private:
   void handleQueryTree(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleQueryPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br);
-
+  void handleQueryColors(XProtoContext& ctx, uint16_t seq, ByteReader& br);
 
 private:
   // Fake pointer state (bring-up)

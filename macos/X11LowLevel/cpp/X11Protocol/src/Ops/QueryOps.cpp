@@ -6,6 +6,7 @@
 //
 
 #include <cstdio>
+#include <vector>
 
 #include "QueryOps.hpp"
 #include "XProtoContext.hpp"
@@ -21,6 +22,7 @@ namespace x11 {
     reg.registerMajor(15, &QueryOps::onMajor, this); // QueryTree
     reg.registerMajor(38, &QueryOps::onMajor, this); // QueryPointer
     reg.registerMajor(43, &QueryOps::onMajor, this); // GetInputFocus
+    reg.registerMajor(91, &QueryOps::onMajor, this); // QueryColors
   }
 
   void QueryOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -33,6 +35,8 @@ namespace x11 {
       case 15: handleQueryTree(ctx, dc.seq, dc.br); return;
       case 38: handleQueryPointer(ctx, dc.seq, dc.br); return;
       case 43: handleGetInputFocus(ctx, dc.seq, dc.br); return;
+      case 91: handleQueryColors(ctx, dc.seq, dc.br); return;
+        
       default: 
         dc.br.skip(dc.br.remaining());
         ctx.tracef("[QueryOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -144,4 +148,73 @@ namespace x11 {
     }
   }
   
+  
+  
+  // ---- 91: QueryColors ----
+  //
+  // Request body (per XCB + working legacy code):
+  //   CARD32 colormap
+  //   LISTofCARD32 pixels     // count implied by request length
+  //
+  // Reply header includes:
+  //   bytes 8..9: CARD16 nColors
+  // Reply payload:
+  //   nColors * { CARD16 red, CARD16 green, CARD16 blue, CARD16 pad }
+  //
+  // Bring-up behavior matches legacy:
+  //   pixel==0 => black, else white.
+  void QueryOps::handleQueryColors(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+
+    const uint32_t cmap = br.readU32();
+    (void)cmap; // bring-up: ignore colormap
+
+    // Number of pixels is implied by remaining request length.
+    uint16_t ncolors = (uint16_t)(br.remaining() / 4u);
+    if (ncolors > 1024) ncolors = 1024;
+
+    // Each xrgb = 8 bytes = 2 words.
+    const uint32_t extra_words = (uint32_t)ncolors * 2u;
+
+  #ifndef NDEBUG
+    ctx.tracef("[QueryColors] seq=%u n=%u extra_words=%u req_remain=%zu\n",
+               (unsigned)seq, (unsigned)ncolors, (unsigned)extra_words, br.remaining());
+  #endif
+
+    const bool ok = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+      // length (words) at bytes 4..7
+      ReplyWriter::wr32_le(rep.data() + 4, extra_words);
+
+      // nColors at bytes 8..9 (CARD16)
+      ReplyWriter::wr16_le(rep.data() + 8, ncolors);
+
+      // byte 1 is "unused" for this reply; leaving as whatever sendReply32 sets (usually 0) is fine.
+    });
+    if (!ok) return;
+
+    // Stream payload: ncolors entries, 8 bytes each (already 4-byte aligned).
+    for (uint16_t i = 0; i < ncolors; i++) {
+      const uint32_t pix = br.readU32();
+
+      uint8_t out[8];
+      if (pix == 0) {
+        // black
+        out[0] = out[1] = 0;
+        out[2] = out[3] = 0;
+        out[4] = out[5] = 0;
+      } else {
+        // white (0xFFFF in 16-bit)
+        out[0] = out[1] = 0xFF;
+        out[2] = out[3] = 0xFF;
+        out[4] = out[5] = 0xFF;
+      }
+      out[6] = 0;
+      out[7] = 0;
+
+      (void)ctx.reply().sendPaddedBytes(out, sizeof(out)); // 8 bytes; no extra pad needed
+    }
+
+    // Defensive: consume any trailing bytes (if request length wasn't a multiple of 4)
+    br.skip(br.remaining());
+  }
 } // namespace x11
