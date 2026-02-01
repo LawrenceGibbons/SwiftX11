@@ -1,0 +1,43 @@
+Project brief
+
+We are in the process of creating a full, rootless X11 server to run on MacOS 26 or later using Swift to handle the MacOS side 
+with metal doing the rendering.  The X11 protocol side should be implemented in C++, with a shim layer between the protocal 
+and SWIFT in either C++ or C.   The model is queue driven, with two separate queues: an X11 event queue on the C++ / C side 
+that handles the protocol, and a request queue filled on the C(++) side and drained on the Swift side to handle the
+rendering.  The X11 protocol is handled by a set of "Ops" objects that register a callback with a XProtoRegistrar object, 
+and that callback function then routes the requests to the appropriate event handler.  Initially you were having me develop 
+the X11 protocol in a small set of C files, but those were rapidly growing unwieldy and hard to parse and maintain.  We were
+in the process of transitioning from those C files to an object-oriented C++ implementation before we further develop the X11 
+protocol.
+
+Current status
+
+We were well along in the process of moving all of the drawing events from the C to the new structued C++ implementation
+that allows drawing of the eyes in the xeyes program.  We had not yet implemented any mouse tracking functions, just the
+drawing.  I believe we were you had completed the migration of the drawing operations needed for xeyes to migrating the rest
+of the infrastructure from C to C++, perhaps leaving the shim itself in C.  But the conversation ended before you could tell
+the exact plan for the next steps.  But the next milestone will be to complete that transition and then complete the
+remaining protocol implementation for xeyes.  Note that we have changed courses from an initial design that was heading 
+towards a single large C++ file to the current design.  Some of the files with nothing implemented may be left over from 
+that initial design and we may want to eliminate.
+
+While you initially had me download xorg_server, it doesn't seem to me that we are making use of it.  Would it perhaps be more 
+efficient to use that vetted code to get to the full implementation, perhaps through hooks in the C++ structure that we are 
+developing?
+
+Intermediate goals
+
+After completing the migration to C++ and implementing enough of the X11 protocol to fully support xeyes, we should then
+proceed through support of xclock and xterm to build up the complexity.  As well as introducing handling of more X11 event
+types, this may also involve updating some of the current implementation that was initially kept at the minimum to support xeyes.
+
+Long term goal
+
+Of course a full implementation of X11 would be the most desired goal, I would settle for smooth running of the vivado and vitis 
+fpga programming environments, which I would run from a docker linux container.
+
+Programming environment
+
+We are developing the project in XCode v26.2.  The application is called SwiftX11, and that target has all of the swift code.
+The X11 protocol is being developed under a subtarget "X11LowLevel".
+ 

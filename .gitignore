@@ -23,3 +23,4 @@ DerivedData/
 # Xcode per-user settings
 xcuserdata/
 *.xcuserdatad/
+xorg-server/
