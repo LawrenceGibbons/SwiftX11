@@ -26,6 +26,8 @@ private:
   // 38 QueryPointer
   // 43 GetInputFocus
   // 91 QueryColors
+  // 98 QueryExtension
+  // 99 ListExtensions
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
 
@@ -35,6 +37,8 @@ private:
   void handleQueryPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleQueryColors(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  void handleQueryExtension(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+  void handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br);
 
 private:
   // Fake pointer state (bring-up)

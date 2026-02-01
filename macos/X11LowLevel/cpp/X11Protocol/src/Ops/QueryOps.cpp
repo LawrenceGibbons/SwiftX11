@@ -23,6 +23,8 @@ namespace x11 {
     reg.registerMajor(38, &QueryOps::onMajor, this); // QueryPointer
     reg.registerMajor(43, &QueryOps::onMajor, this); // GetInputFocus
     reg.registerMajor(91, &QueryOps::onMajor, this); // QueryColors
+    reg.registerMajor(98, &QueryOps::onMajor, this); // QueryExtension
+    reg.registerMajor(99, &QueryOps::onMajor, this); // ListExtensions
   }
 
   void QueryOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -36,7 +38,9 @@ namespace x11 {
       case 38: handleQueryPointer(ctx, dc.seq, dc.br); return;
       case 43: handleGetInputFocus(ctx, dc.seq, dc.br); return;
       case 91: handleQueryColors(ctx, dc.seq, dc.br); return;
-        
+      case 98: handleQueryExtension(ctx, dc.seq, dc.br); return;
+      case 99: handleListExtensions(ctx, dc.seq, dc.br); return;
+
       default: 
         dc.br.skip(dc.br.remaining());
         ctx.tracef("[QueryOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -217,4 +221,66 @@ namespace x11 {
     // Defensive: consume any trailing bytes (if request length wasn't a multiple of 4)
     br.skip(br.remaining());
   }
+  
+  
+  
+  // ---- 98: QueryExtension ----
+  //
+  // Request body:
+  //   CARD16 nbytes
+  //   CARD16 pad
+  //   LISTofCHAR name (nbytes), followed by padding to 4-byte multiple
+  //
+  // Reply body:
+  //   BYTE present
+  //   CARD8 major_opcode
+  //   CARD8 first_event
+  //   CARD8 first_error
+  //   length = 0 (no extra data)
+  //
+  // Bring-up: we report present=0 for all names (no extensions supported).
+  void QueryOps::handleQueryExtension(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+
+    const uint16_t nbytes = br.readU16();
+    br.skip(2); // pad
+
+    // Consume name bytes (if present) and 4-byte pad.
+    const std::size_t avail = br.remaining();
+    const std::size_t take  = std::min<std::size_t>(nbytes, avail);
+    br.skip(take);
+    // Skip any remaining padding (request is padded to 4-byte boundary).
+    const std::size_t rem = br.remaining();
+    const std::size_t pad = rem % 4u;
+    if (pad) br.skip(pad);
+    br.skip(br.remaining()); // defensive: consume rest
+
+    (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+      // length = 0 (bytes 4..7 already set by sendReply32, but make it explicit)
+      ReplyWriter::wr32_le(rep.data() + 4, 0);
+      rep[1]  = 0; // present
+      rep[8]  = 0; // major_opcode
+      rep[9]  = 0; // first_event
+      rep[10] = 0; // first_error
+    });
+  }
+
+  // ---- 99: ListExtensions ----
+  //
+  // Reply:
+  //   BYTE nExtensions (rep[1])
+  //   length = 0, and no payload list.
+  //
+  // Bring-up: no extensions.
+  void QueryOps::handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+    br.skip(br.remaining()); // request has no extra fields we care about
+
+    (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+      ReplyWriter::wr32_le(rep.data() + 4, 0); // length=0
+      rep[1] = 0; // nExtensions
+    });
+  }
+
+  
+  
 } // namespace x11

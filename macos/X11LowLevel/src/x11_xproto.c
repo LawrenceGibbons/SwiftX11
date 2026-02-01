@@ -1007,76 +1007,76 @@ static void handle_ListExtensions(int fd, uint16_t seq)
 
 
 // QueryColors (major = 91)
-static void handle_QueryColors(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
-{
-  // Body after 4-byte header:
-  //   CARD32 colormap
-  //   LISTofCARD32 pixels
-  // Reply returns a LISTofxrgb where xrgb is 8 bytes:
-  //   CARD16 red, CARD16 green, CARD16 blue, CARD16 pad
-  // (No pixel field in the reply; pixel list is already in the request.)
-  if (remain < 4) return;
-
-  // Number of pixels is implied by request length.
-  uint16_t ncolors = (uint16_t)((remain - 4u) / 4u);
-  if (ncolors > 1024) ncolors = 1024;
-
-  // Each xrgb is 8 bytes = 2 words.
-  const uint32_t extra_words = (uint32_t)ncolors * 2u;
-
-  uint8_t rep[32];
-  x11_reply32_le(rep, seq, extra_words);
-
-  // Reply: bytes 8..9 = nColors (CARD16)
-  rep[8] = (uint8_t)(ncolors & 0xFF);
-  rep[9] = (uint8_t)((ncolors >> 8) & 0xFF);
-
-#if !defined(NDEBUG) && SWIFTX11_TRACE
-  fprintf(stderr, "[SwiftX11] xproto: QueryColors nColors=%u extra_words=%u remain=%zu\n",
-          (unsigned)ncolors, (unsigned)extra_words, remain);
-#endif
-
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] xproto: REPLY op=QueryColors (first x11_send_all) seq=%u bytes=%zu length_words=%u\n",
-          (unsigned)seq,
-          (size_t)sizeof(rep),
-          (unsigned)rd32(rep + 4));
-  dbg_check_reply_header32("QueryColors", seq, rep);
-#endif
-  (void)x11_send_all(fd, rep, sizeof(rep));
-
-  // Minimal colormap behavior for bring-up:
-  // Treat pixel==0 as black, and any nonzero pixel as white.
-  for (uint16_t i = 0; i < ncolors; i++) {
-    const uint32_t pix = rd32(payload + 4u + (size_t)i * 4u);
-
-    // xrgb: CARD16 red, green, blue, pad
-    uint8_t out[8];
-    if (pix == 0) {
-      // black
-      out[0] = out[1] = 0;
-      out[2] = out[3] = 0;
-      out[4] = out[5] = 0;
-    } else {
-      // white
-      out[0] = out[1] = 0xFF;
-      out[2] = out[3] = 0xFF;
-      out[4] = out[5] = 0xFF;
-    }
-    out[6] = 0;
-    out[7] = 0;
-
-    (void)x11_send_all(fd, out, sizeof(out));
-  }
-#ifndef NDEBUG
-size_t total_sent = 32u + (size_t)ncolors * 8u;
-dbg_check_reply_total("QueryColors(total)", seq, total_sent, rep);
-fprintf(stderr, "[SwiftX11] xproto: REPLY TOTAL op=QueryColors seq=%u total_sent=%zu\n",
-        (unsigned)seq, total_sent);
-#endif
-  
-}
+//static void handle_QueryColors(int fd, uint16_t seq, const uint8_t* payload, size_t remain)
+//{
+//  // Body after 4-byte header:
+//  //   CARD32 colormap
+//  //   LISTofCARD32 pixels
+//  // Reply returns a LISTofxrgb where xrgb is 8 bytes:
+//  //   CARD16 red, CARD16 green, CARD16 blue, CARD16 pad
+//  // (No pixel field in the reply; pixel list is already in the request.)
+//  if (remain < 4) return;
+//
+//  // Number of pixels is implied by request length.
+//  uint16_t ncolors = (uint16_t)((remain - 4u) / 4u);
+//  if (ncolors > 1024) ncolors = 1024;
+//
+//  // Each xrgb is 8 bytes = 2 words.
+//  const uint32_t extra_words = (uint32_t)ncolors * 2u;
+//
+//  uint8_t rep[32];
+//  x11_reply32_le(rep, seq, extra_words);
+//
+//  // Reply: bytes 8..9 = nColors (CARD16)
+//  rep[8] = (uint8_t)(ncolors & 0xFF);
+//  rep[9] = (uint8_t)((ncolors >> 8) & 0xFF);
+//
+//#if !defined(NDEBUG) && SWIFTX11_TRACE
+//  fprintf(stderr, "[SwiftX11] xproto: QueryColors nColors=%u extra_words=%u remain=%zu\n",
+//          (unsigned)ncolors, (unsigned)extra_words, remain);
+//#endif
+//
+//#ifndef NDEBUG
+//  fprintf(stderr,
+//          "[SwiftX11] xproto: REPLY op=QueryColors (first x11_send_all) seq=%u bytes=%zu length_words=%u\n",
+//          (unsigned)seq,
+//          (size_t)sizeof(rep),
+//          (unsigned)rd32(rep + 4));
+//  dbg_check_reply_header32("QueryColors", seq, rep);
+//#endif
+//  (void)x11_send_all(fd, rep, sizeof(rep));
+//
+//  // Minimal colormap behavior for bring-up:
+//  // Treat pixel==0 as black, and any nonzero pixel as white.
+//  for (uint16_t i = 0; i < ncolors; i++) {
+//    const uint32_t pix = rd32(payload + 4u + (size_t)i * 4u);
+//
+//    // xrgb: CARD16 red, green, blue, pad
+//    uint8_t out[8];
+//    if (pix == 0) {
+//      // black
+//      out[0] = out[1] = 0;
+//      out[2] = out[3] = 0;
+//      out[4] = out[5] = 0;
+//    } else {
+//      // white
+//      out[0] = out[1] = 0xFF;
+//      out[2] = out[3] = 0xFF;
+//      out[4] = out[5] = 0xFF;
+//    }
+//    out[6] = 0;
+//    out[7] = 0;
+//
+//    (void)x11_send_all(fd, out, sizeof(out));
+//  }
+//#ifndef NDEBUG
+//size_t total_sent = 32u + (size_t)ncolors * 8u;
+//dbg_check_reply_total("QueryColors(total)", seq, total_sent, rep);
+//fprintf(stderr, "[SwiftX11] xproto: REPLY TOTAL op=QueryColors seq=%u total_sent=%zu\n",
+//        (unsigned)seq, total_sent);
+//#endif
+//  
+//}
 
 
 static void resize_window_and_fb(uint32_t wid, uint16_t new_w, uint16_t new_h)
@@ -1481,17 +1481,17 @@ if (major >= 128) {
       
       switch (major) {
                     
-        case 91: // QueryColors
-          handle_QueryColors(cfd, seq, payload, remain);
-          break;
+        //case 91: // QueryColors
+        //  handle_QueryColors(cfd, seq, payload, remain);
+        //  break;
           
-        case 98: // QueryExtension
-          handle_QueryExtension(cfd, seq);
-          break;
-          
-        case 99: // ListExtensions
-          handle_ListExtensions(cfd, seq);
-          break;
+       // case 98: // QueryExtension
+       //   handle_QueryExtension(cfd, seq);
+       //   break;
+       //   
+       // case 99: // ListExtensions
+       //   handle_ListExtensions(cfd, seq);
+       //   break;
           
         default:
 #ifndef NDEBUG
