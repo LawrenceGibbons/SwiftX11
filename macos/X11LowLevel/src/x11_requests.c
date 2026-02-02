@@ -514,8 +514,8 @@ void x11_requests_drain_on_server_thread(void)
         // Runs on server thread. Do not take backend lock here if your xproto state
         // (win_find/g_framebuffers) is not protected by it.
         x11_xproto_apply_rootless_resize_on_server_thread(r.xid,
-                                                          r.u.resize.w_px,
-                                                          r.u.resize.h_px);
+                                                          r.u.rootless_resize.w_px,
+                                                          r.u.rootless_resize.h_px);
         break;
       }
         

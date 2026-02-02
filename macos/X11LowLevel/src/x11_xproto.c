@@ -849,25 +849,6 @@ void x11_xproto_apply_configure_from_cpp(uint32_t wid,
 
 
 // ----------------------------------------------------------------------------
-// Swift-side server to X11
-// ----------------------------------------------------------------------------
-void x11_xproto_set_window_presentable(uint32_t xid)
-{
-  if (xid == 0) return;
-  
-  x11_fb_slot_t* w = fb_find(xid);
-  if (!w) return;
-  
-  x11_proto_bridge_window_set_presentable(xid, 1);
-  
-  if (x11_proto_bridge_window_consume_dirty_if_ready(xid)) {
-    enqueue_damage_window(xid);
-  }
-}
-
-
-
-// ----------------------------------------------------------------------------
 // Request pump + dispatcher
 // ----------------------------------------------------------------------------
 void drain_requests(int cfd)

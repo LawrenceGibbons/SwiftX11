@@ -68,13 +68,11 @@ int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
 void x11_proto_bridge_window_erase(uint32_t xid);
 
 void x11_proto_bridge_window_set_mapped(uint32_t xid, int mapped);
-void x11_proto_bridge_window_set_presentable(uint32_t xid, int presentable);
 void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t event_mask);
 //void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h);
 
 int  x11_proto_bridge_window_is_ready_to_present(uint32_t xid);
 void x11_proto_bridge_window_mark_dirty(uint32_t xid);
-int  x11_proto_bridge_window_consume_dirty_if_ready(uint32_t xid);
 
 void x11_proto_bridge_window_debug_state(uint32_t xid,
                                          uint32_t* out_parent,

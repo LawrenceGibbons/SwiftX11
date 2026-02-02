@@ -180,13 +180,6 @@ extern "C" void x11_proto_bridge_window_set_mapped(uint32_t xid, int mapped)
   srv->ctx().windows().setMapped(xid, mapped != 0);
 }
 
-extern "C" void x11_proto_bridge_window_set_presentable(uint32_t xid, int presentable)
-{
-  auto* srv = g_srv.load(std::memory_order_acquire);
-  if (!srv) return;
-  srv->ctx().windows().setPresentable(xid, presentable != 0);
-}
-
 extern "C" void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t event_mask)
 {
   auto* srv = g_srv.load(std::memory_order_acquire);
@@ -214,13 +207,6 @@ extern "C" void x11_proto_bridge_window_mark_dirty(uint32_t xid)
   auto* srv = g_srv.load(std::memory_order_acquire);
   if (!srv) return;
   srv->ctx().windows().markDirty(xid);
-}
-
-extern "C" int x11_proto_bridge_window_consume_dirty_if_ready(uint32_t xid)
-{
-  auto* srv = g_srv.load(std::memory_order_acquire);
-  if (!srv) return 0;
-  return srv->ctx().windows().consumeDirtyIfReady(xid) ? 1 : 0;
 }
 
 extern "C" void x11_proto_bridge_window_debug_state(uint32_t xid,
