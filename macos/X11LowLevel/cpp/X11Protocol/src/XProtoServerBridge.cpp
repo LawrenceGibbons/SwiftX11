@@ -13,47 +13,23 @@
 #include <cstring>
 
 #include "XProtoServerBridge.h"
+#include "x11_requests.h"
 
 #include "XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
-#include "XProtoWindowLookupBridge.h"
 #include "QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 #include "WindowTable.hpp"
 #include "XProtoModules.hpp"
 #include "XProtoContext.hpp"
-#include "x11_window_set_mapped.h"
+//#include "x11_window_set_mapped.h"
 #include "GCTable.hpp"
 #include "XProtoGCBridge.hpp"
+#include "HostResize.hpp"
 
 // Modules live for the lifetime of the session.
 static std::atomic<x11::XProtoModules*> g_mods{nullptr};
 static std::mutex g_mu; // only used to serialize begin/end session
 static std::atomic<x11::XProtoServer*> g_srv{nullptr};
 
-static bool c_lookup_window(uint32_t xid, x11::WindowView* out, void* /*user*/)
-{
-  fprintf(stderr, "[BRIDGE] c_lookup_window xid=0x%08X\n", (unsigned)xid);
-  if (!out) return false;
-
-  int16_t x=0,y=0;
-  uint16_t w=0,h=0;
-  uint32_t mask=0;
-  int mapped=0;
-  int owner_fd=-1;
-
-  if (!x11_xproto_snapshot_window_view(xid, &x, &y, &w, &h, &mask, &mapped, &owner_fd)) {
-    return false;
-  }
-
-  out->xid = xid;
-  out->x = x;
-  out->y = y;
-  out->w = w;
-  out->h = h;
-  out->event_mask = mask;
-  out->mapped = (mapped != 0);
-  out->owner_fd = owner_fd;
-  return true;
-}
 
 extern "C" void x11_proto_bridge_begin_session(int client_fd)
 {
@@ -68,7 +44,6 @@ extern "C" void x11_proto_bridge_begin_session(int client_fd)
   }
   
   // 2) Configure server plumbing for THIS session.
-  //srv->setWindowLookup(&c_lookup_window, nullptr);
   srv->attachClientFd(client_fd);
   srv->setXprotoThreadSelf();
   
@@ -107,12 +82,12 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
   if (srv) srv->flushNotifyQueue();
 }
 
-extern "C" void x11_proto_bridge_queue_notify(uint32_t wid, int want_configure, int want_expose)
-{
-  auto* srv = g_srv.load(std::memory_order_acquire);
-  if (!srv) return;
-  srv->queueNotify(wid, want_configure != 0, want_expose != 0);
-}
+//extern "C" void x11_proto_bridge_queue_notify(uint32_t wid, int want_configure, int want_expose)
+//{
+//  auto* srv = g_srv.load(std::memory_order_acquire);
+//  if (!srv) return;
+//  srv->queueNotify(wid, want_configure != 0, want_expose != 0);
+//}
 
 extern "C" void x11_proto_bridge_queue_expose_rect(uint32_t wid,
                                                    uint16_t x, uint16_t y,
@@ -210,7 +185,6 @@ extern "C" void x11_proto_bridge_window_set_presentable(uint32_t xid, int presen
   auto* srv = g_srv.load(std::memory_order_acquire);
   if (!srv) return;
   srv->ctx().windows().setPresentable(xid, presentable != 0);
-  x11_xproto_c_window_set_presentable(xid, presentable != 0);
 }
 
 extern "C" void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t event_mask)
@@ -221,12 +195,12 @@ extern "C" void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t ev
   fprintf(stderr, "[BRIDGE] set_event_mask xid=0x%08X mask=0x%08X\n", xid, event_mask);
 }
 
-extern "C" void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h)
-{
-  auto* srv = g_srv.load(std::memory_order_acquire);
-  if (!srv) return;
-  srv->ctx().windows().setGeometry(xid, x, y, w, h);
-}
+//extern "C" void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h)
+//{
+//  auto* srv = g_srv.load(std::memory_order_acquire);
+//  if (!srv) return;
+//  srv->ctx().windows().setGeometry(xid, x, y, w, h);
+//}
 
 extern "C" int x11_proto_bridge_window_is_ready_to_present(uint32_t xid)
 {
@@ -293,3 +267,26 @@ extern "C" void x11_proto_bridge_pixmap_free(uint32_t pid)
   srv->ctx().pixmaps().freePixmap(pid);
 }
 
+extern "C" void x11_proto_bridge_apply_rootless_resize(uint32_t wid, int32_t w_px, int32_t h_px)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+
+  // Assumption: called on server/protocol thread (same as old name implied).
+  // If you later need to enforce thread affinity, this is the one place to enqueue onto that thread.
+  applyRootlessResize(srv->ctx(), wid, w_px, h_px);
+}
+
+extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid)
+{
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv) return;
+
+  auto& ctx = srv->ctx();
+  ctx.windows().setPresentable(xid, true);
+
+  if (ctx.windows().consumeDirtyIfReady(xid)) {
+    // Push a damage request for Swift to present.
+    x11_requests_push_damage(xid);
+  }
+}

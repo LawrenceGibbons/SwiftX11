@@ -17,8 +17,8 @@
 #include "WindowTable.hpp"
 #include "DrawableRW.hpp"
 
-
-extern "C" void x11_xproto_enqueue_damage(uint32_t xid);
+// bridge to C and Swift
+#include "x11_requests.h"
 
 namespace x11 {
 
@@ -123,7 +123,11 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Present only if destination is a window (pixmaps get presented when copied to window)
     if (dst.is_window) {
-      x11_xproto_enqueue_damage(drawable);
+      if (ctx.windows().isReadyToPresent(drawable)) {
+        x11_requests_push_damage(drawable);
+      } else {
+        ctx.windows().markDirty(drawable);
+      }
     }
   }
   
@@ -206,7 +210,13 @@ void ShapeOps::handlePolyFillArc(XProtoContext& ctx, uint16_t, ByteReader& br) {
   }
 
   br.skip(br.remaining());
-  if (dstIsWindow) x11_xproto_enqueue_damage(drawable);
+  if (dstIsWindow) {
+    if (ctx.windows().isReadyToPresent(drawable)) {
+      x11_requests_push_damage(drawable);
+    } else {
+      ctx.windows().markDirty(drawable);
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -287,7 +297,13 @@ void ShapeOps::handlePolyArc(XProtoContext& ctx, uint16_t, ByteReader& br) {
   }
 
   br.skip(br.remaining());
-  if (dstIsWindow) x11_xproto_enqueue_damage(drawable);
+  if (dstIsWindow) {
+    if (ctx.windows().isReadyToPresent(drawable)) {
+      x11_requests_push_damage(drawable);
+    } else {
+      ctx.windows().markDirty(drawable);
+    }
+  }
 }
 
 } // namespace x11

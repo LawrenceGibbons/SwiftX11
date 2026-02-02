@@ -26,7 +26,7 @@ void x11_proto_bridge_note_last_seq(uint16_t seq);
 void x11_proto_bridge_flush_notify_queue(void);
 
 // Called from places that currently call queue_notify / enqueue Configure/Expose.
-void x11_proto_bridge_queue_notify(uint32_t wid, int want_configure, int want_expose);
+//void x11_proto_bridge_queue_notify(uint32_t wid, int want_configure, int want_expose);
 
 void x11_proto_bridge_queue_expose_rect(uint32_t wid,
                                         uint16_t x, uint16_t y,
@@ -70,7 +70,7 @@ void x11_proto_bridge_window_erase(uint32_t xid);
 void x11_proto_bridge_window_set_mapped(uint32_t xid, int mapped);
 void x11_proto_bridge_window_set_presentable(uint32_t xid, int presentable);
 void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t event_mask);
-void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h);
+//void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h);
 
 int  x11_proto_bridge_window_is_ready_to_present(uint32_t xid);
 void x11_proto_bridge_window_mark_dirty(uint32_t xid);
@@ -83,13 +83,10 @@ void x11_proto_bridge_window_debug_state(uint32_t xid,
                                          int* out_dirty,
                                          int* out_owner_fd);
 
-void x11_xproto_c_set_window_event_mask(uint32_t xid, uint32_t event_mask);
-
 
 // Apply ConfigureWindow result to C canonical window + framebuffer.
 // resize_fb = 1 means: if w/h changed, resize framebuffer with preserve+white-fill.
 void x11_xproto_apply_configure_from_cpp(uint32_t wid,
-                                        int16_t x, int16_t y,
                                         uint16_t w, uint16_t h,
                                         int resize_fb);
 
@@ -105,11 +102,18 @@ void x11_proto_bridge_pixmap_free(uint32_t pid);
                               uint32_t* outW,
                               uint32_t* outH);
 
-  // Call the exact same damage gating as the old C draw ops.
-  void x11_xproto_enqueue_damage(uint32_t xid);
+void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h);
 
+// Creates/refreshes the C-side g_fb[] slot for wid.
+int x11_backend_fb_create_slot(uint32_t wid,
+                               uint16_t wpx,
+                               uint16_t hpx,
+                               int owner_fd,
+                               int* out_dirty /* optional, may be NULL */);
 
+void x11_backend_fb_destroy(uint32_t wid);
 
+void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid);
   
 #ifdef __cplusplus
 }

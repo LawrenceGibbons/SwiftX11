@@ -218,6 +218,10 @@ int x11_server_copy_window_bgra(uint32_t xid,
                                 int32_t* out_bpr);
   
 void x11_post_window_presentable(uint32_t xid);
+  
+// Swift calls this on the X11 server thread when the host surface resized.
+// Only w/h are provided; x/y are unchanged and remain authoritative in C++ WindowTable.
+void x11_xproto_apply_rootless_resize_on_server_thread(uint32_t wid, int32_t w_px, int32_t h_px);
 
 #ifdef __cplusplus
 }

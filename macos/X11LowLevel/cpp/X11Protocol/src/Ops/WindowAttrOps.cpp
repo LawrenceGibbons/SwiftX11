@@ -87,11 +87,9 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
   // If CWEventMask wasn’t present, we do nothing.
   if ((vmask & (1u << 11)) == 0) return;
 
-  // 1) Update C++ authoritative table
+  // Update C++ authoritative table
   ctx.windows().setEventMask(wid, cur_mask);
 
-  // 2) Keep C mirror in sync until ALL remaining C handlers stop reading w->event_mask
-  x11_xproto_c_set_window_event_mask(wid, cur_mask);
 }
 
   void WindowAttrOps::handleConfigureWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
@@ -139,7 +137,7 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
     ctx.windows().setGeometry(wid, x, y, w, h);
     
     // keep C canonical state in sync (this is what makes drawing correct)
-    x11_xproto_apply_configure_from_cpp(wid, x, y, w, h, /*resize_fb=*/1);
+    x11_xproto_apply_configure_from_cpp(wid, w, h, /*resize_fb=*/1);
 
 
     // Tell Swift/shim side about configure (existing behavior)

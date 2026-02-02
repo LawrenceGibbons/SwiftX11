@@ -19,10 +19,6 @@ extern "C" {
                               uint32_t* outW,
                               uint32_t* outH);
   
-  // Call the exact same damage gating as old C draw ops.
-  void x11_xproto_enqueue_damage(uint32_t xid);
-  
-  
   
 #ifdef __cplusplus
 }

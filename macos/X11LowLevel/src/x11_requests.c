@@ -15,6 +15,7 @@
 #include "x11_backend.h"
 #include "x11_server_internal.h"
 #include "x11_xproto.h"
+#include "XProtoServerBridge.h"
 
 // ---------------- Client request queue (C -> server thread) ------------------
 
@@ -519,7 +520,7 @@ void x11_requests_drain_on_server_thread(void)
       }
         
       case X11_REQ_WINDOW_PRESENTABLE:
-        x11_xproto_set_window_presentable(r.xid);
+        x11_proto_bridge_window_set_presentable_and_flush(r.xid);
         break;
         
       default:

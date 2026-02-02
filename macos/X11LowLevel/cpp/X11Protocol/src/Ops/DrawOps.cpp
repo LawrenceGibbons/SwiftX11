@@ -21,6 +21,7 @@
 
 // bridging
 #include "X11BackendFBBridge.h"
+#include "x11_requests.h"
 
 // temporary
 #include "XProtoServerBridge.h"
@@ -293,7 +294,11 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     // Damage only if destination is a window (pixmaps present when copied into a window)
     // ------------------------------------------------------------
     if (dstIsWindow) {
-      x11_xproto_enqueue_damage(dst);
+      if (ctx.windows().isReadyToPresent(dst)) {
+        x11_requests_push_damage(dst);
+      } else {
+        ctx.windows().markDirty(dst);
+      }
     }
   }
   
@@ -486,9 +491,12 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
     // Damage only if destination is a window.
     if (dstIsWindow) {
-      x11_xproto_enqueue_damage(dst);
-    }
-  }
+      if (ctx.windows().isReadyToPresent(dst)) {
+        x11_requests_push_damage(dst);
+      } else {
+        ctx.windows().markDirty(dst);
+      }
+    }  }
   
   
   void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t /*seq*/, uint8_t exposures, ByteReader& br)
@@ -544,8 +552,11 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     }
 
     // Damage -> present
-    x11_xproto_enqueue_damage(wid);
-
+    if (ctx.windows().isReadyToPresent(wid)) {
+      x11_requests_push_damage(wid);
+    } else {
+      ctx.windows().markDirty(wid);
+    }
     // Optional Expose event (only if client asked for exposures and selected ExposureMask)
     if (exposures) {
       if (const WindowView* vw = ctx.window(wid)) {

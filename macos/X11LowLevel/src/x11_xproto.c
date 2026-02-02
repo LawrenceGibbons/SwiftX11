@@ -112,32 +112,15 @@ static pthread_t g_thread;
 static int g_current_client_fd = -1;
 
 typedef struct {
-  uint32_t xid;
-  uint32_t parent;
-  int16_t  x;
-  int16_t  y;
-  uint16_t w;
-  uint16_t h;
-  uint8_t  mapped;      // 0/10
-  uint8_t  dirty;       // 1 if drawing happened while unmapped
-  uint8_t presentable;   // Cocoa says safe to present
-  uint32_t event_mask;  // from ChangeWindowAttributes / CreateWindow
-  bool pending_damage;
-  uint16_t _pad0;
-  int owner_fd;   // client socket that created this window
-} x11_win_t;
+  uint32_t  xid;
+  int       owner_fd;
+  uint32_t  width;
+  uint32_t  height;
+  uint32_t* pixels;
+} x11_fb_slot_t;
 
-// Per-window framebuffer
-typedef struct {
-  uint32_t width;
-  uint32_t height;
-  uint32_t* pixels; // ARGB8888 buffer
-} x11_fb_t;
-
-
-static x11_win_t g_wins[256];
-static x11_fb_t g_framebuffers[256]; // parallel to g_wins
-static size_t g_wins_n = 0;
+static x11_fb_slot_t g_fb[256];
+static size_t        g_fb_n = 0;
 
 static uint32_t rd32(const uint8_t* p){ return (uint32_t)(p[0] | (p[1]<<8) | (p[2]<<16) | (p[3]<<24)); }
 
@@ -198,140 +181,36 @@ static int x11_recv_exact(int fd, uint8_t *dst, size_t n)
 
 
 
-static ssize_t win_index(uint32_t xid)
+static ssize_t fb_index(uint32_t xid)
 {
-  for (size_t i = 0; i < g_wins_n; i++) {
-    if (g_wins[i].xid == xid) return (ssize_t)i;
+  for (size_t i = 0; i < g_fb_n; i++) {
+    if (g_fb[i].xid == xid) return (ssize_t)i;
   }
   return -1;
 }
 
-static x11_win_t* win_find(uint32_t xid)
+static x11_fb_slot_t* fb_find(uint32_t xid)
 {
-  const ssize_t idx = win_index(xid);
-  return (idx >= 0) ? &g_wins[(size_t)idx] : NULL;
+  const ssize_t idx = fb_index(xid);
+  return (idx >= 0) ? &g_fb[(size_t)idx] : NULL;
 }
 
 // Add a new window slot and keep g_framebuffers[] aligned.
 // Returns the index on success, -1 on failure.
 static ssize_t win_add(uint32_t xid)
 {
-  if (g_wins_n >= (sizeof(g_wins)/sizeof(g_wins[0]))) return -1;
+  if (g_fb_n >= (sizeof(g_fb)/sizeof(g_fb[0]))) return -1;
 
-  const size_t idx = g_wins_n++;
-  x11_win_t* w = &g_wins[idx];
+  const size_t idx = g_fb_n++;
+  x11_fb_slot_t* w = &g_fb[idx];
   memset(w, 0, sizeof(*w));
   w->xid = xid;
-
-  // IMPORTANT: keep framebuffer slot in a known state.
-  x11_fb_t* fb = &g_framebuffers[idx];
-  memset(fb, 0, sizeof(*fb));
 
   return (ssize_t)idx;
 }
 
 
-#ifndef NDEBUG
-static void dbg_dump_windows_brief(const char* tag, uint32_t target_xid) {
-  fprintf(stderr, "[SwiftX11][SNAP] %s: target=0x%08X g_wins_n=%zu\n",
-          tag, (unsigned)target_xid, g_wins_n);
 
-  // Dump up to first 64 windows for sanity.
-  size_t limit = g_wins_n < 64 ? g_wins_n : 64;
-  for (size_t i = 0; i < limit; i++) {
-    const x11_win_t* w = &g_wins[i];
-    if (!w->xid) continue;
-
-    fprintf(stderr,
-            "[SwiftX11][SNAP]   i=%zu xid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u mapped=%u presentable=%u dirty=%u owner_fd=%d mask=0x%08X\n",
-            i,
-            (unsigned)w->xid,
-            (unsigned)w->parent,
-            (int)w->x, (int)w->y,
-            (unsigned)w->w, (unsigned)w->h,
-            (unsigned)w->mapped,
-            (unsigned)w->presentable,
-            (unsigned)w->dirty,
-            (int)w->owner_fd,
-            (unsigned)w->event_mask);
-  }
-}
-#endif
-
-
-int x11_xproto_snapshot_window_view(uint32_t xid,
-                                   int16_t* out_x,
-                                   int16_t* out_y,
-                                   uint16_t* out_w,
-                                   uint16_t* out_h,
-                                   uint32_t* out_event_mask,
-                                   int* out_mapped,
-                                   int* out_owner_fd)
-{
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11][SNAP] ENTER xid=0x%08X\n", (unsigned)xid);
-#endif
-  const x11_win_t* found = NULL;
-  size_t found_i = (size_t)-1;
-
-  // Scan g_wins[] linearly (don’t call win_find yet; we want to verify it)
-  for (size_t i = 0; i < g_wins_n; i++) {
-    const x11_win_t* w = &g_wins[i];
-    if (w->xid == xid) {
-      found = w;
-      found_i = i;
-      break;
-    }
-  }
-
-  if (!found) {
-#ifndef NDEBUG
-    fprintf(stderr, "[SwiftX11][SNAP] NOT FOUND xid=0x%08X\n", (unsigned)xid);
-    dbg_dump_windows_brief("NOT_FOUND_DUMP", xid);
-
-    // Also try to find “neighbors”: host/child patterns
-    // (This is helpful if you know host is xid-1 or parent is 0x1000000A, etc.)
-#endif
-    return 0;
-  }
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11][SNAP] FOUND xid=0x%08X at i=%zu parent=0x%08X owner_fd=%d mapped=%u presentable=%u dirty=%u mask=0x%08X wh=%ux%u\n",
-          (unsigned)xid,
-          found_i,
-          (unsigned)found->parent,
-          (int)found->owner_fd,
-          (unsigned)found->mapped,
-          (unsigned)found->presentable,
-          (unsigned)found->dirty,
-          (unsigned)found->event_mask,
-          (unsigned)found->w,
-          (unsigned)found->h);
-#endif
-
-  // Fill outputs (use found-> fields)
-  if (out_x) *out_x = found->x;
-  if (out_y) *out_y = found->y;
-  if (out_w) *out_w = found->w;
-  if (out_h) *out_h = found->h;
-  if (out_event_mask) *out_event_mask = found->event_mask;
-  if (out_mapped) *out_mapped = found->mapped ? 1 : 0;
-  if (out_owner_fd) *out_owner_fd = found->owner_fd;
-
-//  x11_win_t* w = win_find(xid);
-//  if (!w) {    
-//    return 0;
-//  }
-//  
-//  if (out_x) *out_x = w->x;
-//  if (out_y) *out_y = w->y;
-//  if (out_w) *out_w = w->w;
-//  if (out_h) *out_h = w->h;
-//  if (out_event_mask) *out_event_mask = w->event_mask;
-//  if (out_mapped) *out_mapped = (int)w->mapped;
-//  if (out_owner_fd) *out_owner_fd = w->owner_fd;
-  return 1;
-}
 
 int x11_xproto_copy_window_bgra(uint32_t xid,
                                 uint8_t* out_bytes,
@@ -347,8 +226,8 @@ fprintf(stderr, "[SwiftX11] xproto: copy_window_bgra ENTER xid=0x%08X out_bytes=
           "[SwiftX11] xproto_copy_window_bgra: ************************************************************************* gets called\n");
 #endif
 
-  const ssize_t idx = win_index(xid);
-  x11_fb_t* fb = (idx >= 0) ? &g_framebuffers[(size_t)idx] : NULL;
+  const ssize_t idx = fb_index(xid);
+  x11_fb_slot_t* fb = (idx >= 0) ? &g_fb[(size_t)idx] : NULL;
 
   if (!fb || !fb->pixels || fb->width == 0 || fb->height == 0) {
     if (out_w) *out_w = 0;
@@ -480,58 +359,40 @@ static int x11_send_all_fd(int fd, const void* buf, size_t n)
 
 #include "XProtoWindowCBridge.h" // add near other includes
 
-int x11_xproto_c_create_window_slot(uint32_t wid,
-                                   uint32_t parent,
-                                   int16_t x,
-                                   int16_t y,
-                                   uint16_t wpx,
-                                   uint16_t hpx,
-                                   uint32_t event_mask,
-                                   int owner_fd,
-                                   int* out_dirty)
+int x11_backend_fb_create_slot(uint32_t wid,
+                               uint16_t wpx,
+                               uint16_t hpx,
+                               int owner_fd,
+                               int* out_dirty)
 {
   if (out_dirty) *out_dirty = 0;
   if (wid == 0) return 0;
 
-  // Create or overwrite (idempotent-ish), keep alignment g_wins[] <-> g_framebuffers[].
-  ssize_t idx = win_index(wid);
+  // Create or overwrite (idempotent-ish)
+  ssize_t idx = fb_index(wid);
   if (idx < 0) idx = win_add(wid);
   if (idx < 0) return 0;
 
-  x11_win_t* w = &g_wins[(size_t)idx];
+  x11_fb_slot_t* w = &g_fb[(size_t)idx];
 
   // Mirror exactly what handle_CreateWindow used to do
-  w->parent      = parent;
-  w->x           = x;
-  w->y           = y;
-  w->w           = (wpx ? wpx : 1);
-  w->h           = (hpx ? hpx : 1);
-  w->mapped      = 0;
-  w->dirty       = 0;
-  w->event_mask  = event_mask;
-  w->presentable = 0;
+  w->width       = (wpx ? wpx : 1);
+  w->height      = (hpx ? hpx : 1);
   w->owner_fd    = owner_fd;
 
-  // Initialize/re-init framebuffer at SAME index.
-  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-
-  if (fb->pixels) {
-    free(fb->pixels);
-    fb->pixels = NULL;
+  if (w->pixels) {
+    free(w->pixels);
+    w->pixels = NULL;
   }
 
-  fb->width  = (uint32_t)w->w;
-  fb->height = (uint32_t)w->h;
-
-  fb->pixels = (uint32_t*)malloc((size_t)fb->width * (size_t)fb->height * sizeof(uint32_t));
-  if (fb->pixels) {
-    const size_t npx = (size_t)fb->width * (size_t)fb->height;
-    for (size_t i = 0; i < npx; i++) fb->pixels[i] = 0xFFFFFFFFu;
-    w->dirty = 1;
+  w->pixels = (uint32_t*)malloc((size_t)w->width * (size_t)w->height * sizeof(uint32_t));
+  if (w->pixels) {
+    const size_t npx = (size_t)w->width * (size_t)w->height;
+    for (size_t i = 0; i < npx; i++) w->pixels[i] = 0xFFFFFFFFu;
     if (out_dirty) *out_dirty = 1;
   } else {
-    fb->width = 0;
-    fb->height = 0;
+    w->width = 0;
+    w->height = 0;
     return 0; // safest: fail hard if FB alloc fails
   }
 
@@ -548,10 +409,10 @@ int x11_xproto_window_fb_rw(uint32_t xid,
   if (outW) *outW = 0;
   if (outH) *outH = 0;
 
-  const ssize_t idx = win_index(xid);
+  const ssize_t idx = fb_index(xid);
   if (idx < 0) return 0;
 
-  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
+  x11_fb_slot_t* fb = &g_fb[(size_t)idx];
   if (!fb->pixels || fb->width == 0 || fb->height == 0) return 0;
 
   if (outPixels) *outPixels = fb->pixels;
@@ -560,93 +421,26 @@ int x11_xproto_window_fb_rw(uint32_t xid,
   return 1;
 }
 
-// Use the existing deferral logic (mapped/presentable gating) in C
-void x11_xproto_enqueue_damage(uint32_t xid)
-{
-  enqueue_damage_window(xid);
-}
 
-
-
-// C-side backing store cleanup only.
+// Backing store cleanup only (window framebuffer memory).
 void x11_backend_fb_destroy(uint32_t wid)
 {
   if (wid == 0) return;
 
-  for (size_t i = 0; i < g_wins_n; i++) {
-    if (g_wins[i].xid == wid) {
-      if (g_framebuffers[i].pixels) {
-        free(g_framebuffers[i].pixels);
-        g_framebuffers[i].pixels = NULL;
-      }
+  for (size_t i = 0; i < g_fb_n; i++) {
+    if (g_fb[i].xid == wid) {
+      free(g_fb[i].pixels);
+      g_fb[i].pixels = NULL;
 
-      size_t last = g_wins_n - 1;
+      size_t last = g_fb_n - 1;
       if (i != last) {
-        g_wins[i] = g_wins[last];
-        g_framebuffers[i] = g_framebuffers[last];
+        g_fb[i] = g_fb[last];
       }
-      g_wins_n--;
+      g_fb_n--;
       return;
     }
   }
 }
-
-
-// in x11_xproto.c
-void x11_xproto_c_window_set_mapped(uint32_t xid, int mapped) {
-  x11_win_t* w = win_find(xid);
-  if (!w) return;
-  w->mapped = mapped ? 1 : 0;
-}
-
-// in x11_xproto.c
-void x11_xproto_c_window_set_presentable(uint32_t xid, int presentable) {
-  x11_win_t* w = win_find(xid);
-  if (!w) return;
-  w->presentable = presentable ? 1 : 0;
-}
-
-
-
-// Minimal bridge: keep C-side w->event_mask in sync while we migrate handlers to C++.
-void x11_xproto_c_set_window_event_mask(uint32_t xid, uint32_t event_mask)
-{
-  x11_win_t* w = win_find(xid);
-  if (!w) return;
-  w->event_mask = event_mask;
-}
-
-int x11_xproto_apply_map_window(uint32_t wid)
-{
-  if (wid == 0) return 0;
-  x11_win_t* w = win_find(wid);
-  if (!w) return 0;
-
-  // Match old handle_MapWindow behavior:
-  w->mapped = 1;
-  enqueue_map_window(wid);
-
-  // If anything drew while unmapped, flush exactly once now,
-  // but only if presentable.
-  if (w->dirty && w->presentable) {
-    w->dirty = 0;
-    enqueue_damage_window(wid);
-  }
-
-  return 1;
-}
-
-
-// x11_xproto.c
-int x11_xproto_window_set_mapped(uint32_t wid, int mapped)
-{
-  x11_win_t* w = win_find(wid);
-  if (!w) return 0;
-  w->mapped = mapped ? 1 : 0;
-  if (!mapped) w->dirty = 1; // matches your existing behavior
-  return 1;
-}
-
 
 extern int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
 
@@ -937,267 +731,97 @@ typedef struct {
 
 
 
-static void resize_window_and_fb(uint32_t wid, uint16_t new_w, uint16_t new_h)
+static void resize_window_and_fb(uint32_t wid, uint32_t new_w, uint32_t new_h)
 {
   if (wid == 0) return;
   if (new_w == 0) new_w = 1;
   if (new_h == 0) new_h = 1;
 
-  x11_win_t* w = win_find(wid);
+  x11_fb_slot_t* w = fb_find(wid);  
   if (!w) return;
 
-  const uint16_t old_w = w->w;
-  const uint16_t old_h = w->h;
+  const uint32_t old_w = w->width;
+  const uint32_t old_h = w->height;
 
   if (new_w == old_w && new_h == old_h) return;
 
-  w->w = new_w;
-  w->h = new_h;
+  const size_t new_npx = (size_t)new_w * (size_t)new_h;
 
-  const ssize_t idx = win_index(wid);
-  if (idx < 0) return;
-
-  x11_fb_t* fb = &g_framebuffers[(size_t)idx];
-  const uint32_t new_fb_w = (uint32_t)new_w;
-  const uint32_t new_fb_h = (uint32_t)new_h;
-  const size_t new_npx = (size_t)new_fb_w * (size_t)new_fb_h;
-
-  // Allocate-first then swap, so we don't lose old buffer on malloc failure
+  // Allocate-first so failure leaves old buffer + old dims intact.
   uint32_t* new_pixels = (uint32_t*)malloc(new_npx * sizeof(uint32_t));
   if (!new_pixels) return;
 
-  // Initialize new buffer to white.
-  for (size_t i = 0; i < new_npx; i++) {
-    new_pixels[i] = 0xFFFFFFFFu;
-  }
+  // Initialize to white.
+  for (size_t i = 0; i < new_npx; i++) new_pixels[i] = 0xFFFFFFFFu;
 
-  // Preserve old contents in the overlapping region.
-  const uint32_t old_fb_w = fb->width;
-  const uint32_t old_fb_h = fb->height;
-  const uint32_t copy_w = (old_fb_w < new_fb_w) ? old_fb_w : new_fb_w;
-  const uint32_t copy_h = (old_fb_h < new_fb_h) ? old_fb_h : new_fb_h;
+  // Preserve overlapping region.
+  const uint32_t copy_w = (old_w < new_w) ? old_w : new_w;
+  const uint32_t copy_h = (old_h < new_h) ? old_h : new_h;
 
-  if (fb->pixels && copy_w && copy_h) {
+  if (w->pixels && copy_w && copy_h) {
     for (uint32_t yy = 0; yy < copy_h; yy++) {
-      const uint32_t* src_row = fb->pixels + (size_t)yy * (size_t)old_fb_w;
-      uint32_t* dst_row = new_pixels + (size_t)yy * (size_t)new_fb_w;
+      const uint32_t* src_row = w->pixels + (size_t)yy * (size_t)old_w;
+      uint32_t* dst_row       = new_pixels + (size_t)yy * (size_t)new_w;
       memcpy(dst_row, src_row, (size_t)copy_w * sizeof(uint32_t));
     }
   }
 
-  free(fb->pixels);
-  fb->pixels = new_pixels;
-  fb->width  = new_fb_w;
-  fb->height = new_fb_h;
+  // Swap in new buffer + dims.
+  free(w->pixels);
+  w->pixels = new_pixels;
+  w->width  = new_w;
+  w->height = new_h;
 }
 
+#include <string.h> // memcpy
 
-void x11_xproto_apply_rootless_resize_on_server_thread(uint32_t wid,
-                                                       int32_t w_px,
-                                                       int32_t h_px)
+void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h)
 {
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] entered xproto_apply_rootless_resize: wid=%d\n",
-        wid);
-#endif
-  
   if (wid == 0) return;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
-
-  x11_win_t* w = win_find(wid);
-  if (!w) return;
-
-#ifndef NDEBUG
-fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize: xid=0x%08X %dx%d\n",
-        (unsigned)wid, (int)w_px, (int)h_px);
-#endif
-  
-  const uint16_t old_w = w->w;
-  const uint16_t old_h = w->h;
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize (old): xid=0x%08X %dx%d\n",
-        (unsigned)wid, (int)old_w, (int)old_h);
-#endif
-
-  
-  // Update server-truth geometry (Cocoa authoritative)
-  uint16_t new_w = (uint16_t)w_px;
-  uint16_t new_h = (uint16_t)h_px;
   if (new_w == 0) new_w = 1;
   if (new_h == 0) new_h = 1;
 
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] xproto_apply_rootless_resize (new): xid=0x%08X %dx%d\n",
-        (unsigned)wid, (int)new_w, (int)new_h);
-#endif
+  x11_fb_slot_t* s = fb_find(wid);
+  if (!s) return;
 
-  // If nothing changed, you can early-out (or still damage if you want)
-  if (new_w == old_w && new_h == old_h) {
-    // Optional: enqueue_damage_window(wid);
-    return;
-  }
+  const uint32_t old_w = s->width;
+  const uint32_t old_h = s->height;
 
-  // compute the scale factors
-  float sx = (old_w > 0) ? ((float)new_w / (float)old_w) : 1.0f;
-  float sy = (old_h > 0) ? ((float)new_h / (float)old_h) : 1.0f;
-  
-  // Resize the top-level window + framebuffer.
-  resize_window_and_fb(wid, new_w, new_h);
-  // Keep C++ authoritative WindowTable in sync
-  x11_proto_bridge_window_set_geometry(wid, w->x, w->y, new_w, new_h);
-  
-  // Notify the owning client that geometry changed, so it can recompute & redraw.
-  // IMPORTANT: do NOT write to the client socket from this thread.
-  // Queue the notifications and let the xproto thread flush them.
-  {
-    x11_win_t* ww = win_find(wid);
-    if (ww && (new_w != old_w || new_h != old_h)) {
-      const int want_cfg = (ww->event_mask & (1u << 17)) ? 1 : 0; // StructureNotifyMask
-      const int want_exp = (ww->event_mask & (1u << 15)) ? 1 : 0; // ExposureMask
-      if (want_cfg || want_exp) {
-#ifndef NDEBUG
-fprintf(stderr,
-        "[SwiftX11] rootless_resize: QUEUE host notify wid=0x%08X cfg=%d exp=%d mask=0x%08X\n",
-        (unsigned)wid, want_cfg, want_exp,
-        ww ? (unsigned)ww->event_mask : 0u);
-#endif
-        x11_proto_bridge_queue_notify(wid, want_cfg, want_exp);
-      }
+  const uint32_t w = (uint32_t)new_w;
+  const uint32_t h = (uint32_t)new_h;
+
+  if (w == old_w && h == old_h) return;
+
+  const size_t new_npx = (size_t)w * (size_t)h;
+
+  // Allocate-first; leave old buffer intact on failure.
+  uint32_t* new_pixels = (uint32_t*)malloc(new_npx * sizeof(uint32_t));
+  if (!new_pixels) return;
+
+  // Init white.
+  for (size_t i = 0; i < new_npx; i++) new_pixels[i] = 0xFFFFFFFFu;
+
+  // Preserve overlap.
+  const uint32_t copy_w = (old_w < w) ? old_w : w;
+  const uint32_t copy_h = (old_h < h) ? old_h : h;
+
+  if (s->pixels && copy_w && copy_h) {
+    for (uint32_t yy = 0; yy < copy_h; yy++) {
+      const uint32_t* src_row = s->pixels + (size_t)yy * (size_t)old_w;
+      uint32_t* dst_row       = new_pixels + (size_t)yy * (size_t)w;
+      memcpy(dst_row, src_row, (size_t)copy_w * sizeof(uint32_t));
     }
   }
-  
-  // Rootless-resize child handling:
-  // Prefer correctness by propagating geometry changes to children rather than
-  // scaling pixels.
-  //
-  // Rules (direct children of `wid` only):
-  //  1) If a child exactly covered the old parent at (0,0), keep it covering.
-  //  2) Else if a child is anchored at (0,0), scale its size.
-  //  3) Else scale both position and size.
-  //
-  // NOTE: This is a heuristic; real X11 toolkits often manage layout via
-  // ConfigureWindow from the client, but rootless hosts commonly need this.
 
-  for (size_t i = 0; i < g_wins_n; i++) {
-    x11_win_t* c = &g_wins[i];
-    if (!c->xid) continue;
-    if (c->parent != wid) continue;
-
-    // Snapshot old child geometry.
-    const int16_t  cx0 = c->x;
-    const int16_t  cy0 = c->y;
-    const uint16_t cw0 = c->w;
-    const uint16_t ch0 = c->h;
-
-    // Compute new child geometry.
-    int16_t  cx1 = cx0;
-    int16_t  cy1 = cy0;
-    uint16_t cw1 = cw0;
-    uint16_t ch1 = ch0;
-
-    const int covered_old_parent = (cx0 == 0 && cy0 == 0 && cw0 == old_w && ch0 == old_h);
-    const int anchored_origin    = (cx0 == 0 && cy0 == 0);
-
-    if (covered_old_parent) {
-      // Case 1: canonical covering child.
-      cx1 = 0;
-      cy1 = 0;
-      cw1 = new_w;
-      ch1 = new_h;
-    } else if (anchored_origin) {
-      // Case 2: anchored at origin; scale size.
-      // Use the host scale factors computed above.
-      int nw = (int)lroundf((float)cw0 * sx);
-      int nh = (int)lroundf((float)ch0 * sy);
-      if (nw < 1) nw = 1;
-      if (nh < 1) nh = 1;
-      cw1 = (uint16_t)nw;
-      ch1 = (uint16_t)nh;
-    } else {
-      // Case 3: scale both position and size.
-      int nx = (int)lroundf((float)cx0 * sx);
-      int ny = (int)lroundf((float)cy0 * sy);
-      int nw = (int)lroundf((float)cw0 * sx);
-      int nh = (int)lroundf((float)ch0 * sy);
-      if (nw < 1) nw = 1;
-      if (nh < 1) nh = 1;
-      cx1 = (int16_t)nx;
-      cy1 = (int16_t)ny;
-      cw1 = (uint16_t)nw;
-      ch1 = (uint16_t)nh;
-    }
-
-    // No-op if nothing changed.
-    if (cx1 == cx0 && cy1 == cy0 && cw1 == cw0 && ch1 == ch0) {
-      continue;
-    }
-
-#ifndef NDEBUG
-    fprintf(stderr,
-            "[SwiftX11] rootless_resize: child xid=0x%08X (%d,%d %ux%u) -> (%d,%d %ux%u) host old %ux%u new %ux%u\n",
-            (unsigned)c->xid,
-            (int)cx0, (int)cy0, (unsigned)cw0, (unsigned)ch0,
-            (int)cx1, (int)cy1, (unsigned)cw1, (unsigned)ch1,
-            (unsigned)old_w, (unsigned)old_h,
-            (unsigned)new_w, (unsigned)new_h);
-#endif
-
-    // Apply geometry change in xproto truth.
-    c->x = cx1;
-    c->y = cy1;
-
-    // Resize backing FB (and update w/h) using the shared helper.
-    resize_window_and_fb(c->xid, cw1, ch1);
-    x11_proto_bridge_window_set_geometry(c->xid, c->x, c->y, cw1, ch1);
-    fprintf(stderr, "[SwiftX11] rootless_resize: resized child xid=0x%08X fb now %ux%u\n",
-            (unsigned)c->xid,
-            (unsigned)g_framebuffers[win_index(c->xid)].width,
-            (unsigned)g_framebuffers[win_index(c->xid)].height);
-    
-    // Notify client on xproto thread.
-    {
-      x11_win_t* cc = win_find(c->xid);
-      if (cc) {
-        const int want_cfg = (cc->event_mask & (1u << 17)) ? 1 : 0; // StructureNotifyMask
-        const int want_exp = (cc->event_mask & (1u << 15)) ? 1 : 0; // ExposureMask
-#ifndef NDEBUG
-fprintf(stderr,
-        "[SwiftX11] rootless_resize: QUEUE child notify wid=0x%08X cfg=%d exp=%d mapped=%d mask=0x%08X parent=0x%08X\n",
-        (unsigned)cc->xid, want_cfg, want_exp,
-        (int)cc->mapped,
-        (unsigned)cc->event_mask,
-        (unsigned)cc->parent);
-#endif
-        if (want_cfg || want_exp) {
-          x11_proto_bridge_queue_notify(cc->xid, want_cfg, want_exp);
-        }
-      }
-    }
-
-    // Ensure the UI presents updated contents.
-    enqueue_damage_window(c->xid);
-
-    // Also enqueue a ConfigureWindow event to the shim so Cocoa/Swift can track size.
-    // (No socket write; this just feeds the Swift side.)
-    enqueue_configure_window(c->xid, c->x, c->y, c->w, c->h);
-  }
-  
-  // Mark the host as damaged too.
-  enqueue_damage_window(wid);
-  
-  
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] ROOTLESS_RESIZE apply xid=0x%08X %u×%u (old %u×%u)\n",
-          (unsigned)wid, (unsigned)new_w, (unsigned)new_h,
-          (unsigned)old_w, (unsigned)old_h);
-#endif
+  free(s->pixels);
+  s->pixels = new_pixels;
+  s->width  = w;
+  s->height = h;
 }
 
+
+
 void x11_xproto_apply_configure_from_cpp(uint32_t wid,
-                                         int16_t x, int16_t y,
                                          uint16_t w, uint16_t h,
                                          int resize_fb)
 {
@@ -1205,16 +829,14 @@ void x11_xproto_apply_configure_from_cpp(uint32_t wid,
   if (w == 0) w = 1;
   if (h == 0) h = 1;
 
-  x11_win_t* ww = win_find(wid);
+  x11_fb_slot_t* ww = fb_find(wid);
   if (!ww) return;
 
-  const uint16_t old_w = ww->w;
-  const uint16_t old_h = ww->h;
+  const uint16_t old_w = ww->width;
+  const uint16_t old_h = ww->height;
 
-  ww->x = x;
-  ww->y = y;
-  ww->w = w;
-  ww->h = h;
+  ww->width = w;
+  ww->height = h;
 
   if (resize_fb && (w != old_w || h != old_h)) {
     // reuse your existing helper (it already allocs white + preserves overlap)
@@ -1233,7 +855,7 @@ void x11_xproto_set_window_presentable(uint32_t xid)
 {
   if (xid == 0) return;
   
-  x11_win_t* w = win_find(xid);
+  x11_fb_slot_t* w = fb_find(xid);
   if (!w) return;
   
   x11_proto_bridge_window_set_presentable(xid, 1);
@@ -1366,24 +988,24 @@ if (major >= 128) {
   
   if (should_cleanup) {
     // Client disconnected: destroy all windows owned by this client
-    for (size_t i = 0; i < g_wins_n; ) {
-      if (g_wins[i].owner_fd == cfd) {
-        uint32_t wid = g_wins[i].xid;
+    for (size_t i = 0; i < g_fb_n; ) {
+      if (g_fb[i].owner_fd == cfd) {
+        uint32_t wid = g_fb[i].xid;
         x11_proto_bridge_window_erase(wid);
 
         // free framebuffer
-        if (g_framebuffers[i].pixels) {
-          free(g_framebuffers[i].pixels);
-          g_framebuffers[i].pixels = NULL;
+        if (g_fb[i].pixels) {
+          free(g_fb[i].pixels);
+          g_fb[i].pixels = NULL;
         }
 
         // swap-with-last (keep aligned)
-        size_t last = g_wins_n - 1;
+        size_t last = g_fb_n - 1;
         if (i != last) {
-          g_wins[i] = g_wins[last];
-          g_framebuffers[i] = g_framebuffers[last];
+          g_fb[i] = g_fb[last];
+          g_fb[i] = g_fb[last];
         }
-        g_wins_n--;
+        g_fb_n--;
 
         enqueue_destroy_window(wid);
         continue; // re-check swapped entry
@@ -1566,8 +1188,8 @@ int x11_backend_copy_window_bgra(uint32_t xid,
                                  int32_t* out_h,
                                  int32_t* out_bpr)
 {
-  const ssize_t idx = win_index(xid);
-  x11_fb_t* fb = (idx >= 0) ? &g_framebuffers[(size_t)idx] : NULL;
+  const ssize_t idx = fb_index(xid);
+  x11_fb_slot_t* fb = (idx >= 0) ? &g_fb[(size_t)idx] : NULL;
 
   if (!fb || !fb->pixels || fb->width == 0 || fb->height == 0) {
     if (out_w) *out_w = 0;
