@@ -45,7 +45,6 @@ typedef struct {
   union {
     struct { int32_t w_px, h_px; } create;
     struct { int32_t w_px, h_px; } configure;
-    struct { int32_t w_px, h_px; } resize;
     struct { int32_t w_px, h_px; } rootless_resize;
   } u;
 } x11_client_req_t;
@@ -384,8 +383,8 @@ int x11_requests_push_rootless_resize(uint32_t xid, int32_t w_px, int32_t h_px)
   x11_client_req_t r = {0};
   r.type = X11_REQ_ROOTLESS_RESIZE;
   r.xid = xid;
-  r.u.resize.w_px = w_px;
-  r.u.resize.h_px = h_px;
+  r.u.rootless_resize.w_px = w_px;
+  r.u.rootless_resize.h_px = h_px;
   
   x11_backend_lock();
   int ok = req_push_locked(&r);
