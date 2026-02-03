@@ -31,6 +31,8 @@ typedef void (*x11_window_closed_cb)(
 // ---- Server lifecycle
 bool x11_start_server(int32_t display);
 void x11_stop_server(void);
+int  x11_proto_start_daemon(int display);
+void x11_proto_stop_daemon(void);
 
 void x11_register_callbacks(
     x11_window_created_cb on_create,
@@ -223,6 +225,7 @@ void x11_post_window_presentable(uint32_t xid);
 // Only w/h are provided; x/y are unchanged and remain authoritative in C++ WindowTable.
 void x11_xproto_apply_rootless_resize_on_server_thread(uint32_t wid, int32_t w_px, int32_t h_px);
 
+  
 #ifdef __cplusplus
 }
 #endif

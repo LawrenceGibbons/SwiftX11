@@ -41,7 +41,10 @@ final class XServerController: ObservableObject {
       name: .x11StopRequested,
       object: nil
     )
+    
+    start()
   }
+  
   
   @objc private func _handleStartRequested(_ note: Notification) {
     start()

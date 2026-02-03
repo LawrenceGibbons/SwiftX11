@@ -526,9 +526,8 @@ bool x11_start_server(int32_t display)
   x11_server_runloop_start();
 
   // Start the (scaffold) X11 socket listener so external X11 clients can connect.
-  x11_xproto_listener_start( display );
-  
-  return true;
+  int ok = x11_proto_start_daemon((int)display);
+  return ok ? true : false;
 }
 
 void x11_stop_server(void)
@@ -1671,5 +1670,4 @@ void x11_xproto_apply_rootless_resize_on_server_thread(uint32_t wid, int32_t w_p
 {
   x11_proto_bridge_apply_rootless_resize(wid, w_px, h_px);
 }
-
 

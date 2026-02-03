@@ -502,7 +502,7 @@ static void dbg_check_reply_total(const char* op, uint16_t seq, size_t total_byt
 
 
 
-static void x11_send_setup_failed_le(int fd, const char* reason)
+void x11_send_setup_failed_le(int fd, const char* reason)
 {
   if (!reason) reason = "not implemented";
 
@@ -538,7 +538,7 @@ static void x11_send_setup_failed_le(int fd, const char* reason)
 
 // Minimal SetupSuccess reply sufficient to get real clients to start sending requests.
 // Little-endian only for now; uses unaligned stores.
-static void x11_send_setup_success_minimal_little_endian(int fd)
+void x11_send_setup_success_minimal_little_endian(int fd)
 {
   // ---- Tunables / IDs
   const uint16_t proto_major = 11;
@@ -851,292 +851,291 @@ void x11_xproto_apply_configure_from_cpp(uint32_t wid,
 // ----------------------------------------------------------------------------
 // Request pump + dispatcher
 // ----------------------------------------------------------------------------
-void drain_requests(int cfd)
-{
-  // Small recv timeout so we can notice stop without blocking forever.
-  struct timeval tv;
-  tv.tv_sec = 0;
-  tv.tv_usec = 100 * 1000;
-  (void)setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
-
-  uint16_t seq = 0;
-  g_current_client_fd = cfd;
-  // Record the xproto client thread for cross-thread safety checks.
-  g_xproto_thread = pthread_self();
-  g_xproto_thread_valid = 1;
-  dbg_set_xproto_thread(pthread_self());
-  
-  bool should_cleanup = true;
-
-  for (;;) {
-    // Flush any pending synthetic events requested by other threads.
-    x11_proto_bridge_flush_notify_queue();
-    //    flush_notify_queue(cfd);
-    if (atomic_load_explicit(&g_stop, memory_order_relaxed)) {
-      should_cleanup = false;
-      break; // stop requested -> break out to disconnect cleanup
-    }
-
-    uint8_t hdr[4];
-    int hr = x11_recv_all(cfd, hdr, sizeof(hdr));
-    if (hr == 0) break;        // client closed connection
-    if (hr == -2) continue;    // timeout, retry
-    if (hr < 0) break;         // real socket error
-
-
-    const uint8_t major = hdr[0];
-    const uint8_t minor = hdr[1];
-    const uint16_t len_words = (uint16_t)(hdr[2] | ((uint16_t)hdr[3] << 8));
-    if (len_words == 0) break;
-
-    const size_t total = (size_t)len_words * 4u;
-    if (total < 4u) break;
-    const size_t remain = total - 4u;
-
-    seq++;
-    x11_proto_bridge_note_last_seq(seq);
-//    atomic_store_explicit(&g_last_seq, seq, memory_order_relaxed);
-    
-    uint8_t stack_buf[4096];
-    uint8_t* payload = stack_buf;
-    uint8_t* heap_buf = NULL;
-
-    // Try to allocate if body is larger than stack buffer
-    if (remain > sizeof(stack_buf)) {
-      heap_buf = malloc(remain);
-      if (!heap_buf) {
-        // allocation failed -> break entire loop
-        break;
-      }
-      payload = heap_buf;
-    }
-
-
-    // read request body
-    int rr = x11_recv_exact(cfd, payload, remain);
-    if (rr == 1) {
-      // ok
-    } else if (rr == -2) {
-      // timeout while reading body — treat as disconnect for now (safe)
-      break;
-    } else {
-      // rr==0 EOF or rr<0 fatal => break out (disconnect)
-      break;
-    }
-    
-    
-    
+//void drain_requests(int cfd)
+//{
+//  // Small recv timeout so we can notice stop without blocking forever.
+//  struct timeval tv;
+//  tv.tv_sec = 0;
+//  tv.tv_usec = 100 * 1000;
+//  (void)setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
+//
+//  uint16_t seq = 0;
+//  g_current_client_fd = cfd;
+//  // Record the xproto client thread for cross-thread safety checks.
+//  g_xproto_thread = pthread_self();
+//  g_xproto_thread_valid = 1;
+//  dbg_set_xproto_thread(pthread_self());
+//  
+//  bool should_cleanup = true;
+//
+//  for (;;) {
+//    // Flush any pending synthetic events requested by other threads.
+//    x11_proto_bridge_flush_notify_queue();
+//    //    flush_notify_queue(cfd);
+//    if (atomic_load_explicit(&g_stop, memory_order_relaxed)) {
+//      should_cleanup = false;
+//      break; // stop requested -> break out to disconnect cleanup
+//    }
+//
+//    uint8_t hdr[4];
+//    int hr = x11_recv_all(cfd, hdr, sizeof(hdr));
+//    if (hr == 0) break;        // client closed connection
+//    if (hr == -2) continue;    // timeout, retry
+//    if (hr < 0) break;         // real socket error
+//
+//
+//    const uint8_t major = hdr[0];
+//    const uint8_t minor = hdr[1];
+//    const uint16_t len_words = (uint16_t)(hdr[2] | ((uint16_t)hdr[3] << 8));
+//    if (len_words == 0) break;
+//
+//    const size_t total = (size_t)len_words * 4u;
+//    if (total < 4u) break;
+//    const size_t remain = total - 4u;
+//
+//    seq++;
+//    x11_proto_bridge_note_last_seq(seq);
+//    
+//    uint8_t stack_buf[4096];
+//    uint8_t* payload = stack_buf;
+//    uint8_t* heap_buf = NULL;
+//
+//    // Try to allocate if body is larger than stack buffer
+//    if (remain > sizeof(stack_buf)) {
+//      heap_buf = malloc(remain);
+//      if (!heap_buf) {
+//        // allocation failed -> break entire loop
+//        break;
+//      }
+//      payload = heap_buf;
+//    }
+//
+//
+//    // read request body
+//    int rr = x11_recv_exact(cfd, payload, remain);
+//    if (rr == 1) {
+//      // ok
+//    } else if (rr == -2) {
+//      // timeout while reading body — treat as disconnect for now (safe)
+//      break;
+//    } else {
+//      // rr==0 EOF or rr<0 fatal => break out (disconnect)
+//      break;
+//    }
+//    
+//    
+//    
+////#ifndef NDEBUG
+//if (major == 62 || major == 63) {
+//  fprintf(stderr, "[SwiftX11] DISPATCH major=%u (Copy%s)\n",
+//          (unsigned)major, (major == 62) ? "Area" : "Plane");
+//}
+//if (major >= 128) {
+//  fprintf(stderr, "[SwiftX11] DISPATCH extension opcode=%u minor=%u len_words=%u\n",
+//          (unsigned)major, (unsigned)minor, (unsigned)len_words);
+//}
+////zThe#endif    
+//    // Dispatch
+//    int handled = x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
+//    if (!handled) {
+//      
+//      switch (major) {
+//                    
+//        default:
 //#ifndef NDEBUG
-if (major == 62 || major == 63) {
-  fprintf(stderr, "[SwiftX11] DISPATCH major=%u (Copy%s)\n",
-          (unsigned)major, (major == 62) ? "Area" : "Plane");
-}
-if (major >= 128) {
-  fprintf(stderr, "[SwiftX11] DISPATCH extension opcode=%u minor=%u len_words=%u\n",
-          (unsigned)major, (unsigned)minor, (unsigned)len_words);
-}
-//zThe#endif    
-    // Dispatch
-    int handled = x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
-    if (!handled) {
-      
-      switch (major) {
-                    
-        default:
-#ifndef NDEBUG
-          fprintf(stderr,
-                  "[SwiftX11] xproto: UNHANDLED major=%u minor=%u len_words=%u remain=%zu\n******************************************************************************************\n",
-                  (unsigned)major, (unsigned)minor, (unsigned)len_words, remain);
-#endif
-          break;
-      }
-    }
-    
-    // Flush again after handling a request so synthetic events don't backlog behind traffic.
-    x11_proto_bridge_flush_notify_queue();
-    //flush_notify_queue(cfd);
-    
-    // Always free heap_buf if used
-    if (heap_buf) {
-      fprintf(stderr, "[SwiftX11] freeing heap_buf for major=%u\n", (unsigned)major);
-      free(heap_buf);
-      heap_buf = NULL;
-    }
-  }
-  
-  g_xproto_thread_valid = 0;
-  g_current_client_fd = -1;
-  
-  if (should_cleanup) {
-    // Client disconnected: destroy all windows owned by this client
-    for (size_t i = 0; i < g_fb_n; ) {
-      if (g_fb[i].owner_fd == cfd) {
-        uint32_t wid = g_fb[i].xid;
-        x11_proto_bridge_window_erase(wid);
-
-        // free framebuffer
-        if (g_fb[i].pixels) {
-          free(g_fb[i].pixels);
-          g_fb[i].pixels = NULL;
-        }
-
-        // swap-with-last (keep aligned)
-        size_t last = g_fb_n - 1;
-        if (i != last) {
-          g_fb[i] = g_fb[last];
-          g_fb[i] = g_fb[last];
-        }
-        g_fb_n--;
-
-        enqueue_destroy_window(wid);
-        continue; // re-check swapped entry
-      }
-      i++;
-    }
-  }
-  
-  x11_proto_bridge_flush_notify_queue();
-  //flush_notify_queue(cfd);
-  
-//#if !defined(NDEBUG) && SWIFTX11_TRACE
-  fprintf(stderr, "[SwiftX11] xproto: 787878787878787878787878778787878787878 drain_requests exiting (client closed or error)\n");
+//          fprintf(stderr,
+//                  "[SwiftX11] xproto: UNHANDLED major=%u minor=%u len_words=%u remain=%zu\n******************************************************************************************\n",
+//                  (unsigned)major, (unsigned)minor, (unsigned)len_words, remain);
 //#endif
-}
-
-// ----------------------------------------------------------------------------
-// Listener thread
-// ----------------------------------------------------------------------------
-static void* listener_main(void* _)
-{
-  (void)_;
-
-  for (;;) {
-    if (atomic_load_explicit(&g_stop, memory_order_relaxed)) break;
-
-    int lfd = g_lfd;
-    if (lfd < 0) break;
-
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(lfd, &rfds);
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 100 * 1000;
-
-    int sel = select(lfd + 1, &rfds, NULL, NULL, &tv);
-    if (sel <= 0) continue;
-
-    struct sockaddr_in addr;
-    socklen_t alen = (socklen_t)sizeof(addr);
-    int cfd = accept(lfd, (struct sockaddr*)&addr, &alen);
-    if (cfd < 0) continue;
-
-#if defined(SO_NOSIGPIPE)
-    int one = 1;
-    (void)setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &one, (socklen_t)sizeof(one));
-#endif
-
-    // Read setup request (12 bytes)
-    uint8_t req[12];
-    ssize_t got = recv(cfd, req, sizeof(req), MSG_WAITALL);
-    if (got != (ssize_t)sizeof(req)) {
-      close(cfd);
-      continue;
-    }
-
-    const char byte_order = (char)req[0];
-    if (byte_order != 'l') {
-      x11_send_setup_failed_le(cfd, "SwiftX11: only little-endian supported");
-      close(cfd);
-      continue;
-    }
-
-    // Skip auth
-    uint16_t auth_proto_len = (uint16_t)(req[6] | ((uint16_t)req[7] << 8));
-    uint16_t auth_data_len  = (uint16_t)(req[8] | ((uint16_t)req[9] << 8));
-    size_t skip = 0;
-    skip += ((size_t)auth_proto_len + 3u) & ~3u;
-    skip += ((size_t)auth_data_len  + 3u) & ~3u;
-
-    while (skip) {
-      uint8_t buf[256];
-      size_t want = (skip > sizeof(buf)) ? sizeof(buf) : skip;
-      ssize_t r = recv(cfd, buf, want, MSG_WAITALL);
-      if (r <= 0) break;
-      skip -= (size_t)r;
-    }
-    if (skip != 0) { close(cfd); continue; }
-
-#if !defined(NDEBUG) && SWIFTX11_TRACE
-    fprintf(stderr, "[SwiftX11] xproto: client connected (byte_order=l), replying SetupSuccess(minimal)\n");
-#endif
-
-    x11_send_setup_success_minimal_little_endian(cfd);
-
-    // ************ temporary bridge for C -> C++ transision **************
-    x11_proto_bridge_begin_session(cfd);
-    
-    // Now drain requests
-    drain_requests(cfd);
-
-    x11_proto_bridge_end_session();
-    close(cfd);
-  }
-
-  return NULL;
-}
+//          break;
+//      }
+//    }
+//    
+//    // Flush again after handling a request so synthetic events don't backlog behind traffic.
+//    x11_proto_bridge_flush_notify_queue();
+//    //flush_notify_queue(cfd);
+//    
+//    // Always free heap_buf if used
+//    if (heap_buf) {
+//      fprintf(stderr, "[SwiftX11] freeing heap_buf for major=%u\n", (unsigned)major);
+//      free(heap_buf);
+//      heap_buf = NULL;
+//    }
+//  }
+//  
+//  g_xproto_thread_valid = 0;
+//  g_current_client_fd = -1;
+//  
+//  if (should_cleanup) {
+//    // Client disconnected: destroy all windows owned by this client
+//    for (size_t i = 0; i < g_fb_n; ) {
+//      if (g_fb[i].owner_fd == cfd) {
+//        uint32_t wid = g_fb[i].xid;
+//        x11_proto_bridge_window_erase(wid);
+//
+//        // free framebuffer
+//        if (g_fb[i].pixels) {
+//          free(g_fb[i].pixels);
+//          g_fb[i].pixels = NULL;
+//        }
+//
+//        // swap-with-last (keep aligned)
+//        size_t last = g_fb_n - 1;
+//        if (i != last) {
+//          g_fb[i] = g_fb[last];
+//          g_fb[i] = g_fb[last];
+//        }
+//        g_fb_n--;
+//
+//        enqueue_destroy_window(wid);
+//        continue; // re-check swapped entry
+//      }
+//      i++;
+//    }
+//  }
+//  
+//  x11_proto_bridge_flush_notify_queue();
+//  //flush_notify_queue(cfd);
+//  
+////#if !defined(NDEBUG) && SWIFTX11_TRACE
+//  fprintf(stderr, "[SwiftX11] xproto: 787878787878787878787878778787878787878 drain_requests exiting (client closed or error)\n");
+////#endif
+//}
+//
+//// ----------------------------------------------------------------------------
+//// Listener thread
+//// ----------------------------------------------------------------------------
+//static void* listener_main(void* _)
+//{
+//  (void)_;
+//
+//  for (;;) {
+//    if (atomic_load_explicit(&g_stop, memory_order_relaxed)) break;
+//
+//    int lfd = g_lfd;
+//    if (lfd < 0) break;
+//
+//    fd_set rfds;
+//    FD_ZERO(&rfds);
+//    FD_SET(lfd, &rfds);
+//    struct timeval tv;
+//    tv.tv_sec = 0;
+//    tv.tv_usec = 100 * 1000;
+//
+//    int sel = select(lfd + 1, &rfds, NULL, NULL, &tv);
+//    if (sel <= 0) continue;
+//
+//    struct sockaddr_in addr;
+//    socklen_t alen = (socklen_t)sizeof(addr);
+//    int cfd = accept(lfd, (struct sockaddr*)&addr, &alen);
+//    if (cfd < 0) continue;
+//
+//#if defined(SO_NOSIGPIPE)
+//    int one = 1;
+//    (void)setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &one, (socklen_t)sizeof(one));
+//#endif
+//
+//    // Read setup request (12 bytes)
+//    uint8_t req[12];
+//    ssize_t got = recv(cfd, req, sizeof(req), MSG_WAITALL);
+//    if (got != (ssize_t)sizeof(req)) {
+//      close(cfd);
+//      continue;
+//    }
+//
+//    const char byte_order = (char)req[0];
+//    if (byte_order != 'l') {
+//      x11_send_setup_failed_le(cfd, "SwiftX11: only little-endian supported");
+//      close(cfd);
+//      continue;
+//    }
+//
+//    // Skip auth
+//    uint16_t auth_proto_len = (uint16_t)(req[6] | ((uint16_t)req[7] << 8));
+//    uint16_t auth_data_len  = (uint16_t)(req[8] | ((uint16_t)req[9] << 8));
+//    size_t skip = 0;
+//    skip += ((size_t)auth_proto_len + 3u) & ~3u;
+//    skip += ((size_t)auth_data_len  + 3u) & ~3u;
+//
+//    while (skip) {
+//      uint8_t buf[256];
+//      size_t want = (skip > sizeof(buf)) ? sizeof(buf) : skip;
+//      ssize_t r = recv(cfd, buf, want, MSG_WAITALL);
+//      if (r <= 0) break;
+//      skip -= (size_t)r;
+//    }
+//    if (skip != 0) { close(cfd); continue; }
+//
+//#if !defined(NDEBUG) && SWIFTX11_TRACE
+//    fprintf(stderr, "[SwiftX11] xproto: client connected (byte_order=l), replying SetupSuccess(minimal)\n");
+//#endif
+//
+//    x11_send_setup_success_minimal_little_endian(cfd);
+//
+//    // ************ temporary bridge for C -> C++ transision **************
+//    x11_proto_bridge_begin_session(cfd);
+//    
+//    // Now drain requests
+//    drain_requests(cfd);
+//
+//    x11_proto_bridge_end_session();
+//    close(cfd);
+//  }
+//
+//  return NULL;
+//}
 
 // ----------------------------------------------------------------------------
 // Public start/stop
 // ----------------------------------------------------------------------------
-void x11_xproto_listener_start(int display)
-{
-  if (atomic_exchange_explicit(&g_running, 1, memory_order_acq_rel)) return;
-
-  atomic_store_explicit(&g_stop, 0, memory_order_release);
-
-  const int port = 6000 + display;
-
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    atomic_store(&g_running, 0);
-    return;
-  }
-
-  int one = 1;
-  (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, (socklen_t)sizeof(one));
-
-  struct sockaddr_in sa;
-  memset(&sa, 0, sizeof(sa));
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons((uint16_t)port);
-  sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-  if (bind(fd, (struct sockaddr*)&sa, (socklen_t)sizeof(sa)) != 0) {
-    close(fd);
-    atomic_store(&g_running, 0);
-    return;
-  }
-
-  if (listen(fd, 16) != 0) {
-    close(fd);
-    atomic_store(&g_running, 0);
-    return;
-  }
-
-  g_lfd = fd;
-
-#if !defined(NDEBUG) && SWIFTX11_TRACE
-  fprintf(stderr, "[SwiftX11] xproto: listening on 127.0.0.1:%d (display :%d)\n", port, display);
-#endif
-
-  if (pthread_create(&g_thread, NULL, listener_main, NULL) != 0) {
-    close(fd);
-    g_lfd = -1;
-    atomic_store(&g_running, 0);
-    return;
-  }
-}
+//void x11_xproto_listener_start(int display)
+//{
+//  if (atomic_exchange_explicit(&g_running, 1, memory_order_acq_rel)) return;
+//
+//  atomic_store_explicit(&g_stop, 0, memory_order_release);
+//
+//  const int port = 6000 + display;
+//
+//  int fd = socket(AF_INET, SOCK_STREAM, 0);
+//  if (fd < 0) {
+//    atomic_store(&g_running, 0);
+//    return;
+//  }
+//
+//  int one = 1;
+//  (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, (socklen_t)sizeof(one));
+//
+//  struct sockaddr_in sa;
+//  memset(&sa, 0, sizeof(sa));
+//  sa.sin_family = AF_INET;
+//  sa.sin_port = htons((uint16_t)port);
+//  sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+//
+//  if (bind(fd, (struct sockaddr*)&sa, (socklen_t)sizeof(sa)) != 0) {
+//    close(fd);
+//    atomic_store(&g_running, 0);
+//    return;
+//  }
+//
+//  if (listen(fd, 16) != 0) {
+//    close(fd);
+//    atomic_store(&g_running, 0);
+//    return;
+//  }
+//
+//  g_lfd = fd;
+//
+//#if !defined(NDEBUG) && SWIFTX11_TRACE
+//  fprintf(stderr, "[SwiftX11] xproto: listening on 127.0.0.1:%d (display :%d)\n", port, display);
+//#endif
+//
+//  if (pthread_create(&g_thread, NULL, listener_main, NULL) != 0) {
+//    close(fd);
+//    g_lfd = -1;
+//    atomic_store(&g_running, 0);
+//    return;
+//  }
+//}
 
 void x11_xproto_listener_stop(void)
 {

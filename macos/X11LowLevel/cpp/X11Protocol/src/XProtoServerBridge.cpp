@@ -24,6 +24,9 @@
 #include "GCTable.hpp"
 #include "XProtoGCBridge.hpp"
 #include "HostResize.hpp"
+#include "XProtoDaemon.hpp"
+
+
 
 // Modules live for the lifetime of the session.
 static std::atomic<x11::XProtoModules*> g_mods{nullptr};
@@ -57,7 +60,7 @@ extern "C" void x11_proto_bridge_begin_session(int client_fd)
 }
 
 
-extern "C" void x11_proto_bridge_end_session(void)
+extern "C" void x11_proto_bridge_end_session(int client_fd)
 {
   std::lock_guard<std::mutex> lock(g_mu);
 
@@ -276,3 +279,18 @@ extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid)
     x11_requests_push_damage(xid);
   }
 }
+
+
+static x11::XProtoDaemon g_daemon;
+
+extern "C" int x11_proto_start_daemon(int display)
+{
+  return g_daemon.start(display) ? 1 : 0;
+}
+
+extern "C" void x11_proto_stop_daemon(void)
+{
+  g_daemon.stop();
+}
+
+

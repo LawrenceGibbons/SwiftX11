@@ -17,7 +17,7 @@ extern "C" {
 void x11_proto_bridge_begin_session(int client_fd);
 
 // Called at end of session (disconnect).
-void x11_proto_bridge_end_session(void);
+void x11_proto_bridge_end_session(int client_fd);
 
 // Called from drain_requests loop.
 void x11_proto_bridge_note_last_seq(uint16_t seq);
