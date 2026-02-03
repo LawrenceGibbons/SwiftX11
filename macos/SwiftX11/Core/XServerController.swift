@@ -148,7 +148,7 @@ final class XServerController: ObservableObject {
 
   private func drainEvents(max: Int) {
     if isDrainPausedNow() {
-      append("drain paused; not popping events")
+      Task { @MainActor in self.append("drain paused; not popping events") }
       return
     }
 
@@ -172,7 +172,7 @@ final class XServerController: ObservableObject {
         handleEventSideEffects(ev)
         if (!isLogPausedNow()),
            let line = format(ev, showMotion: (showMotion?() ?? false)) {
-          append(line)
+          Task { @MainActor in self.append(line) }
         }
       }
     }
