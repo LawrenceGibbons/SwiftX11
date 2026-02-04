@@ -169,6 +169,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // 3) Swift/UI teardown event path (existing behavior)
   // This queues X11_REQ_DESTROY -> shim -> Swift close
   x11_requests_push_destroy(wid);
+  fprintf(stderr, "[SwiftX11] end_session: destroy xid=0x%08X\n", (unsigned)wid);
 }
   
   

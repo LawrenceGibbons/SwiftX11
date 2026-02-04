@@ -23,9 +23,6 @@ void x11_server_apply_map_request(uint32_t xid);
 void x11_server_apply_unmap_request(uint32_t xid);
 void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px);
 
-void x11_xproto_apply_rootless_resize_on_server_thread(uint32_t wid,
-                                                       int32_t w_px,
-                                                       int32_t h_px);
 //uint64_t x11_now_ns(void); // if needed
 
 #ifdef __cplusplus

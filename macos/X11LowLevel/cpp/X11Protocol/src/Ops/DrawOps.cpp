@@ -20,7 +20,7 @@
 #include "DrawOps.hpp"
 
 // bridging
-#include "X11BackendFBBridge.h"
+#include "x11_backend_fb.h"
 #include "x11_requests.h"
 
 // temporary

@@ -9,6 +9,7 @@
 
 #import <X11LowLevel/x11_shim.h>
 #import <X11LowLevel/x11_requests.h>
+#import <X11LowLevel/x11_backend_fb.h>
 
 //! Project version number for X11LowLevel.
 FOUNDATION_EXPORT double X11LowLevelVersionNumber;

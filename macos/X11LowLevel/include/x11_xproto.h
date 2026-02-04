@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 // Start/stop the X11 TCP listener on :display (port 6000+display).
-void x11_xproto_listener_start(int display);
+//void x11_xproto_listener_start(int display);
 void x11_xproto_listener_stop(void);
 
 // server-thread only:

@@ -13,8 +13,10 @@
 #include <cstring>
 
 #include "XProtoServerBridge.h"
+extern "C" {
 #include "x11_requests.h"
-
+#include "x11_backend_fb.h"   // adjust path to wherever you placed it
+}
 #include "XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
 #include "QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 #include "WindowTable.hpp"
@@ -62,14 +64,32 @@ extern "C" void x11_proto_bridge_begin_session(int client_fd)
 
 extern "C" void x11_proto_bridge_end_session(int client_fd)
 {
-  std::lock_guard<std::mutex> lock(g_mu);
+  x11::XProtoModules* mods = nullptr;
+  x11::XProtoServer*  srv  = nullptr;
 
-  // Destroy modules first (they may reference the server during destruction in the future).
-  auto* mods = g_mods.exchange(nullptr, std::memory_order_acq_rel);
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    mods = g_mods.exchange(nullptr, std::memory_order_acq_rel);
+    srv  = g_srv.exchange(nullptr, std::memory_order_acq_rel);
+  }
+
+  if (srv) {
+    auto& ctx = srv->ctx();
+
+    // Erase windows owned by this fd (child-first order).
+    std::vector<uint32_t> owned = ctx.windows().eraseOwnedBy(client_fd);
+
+    // For each window: free C backing store + tell Swift to destroy the native window.
+    for (uint32_t wid : owned) {
+      x11_backend_fb_destroy(wid);
+      x11_requests_push_destroy(wid);
+    }
+
+    // Optional: clear notify queue if you keep server alive across sessions.
+    // Since we're deleting srv, per-session notify state is discarded.
+  }
+
   delete mods;
-
-  // Then destroy the server.
-  auto* srv = g_srv.exchange(nullptr, std::memory_order_acq_rel);
   delete srv;
 }
 

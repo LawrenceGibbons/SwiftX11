@@ -1,4 +1,14 @@
-// WindowTable.cpp
+//
+//  WindowTable.cpp
+//  X11LowLevel
+//
+//  Created by Lawrence Gibbons on 1/28/26.
+//
+
+#include <unordered_map>
+#include <algorithm>
+#include <functional>
+
 #include "WindowTable.hpp"
 #include "WindowView.hpp"
 
@@ -294,4 +304,53 @@ std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
   return out;
 }
   
+  std::vector<uint32_t> WindowTable::eraseOwnedBy(int owner_fd)
+  {
+    std::vector<uint32_t> xids;
+    std::unordered_map<uint32_t, uint32_t> parentOf;
+    parentOf.reserve(256);
+
+    // 1) Snapshot owned windows and erase them under lock.
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+
+      for (const auto& kv : map_) {
+        const uint32_t xid = kv.first;
+        const WindowState& st = kv.second;
+        if (st.owner_fd == owner_fd) {
+          xids.push_back(xid);
+          parentOf[xid] = st.parent;
+        }
+      }
+
+      for (uint32_t xid : xids) {
+        map_.erase(xid);
+      }
+    }
+
+    // 2) Sort child-first among the owned set (important for Swift view teardown).
+    std::unordered_map<uint32_t, int> memo;
+    memo.reserve(xids.size());
+
+    std::function<int(uint32_t)> depth = [&](uint32_t xid) -> int {
+      auto it = memo.find(xid);
+      if (it != memo.end()) return it->second;
+
+      int d = 0;
+      auto pIt = parentOf.find(xid);
+      if (pIt != parentOf.end()) {
+        const uint32_t p = pIt->second;
+        if (parentOf.find(p) != parentOf.end()) {
+          d = 1 + depth(p);
+        }
+      }
+      memo[xid] = d;
+      return d;
+    };
+
+    std::stable_sort(xids.begin(), xids.end(),
+                     [&](uint32_t a, uint32_t b) { return depth(a) > depth(b); });
+
+    return xids;
+  }
 } // namespace x11

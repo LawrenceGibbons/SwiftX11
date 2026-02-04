@@ -35,7 +35,6 @@ public:
   void setPresentable(uint32_t xid, bool presentable);
   void markDirty(uint32_t xid);
 
-  // NEW for this step:
   bool isReadyToPresent(uint32_t xid) const;
   bool consumeDirtyIfReady(uint32_t xid);
 
@@ -50,6 +49,9 @@ public:
                    int16_t x, int16_t y,
                    uint16_t w, uint16_t h);
   
+  // Erase all windows owned by owner_fd.
+  // Returns erased XIDs in child-first order (deepest children first).
+  std::vector<uint32_t> eraseOwnedBy(int owner_fd);
 
   // Debug snapshot directly from WindowState (no WindowView required)
   void debugState(uint32_t xid,

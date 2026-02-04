@@ -47,6 +47,7 @@
 				cpp/X11Protocol/README_XPROTO.md,
 			);
 			publicHeaders = (
+				include/x11_backend_fb.h,
 				include/x11_events.h,
 				include/x11_requests.h,
 				include/x11_shim.h,
