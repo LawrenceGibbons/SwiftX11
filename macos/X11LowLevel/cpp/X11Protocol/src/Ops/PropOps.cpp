@@ -19,6 +19,7 @@
 #include "XProtoContext.hpp"
 #include "ReplyWriter.hpp"
 #include "ByteReader.hpp"
+#include "WireLE.hpp"
 
 namespace x11 {
 
@@ -212,9 +213,9 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   if (!found || p.format == 0 || p.data.empty()) {
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
       rep[1] = 0;                       // format
-      ReplyWriter::wr32_le(rep.data()+8,  0); // type=None
-      ReplyWriter::wr32_le(rep.data()+12, 0); // bytesAfter
-      ReplyWriter::wr32_le(rep.data()+16, 0); // nItems
+      wire::wr32_le(rep.data()+8,  0); // type=None
+      wire::wr32_le(rep.data()+12, 0); // bytesAfter
+      wire::wr32_le(rep.data()+16, 0); // nItems
     });
     return;
   }
@@ -223,9 +224,9 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   if (reqType != 0 && p.type != reqType) {
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
       rep[1] = 0;                       // format
-      ReplyWriter::wr32_le(rep.data()+8,  0); // type=None
-      ReplyWriter::wr32_le(rep.data()+12, 0); // bytesAfter
-      ReplyWriter::wr32_le(rep.data()+16, 0); // nItems
+      wire::wr32_le(rep.data()+8,  0); // type=None
+      wire::wr32_le(rep.data()+12, 0); // bytesAfter
+      wire::wr32_le(rep.data()+16, 0); // nItems
     });
     return;
   }
@@ -238,9 +239,9 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
     // invalid stored property
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
       rep[1] = 0;
-      ReplyWriter::wr32_le(rep.data()+8,  0);
-      ReplyWriter::wr32_le(rep.data()+12, 0);
-      ReplyWriter::wr32_le(rep.data()+16, 0);
+      wire::wr32_le(rep.data()+8,  0);
+      wire::wr32_le(rep.data()+12, 0);
+      wire::wr32_le(rep.data()+16, 0);
     });
     return;
   }
@@ -270,10 +271,10 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   // Send header
   const bool okHdr = ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
     rep[1] = p.format;
-    ReplyWriter::wr32_le(rep.data()+4,  lengthWords);
-    ReplyWriter::wr32_le(rep.data()+8,  p.type);
-    ReplyWriter::wr32_le(rep.data()+12, bytesAfter);
-    ReplyWriter::wr32_le(rep.data()+16, nItems);
+    wire::wr32_le(rep.data()+4,  lengthWords);
+    wire::wr32_le(rep.data()+8,  p.type);
+    wire::wr32_le(rep.data()+12, bytesAfter);
+    wire::wr32_le(rep.data()+16, nItems);
   });
   if (!okHdr) return;
 

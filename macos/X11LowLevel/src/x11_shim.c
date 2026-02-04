@@ -33,10 +33,6 @@
 #include "x11_xproto.h"
 
 
-// For window creation and handling
-static _Atomic uint32_t g_next_xid = 0x10010; // avoid colliding with old demo ids
-
-
 // -----------------------------------------------------------------------------
 // Shim-local server context (scaffold step): collect shim state into one struct.
 // Protected by the backend lock (x11_backend_lock/unlock).
@@ -546,7 +542,8 @@ void x11_stop_server(void)
 #endif
 
   // Stop listener before stopping the runloop.
-  x11_xproto_listener_stop();
+  //x11_xproto_listener_stop();
+  x11_proto_stop_daemon();
   
   x11_server_runloop_stop();
 

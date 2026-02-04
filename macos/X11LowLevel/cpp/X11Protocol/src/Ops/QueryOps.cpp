@@ -14,6 +14,7 @@
 #include "ReplyWriter.hpp"
 #include "ByteReader.hpp"
 #include "XConstants.hpp"
+#include "WireLE.hpp"
 
 
 namespace x11 {
@@ -99,13 +100,13 @@ namespace x11 {
     //   24..25  = mask  (CARD16)
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       rep[1] = 1; // sameScreen = true
-      ReplyWriter::wr32_le(rep.data() + 8,  kRootXid);
-      ReplyWriter::wr32_le(rep.data() + 12, child);
-      ReplyWriter::wr16_le(rep.data() + 16, (uint16_t)fake_rx_);
-      ReplyWriter::wr16_le(rep.data() + 18, (uint16_t)fake_ry_);
-      ReplyWriter::wr16_le(rep.data() + 20, (uint16_t)winx);
-      ReplyWriter::wr16_le(rep.data() + 22, (uint16_t)winy);
-      ReplyWriter::wr16_le(rep.data() + 24, 0);
+      wire::wr32_le(rep.data() + 8,  kRootXid);
+      wire::wr32_le(rep.data() + 12, child);
+      wire::wr16_le(rep.data() + 16, (uint16_t)fake_rx_);
+      wire::wr16_le(rep.data() + 18, (uint16_t)fake_ry_);
+      wire::wr16_le(rep.data() + 20, (uint16_t)winx);
+      wire::wr16_le(rep.data() + 22, (uint16_t)winy);
+      wire::wr16_le(rep.data() + 24, 0);
     });
   }
 
@@ -134,10 +135,10 @@ namespace x11 {
 
     // Reply header (32 bytes)
     const bool okHdr = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      ReplyWriter::wr32_le(rep.data() + 4, extra_words);   // length_words
-      ReplyWriter::wr32_le(rep.data() + 8, kRootXid);      // root
-      ReplyWriter::wr32_le(rep.data() + 12, parent);       // parent
-      ReplyWriter::wr16_le(rep.data() + 16, (uint16_t)nchildren);
+      wire::wr32_le(rep.data() + 4, extra_words);   // length_words
+      wire::wr32_le(rep.data() + 8, kRootXid);      // root
+      wire::wr32_le(rep.data() + 12, parent);       // parent
+      wire::wr16_le(rep.data() + 16, (uint16_t)nchildren);
     });
     if (!okHdr) return;
 
@@ -145,7 +146,7 @@ namespace x11 {
     if (nchildren) {
       uint8_t out[256 * 4];
       for (uint32_t i = 0; i < nchildren; i++) {
-        ReplyWriter::wr32_le(out + (size_t)i * 4u, children[i]);
+        wire::wr32_le(out + (size_t)i * 4u, children[i]);
       }
       // Already 4-byte aligned, so sendReplyBytes is fine (no padding needed)
       (void)ctx.transport().sendReplyBytes(out, (std::size_t)nchildren * 4u);
@@ -187,10 +188,10 @@ namespace x11 {
 
     const bool ok = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       // length (words) at bytes 4..7
-      ReplyWriter::wr32_le(rep.data() + 4, extra_words);
+      wire::wr32_le(rep.data() + 4, extra_words);
 
       // nColors at bytes 8..9 (CARD16)
-      ReplyWriter::wr16_le(rep.data() + 8, ncolors);
+      wire::wr16_le(rep.data() + 8, ncolors);
 
       // byte 1 is "unused" for this reply; leaving as whatever sendReply32 sets (usually 0) is fine.
     });
@@ -257,7 +258,7 @@ namespace x11 {
 
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       // length = 0 (bytes 4..7 already set by sendReply32, but make it explicit)
-      ReplyWriter::wr32_le(rep.data() + 4, 0);
+      wire::wr32_le(rep.data() + 4, 0);
       rep[1]  = 0; // present
       rep[8]  = 0; // major_opcode
       rep[9]  = 0; // first_event
@@ -276,7 +277,7 @@ namespace x11 {
     br.skip(br.remaining()); // request has no extra fields we care about
 
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      ReplyWriter::wr32_le(rep.data() + 4, 0); // length=0
+      wire::wr32_le(rep.data() + 4, 0); // length=0
       rep[1] = 0; // nExtensions
     });
   }

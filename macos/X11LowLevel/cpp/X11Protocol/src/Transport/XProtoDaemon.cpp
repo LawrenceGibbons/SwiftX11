@@ -128,20 +128,20 @@ namespace x11 {
     running_.store(false, std::memory_order_release);
   }
   
-  static bool recv_exact(int fd, void* buf, size_t n) {
-    uint8_t* p = (uint8_t*)buf;
-    size_t got = 0;
-    while (got < n) {
-      ssize_t r = ::recv(fd, p + got, n - got, 0);
-      if (r == 0) return false;
-      if (r < 0) {
-        if (errno == EINTR) continue;
-        return false;
-      }
-      got += (size_t)r;
-    }
-    return true;
-  }
+//  static bool recv_exact(int fd, void* buf, size_t n) {
+//    uint8_t* p = (uint8_t*)buf;
+//    size_t got = 0;
+//    while (got < n) {
+//      ssize_t r = ::recv(fd, p + got, n - got, 0);
+//      if (r == 0) return false;
+//      if (r < 0) {
+//        if (errno == EINTR) continue;
+//        return false;
+//      }
+//      got += (size_t)r;
+//    }
+//    return true;
+//  }
   
   // ---------- the meat: setup + drain ----------
   void XProtoDaemon::runSession(int cfd) {

@@ -62,13 +62,13 @@ int x11_requests_push_set_title(uint32_t xid, const char* title_utf8);
 int x11_requests_push_damage(uint32_t xid);
 int x11_requests_push_window_presentable(uint32_t xid);
   
-int x11_backend_copy_window_bgra(uint32_t xid,
-                                 uint8_t* out_bytes,
-                                 int32_t out_cap,
-                                 int32_t* out_w,
-                                 int32_t* out_h,
-                                 int32_t* out_bpr);
-  
+//int x11_backend_copy_window_bgra(uint32_t xid,
+//                                 uint8_t* out_bytes,
+//                                 int32_t out_cap,
+//                                 int32_t* out_w,
+//                                 int32_t* out_h,
+//                                 int32_t* out_bpr);
+//  
 #ifdef __cplusplus
 } // extern "C"
 #endif

@@ -13,17 +13,21 @@
 #include "x11_requests.h"
 #include "HostResize.hpp"
 
-// temp
+// bridge
+extern "C" {
+  #include "x11_requests.h"
+}
+
+// util
+#include "Damage.hpp"
+
+// bridge
 #include "XProtoServerBridge.h"
+#include "x11_backend_fb.h"
 #include <cstdio>   // snprintf
 
 namespace x11 {
 
-static inline void damageOrDirty(XProtoContext& ctx, uint32_t wid) {
-  if (ctx.windows().isReadyToPresent(wid)) x11_requests_push_damage(wid);
-  else ctx.windows().markDirty(wid);
-}
-  
 
 //// Host resized native surface for wid; update server truth + FB + notify + redraw.
 //// Preconditions: called on server/protocol thread (same as old function name implied).
@@ -169,7 +173,6 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // 3) Swift/UI teardown event path (existing behavior)
   // This queues X11_REQ_DESTROY -> shim -> Swift close
   x11_requests_push_destroy(wid);
-  fprintf(stderr, "[SwiftX11] end_session: destroy xid=0x%08X\n", (unsigned)wid);
 }
   
   

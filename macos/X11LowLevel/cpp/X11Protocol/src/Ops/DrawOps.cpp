@@ -22,9 +22,10 @@
 // bridging
 #include "x11_backend_fb.h"
 #include "x11_requests.h"
-
-// temporary
 #include "XProtoServerBridge.h"
+
+// util
+#include "Damage.hpp"
 
 namespace x11 {
 

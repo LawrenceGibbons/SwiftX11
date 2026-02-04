@@ -13,13 +13,20 @@
 #include "ReplyWriter.hpp"
 #include "XProtoTransport.hpp"
 #include "XConstants.hpp"
+#include "WireLE.hpp"
 
-// Temp -- Update C-side mirror event_mask during transition
+// Bridge -- Update C-side 
 #include "XProtoServerBridge.h"
 
 extern "C" {
 #include "x11_requests.h"
+#include "x11_backend_fb.h"
 }
+
+// util
+#include "Damage.hpp"
+
+
 
 static constexpr uint32_t kRootVis   = 0x00000021u; // X11_ROOT_VIS
 static constexpr uint32_t kRootCmap  = 0x00000020u; // defaultColormap advertised
@@ -137,7 +144,9 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
     ctx.windows().setGeometry(wid, x, y, w, h);
     
     // keep C canonical state in sync (this is what makes drawing correct)
-    x11_xproto_apply_configure_from_cpp(wid, w, h, /*resize_fb=*/1);
+    x11_backend_fb_resize(wid, w, h);
+    // resizing affects presentation, so request redraw (gated)
+    damageOrDirty(ctx, wid);
 
 
     // Tell Swift/shim side about configure (existing behavior)
@@ -178,24 +187,24 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
     rep[1] = 0;   // backing-store = NotUseful
 
     // seq
-    ReplyWriter::wr16_le(rep.data() + 2, seq);
+    wire::wr16_le(rep.data() + 2, seq);
 
     // length_words = (44-32)/4 = 3
-    ReplyWriter::wr32_le(rep.data() + 4, 3);
+    wire::wr32_le(rep.data() + 4, 3);
 
     // visual
-    ReplyWriter::wr32_le(rep.data() + 8, kRootVis);
+    wire::wr32_le(rep.data() + 8, kRootVis);
 
     // class = InputOutput (CARD16)
-    ReplyWriter::wr16_le(rep.data() + 12, 1);
+    wire::wr16_le(rep.data() + 12, 1);
 
     // bit-gravity / win-gravity
     rep[14] = 0; // Forget
     rep[15] = 0; // Unmap
 
     // backing-planes / backing-pixel
-    ReplyWriter::wr32_le(rep.data() + 16, 0);
-    ReplyWriter::wr32_le(rep.data() + 20, 0);
+    wire::wr32_le(rep.data() + 16, 0);
+    wire::wr32_le(rep.data() + 20, 0);
 
     // save-under / map-is-installed / map-state / override-redirect
     rep[24] = 0;        // saveUnder
@@ -204,15 +213,15 @@ void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*
     rep[27] = 0;        // overrideRedirect
 
     // colormap
-    ReplyWriter::wr32_le(rep.data() + 28, kRootCmap);
+    wire::wr32_le(rep.data() + 28, kRootCmap);
 
     // all-event-masks / your-event-mask
-    ReplyWriter::wr32_le(rep.data() + 32, eventMask);
-    ReplyWriter::wr32_le(rep.data() + 36, eventMask);
+    wire::wr32_le(rep.data() + 32, eventMask);
+    wire::wr32_le(rep.data() + 36, eventMask);
 
     // do-not-propagate-mask + pad
-    ReplyWriter::wr16_le(rep.data() + 40, 0);
-    ReplyWriter::wr16_le(rep.data() + 42, 0);
+    wire::wr16_le(rep.data() + 40, 0);
+    wire::wr16_le(rep.data() + 42, 0);
 
     // IMPORTANT: this is a single 44-byte reply (not “32 + payload separately”)
     // so just sendReplyBytes directly.

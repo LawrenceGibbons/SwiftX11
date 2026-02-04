@@ -221,9 +221,6 @@ void WindowTable::setGeometry(uint32_t xid,
   WindowState* st = findLocked(xid);
   if (!st) return;
 
-  fprintf(stderr, "[BRIDGE] set_geometry xid=0x%08X mask=0x%08X x=%d y=%d w=%d h=%d mapped=%d presentable=%d dirty=%d\n", 
-          xid, st->event_mask, x, y, (int)w, (int)h, st->mapped, st->presentable, st->dirty);
-
   st->x = x;
   st->y = y;
   st->w = w;
@@ -231,7 +228,7 @@ void WindowTable::setGeometry(uint32_t xid,
 
   // Do NOT touch st->dirty here.
   // st->dirty is for “damage happened before ready-to-present” gating only.
-  // Geometry changes are handled by X11 Configure/Expose notifications + explicit enqueue_damage_window in C.  //st->dirty = true;
+  // Geometry changes are handled by X11 Configure/Expose notifications
   st->serial++;
 }
   

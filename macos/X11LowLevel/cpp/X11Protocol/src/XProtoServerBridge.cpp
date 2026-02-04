@@ -208,7 +208,6 @@ extern "C" void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t ev
   auto* srv = g_srv.load(std::memory_order_acquire);
   if (!srv) return;
   srv->ctx().windows().setEventMask(xid, event_mask);
-  fprintf(stderr, "[BRIDGE] set_event_mask xid=0x%08X mask=0x%08X\n", xid, event_mask);
 }
 
 //extern "C" void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h)

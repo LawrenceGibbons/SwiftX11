@@ -35,7 +35,7 @@ void x11_proto_bridge_queue_expose_rect(uint32_t wid,
   
 // Send raw reply/handshake bytes on the current client connection (must be called on xproto thread).
 // Returns 1 on success, 0 on failure.
-int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
+//int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
 
   
 // int x11_proto_bridge_send_get_geometry_reply(uint16_t seq,
@@ -51,8 +51,8 @@ int x11_proto_bridge_send_reply_bytes(const void* buf, size_t n);
 //                                                 uint32_t focus);
   
   
-int x11_proto_bridge_send_intern_atom_reply(uint16_t seq, uint32_t atom);
-int x11_proto_bridge_send_get_atom_name_reply(uint16_t seq, const char* name, uint16_t nameLen);
+//int x11_proto_bridge_send_intern_atom_reply(uint16_t seq, uint32_t atom);
+//int x11_proto_bridge_send_get_atom_name_reply(uint16_t seq, const char* name, uint16_t nameLen);
   
   
 int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
@@ -65,51 +65,32 @@ int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
 //                                   uint32_t event_mask,
 //                                   int owner_fd);
 
-void x11_proto_bridge_window_erase(uint32_t xid);
+//void x11_proto_bridge_window_erase(uint32_t xid);
 
-void x11_proto_bridge_window_set_mapped(uint32_t xid, int mapped);
-void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t event_mask);
+//void x11_proto_bridge_window_set_mapped(uint32_t xid, int mapped);
+//void x11_proto_bridge_window_set_event_mask(uint32_t xid, uint32_t event_mask);
 //void x11_proto_bridge_window_set_geometry(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h);
 
-int  x11_proto_bridge_window_is_ready_to_present(uint32_t xid);
-void x11_proto_bridge_window_mark_dirty(uint32_t xid);
+//int  x11_proto_bridge_window_is_ready_to_present(uint32_t xid);
+//void x11_proto_bridge_window_mark_dirty(uint32_t xid);
 
-void x11_proto_bridge_window_debug_state(uint32_t xid,
-                                         uint32_t* out_parent,
-                                         int* out_mapped,
-                                         int* out_presentable,
-                                         int* out_dirty,
-                                         int* out_owner_fd);
+//void x11_proto_bridge_window_debug_state(uint32_t xid,
+//                                         uint32_t* out_parent,
+//                                         int* out_mapped,
+//                                         int* out_presentable,
+//                                         int* out_dirty,
+//                                         int* out_owner_fd);
 
 
 // Apply ConfigureWindow result to C canonical window + framebuffer.
 // resize_fb = 1 means: if w/h changed, resize framebuffer with preserve+white-fill.
-void x11_xproto_apply_configure_from_cpp(uint32_t wid,
-                                        uint16_t w, uint16_t h,
-                                        int resize_fb);
+//void x11_xproto_apply_configure_from_cpp(uint32_t wid,
+//                                        uint16_t w, uint16_t h,
+//                                        int resize_fb);
 
   
-void x11_proto_bridge_pixmap_create(uint32_t pid, uint8_t depth, uint16_t w, uint16_t h);
-void x11_proto_bridge_pixmap_free(uint32_t pid);
-
-  // Returns 1 on success, 0 on failure.
-  // outPixels is a pointer to the window framebuffer (ARGB/BGRA as you currently store it),
-  // outW/outH are pixel dimensions.
-  int x11_xproto_window_fb_rw(uint32_t xid,
-                              uint32_t** outPixels,
-                              uint32_t* outW,
-                              uint32_t* outH);
-
-void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h);
-
-// Creates/refreshes the C-side g_fb[] slot for wid.
-int x11_backend_fb_create_slot(uint32_t wid,
-                               uint16_t wpx,
-                               uint16_t hpx,
-                               int owner_fd,
-                               int* out_dirty /* optional, may be NULL */);
-
-void x11_backend_fb_destroy(uint32_t wid);
+//void x11_proto_bridge_pixmap_create(uint32_t pid, uint8_t depth, uint16_t w, uint16_t h);
+//void x11_proto_bridge_pixmap_free(uint32_t pid);
 
 void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid);
   

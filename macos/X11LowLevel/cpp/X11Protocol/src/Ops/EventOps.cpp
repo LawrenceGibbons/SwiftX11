@@ -12,20 +12,22 @@
 #include "XProtoTransport.hpp"
 #include "XProtoContext.hpp"
 #include "ByteReader.hpp"
+#include "ReplyWriter.hpp"
+#include "WireLE.hpp"
 
 namespace x11 {
   
-  // Little-endian writers (keep local for now; later share in a common helpers header).
-  static inline void wr16_le(uint8_t* p, uint16_t v) {
-    p[0] = (uint8_t)(v & 0xFF);
-    p[1] = (uint8_t)((v >> 8) & 0xFF);
-  }
-  static inline void wr32_le(uint8_t* p, uint32_t v) {
-    p[0] = (uint8_t)(v & 0xFF);
-    p[1] = (uint8_t)((v >> 8) & 0xFF);
-    p[2] = (uint8_t)((v >> 16) & 0xFF);
-    p[3] = (uint8_t)((v >> 24) & 0xFF);
-  }
+//  // Little-endian writers (keep local for now; later share in a common helpers header).
+//  static inline void wr16_le(uint8_t* p, uint16_t v) {
+//    p[0] = (uint8_t)(v & 0xFF);
+//    p[1] = (uint8_t)((v >> 8) & 0xFF);
+//  }
+//  static inline void wr32_le(uint8_t* p, uint32_t v) {
+//    p[0] = (uint8_t)(v & 0xFF);
+//    p[1] = (uint8_t)((v >> 8) & 0xFF);
+//    p[2] = (uint8_t)((v >> 16) & 0xFF);
+//    p[3] = (uint8_t)((v >> 24) & 0xFF);
+//  }
   
   void EventOps::handle(uint8_t majorOpcode, uint8_t minorOpcode, ByteReader& br) {
     // For now, no core “event opcodes” exist in core X11.
@@ -46,13 +48,13 @@ namespace x11 {
     // Expose event type = 12
     ev[0] = 12;
     // ev[1] unused
-    wr16_le(ev.data() + 2, seq);
-    wr32_le(ev.data() + 4, window);
-    wr16_le(ev.data() + 8, x);
-    wr16_le(ev.data() + 10, y);
-    wr16_le(ev.data() + 12, w);
-    wr16_le(ev.data() + 14, h);
-    wr16_le(ev.data() + 16, count);
+    wire::wr16_le(ev.data() + 2, seq);
+    wire::wr32_le(ev.data() + 4, window);
+    wire::wr16_le(ev.data() + 8, x);
+    wire::wr16_le(ev.data() + 10, y);
+    wire::wr16_le(ev.data() + 12, w);
+    wire::wr16_le(ev.data() + 14, h);
+    wire::wr16_le(ev.data() + 16, count);
     return ev;
   }
   
@@ -64,19 +66,19 @@ namespace x11 {
     // ConfigureNotify event type = 22
     ev[0] = 22;
     ev[1] = 0; // not synthetic
-    wr16_le(ev.data() + 2, p.seq);
+    wire::wr16_le(ev.data() + 2, p.seq);
     
     // event + window both set to window for a normal ConfigureNotify
-    wr32_le(ev.data() + 4, p.window); // event
-    wr32_le(ev.data() + 8, p.window); // window
-    wr32_le(ev.data() + 12, p.aboveSibling); // aboveSibling or None(0)
+    wire::wr32_le(ev.data() + 4, p.window); // event
+    wire::wr32_le(ev.data() + 8, p.window); // window
+    wire::wr32_le(ev.data() + 12, p.aboveSibling); // aboveSibling or None(0)
     
     // x/y are INT16 on the wire
-    wr16_le(ev.data() + 16, static_cast<uint16_t>(p.x));
-    wr16_le(ev.data() + 18, static_cast<uint16_t>(p.y));
-    wr16_le(ev.data() + 20, p.w);
-    wr16_le(ev.data() + 22, p.h);
-    wr16_le(ev.data() + 24, p.borderWidth);
+    wire::wr16_le(ev.data() + 16, static_cast<uint16_t>(p.x));
+    wire::wr16_le(ev.data() + 18, static_cast<uint16_t>(p.y));
+    wire::wr16_le(ev.data() + 20, p.w);
+    wire::wr16_le(ev.data() + 22, p.h);
+    wire::wr16_le(ev.data() + 24, p.borderWidth);
     ev[26] = p.overrideRedirect ? 1 : 0;
     
     return ev;

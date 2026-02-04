@@ -20,6 +20,9 @@
 // bridge to C and Swift
 #include "x11_requests.h"
 
+// util
+#include "Damage.hpp"
+
 namespace x11 {
 
 static inline float norm360(float a) {
