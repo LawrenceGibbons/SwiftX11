@@ -98,6 +98,8 @@ static void x11_srv_ctor_defaults(void) {
 }
 
 
+
+
 #ifndef NDEBUG
 // Rate-limit to ~10 Hz so logs are readable.
 static inline void dbg_motion_log_rl(uint64_t now_ns, const char* fmt, ...) {
@@ -1106,7 +1108,7 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
   
   // Update backend truth first.
   x11_backend_window_set_size(xid, w_px, h_px);
-  
+    
   // Tell xproto/server-thread to resize its window+fb too.
   int ok = x11_requests_push_rootless_resize(xid, w_px, h_px);
 #ifndef NDEBUG
@@ -1132,6 +1134,29 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
   // Wake repaint loop so the resize shows immediately.
   x11_server_wakeup();
 }
+
+
+// Server-driven configure: update backend size + wake UI.
+// IMPORTANT: does NOT enqueue ROOTLESS_RESIZE back to server.
+void x11_apply_window_configure(uint32_t xid, int32_t w_px, int32_t h_px)
+{
+  if (xid == 0) return;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  x11_backend_lock();
+  const int exists = x11_backend_window_exists_locked(xid);
+  const int closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;
+  x11_backend_unlock();
+  if (!exists || closing) return;
+
+  x11_backend_window_set_size(xid, w_px, h_px);
+
+  // Optional: emit a debug event if you want to track configures separately
+  // (NOT EV_WINDOW_RESIZE unless you really want it).
+  x11_server_wakeup();
+}
+
 
 void x11_set_window_size(uint32_t xid, int32_t width_px, int32_t height_px)
 {

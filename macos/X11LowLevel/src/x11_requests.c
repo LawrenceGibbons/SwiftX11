@@ -62,6 +62,9 @@ static inline uint32_t req_prev(uint32_t v) { return (v + X11_CLIENT_REQ_CAP - 1
 static inline int req_is_empty(void) { return (g_req_r == g_req_w); }
 
 
+
+
+
 static int req_push_locked(const x11_client_req_t *req)
 {
   if (!req) return 0;
@@ -76,6 +79,12 @@ static int req_push_locked(const x11_client_req_t *req)
       // Coalesce CONFIGURE (resize)
       if (prev->type == X11_REQ_CONFIGURE && req->type == X11_REQ_CONFIGURE) {
         prev->u.configure = req->u.configure;
+        return 1;
+      }
+
+      // Coalesce ROOTLESS_RESIZE (host-driven resize)
+      if (prev->type == X11_REQ_ROOTLESS_RESIZE && req->type == X11_REQ_ROOTLESS_RESIZE) {
+        prev->u.rootless_resize = req->u.rootless_resize;
         return 1;
       }
 
@@ -487,7 +496,7 @@ void x11_requests_drain_on_server_thread(void)
         break;
 
       case X11_REQ_CONFIGURE:
-        x11_post_window_resize(r.xid, r.u.configure.w_px, r.u.configure.h_px);
+        x11_apply_window_configure(r.xid, r.u.configure.w_px, r.u.configure.h_px);
         break;
 
       case X11_REQ_SET_TITLE:

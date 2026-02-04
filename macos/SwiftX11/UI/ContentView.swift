@@ -1,5 +1,31 @@
 import SwiftUI
+import AppKit
 import X11LowLevel
+
+struct LogTextView: NSViewRepresentable {
+  @Binding var text: String
+
+  func makeNSView(context: Context) -> NSScrollView {
+    let tv = NSTextView()
+    tv.isEditable = false
+    tv.isSelectable = true
+    tv.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+    tv.textContainerInset = NSSize(width: 6, height: 6)
+
+    let sv = NSScrollView()
+    sv.hasVerticalScroller = true
+    sv.documentView = tv
+    return sv
+  }
+
+  func updateNSView(_ nsView: NSScrollView, context: Context) {
+    guard let tv = nsView.documentView as? NSTextView else { return }
+    if tv.string != text {
+      tv.string = text
+      tv.scrollToEndOfDocument(nil) // optional auto-scroll
+    }
+  }
+}
 
 struct ContentView: View {
   @EnvironmentObject var server: XServerController
@@ -69,34 +95,24 @@ struct ContentView: View {
         x11_debug_dump_routing_snapshot("manual")
       }
       
-      Divider()
-      
-      Text("Logs").font(.headline)
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(server.logLines.enumerated()), id: \.offset) { idx, line in
-              Text(line)
-                .font(.system(.caption, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .id(idx)
-            }
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .onAppear {
-          if let last = server.logLines.indices.last {
-            proxy.scrollTo(last, anchor: .bottom)
-          }
-        }
-        .onChange(of: server.logLines.count) { _, _ in
-          if let last = server.logLines.indices.last {
-            proxy.scrollTo(last, anchor: .bottom)
-          }
-        }
-      }
       Toggle("Use Metal rendering", isOn: $settings.useMetal)
+      
+      Toggle("Show Damage events", isOn: $settings.showDamageLogs)
+
+      Divider()
+
+      Text("Logs").font(.headline)
+
+      HStack {
+        Button("Copy All") {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(server.logText, forType: .string)
+        }
+        Spacer()
+      }
+
+      LogTextView(text: $server.logText)
+        .frame(minHeight: 200)
     }
     .padding(16)
     .frame(minWidth: 560, minHeight: 360)

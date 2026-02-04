@@ -279,10 +279,7 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
   // 2) Update authoritative geometry in C++ (x/y unchanged).
   ctx.windows().setGeometry(wid, vw0->x, vw0->y, new_w, new_h);
 
-  // 3) Tell Swift to resize surface (size-only; keep existing queue format).
-  x11_requests_push_configure(wid, (int32_t)new_w, (int32_t)new_h);
-
-  // 4) Notify owning client if selected.
+  // 3) Notify owning client if selected.
   if (const WindowView* vw = ctx.window(wid)) {
     const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);                 // StructureNotifyMask
     const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0)); // ExposureMask

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		5225BDE32F05AF2B009E510B /* X11LowLevel.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; };
 		5225BDE42F05AF2B009E510B /* X11LowLevel.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		528AC14F2F33B94300186633 /* TylerFit in Resources */ = {isa = PBXBuildFile; fileRef = 528AC14E2F33B94300186633 /* TylerFit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -38,6 +39,7 @@
 /* Begin PBXFileReference section */
 		5225BD772F0489A9009E510B /* SwiftX11.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftX11.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = X11LowLevel.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		528AC14E2F33B94300186633 /* TylerFit */ = {isa = PBXFileReference; lastKnownFileType = text; path = TylerFit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -103,6 +105,7 @@
 		5225BD6E2F0489A9009E510B = {
 			isa = PBXGroup;
 			children = (
+				528AC14E2F33B94300186633 /* TylerFit */,
 				5225BD792F0489A9009E510B /* SwiftX11 */,
 				5225BDDC2F05AF2B009E510B /* X11LowLevel */,
 				5225BD782F0489A9009E510B /* Products */,
@@ -222,6 +225,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				528AC14F2F33B94300186633 /* TylerFit in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

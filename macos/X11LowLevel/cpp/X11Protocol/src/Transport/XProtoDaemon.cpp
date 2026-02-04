@@ -67,6 +67,21 @@ namespace x11 {
     return true;
   }
   
+  // returns:  1 ok, 0 disconnect, -2 timeout, -1 fatal
+  static int recv_hdr_timeout(int fd, uint8_t hdr[4]) {
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    timeval tv{0, 100 * 1000};
+    int sel = ::select(fd + 1, &rfds, nullptr, nullptr, &tv);
+    if (sel == 0) return -2;
+    if (sel < 0) {
+      if (errno == EINTR) return -2;
+      return -1;
+    }
+    return recv_waitall(fd, hdr, 4) ? 1 : 0;
+  }
+  
   // ---------- lifecycle ----------
   XProtoDaemon::XProtoDaemon() = default;
   XProtoDaemon::~XProtoDaemon() { stop(); }
@@ -185,7 +200,9 @@ namespace x11 {
       if (stop_.load(std::memory_order_acquire)) break;
       
       uint8_t hdr[4];
-      if (!recv_waitall(cfd, hdr, sizeof(hdr))) break;
+      int hr = recv_hdr_timeout(cfd, hdr);
+      if (hr == -2) continue; // timeout -> loop again (flush runs at top)
+      if (hr <= 0) break;     // disconnect or error
       
       const uint8_t major = hdr[0];
       const uint8_t minor = hdr[1];

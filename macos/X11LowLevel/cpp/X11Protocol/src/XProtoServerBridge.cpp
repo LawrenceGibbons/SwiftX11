@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <array>
 #include <cstring>
+#include <deque>
+#include <cstdint>
 
 #include "XProtoServerBridge.h"
 extern "C" {
@@ -27,6 +29,53 @@ extern "C" {
 #include "XProtoGCBridge.hpp"
 #include "HostResize.hpp"
 #include "XProtoDaemon.hpp"
+
+
+
+// ---- Host-command queue (server thread -> xproto thread) ----
+namespace {
+
+enum class HostCmdType : uint8_t {
+  RootlessResize,
+  SetPresentable,
+};
+
+struct HostCmd {
+  HostCmdType type;
+  uint32_t xid;
+  int32_t w_px;
+  int32_t h_px;
+};
+
+std::mutex g_hostcmd_mu;
+std::deque<HostCmd> g_hostcmd_q;
+
+static inline void hostcmd_push(const HostCmd& c) {
+  std::lock_guard<std::mutex> lock(g_hostcmd_mu);
+
+  if (c.type == HostCmdType::RootlessResize) {
+    if (!g_hostcmd_q.empty()) {
+      HostCmd& back = g_hostcmd_q.back();
+      if (back.type == HostCmdType::RootlessResize && back.xid == c.xid) {
+        back.w_px = c.w_px;
+        back.h_px = c.h_px;
+        return;
+      }
+    }
+  }
+
+  g_hostcmd_q.push_back(c);
+}
+  
+  
+static inline std::deque<HostCmd> hostcmd_take_all() {
+  std::lock_guard<std::mutex> lock(g_hostcmd_mu);
+  std::deque<HostCmd> out;
+  out.swap(g_hostcmd_q);
+  return out;
+}
+
+} // namespace
 
 
 
@@ -102,7 +151,33 @@ extern "C" void x11_proto_bridge_note_last_seq(uint16_t seq)
 extern "C" void x11_proto_bridge_flush_notify_queue(void)
 {
   auto* srv = g_srv.load(std::memory_order_acquire);
-  if (srv) srv->flushNotifyQueue();
+  if (!srv) return;
+  
+  auto& ctx = srv->ctx();
+
+  // ---- drain host commands on xproto thread ----
+  {
+    auto cmds = hostcmd_take_all();
+    for (const auto& c : cmds) {
+      switch (c.type) {
+        case HostCmdType::RootlessResize:
+          // Runs on xproto thread now: safe vs drawing + fb resize
+          applyRootlessResize(ctx, c.xid, c.w_px, c.h_px);
+          break;
+
+        case HostCmdType::SetPresentable:
+          ctx.windows().setPresentable(c.xid, true);
+          if (ctx.windows().consumeDirtyIfReady(c.xid)) {
+            x11_requests_push_damage(c.xid);
+          }
+          break;
+      }
+    }
+  }
+
+    
+    
+    srv->flushNotifyQueue();
 }
 
 //extern "C" void x11_proto_bridge_queue_notify(uint32_t wid, int want_configure, int want_expose)
@@ -275,28 +350,19 @@ extern "C" void x11_proto_bridge_pixmap_free(uint32_t pid)
   srv->ctx().pixmaps().freePixmap(pid);
 }
 
-extern "C" void x11_proto_bridge_apply_rootless_resize(uint32_t wid, int32_t w_px, int32_t h_px)
+extern "C" void x11_proto_bridge_apply_rootless_resize(uint32_t xid, int32_t w_px, int32_t h_px)
 {
-  auto* srv = g_srv.load(std::memory_order_acquire);
-  if (!srv) return;
+  if (xid == 0) return;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
 
-  // Assumption: called on server/protocol thread (same as old name implied).
-  // If you later need to enforce thread affinity, this is the one place to enqueue onto that thread.
-  applyRootlessResize(srv->ctx(), wid, w_px, h_px);
+  hostcmd_push(HostCmd{HostCmdType::RootlessResize, xid, w_px, h_px});
 }
 
 extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid)
 {
-  auto* srv = g_srv.load(std::memory_order_acquire);
-  if (!srv) return;
-
-  auto& ctx = srv->ctx();
-  ctx.windows().setPresentable(xid, true);
-
-  if (ctx.windows().consumeDirtyIfReady(xid)) {
-    // Push a damage request for Swift to present.
-    x11_requests_push_damage(xid);
-  }
+  if (xid == 0) return;
+  hostcmd_push(HostCmd{HostCmdType::SetPresentable, xid, 0, 0});
 }
 
 

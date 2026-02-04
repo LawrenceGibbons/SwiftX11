@@ -192,6 +192,7 @@ void     x11_window_set_title(uint32_t xid, const char* title); // optional
 void x11_post_window_map(uint32_t xid);
 void x11_post_window_unmap(uint32_t xid);
 void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);
+void x11_apply_window_configure(uint32_t xid, int32_t w_px, int32_t h_px);
   
  // ---- Server-only emit helpers (used by request queue drain)
 // These must be called from the server thread (or otherwise safe context).
@@ -224,7 +225,6 @@ void x11_post_window_presentable(uint32_t xid);
 // Swift calls this on the X11 server thread when the host surface resized.
 // Only w/h are provided; x/y are unchanged and remain authoritative in C++ WindowTable.
 void x11_xproto_apply_rootless_resize_on_server_thread(uint32_t wid, int32_t w_px, int32_t h_px);
-
   
 #ifdef __cplusplus
 }

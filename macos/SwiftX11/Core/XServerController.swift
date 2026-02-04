@@ -7,7 +7,7 @@ import QuartzCore
 final class XServerController: ObservableObject {
   @Published var isRunning: Bool = false
   @Published var display: Int = 0
-  @Published var logLines: [String] = []
+  @Published var logText: String = ""
   @Published var didInstallLogControls = false
 
   private var drainTimer: DispatchSourceTimer?
@@ -103,9 +103,9 @@ final class XServerController: ObservableObject {
 
   @MainActor
   func append(_ line: String) {
-    logLines.append("[\(tstamp())] \(line)")
-  }
-  
+    let s = "[\(tstamp())] \(line)"
+    logText += s + "\n"
+  }  
   
   @MainActor
   func newWindow(title: String = "SwiftX11 Window", w: Int32 = 800, h: Int32 = 600)  -> UInt32  {

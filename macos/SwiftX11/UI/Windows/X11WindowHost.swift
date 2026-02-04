@@ -75,6 +75,13 @@ final class X11View: NSView {
     private var didNotifyPresentable = false
     override var acceptsFirstResponder: Bool { true }
   
+  
+    // MARK: -- suppress circular rootless resize calls
+    // When the server drives a configure resize, we suppress rootless resize callbacks
+    // until the drawable reaches the expected pixel size (or a small budget expires).
+    private var suppressExpectedPx: (w: Int32, h: Int32)? = nil
+    private var suppressBudget: Int = 0
+  
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -733,15 +740,20 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   }
 
   func draw(in view: MTKView) {
-    handleDrawableSize(view.drawableSize)
+    // Do NOT call handleDrawableSize here
     owner?.metalDraw(in: view)
   }
+  
+  private var pendingResizeTask: DispatchWorkItem? = nil
+  private var pendingSize: (w: Int32, h: Int32)? = nil
 
   private func handleDrawableSize(_ size: CGSize) {
     guard xid != 0 else { return }
 
-    let wPx = Int32(size.width.rounded(.down))
-    let hPx = Int32(size.height.rounded(.down))
+    // MTKView drawable sizes are already in pixels.
+    let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
+    let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
+
     guard wPx >= 1, hPx >= 1 else { return }
 
     // Presentable: once.
@@ -750,11 +762,19 @@ final class X11Renderer: NSObject, MTKViewDelegate {
       x11_post_window_presentable(xid)
     }
 
-    // Resize: whenever it changes.
-    if wPx != lastDrawablePx.w || hPx != lastDrawablePx.h {
-      lastDrawablePx = (wPx, hPx)
-      x11_post_window_resize(xid, wPx, hPx)
+    if wPx == lastDrawablePx.w && hPx == lastDrawablePx.h { return }
+    lastDrawablePx = (wPx, hPx)
+
+    // Debounce resize feedback (coalesce bursts)
+    pendingResizeTask?.cancel()
+    pendingSize = (wPx, hPx)
+
+    let task = DispatchWorkItem { [weak self] in
+      guard let self = self, let s = self.pendingSize else { return }
+      x11_post_window_resize(self.xid, s.w, s.h)
     }
+    pendingResizeTask = task
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task) // 50ms
   }
 }
 

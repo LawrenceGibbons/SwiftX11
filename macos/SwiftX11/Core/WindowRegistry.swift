@@ -20,8 +20,11 @@ struct X11WindowInfo {
 
 @MainActor
 final class WindowRegistry {
+  
   static let shared = WindowRegistry()
   
+  private var showDamageLogs: () -> Bool = { true }   // default
+
   // injected hooks (set once from SwiftUI/XServerController)
   private var logAppend: ((String) -> Void)?
   private var isLogPaused: (() -> Bool)?
@@ -35,6 +38,17 @@ final class WindowRegistry {
   private var childrenByParent: [UInt32: Set<UInt32>] = [:]   // optional, but useful
   private let rootXid: UInt32 = 1
 
+  // avoid rootless_resize thrashing
+  // For each xid, the size we just asked Cocoa to apply via CONFIGURE
+  private var suppressExpectedSize: [UInt32: (w: Int32, h: Int32)] = [:]
+
+  // Budget of how many callbacks to suppress before giving up (layout can generate intermediate sizes)
+  private var suppressBudget: [UInt32: Int] = [:]
+
+  // De-dupe for rootless resize enqueue
+  private var lastRootlessSent: [UInt32: (w: Int32, h: Int32)] = [:]
+
+
   private func isTopLevelX11Window(_ xid: UInt32) -> Bool {
     // Top-level means parent is the X11 root (1). If unknown, assume top-level
     // (defensive; better to show a window than hide it).
@@ -43,6 +57,11 @@ final class WindowRegistry {
     return true
   }
   
+  func setSettingsHooks(showDamageLogs: @escaping () -> Bool) {
+    self.showDamageLogs = showDamageLogs
+  }
+  
+    
   // call this once at startup
   func attachLogHooks(
     logAppend: @escaping (String) -> Void,
@@ -400,8 +419,17 @@ final class WindowRegistry {
     let w = ev.u.win_damage.w_px
     let h = ev.u.win_damage.h_px
     
-    let hasWindow = (windows[xid] != nil)
-    logAppend?("handleDamageEvent: xid=0x\(String(xid, radix: 16).uppercased()) rect=(\(x),\(y)) \(w)x\(h) hasWindow=\(hasWindow)")
+    guard windows[xid] != nil else {
+      // Child window or no host surface → ignore for logging
+      noteDamage(xid: xid, x: x, y: y, w: w, h: h)
+      return
+    }
+
+    if showDamageLogs() {
+      logAppend?(
+        "handleDamageEvent: xid=0x\(String(xid, radix: 16).uppercased()) rect=(\(x),\(y)) \(w)x\(h)"
+      )
+    }
     
     // Record damage (later: coalesce dirty rects). This also schedules a single present
     // on the main queue (see schedulePresent).
@@ -555,6 +583,10 @@ final class WindowRegistry {
   private func sendConfigureAsync(xid: UInt32, w: Int32, h: Int32) {
     let w = max(1, w)
     let h = max(1, h)
+    
+    suppressExpectedSize[xid] = (w: w, h: h)
+    suppressBudget[xid] = 8   // swallow a few intermediate callbacks
+
     DispatchQueue.main.async {
       x11_client_configure_window(xid, w, h)
     }
@@ -731,6 +763,32 @@ final class WindowRegistry {
       }
       self.snapshotAndPresentNow(sourceXid: source, presentXid: host)    }
   }
+  
+  
+  @MainActor
+  func shouldSuppressRootlessResize(xid: UInt32, w_px: Int32, h_px: Int32) -> Bool {
+      guard let exp = suppressExpectedSize[xid] else { return false }
+
+      // If we've reached the requested size, consume suppression.
+      if exp.w == w_px && exp.h == h_px {
+          suppressExpectedSize.removeValue(forKey: xid)
+          suppressBudget.removeValue(forKey: xid)
+          return true
+      }
+
+      // Otherwise suppress a limited number of callbacks (layout jitter).
+      let b = suppressBudget[xid] ?? 0
+      if b > 0 {
+          suppressBudget[xid] = b - 1
+          return true
+      }
+
+      // Fail-safe: stop suppressing if it never converges.
+      suppressExpectedSize.removeValue(forKey: xid)
+      suppressBudget.removeValue(forKey: xid)
+      return false
+  }
+  
 }
 
 
