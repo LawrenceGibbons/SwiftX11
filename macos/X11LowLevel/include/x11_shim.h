@@ -102,7 +102,13 @@ void x11_post_pointer_leave(uint32_t xid,
                             int32_t y_px,
                             uint32_t modifiers);
   
-
+void x11_post_pointer_move2(uint32_t xid,
+                            int32_t win_x, int32_t win_y,
+                            int32_t root_x, int32_t root_y,
+                            uint8_t deliver,
+                            uint32_t buttons,
+                            uint32_t modifiers);
+  
 bool x11_debug_pop_event(x11_event_t* out_ev);
 void x11_post_window_raise(uint32_t xid);
 void x11_post_window_destroy(uint32_t xid);

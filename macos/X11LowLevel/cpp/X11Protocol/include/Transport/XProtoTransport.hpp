@@ -62,6 +62,9 @@ public:
                        uint16_t w, uint16_t h,
                        uint16_t count);
   
+  //Accessor(s)
+  XProtoNotifyQueue& notifyQueue() { return notifyQueue_; }
+
 private:
   XProtoContext& ctx_;
   EventOps& evOps_;

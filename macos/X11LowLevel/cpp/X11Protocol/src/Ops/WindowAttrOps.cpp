@@ -66,10 +66,13 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 //
 // We only implement CWEventMask (bit 11) for now.
 void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  ctx.tracef("[CWA] ENTER remain=%zu\n", br.remaining());
+  fprintf(stderr, "[CWA] ENTER remain=%zu\n", br.remaining());
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
   const uint32_t wid   = br.readU32();
   const uint32_t vmask = br.readU32();
+  ctx.tracef("[CWA] GATE1 wid=0x%08X remain=%zu\n", wid, br.remaining());
 
   // Value list is 32-bit items in increasing bit order.
   // We only care about bit 11, but we still must consume correctly.

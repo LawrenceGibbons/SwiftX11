@@ -13,6 +13,7 @@
 #include <cassert>
 
 #include "WindowView.hpp"
+#include "InputState.hpp"
 
 namespace x11 {
 
@@ -62,6 +63,9 @@ public:
   
   const PixmapTable& pixmaps() const { assert(pixmap_table_); return *pixmap_table_; }
   
+  // Mouse handling
+  InputState& input() { return input_; }
+  const InputState& input() const { return input_; }
 
 private:
   XProtoTransport* transport_ = nullptr;
@@ -77,6 +81,9 @@ private:
   
   // pixel maps
   PixmapTable* pixmap_table_ = nullptr;
+  
+  // Mouse handling
+  InputState input_;
 };
 
 } // namespace x11

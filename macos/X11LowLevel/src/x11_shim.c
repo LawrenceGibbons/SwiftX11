@@ -1,5 +1,5 @@
 //
-//  x11_requests.c
+//  x11_shim.c
 //  X11LowLevel
 //
 //  Created by Lawrence Gibbons on 1/6/26.
@@ -31,7 +31,7 @@
 #include "x11_requests.h"
 #include "x11_server_internal.h"
 #include "x11_xproto.h"
-
+#include "XProtoServerBridge.h"
 
 // -----------------------------------------------------------------------------
 // Shim-local server context (scaffold step): collect shim state into one struct.
@@ -587,138 +587,205 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
 }
 
 
+//void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
+//                            int32_t x_px, int32_t y_px,
+//                            uint32_t buttons, uint32_t modifiers)
+//{
+//    // Motion routing (extra-correct for macOS):
+//    // - If a drag-grab is active, route motion to the grab window.
+//    // Motion routing (deterministic):
+//    // - If a drag-grab is active, route motion to the grab window.
+//    // - Otherwise, route motion to the current pointer owner (enter/leave ownership).
+//    // - If no pointer owner exists, fall back to the focused window (if any).
+//    //
+//    // NOTE: This is intentionally pointer-owner-first (more X11-ish). If you later want
+//    // "key window receives mouseMoved even when pointer is outside", swap focus/pointer.    
+//  if (type == X11_PTR_MOVE) {
+//        atomic_fetch_add_explicit(&g_srv.dbg_move_calls, 1, memory_order_relaxed);
+//        uint32_t drag = 0;
+//        uint32_t focus = 0;
+//        uint32_t pointer = 0;
+//
+//        x11_backend_lock();
+//        drag = g_srv.drag_xid;
+//        focus = g_srv.focus_xid;
+//        pointer = g_srv.pointer_xid;
+//        x11_backend_unlock();
+//
+//      uint32_t target = 0;
+//      if (drag != 0) {
+//        target = drag;
+//        atomic_fetch_add_explicit(&g_srv.dbg_move_target_drag, 1, memory_order_relaxed);
+//      } else if (pointer != 0) {
+//        target = pointer;
+//        atomic_fetch_add_explicit(&g_srv.dbg_move_target_pointer, 1, memory_order_relaxed);
+//      } else {
+//        target = focus;
+//        atomic_fetch_add_explicit(&g_srv.dbg_move_target_focus, 1, memory_order_relaxed);
+//      }
+//
+//      if (target == 0) {
+//        atomic_fetch_add_explicit(&g_srv.dbg_move_drop_no_target, 1, memory_order_relaxed);
+//      #ifndef NDEBUG
+//        dbg_motion_log_rl(x11_now_ns(),
+//          "[SwiftX11] MOVE drop: no target (from xid=0x%X drag=0x%X focus=0x%X ptr=0x%X)\n",
+//          xid, drag, focus, pointer);
+//      #endif
+//        return;
+//      }
+//
+//      // Deterministic routing: rewrite to the computed target instead of dropping.
+//      if (target != xid) {
+//        atomic_fetch_add_explicit(&g_srv.dbg_move_drop_target_mismatch, 1, memory_order_relaxed);
+//      #ifndef NDEBUG
+//        dbg_motion_log_rl(x11_now_ns(),
+//          "[SwiftX11] MOVE reroute: from xid=0x%X -> target=0x%X (drag=0x%X focus=0x%X ptr=0x%X)\n",
+//          xid, target, drag, focus, pointer);
+//      #endif
+//        xid = target;
+//      }
+//
+//      #ifndef NDEBUG
+//      dbg_motion_log_rl(x11_now_ns(),
+//        "[SwiftX11] MOVE ok: xid=0x%X (drag=0x%X focus=0x%X ptr=0x%X)\n",
+//        xid, drag, focus, pointer);
+//      #endif
+//    }
+//
+//    // Keep canonical backend button/drag state correct even for the legacy API.
+//    // NOTE: Some callers historically passed 0 for motion. Therefore:
+//    //   - For motion: NEVER trust `buttons`; read g_srv.buttons instead.
+//    //   - For down/up: treat `buttons` as the AFTER-state mask and commit it to g_srv.buttons.
+//    // Drag ownership is derived from the 0->nonzero and nonzero->0 transitions.
+//    uint32_t buttons_snapshot = 0;
+//
+//    if (type == X11_PTR_DOWN || type == X11_PTR_UP) {
+//        x11_backend_lock();
+//      
+//        // A click implies pointer ownership.
+//        if (type == X11_PTR_DOWN) {
+//            g_srv.pointer_xid = xid;
+//        }
+//
+//        const uint32_t old_buttons = g_srv.buttons;
+//        const uint32_t new_buttons = buttons; // legacy API supplies AFTER-state mask
+//        g_srv.buttons = new_buttons;
+//
+//        // Drag grab behavior: first transition to nonzero grabs; transition to zero releases.
+//        if (old_buttons == 0 && new_buttons != 0) {
+//            g_srv.drag_xid = xid;
+//        } else if (old_buttons != 0 && new_buttons == 0) {
+//            g_srv.drag_xid = 0;
+//        }
+//
+//        buttons_snapshot = g_srv.buttons;
+//        x11_backend_unlock();
+//    } else if (type == X11_PTR_MOVE) {
+//        x11_backend_lock();
+//        buttons_snapshot = g_srv.buttons;
+//        x11_backend_unlock();
+//    }
+//
+//    x11_event_t ev = (x11_event_t){0};
+//    ev.timestamp_ns = x11_now_ns();
+//    ev.xid = xid;
+//
+//    ev.type = (type == X11_PTR_MOVE) ? X11_EV_POINTER_MOTION :
+//              (type == X11_PTR_DOWN || type == X11_PTR_UP) ? X11_EV_POINTER_BUTTON :
+//              X11_EV_NONE;
+//
+//    if (ev.type == X11_EV_POINTER_MOTION) {
+//        ev.size = sizeof(ev.u.motion);
+//        ev.u.motion.x_px = x_px;
+//        ev.u.motion.y_px = y_px;
+//        ev.u.motion.buttons = buttons_snapshot;
+//        ev.u.motion.modifiers = modifiers;
+//        (void)x11_events_push(&ev);
+//        return;
+//    }
+//
+//    if (ev.type == X11_EV_POINTER_BUTTON) {
+//        ev.size = sizeof(ev.u.button);
+//        ev.u.button.x_px = x_px;
+//        ev.u.button.y_px = y_px;
+//
+//        // Legacy API can't identify which button changed.
+//        ev.u.button.button = 0;
+//        ev.u.button.is_press = (type == X11_PTR_DOWN) ? 1 : 0;
+//
+//        // AFTER-state mask
+//        ev.u.button.buttons = buttons_snapshot;
+//        ev.u.button.modifiers = modifiers;
+//        (void)x11_events_push(&ev);
+//        return;
+//    }
+//}
+
+
 void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
                             int32_t x_px, int32_t y_px,
                             uint32_t buttons, uint32_t modifiers)
 {
-    // Motion routing (extra-correct for macOS):
-    // - If a drag-grab is active, route motion to the grab window.
-    // Motion routing (deterministic):
-    // - If a drag-grab is active, route motion to the grab window.
-    // - Otherwise, route motion to the current pointer owner (enter/leave ownership).
-    // - If no pointer owner exists, fall back to the focused window (if any).
-    //
-    // NOTE: This is intentionally pointer-owner-first (more X11-ish). If you later want
-    // "key window receives mouseMoved even when pointer is outside", swap focus/pointer.    
-  if (type == X11_PTR_MOVE) {
-        atomic_fetch_add_explicit(&g_srv.dbg_move_calls, 1, memory_order_relaxed);
-        uint32_t drag = 0;
-        uint32_t focus = 0;
-        uint32_t pointer = 0;
+#if !defined(NDEBUG) && SWIFTX11_TRACE
+  fprintf(stderr, "[C] x11_post_pointer_event MOVE xid=0x%X x=%d y=%d buttons=0x%X mods=0x%X\n",
+          xid, (int)x_px, (int)y_px, (unsigned)buttons, (unsigned)modifiers);
+#endif
+  
+  if (xid == 0) return;
 
-        x11_backend_lock();
-        drag = g_srv.drag_xid;
-        focus = g_srv.focus_xid;
-        pointer = g_srv.pointer_xid;
-        x11_backend_unlock();
-
-      uint32_t target = 0;
-      if (drag != 0) {
-        target = drag;
-        atomic_fetch_add_explicit(&g_srv.dbg_move_target_drag, 1, memory_order_relaxed);
-      } else if (pointer != 0) {
-        target = pointer;
-        atomic_fetch_add_explicit(&g_srv.dbg_move_target_pointer, 1, memory_order_relaxed);
-      } else {
-        target = focus;
-        atomic_fetch_add_explicit(&g_srv.dbg_move_target_focus, 1, memory_order_relaxed);
-      }
-
-      if (target == 0) {
-        atomic_fetch_add_explicit(&g_srv.dbg_move_drop_no_target, 1, memory_order_relaxed);
-      #ifndef NDEBUG
-        dbg_motion_log_rl(x11_now_ns(),
-          "[SwiftX11] MOVE drop: no target (from xid=0x%X drag=0x%X focus=0x%X ptr=0x%X)\n",
-          xid, drag, focus, pointer);
-      #endif
-        return;
-      }
-
-      // Deterministic routing: rewrite to the computed target instead of dropping.
-      if (target != xid) {
-        atomic_fetch_add_explicit(&g_srv.dbg_move_drop_target_mismatch, 1, memory_order_relaxed);
-      #ifndef NDEBUG
-        dbg_motion_log_rl(x11_now_ns(),
-          "[SwiftX11] MOVE reroute: from xid=0x%X -> target=0x%X (drag=0x%X focus=0x%X ptr=0x%X)\n",
-          xid, target, drag, focus, pointer);
-      #endif
-        xid = target;
-      }
-
-      #ifndef NDEBUG
-      dbg_motion_log_rl(x11_now_ns(),
-        "[SwiftX11] MOVE ok: xid=0x%X (drag=0x%X focus=0x%X ptr=0x%X)\n",
-        xid, drag, focus, pointer);
-      #endif
+  switch (type) {
+    case X11_PTR_MOVE: {
+      // Legacy API: coords are window-local.
+      // We cannot know true root coords here, so pass root=win.
+      // deliver=1 because this is the old "deliver motion" entrypoint.
+      x11_post_pointer_move2(xid,
+                             x_px, y_px,      // win_x/win_y
+                             x_px, y_px,      // root_x/root_y (fallback)
+                             1,               // deliver
+                             buttons,
+                             modifiers);
+      return;
     }
 
-    // Keep canonical backend button/drag state correct even for the legacy API.
-    // NOTE: Some callers historically passed 0 for motion. Therefore:
-    //   - For motion: NEVER trust `buttons`; read g_srv.buttons instead.
-    //   - For down/up: treat `buttons` as the AFTER-state mask and commit it to g_srv.buttons.
-    // Drag ownership is derived from the 0->nonzero and nonzero->0 transitions.
-    uint32_t buttons_snapshot = 0;
+    case X11_PTR_DOWN:
+      // Legacy API: no specific button number available here.
+      // If you have x11_post_pointer_button(...) elsewhere for real button events,
+      // this path is rarely used. Keep it for compatibility.
+      x11_proto_bridge_post_pointer_button_legacy(xid, 1, x_px, y_px, buttons, modifiers);
+      return;
 
-    if (type == X11_PTR_DOWN || type == X11_PTR_UP) {
-        x11_backend_lock();
-      
-        // A click implies pointer ownership.
-        if (type == X11_PTR_DOWN) {
-            g_srv.pointer_xid = xid;
-        }
+    case X11_PTR_UP:
+      x11_proto_bridge_post_pointer_button_legacy(xid, 0, x_px, y_px, buttons, modifiers);
+      return;
 
-        const uint32_t old_buttons = g_srv.buttons;
-        const uint32_t new_buttons = buttons; // legacy API supplies AFTER-state mask
-        g_srv.buttons = new_buttons;
+    default:
+      return;
+  }
+}
 
-        // Drag grab behavior: first transition to nonzero grabs; transition to zero releases.
-        if (old_buttons == 0 && new_buttons != 0) {
-            g_srv.drag_xid = xid;
-        } else if (old_buttons != 0 && new_buttons == 0) {
-            g_srv.drag_xid = 0;
-        }
 
-        buttons_snapshot = g_srv.buttons;
-        x11_backend_unlock();
-    } else if (type == X11_PTR_MOVE) {
-        x11_backend_lock();
-        buttons_snapshot = g_srv.buttons;
-        x11_backend_unlock();
-    }
+// C++ bridge (enqueue-only)
+extern void x11_proto_bridge_post_pointer_move2(uint32_t xid,
+                                                int32_t win_x, int32_t win_y,
+                                                int32_t root_x, int32_t root_y,
+                                                uint8_t deliver,
+                                                uint32_t buttons,
+                                                uint32_t modifiers);
 
-    x11_event_t ev = (x11_event_t){0};
-    ev.timestamp_ns = x11_now_ns();
-    ev.xid = xid;
-
-    ev.type = (type == X11_PTR_MOVE) ? X11_EV_POINTER_MOTION :
-              (type == X11_PTR_DOWN || type == X11_PTR_UP) ? X11_EV_POINTER_BUTTON :
-              X11_EV_NONE;
-
-    if (ev.type == X11_EV_POINTER_MOTION) {
-        ev.size = sizeof(ev.u.motion);
-        ev.u.motion.x_px = x_px;
-        ev.u.motion.y_px = y_px;
-        ev.u.motion.buttons = buttons_snapshot;
-        ev.u.motion.modifiers = modifiers;
-        (void)x11_events_push(&ev);
-        return;
-    }
-
-    if (ev.type == X11_EV_POINTER_BUTTON) {
-        ev.size = sizeof(ev.u.button);
-        ev.u.button.x_px = x_px;
-        ev.u.button.y_px = y_px;
-
-        // Legacy API can't identify which button changed.
-        ev.u.button.button = 0;
-        ev.u.button.is_press = (type == X11_PTR_DOWN) ? 1 : 0;
-
-        // AFTER-state mask
-        ev.u.button.buttons = buttons_snapshot;
-        ev.u.button.modifiers = modifiers;
-        (void)x11_events_push(&ev);
-        return;
-    }
+void x11_post_pointer_move2(uint32_t xid,
+                            int32_t win_x, int32_t win_y,
+                            int32_t root_x, int32_t root_y,
+                            uint8_t deliver,
+                            uint32_t buttons,
+                            uint32_t modifiers)
+{
+  if (xid == 0) return;
+  x11_proto_bridge_post_pointer_move2(xid,
+                                      win_x, win_y,
+                                      root_x, root_y,
+                                      deliver,
+                                      buttons,
+                                      modifiers);
 }
 
 void x11_post_key_event(uint32_t xid, bool is_down,
@@ -1692,4 +1759,5 @@ void x11_xproto_apply_rootless_resize_on_server_thread(uint32_t wid, int32_t w_p
 {
   x11_proto_bridge_apply_rootless_resize(wid, w_px, h_px);
 }
+
 

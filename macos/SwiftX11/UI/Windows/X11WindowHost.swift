@@ -501,63 +501,101 @@ private func mods(_ flags: NSEvent.ModifierFlags) -> UInt32 {
   return m
 }
 
-private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
-  // Convert to view coords (origin bottom-left)
-  let pInWindow = event.locationInWindow
-  let p = convert(pInWindow, from: nil)
+  
+  private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
+    // View coords in points (origin bottom-left)
+    let pInWindow = event.locationInWindow
+    let p = convert(pInWindow, from: nil)
 
-  let scale = window?.backingScaleFactor ?? 1.0
+    let scale = window?.backingScaleFactor ?? 1.0
 
-  // Allow negative/outside coords when NOT clamping (drag semantics).
-  var xF = p.x * scale
-  var yF = p.y * scale
-
-  if clampToView {
-    // Clamp in points then scale (matches bounds.contains logic)
-    let clampedXPt = min(max(p.x, 0), bounds.width)
-    let clampedYPt = min(max(p.y, 0), bounds.height)
-    xF = clampedXPt * scale
-    yF = clampedYPt * scale
-
-    // Clamp in pixels to [0 .. sizePx-1]
+    // Backing pixel dimensions of this view
     let wPx = max(1, Int(floor(bounds.width * scale)))
     let hPx = max(1, Int(floor(bounds.height * scale)))
-    xF = min(max(xF, 0), CGFloat(wPx - 1))
-    yF = min(max(yF, 0), CGFloat(hPx - 1))
+
+    // Convert to pixels in Cocoa-up coordinates
+    var xF = p.x * scale
+    var yF = p.y * scale
+
+    if clampToView {
+      // Clamp in points then scale (matches bounds.contains logic)
+      let clampedXPt = min(max(p.x, 0), bounds.width)
+      let clampedYPt = min(max(p.y, 0), bounds.height)
+      xF = clampedXPt * scale
+      yF = clampedYPt * scale
+
+      // Clamp in pixels to [0 .. sizePx-1] (still Cocoa-up)
+      xF = min(max(xF, 0), CGFloat(wPx - 1))
+      yF = min(max(yF, 0), CGFloat(hPx - 1))
+    }
+
+    // Flip Y to X11 top-down (0 at top)
+    yF = CGFloat(hPx - 1) - yF
+
+    if clampToView {
+      // After flip, ensure still in range (paranoia)
+      yF = min(max(yF, 0), CGFloat(hPx - 1))
+    }
+
+    return (Int32(floor(xF)), Int32(floor(yF)))
   }
+  
+  
+  private func rootPointInPixelsTopLeft() -> (Int32, Int32) {
+    // Global mouse location in screen points (origin bottom-left of global space)
+    let gp = NSEvent.mouseLocation
 
-  return (Int32(floor(xF)), Int32(floor(yF)))
-}
+    // Virtual desktop bounds in points
+    let screens = NSScreen.screens
+    let vminX = screens.map { $0.frame.minX }.min() ?? 0
+    let vmaxY = screens.map { $0.frame.maxY }.max() ?? 0
 
+    // Use scale of the screen containing the pointer if possible
+    let screen = screens.first(where: { $0.frame.contains(gp) }) ?? NSScreen.main
+    let scale = screen?.backingScaleFactor ?? 1.0
+
+    // Root coords in pixels, top-left origin of virtual desktop
+    let xPx = Int32(((gp.x - vminX) * scale).rounded(.toNearestOrAwayFromZero))
+    let yPx = Int32(((vmaxY - gp.y) * scale).rounded(.toNearestOrAwayFromZero)) - 1
+
+    return (max(0, xPx), max(0, yPx))
+  }
+  
+  
 // MARK: - Mouse
-private func sendMotion(_ event: NSEvent) {
-  // Compute inside in *points*
-  let p = convert(event.locationInWindow, from: nil)
-  let insideNow = bounds.contains(p)
-  let dragging = (buttonMask != 0)
+  private func sendMotion(_ event: NSEvent) {
+    // Points
+    let p = convert(event.locationInWindow, from: nil)
+    let insideNow = bounds.contains(p)
+    let dragging = (buttonMask != 0)
 
-  // Synthesize enter/leave transitions (robust even if trackingArea misses)
-  if insideNow && !isPointerInside {
-    isPointerInside = true
-    let (x, y) = pointInPixels(event, clampToView: true)
-    x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
-  } else if !insideNow && isPointerInside && !dragging {
-    // Only synth-leave when not dragging (during drag we want “grab” semantics)
-    isPointerInside = false
-    let (x, y) = pointInPixels(event, clampToView: true)
-    x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+    // Enter/leave synth
+    if insideNow && !isPointerInside {
+      isPointerInside = true
+      let (x, y) = pointInPixels(event, clampToView: true)
+      x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
+    } else if !insideNow && isPointerInside && !dragging {
+      isPointerInside = false
+      let (x, y) = pointInPixels(event, clampToView: true)
+      x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+    }
+
+    // controls whether we will send events.  Only send while inside, unless dragging
+    let deliver: UInt8 = (insideNow || dragging) ? 1 : 0
+
+    // Window-local coords:
+    // - if inside, use true coords
+    // - if outside and not dragging, clamp to edge so winX/winY stay sane
+    let (winX, winY) = pointInPixels(event, clampToView: !dragging)
+
+    // Global root coords (top-left)
+    let (rootX, rootY) = rootPointInPixelsTopLeft()
+
+    // Always update pointer state in server (so QueryPointer follows everywhere)
+    x11_post_pointer_move2(xid, winX, winY, rootX, rootY, deliver, buttonMask, mods(event.modifierFlags))
+
   }
-
-  // Deliver motion only when inside OR dragging/grab
-  if !insideNow && !dragging {
-    return
-  }
-
-  // During drag allow outside coords; hover clamps.
-  let (x, y) = pointInPixels(event, clampToView: !dragging)
-  x11_post_pointer_event(xid, X11_PTR_MOVE, x, y, buttonMask, mods(event.modifierFlags))
-}
-
+  
 private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
   let (x, y) = pointInPixels(event, clampToView: false)
   x11_post_pointer_button(xid, isPress, button, x, y, buttonMask, mods(event.modifierFlags))

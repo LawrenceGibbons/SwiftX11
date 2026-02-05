@@ -199,6 +199,10 @@ void WindowTable::debugState(uint32_t xid,
 // WindowTable.cpp
 
 void WindowTable::setEventMask(uint32_t xid, uint32_t event_mask) {
+  fprintf(stderr,
+          "[MASK] xid=0x%08X event_mask=0x%08X\n",
+          (unsigned)xid, (unsigned)event_mask);
+  
   if (xid == 0) return;
 
   std::lock_guard<std::mutex> lock(mu_);

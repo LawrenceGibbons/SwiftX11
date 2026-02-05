@@ -84,6 +84,12 @@ namespace x11 {
     // seq is the sequence number Transport decided to stamp on the event.
     void flushPendingNotify(const PendingNotify& pn, uint16_t seq);
         
+    // mouse handling
+    void sendMotionNotify(XProtoContext& ctx,
+                          uint32_t wid,
+                          int32_t root_x, int32_t root_y,
+                          uint32_t buttons, uint32_t mods);
+    
   private:
     XProtoContext& ctx_;
   };

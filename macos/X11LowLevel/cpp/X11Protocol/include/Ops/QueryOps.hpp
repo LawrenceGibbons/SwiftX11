@@ -41,9 +41,6 @@ private:
   void handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br);
 
 private:
-  // Fake pointer state (bring-up)
-  int16_t fake_rx_ = 0;
-  int16_t fake_ry_ = 0;
 };
 
 } // namespace x11

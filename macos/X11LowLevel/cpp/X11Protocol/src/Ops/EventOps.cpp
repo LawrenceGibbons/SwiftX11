@@ -143,7 +143,6 @@ namespace x11 {
     queueConfigureNotify(p);
   }
   
-  // ******************* temporarily commented out for C -> C++ transition
   void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
     if (pn.wid == 0) return;
     
@@ -176,5 +175,58 @@ namespace x11 {
     }
   }
   
+  void EventOps::sendMotionNotify(XProtoContext& ctx,
+                                  uint32_t wid,
+                                  int32_t root_x, int32_t root_y,
+                                  uint32_t buttons, uint32_t mods)
+  {
+    // Clamp to 16-bit signed coordinate range used by core events
+    auto clamp16 = [](int32_t v) -> int16_t {
+      if (v < -32768) return -32768;
+      if (v >  32767) return  32767;
+      return (int16_t)v;
+    };
+
+    const int16_t rx = clamp16(root_x);
+    const int16_t ry = clamp16(root_y);
+
+    uint8_t ev[32] = {0};
+
+    ev[0] = 6;   // MotionNotify
+    ev[1] = 0;   // detail
+
+    // Sequence: if you have a stored "last seq" in transport, use it. Otherwise 0 is acceptable.
+    // If you *do* have a method, replace 0 with that.
+    wire::wr16_le(ev + 2, 0);
+
+    // Time (ms). 0 is acceptable for bring-up.
+    wire::wr32_le(ev + 4, 0);
+
+    // Root window XID (you advertise root=1 in SetupSuccess)
+    wire::wr32_le(ev + 8, 1);
+
+    // Event window
+    wire::wr32_le(ev + 12, wid);
+
+    // Child (none for now)
+    wire::wr32_le(ev + 16, 0);
+
+    // rootX/rootY
+    wire::wr16_le(ev + 20, (uint16_t)rx);
+    wire::wr16_le(ev + 22, (uint16_t)ry);
+
+    // eventX/eventY
+    // For now, treat same as root coords. (Enough for xeyes; later subtract window origin.)
+    wire::wr16_le(ev + 24, (uint16_t)rx);
+    wire::wr16_le(ev + 26, (uint16_t)ry);
+
+    // state: combine button/modifier masks from Swift (you already encode these)
+    wire::wr16_le(ev + 28, (uint16_t)(buttons | mods));
+
+    ev[30] = 1;  // sameScreen
+    ev[31] = 0;
+
+    ctx.transport().sendEvent32(wid, ev);
+  }
 } // namespace x11
 

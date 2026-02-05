@@ -64,49 +64,141 @@ namespace x11 {
     const uint32_t qwin = br.readU32();
     br.skip(br.remaining());
 
-    // Fake pointer motion (same as old C behavior)
-    fake_rx_ = (int16_t)((fake_rx_ + 1) % 200);
-    fake_ry_ = (int16_t)((fake_ry_ + 1) % 120);
+    const auto& in = ctx.input();
 
+    // Root coords (global, top-left)
+    const int32_t rootx32 = in.root_x;
+    const int32_t rooty32 = in.root_y;
+    const uint16_t mask = (uint16_t)(in.buttons | in.mods);
+
+    // Host-local coords (relative to host_xid view)
+    const uint32_t host = in.last_xid;
+    const int32_t hostx = in.win_x;
+    const int32_t hosty = in.win_y;
+
+    auto clamp16 = [](int32_t v) -> int16_t {
+      if (v < -32768) return -32768;
+      if (v >  32767) return  32767;
+      return (int16_t)v;
+    };
+
+    const int16_t rootx = clamp16(rootx32);
+    const int16_t rooty = clamp16(rooty32);
+
+    // Default child/win coords
     uint32_t child = 0;
-    int16_t  winx = 0, winy = 0;
+    int16_t winx = 0;
+    int16_t winy = 0;
 
-    if (const WindowView* w = ctx.window(qwin)) {
-      if (w->mapped) {
-        child = qwin;
+    // If we don't know host yet, answer root-only.
+    if (host == 0) {
+      (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+        rep[1] = 1;
+        wire::wr32_le(rep.data() + 8,  kRootXid);
+        wire::wr32_le(rep.data() + 12, 0);
+        wire::wr16_le(rep.data() + 16, (uint16_t)rootx);
+        wire::wr16_le(rep.data() + 18, (uint16_t)rooty);
+        wire::wr16_le(rep.data() + 20, 0);
+        wire::wr16_le(rep.data() + 22, 0);
+        wire::wr16_le(rep.data() + 24, mask);
+      });
+      return;
+    }
 
-        int32_t tx = (int32_t)fake_rx_ - (int32_t)w->x;
-        int32_t ty = (int32_t)fake_ry_ - (int32_t)w->y;
+    // --- Helper: find deepest mapped child under pointer (no mask requirement) ---
+    auto pick_deepest_mapped_child = [&](uint32_t host_xid, int32_t x, int32_t y) -> uint32_t {
+      uint32_t best = host_xid;
+      int bestDepth = -1;
 
-        if (tx < 0) tx = 0;
-        if (ty < 0) ty = 0;
-        if (tx > (int32_t)w->w) tx = (int32_t)w->w;
-        if (ty > (int32_t)w->h) ty = (int32_t)w->h;
+      std::vector<uint32_t> nodes = ctx.windows().descendantsOf(host_xid);
+      nodes.push_back(host_xid);
 
-        winx = (int16_t)tx;
-        winy = (int16_t)ty;
+      auto contains = [&](uint32_t xid, const WindowView& vw, int32_t& lx, int32_t& ly, int& depth) -> bool {
+        lx = x;
+        ly = y;
+        depth = 0;
+        uint32_t cur = xid;
+        while (cur && cur != host_xid) {
+          WindowView cv{};
+          if (!ctx.windows().snapshot(cur, cv)) return false;
+          lx -= cv.x;
+          ly -= cv.y;
+          cur = cv.parent_xid;
+          depth++;
+          if (depth > 64) return false;
+        }
+        if (xid != host_xid && cur != host_xid) return false;
+        return (lx >= 0 && ly >= 0 && lx < (int32_t)vw.w && ly < (int32_t)vw.h);
+      };
+
+      for (uint32_t xid : nodes) {
+        WindowView vw{};
+        if (!ctx.windows().snapshot(xid, vw)) continue;
+        if (!vw.mapped) continue;
+
+        int32_t lx=0, ly=0; int depth=0;
+        if (!contains(xid, vw, lx, ly, depth)) continue;
+
+        if (depth > bestDepth) {
+          best = xid;
+          bestDepth = depth;
+        }
+      }
+      return best;
+    };
+
+    child = pick_deepest_mapped_child(host, hostx, hosty);
+    if (child == host) {
+      // If host contains pointer, child should be 0 unless a true subwindow exists.
+      // We'll leave host here for bring-up; change to 0 later if you want strictness.
+    }
+
+    // --- Compute winX/winY relative to qwin ---
+    if (qwin == kRootXid) {
+      // When querying the root, window coords are root coords
+      winx = rootx;
+      winy = rooty;
+    } else {
+      // Compute qwin local coords using host-local pointer coords.
+      // Walk from qwin up to host, accumulating offsets; if not under host, leave winx/winy=0.
+      int32_t lx = hostx;
+      int32_t ly = hosty;
+
+      uint32_t cur = qwin;
+      int depth = 0;
+      while (cur && cur != host) {
+        WindowView cv{};
+        if (!ctx.windows().snapshot(cur, cv)) { cur = 0; break; }
+        lx -= cv.x;
+        ly -= cv.y;
+        cur = cv.parent_xid;
+        depth++;
+        if (depth > 64) { cur = 0; break; }
+      }
+
+      if (cur == host || qwin == host) {
+        // Clamp to qwin bounds if we can snapshot it
+        WindowView qw{};
+        if (ctx.windows().snapshot(qwin, qw)) {
+          if (lx < 0) lx = 0;
+          if (ly < 0) ly = 0;
+          if (lx > (int32_t)qw.w) lx = (int32_t)qw.w;
+          if (ly > (int32_t)qw.h) ly = (int32_t)qw.h;
+        }
+        winx = clamp16(lx);
+        winy = clamp16(ly);
       }
     }
 
-    // Build the fixed 32-byte reply using ReplyWriter.
-    // NOTE: QueryPointer reply fields are:
-    //   rep[1]  = sameScreen (bool)
-    //   8..11   = root (WINDOW)
-    //   12..15  = child (WINDOW)
-    //   16..17  = rootX (INT16)
-    //   18..19  = rootY (INT16)
-    //   20..21  = winX  (INT16)
-    //   22..23  = winY  (INT16)
-    //   24..25  = mask  (CARD16)
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      rep[1] = 1; // sameScreen = true
+      rep[1] = 1; // sameScreen
       wire::wr32_le(rep.data() + 8,  kRootXid);
       wire::wr32_le(rep.data() + 12, child);
-      wire::wr16_le(rep.data() + 16, (uint16_t)fake_rx_);
-      wire::wr16_le(rep.data() + 18, (uint16_t)fake_ry_);
+      wire::wr16_le(rep.data() + 16, (uint16_t)rootx);
+      wire::wr16_le(rep.data() + 18, (uint16_t)rooty);
       wire::wr16_le(rep.data() + 20, (uint16_t)winx);
       wire::wr16_le(rep.data() + 22, (uint16_t)winy);
-      wire::wr16_le(rep.data() + 24, 0);
+      wire::wr16_le(rep.data() + 24, mask);
     });
   }
 

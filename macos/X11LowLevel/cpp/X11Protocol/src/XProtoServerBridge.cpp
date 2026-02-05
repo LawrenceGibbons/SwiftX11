@@ -26,26 +26,54 @@ extern "C" {
 #include "XProtoContext.hpp"
 //#include "x11_window_set_mapped.h"
 #include "GCTable.hpp"
-#include "XProtoGCBridge.hpp"
 #include "HostResize.hpp"
 #include "XProtoDaemon.hpp"
-
+#include "WindowView.hpp"
+#include "EventOps.hpp"
+#include "XProtoNotifyBridge.hpp"
 
 
 // ---- Host-command queue (server thread -> xproto thread) ----
 namespace {
 
-enum class HostCmdType : uint8_t {
-  RootlessResize,
-  SetPresentable,
-};
+  enum class HostCmdType : uint8_t {
+    RootlessResize,
+    SetPresentable,
+    PointerMove,
+    PointerEnter,
+    PointerLeave,
+    Button,
+    ScrollTicks,
+    Key,
+  };
+  
+  struct HostCmd {
+    HostCmdType type;
 
-struct HostCmd {
-  HostCmdType type;
-  uint32_t xid;
-  int32_t w_px;
-  int32_t h_px;
-};
+    uint32_t xid = 0;
+
+    // window resizing
+    int32_t w_px = 0;
+    int32_t h_px = 0;
+
+    // pointer
+    int32_t win_x = 0;
+    int32_t win_y = 0;
+    int32_t root_x = 0;
+    int32_t root_y = 0;
+    uint8_t deliver = 0; // 1 => deliver MotionNotify, 0 => only update InputState
+
+    uint32_t buttonsMask = 0;
+    uint32_t modsMask = 0;
+
+    // buttons / scroll / keys
+    uint8_t button = 0;
+    uint8_t isDown = 0;
+    int16_t ticks = 0;
+    uint8_t axis = 0;
+    uint32_t keyCode = 0;
+    // (don’t keep utf8 across threads yet)
+  };
 
 std::mutex g_hostcmd_mu;
 std::deque<HostCmd> g_hostcmd_q;
@@ -85,6 +113,9 @@ static std::mutex g_mu; // only used to serialize begin/end session
 static std::atomic<x11::XProtoServer*> g_srv{nullptr};
 
 
+extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
+extern "C" void x11_cpp_notify_shutdown(void); 
+
 extern "C" void x11_proto_bridge_begin_session(int client_fd)
 {
   std::lock_guard<std::mutex> lock(g_mu);
@@ -108,11 +139,22 @@ extern "C" void x11_proto_bridge_begin_session(int client_fd)
     mods = new x11::XProtoModules(*srv); // *srv is the registrar
     g_mods.store(mods, std::memory_order_release);
   }
+  
+  // 4) Initialize the notify pointers
+  if ( srv ) {
+    void* ctx_ptr = (void*)&srv->ctx();
+    void* ev_ptr  = (void*)&srv->eventOps();
+    void* q_ptr   = (void*)&srv->ctx().transport().notifyQueue(); 
+    
+    x11_cpp_notify_init(ctx_ptr, ev_ptr, q_ptr);
+  }
 }
 
 
 extern "C" void x11_proto_bridge_end_session(int client_fd)
 {
+  x11_cpp_notify_shutdown();
+  
   x11::XProtoModules* mods = nullptr;
   x11::XProtoServer*  srv  = nullptr;
 
@@ -164,20 +206,27 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // Runs on xproto thread now: safe vs drawing + fb resize
           applyRootlessResize(ctx, c.xid, c.w_px, c.h_px);
           break;
-
+          
         case HostCmdType::SetPresentable:
           ctx.windows().setPresentable(c.xid, true);
           if (ctx.windows().consumeDirtyIfReady(c.xid)) {
             x11_requests_push_damage(c.xid);
           }
           break;
-      }
+          
+        case HostCmdType::PointerMove: {
+          x11::notify::postMotion(c.xid,
+                                  c.win_x, c.win_y,
+                                  c.root_x, c.root_y,
+                                  c.deliver,
+                                  c.buttonsMask, c.modsMask);
+          break;
+        }  // case
+      } // switch
     }
   }
 
-    
-    
-    srv->flushNotifyQueue();
+  srv->flushNotifyQueue();
 }
 
 //extern "C" void x11_proto_bridge_queue_notify(uint32_t wid, int want_configure, int want_expose)
@@ -252,17 +301,6 @@ extern "C" int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t 
   return srv->dispatch(major, minor, seq, payload, remain) ? 1 : 0;
 }
 
-
-//extern "C" void x11_proto_bridge_window_upsert(uint32_t xid, uint32_t parent,
-//                                               int16_t x, int16_t y,
-//                                               uint16_t w, uint16_t h,
-//                                               uint32_t event_mask,
-//                                               int owner_fd)
-//{
-//  auto* srv = g_srv.load(std::memory_order_acquire);
-//  if (!srv) return;
-//  srv->ctx().windows().upsert(xid, parent, x, y, w, h, event_mask, owner_fd);
-//}
 
 extern "C" void x11_proto_bridge_window_erase(uint32_t xid)
 {
@@ -378,4 +416,67 @@ extern "C" void x11_proto_stop_daemon(void)
   g_daemon.stop();
 }
 
+// Legacy fallback for callers that only have DOWN/UP without a button number.
+// If you don’t want this, you can omit it and just ignore DOWN/UP here.
+extern "C" void x11_proto_bridge_post_pointer_button_legacy(uint32_t xid,
+                                                int is_press,
+                                                int32_t x_px, int32_t y_px,
+                                                uint32_t buttons, uint32_t modifiers);
 
+
+// pointer/mouse handling
+extern "C" {
+
+//void x11_proto_bridge_post_pointer_move(uint32_t xid,
+//                                       int32_t x_px, int32_t y_px,
+//                                       uint32_t buttons, uint32_t modifiers)
+//{
+//  
+//  HostCmd c;
+//  c.type = HostCmdType::PointerMove;
+//  c.xid = xid;
+//  c.x_px = x_px;
+//  c.y_px = y_px;
+//  c.buttonsMask = buttons;
+//  c.modsMask = modifiers;
+//  hostcmd_push(c);
+//}
+
+void x11_proto_bridge_post_pointer_button_legacy(uint32_t xid,
+                                                int is_press,
+                                                int32_t x_px, int32_t y_px,
+                                                uint32_t buttons, uint32_t modifiers)
+{
+  HostCmd c;
+  c.type = HostCmdType::Button;
+  c.xid = xid;
+  c.isDown = is_press ? 1 : 0;
+  c.button = 0; // legacy / unknown button
+  c.win_x = x_px;
+  c.win_y = y_px;
+  c.buttonsMask = buttons;
+  c.modsMask = modifiers;
+  hostcmd_push(c);
+}
+
+} // extern "C"
+
+extern "C" void x11_proto_bridge_post_pointer_move2(uint32_t xid,
+                                                   int32_t win_x, int32_t win_y,
+                                                   int32_t root_x, int32_t root_y,
+                                                   uint8_t deliver,
+                                                   uint32_t buttons,
+                                                   uint32_t modifiers)
+{
+  HostCmd c;
+  c.type = HostCmdType::PointerMove;
+  c.xid = xid;
+  c.win_x = win_x;
+  c.win_y = win_y;
+  c.root_x = root_x;
+  c.root_y = root_y;
+  c.deliver = deliver;
+  c.buttonsMask = buttons;
+  c.modsMask = modifiers;
+  hostcmd_push(c);
+}

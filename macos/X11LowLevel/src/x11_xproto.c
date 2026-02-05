@@ -19,6 +19,8 @@
 #include <sys/socket.h>   // send()
 #include <sys/types.h>
 
+#include <CoreGraphics/CoreGraphics.h>
+
 #include "x11_requests.h"
 #include "x11_setup.h"
 
