@@ -67,7 +67,10 @@ final class XServerController: ObservableObject {
     
     isRunning = ok
     append(ok ? "Server started" : "Failed to start server")
-    if ok { startDrainTimer() }
+    if ok {
+      GlobalPointerTracker.shared.start()
+      startDrainTimer() 
+    }
   }
   
   func stop() {
@@ -82,6 +85,7 @@ final class XServerController: ObservableObject {
 
     isRunning = false
     stopDrainTimer()
+    GlobalPointerTracker.shared.stop()
     append("Server stopped")
   }
   

@@ -591,6 +591,8 @@ private func mods(_ flags: NSEvent.ModifierFlags) -> UInt32 {
     // Global root coords (top-left)
     let (rootX, rootY) = rootPointInPixelsTopLeft()
 
+    GlobalPointerTracker.shared.updateActiveWindow(xid: xid, lastWinXY: (winX, winY))
+    
     // Always update pointer state in server (so QueryPointer follows everywhere)
     x11_post_pointer_move2(xid, winX, winY, rootX, rootY, deliver, buttonMask, mods(event.modifierFlags))
 
