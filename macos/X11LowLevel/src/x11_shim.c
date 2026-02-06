@@ -204,27 +204,6 @@ static void x11_emit_window_create(uint32_t xid, uint32_t parent_xid, const char
           (unsigned)xid);
 #endif
   
-//  // Ask Swift to create the NSWindow
-//  x11_window_created_cb on_create = NULL;
-//  x11_backend_lock();
-//  on_create = g_srv.on_create;
-//  x11_backend_unlock();
-//
-//  if (on_create) {
-//    on_create(xid, title, (int)ww, (int)hh);
-//  }
-  
-  // Enqueue event as backend truth
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_CREATE;
-//  ev.size = sizeof(ev.u.win_create);
-//  ev.u.win_create.width_px = ww;
-//  ev.u.win_create.height_px = hh;
-//  ev.u.win_create.parent_xid = parent_xid;
-//  (void)x11_events_push(&ev);
-  
   x11_ui_push_create(xid, parent_xid, w, h);
   x11_server_wakeup();
 }
@@ -301,24 +280,6 @@ static void x11_emit_window_destroy(uint32_t xid)
   if (retired) x11_backend_free_retired(retired);
   
   // If the window was mapped, emit UNMAP before DESTROY (X11-ish ordering).
-  uint64_t timestamp = x11_now_ns();
-//  if (was_mapped) {
-//    x11_event_t un = (x11_event_t){0};
-//    un.timestamp_ns = timestamp;
-//    un.xid = xid;
-//    un.type = X11_EV_WINDOW_UNMAP;
-//    un.size = sizeof(un.u.win_unmap);
-//    (void)x11_events_push(&un);
-//  }
-
-  // Enqueue DESTROY as backend truth.
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = timestamp + 1;
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_DESTROY;
-//  ev.size = sizeof(ev.u.win_destroy);
-//  (void)x11_events_push(&ev);
-  
   x11_ui_push_destroy(xid);
   x11_server_wakeup();
 }
@@ -801,24 +762,24 @@ void x11_post_key_event(uint32_t xid, bool is_down,
   // If nothing focused, drop the key
   if (target == 0) return;
 
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = target;
-  ev.type = X11_EV_KEY;
-  ev.size = sizeof(ev.u.key);
-  ev.u.key.keycode = keycode;
-  ev.u.key.is_press = is_down ? 1 : 0;
-  ev.u.key.modifiers = modifiers;
-  
-  if (is_down && utf8_text) {
-    size_t n = strnlen(utf8_text, X11_TEXT_MAX);
-    ev.u.key.text_len = (uint8_t)n;
-    memcpy(ev.u.key.text_utf8, utf8_text, n);
-  } else {
-    ev.u.key.text_len = 0;
-  }
-  
-  (void)x11_events_push(&ev);
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = target;
+//  ev.type = X11_EV_KEY;
+//  ev.size = sizeof(ev.u.key);
+//  ev.u.key.keycode = keycode;
+//  ev.u.key.is_press = is_down ? 1 : 0;
+//  ev.u.key.modifiers = modifiers;
+//  
+//  if (is_down && utf8_text) {
+//    size_t n = strnlen(utf8_text, X11_TEXT_MAX);
+//    ev.u.key.text_len = (uint8_t)n;
+//    memcpy(ev.u.key.text_utf8, utf8_text, n);
+//  } else {
+//    ev.u.key.text_len = 0;
+//  }
+//  
+//  (void)x11_events_push(&ev);
 }
 
 void x11_post_pointer_button(uint32_t xid,
@@ -865,24 +826,20 @@ void x11_post_pointer_button(uint32_t xid,
 
   x11_backend_unlock();
 
-#ifndef NDEBUG
-  x11_debug_dump_routing_snapshot(is_press ? "pointer_button(down)" : "pointer_button(up)");
-#endif
-  
-  x11_event_t ev = {0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid  = xid;
-  ev.type = X11_EV_POINTER_BUTTON;
-  ev.size = sizeof(ev.u.button);
-  
-  ev.u.button.x_px = x_px;
-  ev.u.button.y_px = y_px;
-  ev.u.button.button = button;
-  ev.u.button.is_press = is_press ? 1 : 0;
-  ev.u.button.buttons = buttons_snapshot;
-  ev.u.button.modifiers = modifiers;
-  
-  (void)x11_events_push(&ev);
+//  x11_event_t ev = {0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid  = xid;
+//  ev.type = X11_EV_POINTER_BUTTON;
+//  ev.size = sizeof(ev.u.button);
+//  
+//  ev.u.button.x_px = x_px;
+//  ev.u.button.y_px = y_px;
+//  ev.u.button.button = button;
+//  ev.u.button.is_press = is_press ? 1 : 0;
+//  ev.u.button.buttons = buttons_snapshot;
+//  ev.u.button.modifiers = modifiers;
+//  
+//  (void)x11_events_push(&ev);
 }
 
 void x11_post_scroll_ticks(uint32_t xid,
@@ -925,20 +882,20 @@ void x11_post_scroll_ticks(uint32_t xid,
   }
   
   
-  x11_event_t ev = {0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid  = xid;
-  ev.type = X11_EV_SCROLL;
-  ev.size = sizeof(ev.u.scroll);
-  
-  ev.u.scroll.x_px = x_px;
-  ev.u.scroll.y_px = y_px;
-  ev.u.scroll.axis = (uint8_t)axis; // store as byte in the struct
-  ev.u.scroll.ticks = ticks;
-  ev.u.scroll.buttons = buttons_snapshot;
-  ev.u.scroll.modifiers = modifiers;
-  
-  (void)x11_events_push(&ev);
+//  x11_event_t ev = {0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid  = xid;
+//  ev.type = X11_EV_SCROLL;
+//  ev.size = sizeof(ev.u.scroll);
+//  
+//  ev.u.scroll.x_px = x_px;
+//  ev.u.scroll.y_px = y_px;
+//  ev.u.scroll.axis = (uint8_t)axis; // store as byte in the struct
+//  ev.u.scroll.ticks = ticks;
+//  ev.u.scroll.buttons = buttons_snapshot;
+//  ev.u.scroll.modifiers = modifiers;
+//  
+//  (void)x11_events_push(&ev);
 }
 
 void x11_post_focus_event(uint32_t xid, bool focused)
@@ -968,17 +925,14 @@ void x11_post_focus_event(uint32_t xid, bool focused)
 
   x11_backend_unlock();
   
-#ifndef NDEBUG
-  x11_debug_dump_routing_snapshot(focused ? "focus(true)" : "focus(false)");
-#endif
   
-  x11_event_t ev = {0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_FOCUS;
-  ev.size = sizeof(ev.u.focus);
-  ev.u.focus.focused = focused ? 1 : 0;
-  (void)x11_events_push(&ev);
+//  x11_event_t ev = {0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_FOCUS;
+//  ev.size = sizeof(ev.u.focus);
+//  ev.u.focus.focused = focused ? 1 : 0;
+//  (void)x11_events_push(&ev);
 }
 
 void x11_post_pointer_enter(uint32_t xid,
@@ -1004,17 +958,17 @@ void x11_post_pointer_enter(uint32_t xid,
   x11_debug_dump_routing_snapshot("pointer_enter");
 #endif
   
-  x11_event_t ev = {0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_POINTER_ENTER;
-  ev.size = sizeof(ev.u.crossing);
-  
-  ev.u.crossing.x_px = x_px;
-  ev.u.crossing.y_px = y_px;
-  ev.u.crossing.modifiers = modifiers;
-  
-  (void)x11_events_push(&ev);
+//  x11_event_t ev = {0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_POINTER_ENTER;
+//  ev.size = sizeof(ev.u.crossing);
+//  
+//  ev.u.crossing.x_px = x_px;
+//  ev.u.crossing.y_px = y_px;
+//  ev.u.crossing.modifiers = modifiers;
+//  
+//  (void)x11_events_push(&ev);
 }
 
 void x11_post_pointer_leave(uint32_t xid,
@@ -1040,22 +994,17 @@ void x11_post_pointer_leave(uint32_t xid,
   x11_debug_dump_routing_snapshot("pointer_leave");
 #endif
   
-  x11_event_t ev = {0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_POINTER_LEAVE;
-  ev.size = sizeof(ev.u.crossing);
-  
-  ev.u.crossing.x_px = x_px;
-  ev.u.crossing.y_px = y_px;
-  ev.u.crossing.modifiers = modifiers;
-  
-  (void)x11_events_push(&ev);
-}
-
-bool x11_debug_pop_event(x11_event_t* out_ev)
-{
-  return x11_events_pop(out_ev);
+//  x11_event_t ev = {0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_POINTER_LEAVE;
+//  ev.size = sizeof(ev.u.crossing);
+//  
+//  ev.u.crossing.x_px = x_px;
+//  ev.u.crossing.y_px = y_px;
+//  ev.u.crossing.modifiers = modifiers;
+//  
+//  (void)x11_events_push(&ev);
 }
 
 void x11_post_window_raise(uint32_t xid)

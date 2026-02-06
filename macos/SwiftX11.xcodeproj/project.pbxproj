@@ -118,13 +118,6 @@
 			);
 			target = 5225BDDA2F05AF2B009E510B /* X11LowLevel */;
 		};
-		525F4FE12F363DB80016C576 /* Exceptions for "SwiftX11" folder in "SwiftX11" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				UI/X11DebugInspector.swift,
-			);
-			target = 5225BD762F0489A9009E510B /* SwiftX11 */;
-		};
 		52801CB22F1E939F0025369B /* Exceptions for "X11LowLevel" folder in "SwiftX11" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -137,9 +130,6 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		5225BD792F0489A9009E510B /* SwiftX11 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				525F4FE12F363DB80016C576 /* Exceptions for "SwiftX11" folder in "SwiftX11" target */,
-			);
 			path = SwiftX11;
 			sourceTree = "<group>";
 		};

@@ -393,31 +393,7 @@ final class WindowRegistry {
     guard let controller = windows[xid], let view = controller.x11View else { return }
     view.presentBGRA(framebuffer: bgra, width: width, height: height, bytesPerRow: bytesPerRow)
   }
-  
-//  func handleDamageEvent(_ ev: x11_event_t) {
-//    let xid = ev.xid
-//    let x = ev.u.win_damage.x_px
-//    let y = ev.u.win_damage.y_px
-//    let w = ev.u.win_damage.w_px
-//    let h = ev.u.win_damage.h_px
-//    
-//    guard windows[xid] != nil else {
-//      // Child window or no host surface → ignore for logging
-//      noteDamage(xid: xid, x: x, y: y, w: w, h: h)
-//      return
-//    }
-//
-//    if showDamageLogs() {
-//      logAppend?(
-//        "handleDamageEvent: xid=0x\(String(xid, radix: 16).uppercased()) rect=(\(x),\(y)) \(w)x\(h)"
-//      )
-//    }
-//    
-//    // Record damage (later: coalesce dirty rects). This also schedules a single present
-//    // on the main queue (see schedulePresent).
-//    noteDamage(xid: xid, x: x, y: y, w: w, h: h)
-//  }
-    
+      
   @MainActor
   func handleDamageRect(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
     let hasWindow = (windows[xid] != nil)

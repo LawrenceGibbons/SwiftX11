@@ -64,7 +64,6 @@ void x11_post_pointer_event(uint32_t xwin_id,
 // ---- New “typed” input APIs (Option A)
 void x11_post_focus_event(uint32_t xid, bool focused);
   
-bool x11_debug_pop_event(x11_event_t* out_ev);
 void x11_post_window_raise(uint32_t xid);
 void x11_post_window_destroy(uint32_t xid);
 void x11_post_window_destroy_async(uint32_t xid);

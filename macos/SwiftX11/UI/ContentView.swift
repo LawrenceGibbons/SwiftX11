@@ -55,7 +55,6 @@ struct ContentView: View {
           .toggleStyle(.switch)
       
       Toggle("Show Motion events", isOn: $settings.showMotionLogs)
-      Toggle("Repaint storm (stress test)", isOn: $settings.repaintStorm)
       
       
       Toggle("Use Metal rendering", isOn: $settings.useMetal)
@@ -109,9 +108,5 @@ struct ContentView: View {
         WindowRegistry.shared.setUseMetalForAllWindows(newValue)
       }
     }
-    //.onChange(of: settings.repaintStorm) { _, enabled in
-    //  // 0 means “all windows” for this debug path
-    //  x11_debug_set_repaint_storm(enabled ? 1 : 0, 0)
-    //}
   }
 }

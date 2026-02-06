@@ -23,5 +23,4 @@ final class SettingsStore: ObservableObject {
   @Published var showDamageLogs: Bool = true     // show/suppress the damage logging
   @Published var pauseDrain:     Bool = false     // stop draining queue
   @Published var showQueueStats: Bool = false
-  @Published var repaintStorm:   Bool = false
 }
