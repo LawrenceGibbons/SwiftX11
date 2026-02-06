@@ -12,8 +12,8 @@
 #include <cstdarg>
 #include <cassert>
 
-#include <WindowView.hpp>
-#include <InputState.hpp>
+#include "WindowView.hpp"
+#include "InputState.hpp"
 
 namespace x11 {
 

@@ -46,15 +46,6 @@ struct ContentView: View {
       }
       .padding(.bottom, 8)
       
-      Button("New X11 Window") {
-        lastXid = server.newWindow()
-      }
-
-      Button("Show Window") {
-        if let xid = lastXid {
-          server.showWindow(xid: xid)
-        }
-      }
       
       Toggle("Freeze log output", isOn: $settings.pauseLogAppend)
 

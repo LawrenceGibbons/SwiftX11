@@ -32,23 +32,30 @@ final class GlobalPointerTracker {
   func start() {
     stop()
 
-    // 1) Global monitor: works even when your app is not key, but requires Accessibility permissions sometimes.
-    globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]) { [weak self] _ in
-      Task { @MainActor in self?.tickGlobalPointer(deliver: 0) }
+    globalMonitor = NSEvent.addGlobalMonitorForEvents(
+      matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+    ) { [weak self] _ in
+      DispatchQueue.main.async {
+        self?.tickGlobalPointer(deliver: 0)
+      }
     }
 
-    // 2) Local monitor: always works while your app is active
-    localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]) { [weak self] ev in
-      Task { @MainActor in self?.tickGlobalPointer(deliver: 0) }
+    localMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+    ) { [weak self] ev in
+      DispatchQueue.main.async {
+        self?.tickGlobalPointer(deliver: 0)
+      }
       return ev
     }
 
-    // 3) Fallback timer (in case monitors are throttled): 30 Hz
     timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-      Task { @MainActor in self?.tickGlobalPointer(deliver: 0) }
+      DispatchQueue.main.async {
+        self?.tickGlobalPointer(deliver: 0)
+      }
     }
   }
-
+  
   func stop() {
     if let gm = globalMonitor { NSEvent.removeMonitor(gm) }
     if let lm = localMonitor { NSEvent.removeMonitor(lm) }

@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include <X11LowLevel/x11_events.h>
+#include "x11_events.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -146,13 +146,9 @@ void x11_debug_torture_once(int iters, int us_between, int allow_destroy);
   
 // window create and destroy
 uint32_t x11_window_create(const char* title, int32_t w, int32_t h);
-void     x11_window_destroy(uint32_t xid);
 void     x11_window_set_title(uint32_t xid, const char* title); // optional
   
 // X11 hooks
-void x11_post_window_map(uint32_t xid);
-void x11_post_window_unmap(uint32_t xid);
-void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);
 void x11_apply_window_configure(uint32_t xid, int32_t w_px, int32_t h_px);
   
  // ---- Server-only emit helpers (used by request queue drain)
@@ -174,13 +170,13 @@ void x11_server_emit_window_damage(uint32_t xid);
 
 // -------------------------------------------------------------------
 // make the one authoritative bgra copy visible to Swift
-int x11_server_copy_window_bgra(uint32_t xid,
-                                uint8_t* out_bytes,
-                                int32_t out_cap,
-                                int32_t* out_w,
-                                int32_t* out_h,
-                                int32_t* out_bpr);
-  
+//int x11_server_copy_window_bgra(uint32_t xid,
+//                                uint8_t* out_bytes,
+//                                int32_t out_cap,
+//                                int32_t* out_w,
+//                                int32_t* out_h,
+//                                int32_t* out_bpr);
+//  
   
 // Swift calls this on the X11 server thread when the host surface resized.
 // Only w/h are provided; x/y are unchanged and remain authoritative in C++ WindowTable.

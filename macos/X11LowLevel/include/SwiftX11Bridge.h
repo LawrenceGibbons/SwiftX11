@@ -50,7 +50,6 @@ typedef struct {
 // Lifecycle
 // -------------------------------------------------------------------------------------
 bool x11_start_server(int32_t display);
-
 void x11_stop_server(void);
 
 
@@ -60,7 +59,9 @@ void x11_stop_server(void);
 // Pop one command; returns false if queue empty
 bool x11_ui_pop_command(x11_ui_cmd_t* out_cmd);
 
+// -------------------------------------------------------------------------------------
 // Push APIs used by your C/C++ server side
+// -------------------------------------------------------------------------------------
 void x11_ui_push_title(uint32_t xid, const char* title_utf8);
 void x11_ui_push_raise(uint32_t xid);
 void x11_ui_push_map(uint32_t xid);
@@ -120,4 +121,27 @@ void x11_post_pointer_leave(uint32_t xid,
 // -------------------------------------------------------------------------------------
 void x11_post_window_presentable(uint32_t xid);
 
+// -------------------------------------------------------------------------------------
+// make the one authoritative bgra copy visible to Swift
+// -------------------------------------------------------------------------------------
+int x11_server_copy_window_bgra(uint32_t xid,
+                                uint8_t* out_bytes,
+                                int32_t out_cap,
+                                int32_t* out_w,
+                                int32_t* out_h,
+                                int32_t* out_bpr);
 
+// -------------------------------------------------------------------------------------
+// Host/window-manager actions (Swift -> server)
+// -------------------------------------------------------------------------------------
+void x11_post_focus_event(uint32_t xid, bool focused);
+void x11_post_window_raise(uint32_t xid);
+void x11_post_window_map(uint32_t xid);
+void x11_post_window_unmap(uint32_t xid);
+void x11_post_window_destroy(uint32_t xid);
+void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);
+
+// -------------------------------------------------------------------------------------
+// Host-driven resize (Cocoa changed size)
+// -------------------------------------------------------------------------------------
+void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);

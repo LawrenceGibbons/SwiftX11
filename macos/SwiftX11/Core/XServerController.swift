@@ -113,20 +113,14 @@ final class XServerController: ObservableObject {
   }  
   
   @MainActor
-  func newWindow(title: String = "SwiftX11 Window", w: Int32 = 800, h: Int32 = 600)  -> UInt32  {
-    guard isRunning else {
-      append("Server not running; cannot create window.")
-      return 0
-    }
-    let xid = x11_client_create_window(title, w, h)
-    x11_client_set_window_title(xid, String(format: "SwiftX11 Window 0x%X", xid) )
-    append(String(format: "Requested new window xid=0x%X", xid))
-    return xid
+  func newWindow(title: String = "SwiftX11 Window", w: Int32 = 800, h: Int32 = 600) -> UInt32 {
+    append("newWindow disabled: X windows must be created by real X11 clients (xeyes/xterm).")
+    return 0
   }
   
   @MainActor
   func showWindow(xid: UInt32) {
-    x11_client_map_window(xid)
+    x11_post_window_map(xid)
 
     // Force processing immediately (removes the timer as a variable)
     drainEventsForce(max: 256)
@@ -305,177 +299,177 @@ final class XServerController: ObservableObject {
   }
   
   
-  @MainActor
-  private func handleEventSideEffects(_ ev: x11_event_t) {
-    assert(Thread.isMainThread)
-    switch ev.type {
-
-    case X11_EV_WINDOW_TITLE: do {
-      let xid = ev.xid
-
-      let len = Int(ev.u.win_title.title_len)
-      let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
-
-      let bytes: [UInt8] = withUnsafeBytes(of: ev.u.win_title.title_utf8) { raw in
-        Array(raw.prefix(cappedLen))
-      }
-      let title = String(bytes: bytes, encoding: .utf8) ?? "SwiftX11 Window"
-
-      //Task { @MainActor in
-      WindowRegistry.shared.setTitle(xid: xid, title: title)
-      //}
-    }
-
-    case X11_EV_WINDOW_RAISE: do {
-      let xid = ev.xid
-      //Task { @MainActor in
-      WindowRegistry.shared.raiseWindow(xid: xid)
-      //}
-    }
-
-    case X11_EV_WINDOW_MAP: do {
-      let xid = ev.xid
-      //Task { @MainActor in
-      WindowRegistry.shared.mapWindow(xid: xid)
-      //}
-    }
-
-    case X11_EV_WINDOW_UNMAP: do {
-      let xid = ev.xid
-      //Task { @MainActor in
-      WindowRegistry.shared.unmapWindow(xid: xid)
-      //}
-    }
-
-    case X11_EV_WINDOW_RESIZE: do {
-      let xid = ev.xid
-      let wPx = ev.u.win_resize.width_px
-      let hPx = ev.u.win_resize.height_px
-      //Task { @MainActor in
-      WindowRegistry.shared.applyX11Resize(xid: xid, wPx: wPx, hPx: hPx)
-      //}
-    }
-
-    case X11_EV_WINDOW_CREATE: do {
-      let xid = ev.xid
-      let parent = ev.u.win_create.parent_xid
-      let w = Int(ev.u.win_create.width_px)
-      let h = Int(ev.u.win_create.height_px)
-      
-      //Task { @MainActor in
-      WindowRegistry.shared.noteX11WindowCreated(
-        xid: xid,
-        parentXid: parent,
-        title: "SwiftX11 Window",   // title may arrive later via TITLE event
-        width: w,
-        height: h
-      )
-      //}
-    }
-
-    case X11_EV_WINDOW_DESTROY: do {
-      let xid = ev.xid
-      //Task { @MainActor in
-      WindowRegistry.shared.noteX11WindowDestroyed(xid: xid)
-      //}
-    }
-
-    case X11_EV_WINDOW_DAMAGE: do {
-      // Keep damage handling centralized in WindowRegistry.
-      let evCopy = ev
-      //Task { @MainActor in
-      WindowRegistry.shared.handleDamageEvent(evCopy)
-      //}
-    }
-
-
-    default:
-      break
-    }
-  }
+//  @MainActor
+//  private func handleEventSideEffects(_ ev: x11_event_t) {
+//    assert(Thread.isMainThread)
+//    switch ev.type {
+//
+//    case X11_EV_WINDOW_TITLE: do {
+//      let xid = ev.xid
+//
+//      let len = Int(ev.u.win_title.title_len)
+//      let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
+//
+//      let bytes: [UInt8] = withUnsafeBytes(of: ev.u.win_title.title_utf8) { raw in
+//        Array(raw.prefix(cappedLen))
+//      }
+//      let title = String(bytes: bytes, encoding: .utf8) ?? "SwiftX11 Window"
+//
+//      //Task { @MainActor in
+//      WindowRegistry.shared.setTitle(xid: xid, title: title)
+//      //}
+//    }
+//
+//    case X11_EV_WINDOW_RAISE: do {
+//      let xid = ev.xid
+//      //Task { @MainActor in
+//      WindowRegistry.shared.raiseWindow(xid: xid)
+//      //}
+//    }
+//
+//    case X11_EV_WINDOW_MAP: do {
+//      let xid = ev.xid
+//      //Task { @MainActor in
+//      WindowRegistry.shared.mapWindow(xid: xid)
+//      //}
+//    }
+//
+//    case X11_EV_WINDOW_UNMAP: do {
+//      let xid = ev.xid
+//      //Task { @MainActor in
+//      WindowRegistry.shared.unmapWindow(xid: xid)
+//      //}
+//    }
+//
+//    case X11_EV_WINDOW_RESIZE: do {
+//      let xid = ev.xid
+//      let wPx = ev.u.win_resize.width_px
+//      let hPx = ev.u.win_resize.height_px
+//      //Task { @MainActor in
+//      WindowRegistry.shared.applyX11Resize(xid: xid, wPx: wPx, hPx: hPx)
+//      //}
+//    }
+//
+//    case X11_EV_WINDOW_CREATE: do {
+//      let xid = ev.xid
+//      let parent = ev.u.win_create.parent_xid
+//      let w = Int(ev.u.win_create.width_px)
+//      let h = Int(ev.u.win_create.height_px)
+//      
+//      //Task { @MainActor in
+//      WindowRegistry.shared.noteX11WindowCreated(
+//        xid: xid,
+//        parentXid: parent,
+//        title: "SwiftX11 Window",   // title may arrive later via TITLE event
+//        width: w,
+//        height: h
+//      )
+//      //}
+//    }
+//
+//    case X11_EV_WINDOW_DESTROY: do {
+//      let xid = ev.xid
+//      //Task { @MainActor in
+//      WindowRegistry.shared.noteX11WindowDestroyed(xid: xid)
+//      //}
+//    }
+//
+//    case X11_EV_WINDOW_DAMAGE: do {
+//      // Keep damage handling centralized in WindowRegistry.
+//      let evCopy = ev
+//      //Task { @MainActor in
+//      WindowRegistry.shared.handleDamageEvent(evCopy)
+//      //}
+//    }
+//
+//
+//    default:
+//      break
+//    }
+//  }
   
   
-  private func format(_ ev: x11_event_t, showMotion: Bool) -> String? {
-      let xid = String(format: "0x%X", ev.xid)
-      let parent_xid = String(format: "0x%X", ev.u.win_create.parent_xid)
-      
-
-      switch ev.type {
-      case X11_EV_WINDOW_CREATE:
-        return "EV_WINDOW_CREATE xid=\(xid) parent=\(parent_xid) \(ev.u.win_create.width_px)x\(ev.u.win_create.height_px)"
-          
-      case X11_EV_WINDOW_DESTROY:
-          return "EV_WINDOW_DESTROY xid=\(xid)"
-          
-      case X11_EV_WINDOW_TITLE:
-          // Note: side-effects are handled in handleEventSideEffects(_:).
-          let xidStr = xid
-          let len = Int(ev.u.win_title.title_len)
-          let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
-          let bytes: [UInt8] = withUnsafeBytes(of: ev.u.win_title.title_utf8) { raw in
-            Array(raw.prefix(cappedLen))
-          }
-          let title = String(bytes: bytes, encoding: .utf8) ?? "(invalid utf8)"
-          return "EV_WINDOW_TITLE xid=\(xidStr) title=\(title)"
-
-      case X11_EV_POINTER_ENTER:
-          return "EV_ENTER xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"
-
-      case X11_EV_POINTER_LEAVE:
-          return "EV_LEAVE xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"
-
-      case X11_EV_POINTER_MOTION:
-         return showMotion ? "EV_MOTION xid=\(xid) (\(ev.u.motion.x_px),\(ev.u.motion.y_px)) buttons=\(ev.u.motion.buttons)" : nil
-
-      case X11_EV_POINTER_BUTTON:
-          return "EV_BUTTON xid=\(xid) btn=\(ev.u.button.button) press=\(ev.u.button.is_press) buttons=\(ev.u.button.buttons)"
-
-      case X11_EV_SCROLL:
-          return "EV_SCROLL xid=\(xid) axis=\(ev.u.scroll.axis) ticks=\(ev.u.scroll.ticks)"
-
-      case X11_EV_KEY:
-          let modsHex = String(format: "0x%X", ev.u.key.modifiers)
-          let isPress = ev.u.key.is_press != 0
-
-          let len = Int(ev.u.key.text_len)
-          let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
-
-          let text: String
-          if cappedLen > 0 {
-              let bytes: [UInt8] = withUnsafeBytes(of: ev.u.key.text_utf8) { raw in
-                  Array(raw.prefix(cappedLen))
-              }
-              text = String(bytes: bytes, encoding: .utf8) ?? "(invalid utf8)"
-          } else {
-              text = ""
-          }
-
-          return """
-          EV_KEY xid=\(xid) code=\(ev.u.key.keycode) press=\(isPress) mods=\(modsHex)\(text.isEmpty ? "" : " text=\"\(text)\"")
-          """
-      
-      case X11_EV_FOCUS:
-          return "EV_FOCUS xid=\(xid) focused=\(ev.u.focus.focused)"
-
-      case X11_EV_WINDOW_RAISE:
-          return "EV_WINDOW_RAISE xid=\(xid)"
-        
-      case X11_EV_WINDOW_MAP:
-          return "EV_WINDOW_MAP xid=\(xid)"
-
-      case X11_EV_WINDOW_UNMAP:
-          return "EV_WINDOW_UNMAP xid=\(xid)"
-        
-      case X11_EV_WINDOW_RESIZE:
-        return "EV_WINDOW_RESIZE xid=\(xid) \(ev.u.win_resize.width_px)x\(ev.u.win_resize.height_px)"
-        
-      case X11_EV_WINDOW_DAMAGE:
-        return "EV_WINDOW_DAMAGE xid=\(xid) rect=(\(ev.u.win_damage.x_px),\(ev.u.win_damage.y_px)) \(ev.u.win_damage.w_px)x\(ev.u.win_damage.h_px)"
-        
-      default:
-          return "EV type=\(ev.type.rawValue) xid=\(xid) size=\(ev.size)"
-      }
-  }
+//  private func format(_ ev: x11_event_t, showMotion: Bool) -> String? {
+//      let xid = String(format: "0x%X", ev.xid)
+//      let parent_xid = String(format: "0x%X", ev.u.win_create.parent_xid)
+//      
+//
+//      switch ev.type {
+//      case X11_EV_WINDOW_CREATE:
+//        return "EV_WINDOW_CREATE xid=\(xid) parent=\(parent_xid) \(ev.u.win_create.width_px)x\(ev.u.win_create.height_px)"
+//          
+//      case X11_EV_WINDOW_DESTROY:
+//          return "EV_WINDOW_DESTROY xid=\(xid)"
+//          
+//      case X11_EV_WINDOW_TITLE:
+//          // Note: side-effects are handled in handleEventSideEffects(_:).
+//          let xidStr = xid
+//          let len = Int(ev.u.win_title.title_len)
+//          let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
+//          let bytes: [UInt8] = withUnsafeBytes(of: ev.u.win_title.title_utf8) { raw in
+//            Array(raw.prefix(cappedLen))
+//          }
+//          let title = String(bytes: bytes, encoding: .utf8) ?? "(invalid utf8)"
+//          return "EV_WINDOW_TITLE xid=\(xidStr) title=\(title)"
+//
+//      case X11_EV_POINTER_ENTER:
+//          return "EV_ENTER xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"
+//
+//      case X11_EV_POINTER_LEAVE:
+//          return "EV_LEAVE xid=\(xid) (\(ev.u.crossing.x_px),\(ev.u.crossing.y_px))"
+//
+//      case X11_EV_POINTER_MOTION:
+//         return showMotion ? "EV_MOTION xid=\(xid) (\(ev.u.motion.x_px),\(ev.u.motion.y_px)) buttons=\(ev.u.motion.buttons)" : nil
+//
+//      case X11_EV_POINTER_BUTTON:
+//          return "EV_BUTTON xid=\(xid) btn=\(ev.u.button.button) press=\(ev.u.button.is_press) buttons=\(ev.u.button.buttons)"
+//
+//      case X11_EV_SCROLL:
+//          return "EV_SCROLL xid=\(xid) axis=\(ev.u.scroll.axis) ticks=\(ev.u.scroll.ticks)"
+//
+//      case X11_EV_KEY:
+//          let modsHex = String(format: "0x%X", ev.u.key.modifiers)
+//          let isPress = ev.u.key.is_press != 0
+//
+//          let len = Int(ev.u.key.text_len)
+//          let cappedLen = max(0, min(len, Int(X11_TEXT_MAX)))
+//
+//          let text: String
+//          if cappedLen > 0 {
+//              let bytes: [UInt8] = withUnsafeBytes(of: ev.u.key.text_utf8) { raw in
+//                  Array(raw.prefix(cappedLen))
+//              }
+//              text = String(bytes: bytes, encoding: .utf8) ?? "(invalid utf8)"
+//          } else {
+//              text = ""
+//          }
+//
+//          return """
+//          EV_KEY xid=\(xid) code=\(ev.u.key.keycode) press=\(isPress) mods=\(modsHex)\(text.isEmpty ? "" : " text=\"\(text)\"")
+//          """
+//      
+//      case X11_EV_FOCUS:
+//          return "EV_FOCUS xid=\(xid) focused=\(ev.u.focus.focused)"
+//
+//      case X11_EV_WINDOW_RAISE:
+//          return "EV_WINDOW_RAISE xid=\(xid)"
+//        
+//      case X11_EV_WINDOW_MAP:
+//          return "EV_WINDOW_MAP xid=\(xid)"
+//
+//      case X11_EV_WINDOW_UNMAP:
+//          return "EV_WINDOW_UNMAP xid=\(xid)"
+//        
+//      case X11_EV_WINDOW_RESIZE:
+//        return "EV_WINDOW_RESIZE xid=\(xid) \(ev.u.win_resize.width_px)x\(ev.u.win_resize.height_px)"
+//        
+//      case X11_EV_WINDOW_DAMAGE:
+//        return "EV_WINDOW_DAMAGE xid=\(xid) rect=(\(ev.u.win_damage.x_px),\(ev.u.win_damage.y_px)) \(ev.u.win_damage.w_px)x\(ev.u.win_damage.h_px)"
+//        
+//      default:
+//          return "EV type=\(ev.type.rawValue) xid=\(xid) size=\(ev.size)"
+//      }
+//  }
 
   deinit {
     NotificationCenter.default.removeObserver(self)

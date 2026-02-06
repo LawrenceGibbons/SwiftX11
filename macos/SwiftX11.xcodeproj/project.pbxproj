@@ -46,6 +46,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				cpp/X11Protocol/README_XPROTO.md,
+				cpp/X11Protocol/src/Utils/Damage.hpp,
 			);
 			privateHeaders = (
 				cpp/X11Protocol/include/Core/DrawableRW.hpp,
@@ -95,26 +96,25 @@
 				cpp/X11Protocol/include/Ops/WindowOps.hpp,
 				cpp/X11Protocol/include/Transport/XProtoDaemon.hpp,
 				cpp/X11Protocol/include/Transport/XProtoTransport.hpp,
+				cpp/X11Protocol/include/UI/UICommandQueue.hpp,
 				cpp/X11Protocol/include/Utils/ByteReader.hpp,
 				cpp/X11Protocol/include/Utils/WireLE.hpp,
 				cpp/X11Protocol/include/XProtoConnectionWrapper.h,
 				cpp/X11Protocol/include/XProtoNotifyBridge.hpp,
 				cpp/X11Protocol/include/XProtoServerBridge.h,
-				cpp/X11Protocol/src/Utils/Damage.hpp,
 				include/x11_backend_fb.h,
 				include/x11_backend_internal.h,
 				include/x11_backend.h,
 				include/x11_events.h,
 				include/x11_parameters.h,
-				include/x11_requests.h,
 				include/x11_server_internal.h,
 				include/x11_setup.h,
 				include/x11_shim.h,
 				include/x11_xproto.h,
-				X11LowLevel.h,
 			);
 			publicHeaders = (
 				include/SwiftX11Bridge.h,
+				X11LowLevel.h,
 			);
 			target = 5225BDDA2F05AF2B009E510B /* X11LowLevel */;
 		};

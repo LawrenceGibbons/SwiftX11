@@ -154,27 +154,20 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     postSyntheticLeaveForCurrentMouseLocation()
 
     // Tell the backend/event-queue that this X11 window is gone
-    x11_client_destroy_window(xid)
+    x11_post_window_destroy(xid)
     
-#if DEBUG
-    // warn if somehow it's still alive
-    if x11_debug_get_window_alive(xid) != 0 {
-      print("WARN: xid still alive after destroy: 0x\(String(xid, radix: 16))")
-    }
-#endif
-
   }  
   
   func windowDidMiniaturize(_ notification: Notification) {
     assert(Thread.isMainThread)
     if WindowRegistry.shared.consumeSuppressUnmapFromCocoa(xid: xid) { return }
-    x11_client_unmap_window(xid)
+    x11_post_window_unmap(xid)
   }
 
   func windowDidDeminiaturize(_ notification: Notification) {
     assert(Thread.isMainThread)
     if WindowRegistry.shared.consumeSuppressMapFromCocoa(xid: xid) { return }
-    x11_client_map_window(xid)
+    x11_post_window_map(xid)
   }
   
   func windowDidChangeOcclusionState(_ notification: Notification) {
@@ -186,10 +179,10 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     let isVisible = win.occlusionState.contains(.visible)
     if isVisible {
       if WindowRegistry.shared.consumeSuppressMapFromCocoa(xid: xid) { return }
-      x11_client_map_window(xid)
+      x11_post_window_map(xid)
     } else {
       if WindowRegistry.shared.consumeSuppressUnmapFromCocoa(xid: xid) { return }
-      x11_client_unmap_window(xid)
+      x11_post_window_unmap(xid)
     }
   }
   

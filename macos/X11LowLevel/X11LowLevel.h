@@ -7,9 +7,6 @@
 
 #import <Foundation/Foundation.h>
 
-#import <X11LowLevel/x11_events.h>
-#import <X11LowLevel/x11_requests.h>
-#import <X11LowLevel/x11_shim.h>
 #import <X11LowLevel/SwiftX11Bridge.h>
 
 //! Project version number for X11LowLevel.

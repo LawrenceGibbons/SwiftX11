@@ -131,18 +131,6 @@ final class WindowRegistry {
     }
     toks.append(didResignKey)
     
-    //let didMini = center.addObserver(
-    //  forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main
-    //) { _ in
-    //  MainActor.assumeIsolated {
-    //    // Prevent feedback loop when unmap came from X11 -> Swift.
-    //    if self.consumeSuppressUnmapFromCocoa(xid: xid) {
-    //      return
-    //    }
-    //    // Cocoa -> X11
-    //    x11_client_unmap_window(xid)
-    //  }
-    //}
     let didMini = center.addObserver(
       forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main
     ) { [weak self] _ in
@@ -150,24 +138,12 @@ final class WindowRegistry {
       MainActor.assumeIsolated {
         if self.consumeSuppressUnmapFromCocoa(xid: xid) { return }
         DispatchQueue.main.async {
-          x11_client_unmap_window(xid)
+          x11_post_window_unmap(xid)
         }
       }
     }
     toks.append(didMini)
     
-    //let didDeMini = center.addObserver(
-    //  forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main
-    //) { _ in
-    //  MainActor.assumeIsolated {
-    //    // Prevent feedback loop when map came from X11 -> Swift.
-    //    if self.consumeSuppressMapFromCocoa(xid: xid) {
-    //      return
-    //    }
-    //    // Cocoa -> X11
-    //    x11_client_map_window(xid)
-    //  }
-    //}
     let didDeMini = center.addObserver(
       forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main
     ) { [weak self] _ in
@@ -175,7 +151,7 @@ final class WindowRegistry {
       MainActor.assumeIsolated {
         if self.consumeSuppressMapFromCocoa(xid: xid) { return }
         DispatchQueue.main.async {
-          x11_client_map_window(xid)
+          x11_post_window_map(xid)
         }
       }
     }
@@ -418,30 +394,38 @@ final class WindowRegistry {
     view.presentBGRA(framebuffer: bgra, width: width, height: height, bytesPerRow: bytesPerRow)
   }
   
-  func handleDamageEvent(_ ev: x11_event_t) {
-    let xid = ev.xid
-    let x = ev.u.win_damage.x_px
-    let y = ev.u.win_damage.y_px
-    let w = ev.u.win_damage.w_px
-    let h = ev.u.win_damage.h_px
+//  func handleDamageEvent(_ ev: x11_event_t) {
+//    let xid = ev.xid
+//    let x = ev.u.win_damage.x_px
+//    let y = ev.u.win_damage.y_px
+//    let w = ev.u.win_damage.w_px
+//    let h = ev.u.win_damage.h_px
+//    
+//    guard windows[xid] != nil else {
+//      // Child window or no host surface → ignore for logging
+//      noteDamage(xid: xid, x: x, y: y, w: w, h: h)
+//      return
+//    }
+//
+//    if showDamageLogs() {
+//      logAppend?(
+//        "handleDamageEvent: xid=0x\(String(xid, radix: 16).uppercased()) rect=(\(x),\(y)) \(w)x\(h)"
+//      )
+//    }
+//    
+//    // Record damage (later: coalesce dirty rects). This also schedules a single present
+//    // on the main queue (see schedulePresent).
+//    noteDamage(xid: xid, x: x, y: y, w: w, h: h)
+//  }
     
-    guard windows[xid] != nil else {
-      // Child window or no host surface → ignore for logging
-      noteDamage(xid: xid, x: x, y: y, w: w, h: h)
-      return
+  @MainActor
+  func handleDamageRect(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
+    let hasWindow = (windows[xid] != nil)
+    if showDamageLogs() == true {
+      logAppend?("handleDamageRect: xid=0x\(String(xid, radix: 16).uppercased()) rect=(\(x),\(y)) \(w)x\(h) hasWindow=\(hasWindow)")
     }
-
-    if showDamageLogs() {
-      logAppend?(
-        "handleDamageEvent: xid=0x\(String(xid, radix: 16).uppercased()) rect=(\(x),\(y)) \(w)x\(h)"
-      )
-    }
-    
-    // Record damage (later: coalesce dirty rects). This also schedules a single present
-    // on the main queue (see schedulePresent).
     noteDamage(xid: xid, x: x, y: y, w: w, h: h)
   }
-    
   
   private func snapshotAndPresentNow(sourceXid: UInt32, presentXid: UInt32) {
     guard windows[presentXid] != nil else { return }
@@ -594,7 +578,7 @@ final class WindowRegistry {
     suppressBudget[xid] = 8   // swallow a few intermediate callbacks
 
     DispatchQueue.main.async {
-      x11_client_configure_window(xid, w, h)
+      x11_post_window_resize(xid, w, h)
     }
   }
   

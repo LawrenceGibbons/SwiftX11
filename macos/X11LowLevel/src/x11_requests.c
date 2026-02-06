@@ -16,6 +16,7 @@
 #include "x11_server_internal.h"
 #include "x11_xproto.h"
 #include "XProtoServerBridge.h"
+#include "SwiftX11Bridge.h"
 
 // ---------------- Client request queue (C -> server thread) ------------------
 
