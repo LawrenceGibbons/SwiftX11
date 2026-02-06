@@ -132,8 +132,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       x11_post_window_raise(xid)
     
       if shouldLogQueueStats?() == true {
-          let s = x11_events_stats()
-          logAppend?("EVQ (focus in) count=\(s.count) co=\(s.motion_overwrites) drops=\(s.push_drops)")
+          logAppend?("EVQ (focus in)")
       }
   }
 
@@ -143,8 +142,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       x11_post_focus_event(xid, false)
     
       if shouldLogQueueStats?() == true {
-          let s = x11_events_stats()
-          logAppend?("EVQ (focus out) count=\(s.count) co=\(s.motion_overwrites) drops=\(s.push_drops)")
+          logAppend?("EVQ (focus out)")
       }
   }
 

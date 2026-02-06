@@ -15,6 +15,7 @@ final class XServerController: ObservableObject {
   private var showMotion:  (() -> Bool)?
   private var showStats:   (() -> Bool)?
   private var drainPaused: (() -> Bool)?
+  private var didLogDrainPaused = false
 
   
   init() {
@@ -152,11 +153,15 @@ final class XServerController: ObservableObject {
 
   private func drainEvents(max: Int) {
     if isDrainPausedNow() {
-      Task { @MainActor in self.append("drain paused; not popping events") }
+      if !didLogDrainPaused {
+        didLogDrainPaused = true
+        Task { @MainActor in self.append("drain paused; not popping events") }
+      }
       return
     }
-
-    // 1) Pop off the C queue here (NOT MainActor)
+    didLogDrainPaused = false
+    
+    // 1) Pop off the C queue here
     var batch: [x11_event_t] = []
     batch.reserveCapacity(max)
 
@@ -176,7 +181,7 @@ final class XServerController: ObservableObject {
         handleEventSideEffects(ev)
         if (!isLogPausedNow()),
            let line = format(ev, showMotion: (showMotion?() ?? false)) {
-          Task { @MainActor in self.append(line) }
+          append(line)
         }
       }
     }
@@ -229,25 +234,7 @@ final class XServerController: ObservableObject {
       guard now - lastStatsPrintTime >= 1.0 else { return }
       lastStatsPrintTime = now
 
-      let co = x11_debug_motion_overwrites()
-      let drops = x11_debug_push_drops()
-
-      append("EVQ qBefore=\(qBefore) drained=\(drained) coalesce=\(co) drops=\(drops)")
-  }
-  
-  func dumpEventQueue(maxItems: UInt32 = 32) {
-      var buf = [CChar](repeating: 0, count: 8192)
-
-      let ok = buf.withUnsafeMutableBufferPointer { ptr -> Bool in
-          guard let base = ptr.baseAddress else { return false }
-          return x11_debug_dump_queue(base, ptr.count, maxItems)
-      }
-
-      if ok {
-          append(String(cString: buf))
-      } else {
-          append("x11_debug_dump_queue: failed")
-      }
+      append("EVQ qBefore=\(qBefore) drained=\(drained)")
   }
   
   
