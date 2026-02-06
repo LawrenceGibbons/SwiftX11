@@ -11,7 +11,7 @@
 #include <stddef.h>
 
 // -------------------------------------------------------------------------------------
-// Modifier efinitions
+// Definitions
 // -------------------------------------------------------------------------------------
 enum {
   X11_MOD_SHIFT   = 1u << 0,
@@ -25,6 +25,27 @@ typedef enum {
   X11_SCROLL_HORZ = 1,
 } x11_scroll_axis_t;
 
+typedef enum {
+  X11_UI_NONE = 0,
+  X11_UI_TITLE,
+  X11_UI_RAISE,
+  X11_UI_MAP,
+  X11_UI_UNMAP,
+  X11_UI_RESIZE,
+  X11_UI_CREATE,
+  X11_UI_DESTROY,
+  X11_UI_DAMAGE,
+} x11_ui_cmd_type_t;
+
+typedef struct {
+  x11_ui_cmd_type_t type;
+  uint32_t          xid;
+  uint32_t          parent_xid;
+  int32_t           x_px, y_px, w_px, h_px;  // used by DAMAGE/RESIZE/CREATE
+  uint8_t           title_len;
+  char              title_utf8[32];
+} x11_ui_cmd_t;
+
 // -------------------------------------------------------------------------------------
 // Lifecycle
 // -------------------------------------------------------------------------------------
@@ -34,12 +55,20 @@ void x11_stop_server(void);
 
 
 // -------------------------------------------------------------------------------------
-// Callback registration (eventually shift to queue polling
+// Event queueing
 // -------------------------------------------------------------------------------------
-//void x11_register_callbacks(
-//    x11_window_created_cb on_create,
-//    x11_window_closed_cb on_close
-//);
+// Pop one command; returns false if queue empty
+bool x11_ui_pop_command(x11_ui_cmd_t* out_cmd);
+
+// Push APIs used by your C/C++ server side
+void x11_ui_push_title(uint32_t xid, const char* title_utf8);
+void x11_ui_push_raise(uint32_t xid);
+void x11_ui_push_map(uint32_t xid);
+void x11_ui_push_unmap(uint32_t xid);
+void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
+void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t h_px);
+void x11_ui_push_destroy(uint32_t xid);
+void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px);
 
 
 // -------------------------------------------------------------------------------------

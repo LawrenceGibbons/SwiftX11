@@ -1,0 +1,218 @@
+//
+//  UICommandQueue.cpp
+//  X11LowLevel
+//
+//  Created by Lawrence Gibbons on 2/6/26.
+//
+// Server -> Swift UI command queue (C++ implementation, C ABI)
+
+#include <deque>
+#include <mutex>
+#include <cstring>
+#include <cstdint>
+#include <algorithm>
+
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
+
+namespace {
+
+// Keep this reasonably large; it’s cheap.
+// If full, we drop newest (safe) and count drops.
+constexpr size_t kMaxCmds = 4096;
+
+std::mutex g_mu;
+std::deque<x11_ui_cmd_t> g_q;
+uint64_t g_push_drops = 0;
+
+static inline void clamp_wh(int32_t& w, int32_t& h) {
+  if (w < 1) w = 1;
+  if (h < 1) h = 1;
+}
+
+// Overwrite last command if same xid+type.
+// Also coalesce DAMAGE by unioning rects (same xid).
+static inline bool coalesce_tail(x11_ui_cmd_t& tail, const x11_ui_cmd_t& in) {
+  if (tail.xid != in.xid) return false;
+
+  if (tail.type == in.type) {
+    switch (in.type) {
+      case X11_UI_TITLE:
+        tail.title_len = in.title_len;
+        std::memcpy(tail.title_utf8, in.title_utf8, sizeof(tail.title_utf8));
+        return true;
+
+      case X11_UI_RESIZE:
+        tail.w_px = in.w_px;
+        tail.h_px = in.h_px;
+        return true;
+
+      case X11_UI_DAMAGE: {
+        // union rectangles
+        const int32_t ax0 = tail.x_px;
+        const int32_t ay0 = tail.y_px;
+        const int32_t ax1 = tail.x_px + tail.w_px;
+        const int32_t ay1 = tail.y_px + tail.h_px;
+
+        const int32_t bx0 = in.x_px;
+        const int32_t by0 = in.y_px;
+        const int32_t bx1 = in.x_px + in.w_px;
+        const int32_t by1 = in.y_px + in.h_px;
+
+        const int32_t ux0 = std::min(ax0, bx0);
+        const int32_t uy0 = std::min(ay0, by0);
+        const int32_t ux1 = std::max(ax1, bx1);
+        const int32_t uy1 = std::max(ay1, by1);
+
+        tail.x_px = ux0;
+        tail.y_px = uy0;
+        tail.w_px = std::max<int32_t>(1, ux1 - ux0);
+        tail.h_px = std::max<int32_t>(1, uy1 - uy0);
+        return true;
+      }
+
+      // These are idempotent-ish; overwrite/drop is fine.
+      case X11_UI_MAP:
+      case X11_UI_UNMAP:
+      case X11_UI_RAISE:
+      case X11_UI_DESTROY:
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
+  // Small cross-type coalescing:
+  // - A DESTROY makes earlier TITLE/RESIZE/DAMAGE irrelevant if it’s at the tail.
+  if (in.type == X11_UI_DESTROY) {
+    // If tail is something about same xid, replace it with destroy.
+    tail = in;
+    return true;
+  }
+
+  return false;
+}
+
+static inline x11_ui_cmd_t make_empty() {
+  x11_ui_cmd_t c{};
+  c.type = X11_UI_NONE;
+  return c;
+}
+
+static inline void push_cmd(const x11_ui_cmd_t& c) {
+  std::lock_guard<std::mutex> lock(g_mu);
+
+  if (!g_q.empty()) {
+    if (coalesce_tail(g_q.back(), c)) return;
+  }
+
+  if (g_q.size() >= kMaxCmds) {
+    g_push_drops++;
+    return;
+  }
+  g_q.push_back(c);
+}
+
+static inline void fill_title(x11_ui_cmd_t& c, const char* title_utf8) {
+  if (!title_utf8) title_utf8 = "";
+  // Cap at 32 bytes (struct fixed)
+  size_t n = strnlen(title_utf8, sizeof(c.title_utf8));
+  c.title_len = (uint8_t)n;
+  std::memset(c.title_utf8, 0, sizeof(c.title_utf8));
+  if (n) std::memcpy(c.title_utf8, title_utf8, n);
+}
+
+} // namespace
+
+extern "C" bool x11_ui_pop_command(x11_ui_cmd_t* out_cmd) {
+  if (!out_cmd) return false;
+
+  std::lock_guard<std::mutex> lock(g_mu);
+  if (g_q.empty()) return false;
+
+  *out_cmd = g_q.front();
+  g_q.pop_front();
+  return true;
+}
+
+extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_TITLE;
+  c.xid = xid;
+  fill_title(c, title_utf8);
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_raise(uint32_t xid) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_RAISE;
+  c.xid = xid;
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_map(uint32_t xid) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_MAP;
+  c.xid = xid;
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_unmap(uint32_t xid) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_UNMAP;
+  c.xid = xid;
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px) {
+  if (xid == 0) return;
+  clamp_wh(w_px, h_px);
+
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_RESIZE;
+  c.xid = xid;
+  c.w_px = w_px;
+  c.h_px = h_px;
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t h_px) {
+  if (xid == 0) return;
+  clamp_wh(w_px, h_px);
+
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_CREATE;
+  c.xid = xid;
+  c.parent_xid = parent_xid;
+  c.w_px = w_px;
+  c.h_px = h_px;
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_destroy(uint32_t xid) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_DESTROY;
+  c.xid = xid;
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px) {
+  if (xid == 0) return;
+  clamp_wh(w_px, h_px);
+
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_DAMAGE;
+  c.xid = xid;
+  c.x_px = x_px;
+  c.y_px = y_px;
+  c.w_px = w_px;
+  c.h_px = h_px;
+  push_cmd(c);
+}

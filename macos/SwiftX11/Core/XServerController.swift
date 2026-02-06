@@ -162,55 +162,71 @@ final class XServerController: ObservableObject {
     didLogDrainPaused = false
     
     // 1) Pop off the C queue here
-    var batch: [x11_event_t] = []
+    var batch: [x11_ui_cmd_t] = []
+    //var batch: [x11_event_t] = []
     batch.reserveCapacity(max)
 
     assert(Thread.isMainThread)
     var n = 0
     while n < max {
-      var ev = x11_event_t()
-      guard x11_debug_pop_event(&ev) else { break }
-      batch.append(ev)
+      var cmd = x11_ui_cmd_t()
+      guard x11_ui_pop_command(&cmd) else { break }
+      batch.append(cmd)
+      //var ev = x11_event_t()
+      //guard x11_debug_pop_event(&ev) else { break }
+      //batch.append(ev)
       n += 1
     }
     if batch.isEmpty { return }
 
     // 2) Apply effects + logging in-order on MainActor
     Task { @MainActor in
-      for ev in batch {
-        handleEventSideEffects(ev)
-        if (!isLogPausedNow()),
-           let line = format(ev, showMotion: (showMotion?() ?? false)) {
-          append(line)
-        }
+      for cmd in batch {
+        handleUICommand(cmd)
+        // (optional) log formatting for UI commands
       }
+      // for ev in batch {
+      //   handleEventSideEffects(ev)
+      //   if (!isLogPausedNow()),
+      //      let line = format(ev, showMotion: (showMotion?() ?? false)) {
+      //     append(line)
+      //   }
+      // }
     }
   }
 
   
   private func drainEventsForce(max: Int) {
     // 1) Pop off the C queue here (NOT MainActor)
-    var batch: [x11_event_t] = []
+    var batch: [x11_ui_cmd_t] = []
+    //var batch: [x11_event_t] = []
     batch.reserveCapacity(max)
 
     var n = 0
     while n < max {
-      var ev = x11_event_t()
-      guard x11_debug_pop_event(&ev) else { break }
-      batch.append(ev)
+      var cmd = x11_ui_cmd_t()
+      guard x11_ui_pop_command(&cmd) else { break }
+      batch.append(cmd)
+      //var ev = x11_event_t()
+      //guard x11_debug_pop_event(&ev) else { break }
+      //batch.append(ev)
       n += 1
     }
     if batch.isEmpty { return }
 
     // 2) Apply effects + logging in-order on MainActor
     Task { @MainActor in
-      for ev in batch {
-        handleEventSideEffects(ev)
-        if (!isLogPausedNow()),
-           let line = format(ev, showMotion: (showMotion?() ?? false)) {
-          append(line)
-        }
+      for cmd in batch {
+        handleUICommand(cmd)
+        // (optional) log formatting for UI commands
       }
+      //for ev in batch {
+      //  handleEventSideEffects(ev)
+      //  if (!isLogPausedNow()),
+      //     let line = format(ev, showMotion: (showMotion?() ?? false)) {
+      //    append(line)
+      //  }
+      //}
     }
   }
   
@@ -235,6 +251,57 @@ final class XServerController: ObservableObject {
       lastStatsPrintTime = now
 
       append("EVQ qBefore=\(qBefore) drained=\(drained)")
+  }
+  
+  
+  @MainActor
+  private func handleUICommand(_ cmd: x11_ui_cmd_t) {
+    switch cmd.type {
+
+    case X11_UI_TITLE:
+      let xid = cmd.xid
+      let len = Int(cmd.title_len)
+      let cappedLen = max(0, min(len, 32))
+
+      let title = withUnsafeBytes(of: cmd.title_utf8) { raw -> String in
+        let bytes = Array(raw.prefix(cappedLen))
+        return String(bytes: bytes, encoding: .utf8) ?? "SwiftX11 Window"
+      }
+
+      WindowRegistry.shared.setTitle(xid: xid, title: title)
+
+    case X11_UI_RAISE:
+      WindowRegistry.shared.raiseWindow(xid: cmd.xid)
+
+    case X11_UI_MAP:
+      WindowRegistry.shared.mapWindow(xid: cmd.xid)
+
+    case X11_UI_UNMAP:
+      WindowRegistry.shared.unmapWindow(xid: cmd.xid)
+
+    case X11_UI_RESIZE:
+      WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wPx: cmd.w_px, hPx: cmd.h_px)
+
+    case X11_UI_CREATE:
+      WindowRegistry.shared.noteX11WindowCreated(
+        xid: cmd.xid,
+        parentXid: cmd.parent_xid,
+        title: "SwiftX11 Window",
+        width: Int(cmd.w_px),
+        height: Int(cmd.h_px)
+      )
+
+    case X11_UI_DESTROY:
+      WindowRegistry.shared.noteX11WindowDestroyed(xid: cmd.xid)
+
+    case X11_UI_DAMAGE:
+      // Convert to your existing damage handler signature.
+      // If you want, you can change WindowRegistry.handleDamageEvent to take raw fields instead.
+      WindowRegistry.shared.noteDamageRect(xid: cmd.xid, x: cmd.x_px, y: cmd.y_px, w: cmd.w_px, h: cmd.h_px)
+
+    default:
+      break
+    }
   }
   
   

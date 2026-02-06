@@ -223,6 +223,8 @@ static void x11_emit_window_create(uint32_t xid, uint32_t parent_xid, const char
   ev.u.win_create.width_px = ww;
   ev.u.win_create.height_px = hh;
   ev.u.win_create.parent_xid = parent_xid;
+  
+  x11_ui_push_create(xid, parent_xid, w, h);
   (void)x11_events_push(&ev);
 
   x11_server_wakeup();
@@ -316,6 +318,8 @@ static void x11_emit_window_destroy(uint32_t xid)
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_DESTROY;
   ev.size = sizeof(ev.u.win_destroy);
+  
+  x11_ui_push_destroy(xid);
   (void)x11_events_push(&ev);
 
   // Ask Swift to actually close the NSWindow (NO LOCK held).
@@ -1068,12 +1072,15 @@ void x11_post_window_raise(uint32_t xid)
     ev.xid = xid;
     ev.type = X11_EV_WINDOW_RAISE;
     ev.size = sizeof(ev.u.raise);
+  
+    x11_ui_push_raise(xid);
     (void)x11_events_push(&ev);
 }
 
 
 void x11_post_window_destroy(uint32_t xid)
 {
+  x11_ui_push_destroy(xid);
 #ifndef NDEBUG
   // In debug, synchronous destroy. Safe from normal UI/control paths.
     x11_emit_window_destroy(xid);
@@ -1118,6 +1125,8 @@ void x11_post_window_map(uint32_t xid)
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_MAP;
   ev.size = sizeof(ev.u.win_map);
+  
+  x11_ui_push_map(xid);
   (void)x11_events_push(&ev);
 
   x11_server_wakeup();
@@ -1143,6 +1152,8 @@ void x11_post_window_unmap(uint32_t xid)
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_UNMAP;
   ev.size = sizeof(ev.u.win_unmap);
+  
+  x11_ui_push_unmap(xid);
   (void)x11_events_push(&ev);
 }
 
@@ -1197,6 +1208,8 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
   ev.size = sizeof(ev.u.win_resize);
   ev.u.win_resize.width_px  = w_px;
   ev.u.win_resize.height_px = h_px;
+  
+  x11_ui_push_resize(xid, w_px, h_px);
   (void)x11_events_push(&ev);
 
   // Wake repaint loop so the resize shows immediately.
@@ -1287,6 +1300,8 @@ void x11_server_emit_window_damage(uint32_t xid)
   ev.u.win_damage.y_px = 0;
   ev.u.win_damage.w_px = 0;
   ev.u.win_damage.h_px = 0;
+  
+  x11_ui_push_damage(xid, 0, 0, 0, 0);
   (void)x11_events_push(&ev);
 
   x11_server_wakeup();
@@ -1601,6 +1616,7 @@ void x11_window_set_title(uint32_t xid, const char* title_utf8)
   ev.u.win_title.title_len = (uint8_t)n;
   memcpy(ev.u.win_title.title_utf8, title_utf8, n);
 
+  x11_ui_push_title(xid, title_utf8);
   (void)x11_events_push(&ev);
 
   // Wake so the UI sees it promptly.
@@ -1642,6 +1658,8 @@ void x11_server_apply_map_request(uint32_t xid)
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_MAP;
   ev.size = sizeof(ev.u.win_map);
+  
+  x11_ui_push_map(xid);
   (void)x11_events_push(&ev);
 
   x11_server_wakeup();
@@ -1670,6 +1688,8 @@ void x11_server_apply_unmap_request(uint32_t xid)
   ev.xid = xid;
   ev.type = X11_EV_WINDOW_UNMAP;
   ev.size = sizeof(ev.u.win_unmap);
+  
+  x11_ui_push_unmap(xid);
   (void)x11_events_push(&ev);
 }
 
@@ -1718,6 +1738,8 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
   ev.size = sizeof(ev.u.win_resize);
   ev.u.win_resize.width_px  = w_px;
   ev.u.win_resize.height_px = h_px;
+  
+  x11_ui_push_resize(xid, w_px, h_px);
   (void)x11_events_push(&ev);
 
   if (mapped) x11_server_wakeup();

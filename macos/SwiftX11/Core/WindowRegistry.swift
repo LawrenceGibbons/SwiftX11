@@ -255,6 +255,12 @@ final class WindowRegistry {
   
   
   @MainActor
+  func noteDamageRect(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
+    noteDamage(xid: xid, x: x, y: y, w: w, h: h)
+  }
+  
+  
+  @MainActor
   func noteX11WindowDestroyed(xid: UInt32) {
     // 0) Cancel any scheduled present/snapshot bookkeeping for this xid as either host or source.
     pendingPresentByXid.remove(xid)
