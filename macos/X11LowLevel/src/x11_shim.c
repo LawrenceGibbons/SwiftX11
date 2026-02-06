@@ -215,18 +215,17 @@ static void x11_emit_window_create(uint32_t xid, uint32_t parent_xid, const char
 //  }
   
   // Enqueue event as backend truth
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_CREATE;
-  ev.size = sizeof(ev.u.win_create);
-  ev.u.win_create.width_px = ww;
-  ev.u.win_create.height_px = hh;
-  ev.u.win_create.parent_xid = parent_xid;
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_CREATE;
+//  ev.size = sizeof(ev.u.win_create);
+//  ev.u.win_create.width_px = ww;
+//  ev.u.win_create.height_px = hh;
+//  ev.u.win_create.parent_xid = parent_xid;
+//  (void)x11_events_push(&ev);
   
   x11_ui_push_create(xid, parent_xid, w, h);
-  (void)x11_events_push(&ev);
-
   x11_server_wakeup();
 }
 
@@ -303,30 +302,24 @@ static void x11_emit_window_destroy(uint32_t xid)
   
   // If the window was mapped, emit UNMAP before DESTROY (X11-ish ordering).
   uint64_t timestamp = x11_now_ns();
-  if (was_mapped) {
-    x11_event_t un = (x11_event_t){0};
-    un.timestamp_ns = timestamp;
-    un.xid = xid;
-    un.type = X11_EV_WINDOW_UNMAP;
-    un.size = sizeof(un.u.win_unmap);
-    (void)x11_events_push(&un);
-  }
+//  if (was_mapped) {
+//    x11_event_t un = (x11_event_t){0};
+//    un.timestamp_ns = timestamp;
+//    un.xid = xid;
+//    un.type = X11_EV_WINDOW_UNMAP;
+//    un.size = sizeof(un.u.win_unmap);
+//    (void)x11_events_push(&un);
+//  }
 
   // Enqueue DESTROY as backend truth.
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = timestamp + 1;
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_DESTROY;
-  ev.size = sizeof(ev.u.win_destroy);
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = timestamp + 1;
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_DESTROY;
+//  ev.size = sizeof(ev.u.win_destroy);
+//  (void)x11_events_push(&ev);
   
   x11_ui_push_destroy(xid);
-  (void)x11_events_push(&ev);
-
-  // Ask Swift to actually close the NSWindow (NO LOCK held).
-  // if (on_close) {
-  //   on_close(xid);
-  // }
-
   x11_server_wakeup();
 }
 
@@ -1067,14 +1060,14 @@ bool x11_debug_pop_event(x11_event_t* out_ev)
 
 void x11_post_window_raise(uint32_t xid)
 {
-    x11_event_t ev = {0};
-    ev.timestamp_ns = x11_now_ns();
-    ev.xid = xid;
-    ev.type = X11_EV_WINDOW_RAISE;
-    ev.size = sizeof(ev.u.raise);
+//    x11_event_t ev = {0};
+//    ev.timestamp_ns = x11_now_ns();
+//    ev.xid = xid;
+//    ev.type = X11_EV_WINDOW_RAISE;
+//    ev.size = sizeof(ev.u.raise);
+//  (void)x11_events_push(&ev);
   
     x11_ui_push_raise(xid);
-    (void)x11_events_push(&ev);
 }
 
 
@@ -1120,15 +1113,14 @@ void x11_post_window_map(uint32_t xid)
   x11_backend_unlock();
 
   // ALWAYS enqueue MAP so Swift can perform the side-effect (show window).
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_MAP;
-  ev.size = sizeof(ev.u.win_map);
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_MAP;
+//  ev.size = sizeof(ev.u.win_map);
+//  (void)x11_events_push(&ev);
   
   x11_ui_push_map(xid);
-  (void)x11_events_push(&ev);
-
   x11_server_wakeup();
 }
 
@@ -1147,14 +1139,14 @@ void x11_post_window_unmap(uint32_t xid)
   }
   x11_backend_unlock();
 
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_UNMAP;
-  ev.size = sizeof(ev.u.win_unmap);
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_UNMAP;
+//  ev.size = sizeof(ev.u.win_unmap);
+//  (void)x11_events_push(&ev);
   
   x11_ui_push_unmap(xid);
-  (void)x11_events_push(&ev);
 }
 
 
@@ -1201,17 +1193,17 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
   // x11_backend_mark_damage(xid);
 
   // Emit event for Swift-side observers/logging.
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_RESIZE;
-  ev.size = sizeof(ev.u.win_resize);
-  ev.u.win_resize.width_px  = w_px;
-  ev.u.win_resize.height_px = h_px;
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_RESIZE;
+//  ev.size = sizeof(ev.u.win_resize);
+//  ev.u.win_resize.width_px  = w_px;
+//  ev.u.win_resize.height_px = h_px;
+//  (void)x11_events_push(&ev);
+
   
   x11_ui_push_resize(xid, w_px, h_px);
-  (void)x11_events_push(&ev);
-
   // Wake repaint loop so the resize shows immediately.
   x11_server_wakeup();
 }
@@ -1292,18 +1284,18 @@ void x11_server_emit_window_damage(uint32_t xid)
   
   // Backend event: DAMAGE (distinct from request queue)
   x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_DAMAGE;
-  ev.size = sizeof(ev.u.win_damage);
-  ev.u.win_damage.x_px = 0;
-  ev.u.win_damage.y_px = 0;
-  ev.u.win_damage.w_px = 0;
-  ev.u.win_damage.h_px = 0;
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_DAMAGE;
+//  ev.size = sizeof(ev.u.win_damage);
+//  ev.u.win_damage.x_px = 0;
+//  ev.u.win_damage.y_px = 0;
+//  ev.u.win_damage.w_px = 0;
+//  ev.u.win_damage.h_px = 0;
+//  (void)x11_events_push(&ev);
+
   
   x11_ui_push_damage(xid, 0, 0, 0, 0);
-  (void)x11_events_push(&ev);
-
   x11_server_wakeup();
 }
 
@@ -1606,19 +1598,20 @@ void x11_window_set_title(uint32_t xid, const char* title_utf8)
   x11_backend_unlock();
   if (!exists) return;
 
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_TITLE;
-  ev.size = sizeof(ev.u.win_title);
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_TITLE;
+//  ev.size = sizeof(ev.u.win_title);
 
-  size_t n = strnlen(title_utf8, X11_TEXT_MAX);
-  ev.u.win_title.title_len = (uint8_t)n;
-  memcpy(ev.u.win_title.title_utf8, title_utf8, n);
+//  size_t n = strnlen(title_utf8, X11_TEXT_MAX);
+//  ev.u.win_title.title_len = (uint8_t)n;
+//  memcpy(ev.u.win_title.title_utf8, title_utf8, n);
+
+//  (void)x11_events_push(&ev);
+
 
   x11_ui_push_title(xid, title_utf8);
-  (void)x11_events_push(&ev);
-
   // Wake so the UI sees it promptly.
   x11_server_wakeup();
 }
@@ -1653,15 +1646,15 @@ void x11_server_apply_map_request(uint32_t xid)
 
   if (!did_map) return;
 
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_MAP;
-  ev.size = sizeof(ev.u.win_map);
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_MAP;
+//  ev.size = sizeof(ev.u.win_map);
+//  (void)x11_events_push(&ev);
+
   
   x11_ui_push_map(xid);
-  (void)x11_events_push(&ev);
-
   x11_server_wakeup();
 }
 
@@ -1683,14 +1676,14 @@ void x11_server_apply_unmap_request(uint32_t xid)
 
   if (!did_unmap) return;
 
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_UNMAP;
-  ev.size = sizeof(ev.u.win_unmap);
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_UNMAP;
+//  ev.size = sizeof(ev.u.win_unmap);
+//  (void)x11_events_push(&ev);
   
   x11_ui_push_unmap(xid);
-  (void)x11_events_push(&ev);
 }
 
 
@@ -1731,17 +1724,17 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
           (unsigned)xid, mapped);
 #endif
 
-  x11_event_t ev = (x11_event_t){0};
-  ev.timestamp_ns = x11_now_ns();
-  ev.xid = xid;
-  ev.type = X11_EV_WINDOW_RESIZE;
-  ev.size = sizeof(ev.u.win_resize);
-  ev.u.win_resize.width_px  = w_px;
-  ev.u.win_resize.height_px = h_px;
+//  x11_event_t ev = (x11_event_t){0};
+//  ev.timestamp_ns = x11_now_ns();
+//  ev.xid = xid;
+//  ev.type = X11_EV_WINDOW_RESIZE;
+//  ev.size = sizeof(ev.u.win_resize);
+//  ev.u.win_resize.width_px  = w_px;
+//  ev.u.win_resize.height_px = h_px;
+//  (void)x11_events_push(&ev);
+
   
   x11_ui_push_resize(xid, w_px, h_px);
-  (void)x11_events_push(&ev);
-
   if (mapped) x11_server_wakeup();
 }
 
