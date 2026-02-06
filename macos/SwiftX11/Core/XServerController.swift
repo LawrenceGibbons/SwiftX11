@@ -18,12 +18,12 @@ final class XServerController: ObservableObject {
 
   
   init() {
-    // Register Swift callbacks with the C shim
-    x11_register_callbacks(
-      swiftX11CreateCallback,
-      swiftX11CloseCallback
-    )
-    append("Registered X11 callbacks")
+    // // Register Swift callbacks with the C shim
+    // x11_register_callbacks(
+    //   swiftX11CreateCallback,
+    //   swiftX11CloseCallback
+    // )
+    // append("Registered X11 callbacks")
     
 //    x11_register_frame_presenter(swiftX11PresentFrame)
 //    append("Registered frame presenter")

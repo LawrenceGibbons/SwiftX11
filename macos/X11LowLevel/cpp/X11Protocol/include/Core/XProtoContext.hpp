@@ -12,8 +12,8 @@
 #include <cstdarg>
 #include <cassert>
 
-#include "WindowView.hpp"
-#include "InputState.hpp"
+#include <WindowView.hpp>
+#include <InputState.hpp>
 
 namespace x11 {
 
@@ -21,6 +21,7 @@ class XProtoTransport;
 class ReplyWriter;
 class WindowTable;
 class PixmapTable;
+class UICommandQueue;
   
 using WindowLookupFn = bool (*)(uint32_t xid, WindowView* out, void* user);
 
@@ -67,6 +68,12 @@ public:
   InputState& input() { return input_; }
   const InputState& input() const { return input_; }
 
+  
+  // User Interface -- this should eventually migrate to XProtoServer
+  void setUI(UICommandQueue* q) { ui_ = q; }
+  UICommandQueue& ui() { assert(ui_); return *ui_; }
+  const UICommandQueue& ui() const { assert(ui_); return *ui_; }
+  
 private:
   XProtoTransport* transport_ = nullptr;
   ReplyWriter* reply_ = nullptr;
@@ -84,6 +91,9 @@ private:
   
   // Mouse handling
   InputState input_;
+  
+  // User Interface
+  UICommandQueue* ui_ = nullptr;
 };
 
 } // namespace x11

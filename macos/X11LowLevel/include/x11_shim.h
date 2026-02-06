@@ -29,15 +29,9 @@ typedef void (*x11_window_closed_cb)(
 );
 
 // ---- Server lifecycle
-bool x11_start_server(int32_t display);
-void x11_stop_server(void);
 int  x11_proto_start_daemon(int display);
 void x11_proto_stop_daemon(void);
 
-void x11_register_callbacks(
-    x11_window_created_cb on_create,
-    x11_window_closed_cb on_close
-);
 
 // ---- Frame presentation (C -> Swift)
 typedef void (*x11_present_frame_cb)(
@@ -68,46 +62,7 @@ void x11_post_pointer_event(uint32_t xwin_id,
                             uint32_t modifiers);
 
 // ---- New “typed” input APIs (Option A)
-void x11_post_pointer_button(uint32_t xid,
-                             bool is_press,
-                             uint8_t button,        // 1..31 (1=left, 2=middle, 3=right, 4..7 wheel if desired)
-                             int32_t x_px,
-                             int32_t y_px,
-                             uint32_t buttons,      // current button mask AFTER state update
-                             uint32_t modifiers);
-
-void x11_post_scroll_ticks(uint32_t xid,
-                           x11_scroll_axis_t axis,  // X11_SCROLL_VERT / X11_SCROLL_HORZ
-                           int16_t ticks,           // +up/right, -down/left
-                           int32_t x_px,
-                           int32_t y_px,
-                           uint32_t buttons,
-                           uint32_t modifiers);
-
-void x11_post_key_event(uint32_t xwin_id,
-                        bool is_down,
-                        uint32_t keycode,
-                        uint32_t modifiers,
-                        const char* utf8_text);
-
 void x11_post_focus_event(uint32_t xid, bool focused);
-  
-void x11_post_pointer_enter(uint32_t xid,
-                            int32_t x_px,
-                            int32_t y_px,
-                            uint32_t modifiers);
-
-void x11_post_pointer_leave(uint32_t xid,
-                            int32_t x_px,
-                            int32_t y_px,
-                            uint32_t modifiers);
-  
-void x11_post_pointer_move2(uint32_t xid,
-                            int32_t win_x, int32_t win_y,
-                            int32_t root_x, int32_t root_y,
-                            uint8_t deliver,
-                            uint32_t buttons,
-                            uint32_t modifiers);
   
 bool x11_debug_pop_event(x11_event_t* out_ev);
 void x11_post_window_raise(uint32_t xid);
@@ -226,7 +181,6 @@ int x11_server_copy_window_bgra(uint32_t xid,
                                 int32_t* out_h,
                                 int32_t* out_bpr);
   
-void x11_post_window_presentable(uint32_t xid);
   
 // Swift calls this on the X11 server thread when the host surface resized.
 // Only w/h are provided; x/y are unchanged and remain authoritative in C++ WindowTable.

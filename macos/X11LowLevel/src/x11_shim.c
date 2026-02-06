@@ -32,6 +32,7 @@
 #include "x11_server_internal.h"
 #include "x11_xproto.h"
 #include "XProtoServerBridge.h"
+#include "SwiftX11Bridge.h"
 
 // -----------------------------------------------------------------------------
 // Shim-local server context (scaffold step): collect shim state into one struct.
@@ -486,20 +487,20 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     return 1;
 }
 
-void x11_register_callbacks(
-                            x11_window_created_cb on_create,
-                            x11_window_closed_cb on_close)
-{
-  x11_backend_lock();
-//  g_srv.on_create = on_create;
-//  g_srv.on_close  = on_close;
-  (void)on_create;
-  (void)on_close;
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] x11_register_callbacks: ignored (event-driven)\n");
-#endif
-  x11_backend_unlock();
-}
+//void x11_register_callbacks(
+//                            x11_window_created_cb on_create,
+//                            x11_window_closed_cb on_close)
+//{
+//  x11_backend_lock();
+////  g_srv.on_create = on_create;
+////  g_srv.on_close  = on_close;
+//  (void)on_create;
+//  (void)on_close;
+//#ifndef NDEBUG
+//  fprintf(stderr, "[SwiftX11] x11_register_callbacks: ignored (event-driven)\n");
+//#endif
+//  x11_backend_unlock();
+//}
 
 bool x11_start_server(int32_t display)
 {

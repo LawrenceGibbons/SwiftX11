@@ -17,13 +17,13 @@
 extern "C" {
 #endif
 
-// ---- Modifiers (your existing mapping is fine)
-enum {
-    X11_MOD_SHIFT   = 1u << 0,
-    X11_MOD_CTRL    = 1u << 1,
-    X11_MOD_ALT     = 1u << 2,
-    X11_MOD_CMD     = 1u << 3,
-};
+//// ---- Modifiers (your existing mapping is fine)
+//enum {
+//    X11_MOD_SHIFT   = 1u << 0,
+//    X11_MOD_CTRL    = 1u << 1,
+//    X11_MOD_ALT     = 1u << 2,
+//    X11_MOD_CMD     = 1u << 3,
+//};
 
 // ---- Pointer button bits: button N sets bit (N-1)
 static inline uint32_t x11_button_bit(uint8_t button_number /* 1..31 */) {
@@ -54,10 +54,10 @@ static inline uint32_t x11_button_bit(uint8_t button_number /* 1..31 */) {
   } x11_event_type_t;
 
 // ---- Scroll “wheels” (X11-ish)
-typedef enum {
-    X11_SCROLL_VERT = 0,
-    X11_SCROLL_HORZ = 1,
-} x11_scroll_axis_t;
+//typedef enum {
+//    X11_SCROLL_VERT = 0,
+//    X11_SCROLL_HORZ = 1,
+//} x11_scroll_axis_t;
 
 // ---- Event payloads
 typedef struct {

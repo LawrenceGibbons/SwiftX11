@@ -13,10 +13,12 @@
 #include "XProtoServer.hpp"
 #include "ByteReader.hpp"
 #include "EventOps.hpp"
-
+#include "UICommandQueue.hpp"
 
 namespace x11 {
 
+static x11::UICommandQueue g_ui; // (temporary global for 2A)
+  
 struct XProtoServer::Impl {
   std::unordered_map<uint32_t, WindowView> testWindows;
 };
@@ -35,6 +37,7 @@ XProtoServer::XProtoServer()
   ctx_.setReplyWriter(&reply_);
   ctx_.setWindowTable(&windows_);
   ctx_.setPixmapTable(&pixmapTable_);
+  ctx_.setUI(&g_ui);
   
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);

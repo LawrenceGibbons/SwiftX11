@@ -70,30 +70,30 @@ struct ContentView: View {
           server.dumpEventQueue(maxItems: 64)
       }
       
-      let XID_A: UInt32 = 0x10001
-      Button("Test destroy-waits (A)") {
-        // Ensure we’re running on the main actor (matches how you do start/stop).
-        Task { @MainActor in
-          // 1) Keep repaints happening so we’ll definitely be in-flight soon.
-          x11_debug_set_repaint_storm(1, XID_A)
+      //let XID_A: UInt32 = 0x10001
+      //Button("Test destroy-waits (A)") {
+      //  // Ensure we’re running on the main actor (matches how you do start/stop).
+      //  Task { @MainActor in
+      //    // 1) Keep repaints happening so we’ll definitely be in-flight soon.
+      //    x11_debug_set_repaint_storm(1, XID_A)
+//
+      //    // 2) One-shot: during the next repaint of A, call destroy from inside repaint.
+      //    x11_debug_destroy_during_next_repaint(1, XID_A)
+      //  }
+      //}
 
-          // 2) One-shot: during the next repaint of A, call destroy from inside repaint.
-          x11_debug_destroy_during_next_repaint(1, XID_A)
-        }
-      }
-
-      Button("Torture Interface") {
-             x11_debug_torture_once(Int32(50), Int32(2000), Int32(0) )
-      }
+      //Button("Torture Interface") {
+      //       x11_debug_torture_once(Int32(50), Int32(2000), Int32(0) )
+      //}
       
-      Button("Open Inspector") {
-          X11DebugInspectorWindowController.shared.show()
-      }
+      //Button("Open Inspector") {
+      //    X11DebugInspectorWindowController.shared.show()
+      //}
       
-      Button("Snapshot routing") {
-        // Dump a routing + window-table snapshot to stderr (debug builds)
-        x11_debug_dump_routing_snapshot("manual")
-      }
+      //Button("Snapshot routing") {
+      //  // Dump a routing + window-table snapshot to stderr (debug builds)
+      //  x11_debug_dump_routing_snapshot("manual")
+      //}
       
       Toggle("Use Metal rendering", isOn: $settings.useMetal)
       
@@ -146,9 +146,9 @@ struct ContentView: View {
         WindowRegistry.shared.setUseMetalForAllWindows(newValue)
       }
     }
-    .onChange(of: settings.repaintStorm) { _, enabled in
-      // 0 means “all windows” for this debug path
-      x11_debug_set_repaint_storm(enabled ? 1 : 0, 0)
-    }
+    //.onChange(of: settings.repaintStorm) { _, enabled in
+    //  // 0 means “all windows” for this debug path
+    //  x11_debug_set_repaint_storm(enabled ? 1 : 0, 0)
+    //}
   }
 }
