@@ -139,7 +139,6 @@ void x11_post_window_raise(uint32_t xid);
 void x11_post_window_map(uint32_t xid);
 void x11_post_window_unmap(uint32_t xid);
 void x11_post_window_destroy(uint32_t xid);
-void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);
 
 // -------------------------------------------------------------------------------------
 // Host-driven resize (Cocoa changed size)

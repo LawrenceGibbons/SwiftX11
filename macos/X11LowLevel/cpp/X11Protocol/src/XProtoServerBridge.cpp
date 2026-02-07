@@ -45,6 +45,7 @@ namespace {
     Button,
     ScrollTicks,
     Key,
+    Focus,
   };
   
   struct HostCmd {
@@ -73,6 +74,8 @@ namespace {
     uint8_t axis = 0;
     uint32_t keyCode = 0;
     // (don’t keep utf8 across threads yet)
+    
+    uint8_t focused = 0;
   };
 
 std::mutex g_hostcmd_mu;
@@ -221,7 +224,53 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
                                   c.deliver,
                                   c.buttonsMask, c.modsMask);
           break;
-        }  // case
+        }
+          
+        case HostCmdType::PointerEnter: {
+          // Update pointer owner state in C++ InputState
+          ctx.input().enter(c.xid);
+
+          // (Optional) deliver EnterNotify later; for now state-only is fine.
+          break;
+        }
+
+        case HostCmdType::PointerLeave: {
+          ctx.input().leave(c.xid);
+          break;
+        }
+
+        case HostCmdType::Focus: {
+          ctx.input().setFocus(c.xid, c.focused != 0);
+          break;
+        }
+
+        case HostCmdType::Button: {
+          // Canonicalize buttons + drag grab semantics in InputState
+          ctx.input().button(c.xid, c.isDown != 0, c.button, c.buttonsMask);
+
+          // (Optional) deliver ButtonPress/Release X11 events later
+          break;
+        }
+
+        case HostCmdType::ScrollTicks: {
+          // Route scroll like old shim: drag > pointer > focus
+          const uint32_t target = ctx.input().routePointer(c.xid);
+          (void)target;
+
+          // (Optional) deliver scroll events later
+          break;
+        }
+
+        case HostCmdType::Key: {
+          // Route keys to focus if xid==0 (legacy behavior)
+          uint32_t target = c.xid;
+          if (target == 0) target = ctx.input().focus_xid;
+          (void)target;
+
+          // (Optional) deliver key events later
+          break;
+        }
+          
       } // switch
     }
   }
@@ -478,5 +527,103 @@ extern "C" void x11_proto_bridge_post_pointer_move2(uint32_t xid,
   c.deliver = deliver;
   c.buttonsMask = buttons;
   c.modsMask = modifiers;
+  hostcmd_push(c);
+}
+
+
+extern "C" void x11_proto_bridge_post_pointer_button(uint32_t xid,
+                                                     uint8_t is_press,
+                                                     uint8_t button,
+                                                     int32_t win_x, int32_t win_y,
+                                                     uint32_t buttons,
+                                                     uint32_t modifiers)
+{
+  HostCmd c;
+  c.type = HostCmdType::Button;
+  c.xid = xid;
+  c.isDown = is_press ? 1 : 0;
+  c.button = button;
+  c.win_x = win_x;
+  c.win_y = win_y;
+  c.buttonsMask = buttons;
+  c.modsMask = modifiers;
+  hostcmd_push(c);
+}
+
+
+extern "C" void x11_proto_bridge_post_scroll(uint32_t xid,
+                                            uint8_t axis,
+                                            int16_t ticks,
+                                            int32_t win_x, int32_t win_y,
+                                            uint32_t buttons,
+                                            uint32_t modifiers)
+{
+  if (xid == 0) return;
+
+  HostCmd c;
+  c.type = HostCmdType::ScrollTicks;
+  c.xid = xid;
+  c.axis = axis;
+  c.ticks = ticks;
+  c.win_x = win_x;
+  c.win_y = win_y;
+  c.buttonsMask = buttons;
+  c.modsMask = modifiers;
+  hostcmd_push(c);
+}
+
+extern "C" void x11_proto_bridge_post_key(uint32_t xid,
+                                         uint8_t is_down,
+                                         uint32_t keycode,
+                                         uint32_t modifiers)
+{
+  HostCmd c;
+  c.type = HostCmdType::Key;
+  c.xid = xid;               // may be 0 → route to focus on C++ side
+  c.isDown = is_down ? 1 : 0;
+  c.keyCode = keycode;
+  c.modsMask = modifiers;
+  hostcmd_push(c);
+}
+
+extern "C" void x11_proto_bridge_post_enter(uint32_t xid,
+                                           int32_t win_x, int32_t win_y,
+                                           uint32_t modifiers)
+{
+  if (xid == 0) return;
+
+  HostCmd c;
+  c.type = HostCmdType::PointerEnter;
+  c.xid = xid;
+  c.win_x = win_x;
+  c.win_y = win_y;
+  c.modsMask = modifiers;
+  hostcmd_push(c);
+}
+
+extern "C" void x11_proto_bridge_post_leave(uint32_t xid,
+                                           int32_t win_x, int32_t win_y,
+                                           uint32_t modifiers)
+{
+  if (xid == 0) return;
+
+  HostCmd c;
+  c.type = HostCmdType::PointerLeave;
+  c.xid = xid;
+  c.win_x = win_x;
+  c.win_y = win_y;
+  c.modsMask = modifiers;
+  hostcmd_push(c);
+}
+
+extern "C" void x11_proto_bridge_post_focus(uint32_t xid,
+                                           uint8_t focused)
+{
+  if (xid == 0) return;
+
+  HostCmd c;
+  c.type = HostCmdType::Focus;
+  c.xid = xid;
+  c.focused = focused ? 1 : 0;
   hostcmd_push(c);
 }

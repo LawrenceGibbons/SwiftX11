@@ -10,26 +10,81 @@
 
 namespace x11 {
 
-struct InputState {
-  int32_t root_x = 0, root_y = 0;
-  int32_t win_x = 0,  win_y = 0;
-  uint32_t buttons = 0;
-  uint32_t mods = 0;
+  struct InputState {
+    // global/root pointer
+    int32_t root_x = 0, root_y = 0;
 
-  // Which host window xid last provided motion (good-enough targeting for now)
-  uint32_t last_xid = 0;
+    // host-window local
+    int32_t win_x = 0,  win_y = 0;
 
-  void update(uint32_t xid,
-              int32_t wx, int32_t wy,
-              int32_t rx, int32_t ry,
-              uint32_t btns, uint32_t m)
-  {
-    last_xid = xid;
-    win_x = wx; win_y = wy;
-    root_x = rx; root_y = ry;
-    buttons = btns;
-    mods = m;
-  }
-};
+    // canonical state
+    uint32_t buttons = 0;
+    uint32_t mods = 0;
 
+    uint32_t last_xid = 0;     // host window xid last used for motion
+    uint32_t pointer_xid = 0;  // pointer owner (enter/click)
+    uint32_t focus_xid = 0;    // focused window
+    uint32_t drag_xid = 0;     // active grab window (nonzero buttons)
+
+    void updateMotion(uint32_t xid,
+                      int32_t wx, int32_t wy,
+                      int32_t rx, int32_t ry,
+                      uint32_t btns, uint32_t m)
+    {
+      last_xid = xid;
+      win_x = wx; win_y = wy;
+      root_x = rx; root_y = ry;
+      // For motion, trust btns if you want. Or keep canonical `buttons` only.
+      // I'd keep canonical `buttons`, but accept btns for now:
+      buttons = btns;
+      mods = m;
+    }
+
+    void setFocus(uint32_t xid, bool focused) {
+      if (focused) {
+        focus_xid = xid;
+        pointer_xid = xid;
+      } else {
+        if (focus_xid == xid) focus_xid = 0;
+        if (pointer_xid == xid && drag_xid == 0) pointer_xid = 0;
+      }
+    }
+
+    void enter(uint32_t xid) {
+      if (drag_xid == 0) pointer_xid = xid;
+    }
+
+    void leave(uint32_t xid) {
+      if (drag_xid == 0 && pointer_xid == xid) pointer_xid = 0;
+    }
+
+    // This matches your old canonicalization behavior.
+    void button(uint32_t xid, bool is_press, uint8_t button_num, uint32_t after_mask) {
+      const uint32_t before = buttons;
+
+      // Force bit to match press/release.
+      uint32_t mask = after_mask;
+      if (button_num >= 1 && button_num <= 31) {
+        const uint32_t bit = (1u << (uint32_t)(button_num - 1u));
+        if (is_press) mask |= bit;
+        else          mask &= ~bit;
+      }
+
+      // click implies pointer ownership
+      if (is_press) pointer_xid = xid;
+
+      buttons = mask;
+
+      if (before == 0 && buttons != 0) drag_xid = xid;
+      else if (before != 0 && buttons == 0) drag_xid = 0;
+    }
+
+    uint32_t routePointer(uint32_t from_xid) const {
+      if (drag_xid) return drag_xid;
+      if (pointer_xid) return pointer_xid;
+      if (focus_xid) return focus_xid;
+      return from_xid;
+    }
+  };
+  
 } // namespace x11

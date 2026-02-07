@@ -69,11 +69,11 @@ void postMotion(uint32_t host_xid,
   if (!ctx || !ev) return;
 
   // Always update InputState with global root coords (QueryPointer follows everywhere)
-  ctx->input().update(host_xid,
-                      win_x, win_y,
-                      root_x, root_y,
-                      buttons, mods);
-
+  ctx->input().updateMotion(host_xid,
+                            win_x, win_y,
+                            root_x, root_y,
+                            buttons, mods);
+  
   // Only deliver MotionNotify when inside (or dragging/grab)
   if (!deliver) return;
 

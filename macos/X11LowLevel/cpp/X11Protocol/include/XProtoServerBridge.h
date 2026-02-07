@@ -58,6 +58,35 @@ void x11_proto_bridge_post_pointer_move2(uint32_t xid,
                                          uint32_t buttons,
                                          uint32_t modifiers);
 
+  void x11_proto_bridge_post_pointer_button(uint32_t xid,
+                                            uint8_t is_press,
+                                            uint8_t button,
+                                            int32_t win_x, int32_t win_y,
+                                            uint32_t buttons,
+                                            uint32_t modifiers);
+
+  void x11_proto_bridge_post_scroll(uint32_t xid,
+                                    uint8_t axis,
+                                    int16_t ticks,
+                                    int32_t win_x, int32_t win_y,
+                                    uint32_t buttons,
+                                    uint32_t modifiers);
+
+  void x11_proto_bridge_post_key(uint32_t xid,
+                                 uint8_t is_down,
+                                 uint32_t keycode,
+                                 uint32_t modifiers);
+
+  void x11_proto_bridge_post_enter(uint32_t xid,
+                                   int32_t win_x, int32_t win_y,
+                                   uint32_t modifiers);
+
+  void x11_proto_bridge_post_leave(uint32_t xid,
+                                   int32_t win_x, int32_t win_y,
+                                   uint32_t modifiers);
+
+  void x11_proto_bridge_post_focus(uint32_t xid,
+                                   uint8_t focused);
 #ifdef __cplusplus
 }
 #endif

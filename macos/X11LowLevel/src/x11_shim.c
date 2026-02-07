@@ -26,7 +26,6 @@
 
 #include "x11_parameters.h"
 #include "x11_shim.h"
-#include "x11_events.h"   // so we can enqueue x11_event_t
 #include "x11_backend.h"
 #include "x11_requests.h"
 #include "x11_server_internal.h"
@@ -410,9 +409,9 @@ int x11_debug_get_snapshot(x11_debug_snapshot_t* out_snapshot)
     memset(out_snapshot, 0, sizeof(*out_snapshot));
 
     // Queue stats (atomic inside x11_events.c)
-    out_snapshot->q_count = x11_events_count();
-    out_snapshot->q_motion_overwrites = x11_debug_motion_overwrites();
-    out_snapshot->q_push_drops = x11_debug_push_drops();
+    out_snapshot->q_count = 0;
+    out_snapshot->q_motion_overwrites = 0;
+    out_snapshot->q_push_drops = 0;
 
     // Backend + routing state must be read under g_mu
     x11_backend_lock();
@@ -466,9 +465,6 @@ bool x11_start_server(int32_t display)
   g_srv.display = (int)display;
   x11_backend_unlock();
   
-  // mouse and keyboard event handling
-  x11_events_init();
-
   // Ensure backend process-lifetime primitives exist
   x11_backend_init();
 
@@ -510,8 +506,6 @@ void x11_stop_server(void)
 
   // Clear backend window table so second start is always clean
   x11_backend_clear_windows();
-  
-  x11_events_shutdown();
 }
 
 //void x11_register_frame_presenter(x11_present_frame_cb on_present)
@@ -731,6 +725,36 @@ extern void x11_proto_bridge_post_pointer_move2(uint32_t xid,
                                                 uint32_t buttons,
                                                 uint32_t modifiers);
 
+extern void x11_proto_bridge_post_pointer_button(uint32_t xid,
+                                                 uint8_t is_press,
+                                                 uint8_t button,
+                                                 int32_t win_x, int32_t win_y,
+                                                 uint32_t buttons,
+                                                 uint32_t modifiers);
+
+extern void x11_proto_bridge_post_scroll(uint32_t xid,
+                                         uint8_t axis,
+                                         int16_t ticks,
+                                         int32_t win_x, int32_t win_y,
+                                         uint32_t buttons,
+                                         uint32_t modifiers);
+
+extern void x11_proto_bridge_post_key(uint32_t xid,
+                                      uint8_t is_down,
+                                      uint32_t keycode,
+                                      uint32_t modifiers);
+
+extern void x11_proto_bridge_post_enter(uint32_t xid,
+                                        int32_t win_x, int32_t win_y,
+                                        uint32_t modifiers);
+
+extern void x11_proto_bridge_post_leave(uint32_t xid,
+                                        int32_t win_x, int32_t win_y,
+                                        uint32_t modifiers);
+
+extern void x11_proto_bridge_post_focus(uint32_t xid,
+                                        uint8_t focused);
+
 void x11_post_pointer_move2(uint32_t xid,
                             int32_t win_x, int32_t win_y,
                             int32_t root_x, int32_t root_y,
@@ -751,36 +775,13 @@ void x11_post_key_event(uint32_t xid, bool is_down,
                         uint32_t keycode, uint32_t modifiers,
                         const char* utf8_text)
 {
-  // Route xid==0 to the currently focused window
-  uint32_t target = xid;
-  if (target == 0) {
-    x11_backend_lock();
-    target = g_srv.focus_xid;
-    x11_backend_unlock();
-  }
-
-  // If nothing focused, drop the key
-  if (target == 0) return;
-
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = target;
-//  ev.type = X11_EV_KEY;
-//  ev.size = sizeof(ev.u.key);
-//  ev.u.key.keycode = keycode;
-//  ev.u.key.is_press = is_down ? 1 : 0;
-//  ev.u.key.modifiers = modifiers;
-//  
-//  if (is_down && utf8_text) {
-//    size_t n = strnlen(utf8_text, X11_TEXT_MAX);
-//    ev.u.key.text_len = (uint8_t)n;
-//    memcpy(ev.u.key.text_utf8, utf8_text, n);
-//  } else {
-//    ev.u.key.text_len = 0;
-//  }
-//  
-//  (void)x11_events_push(&ev);
+  (void)utf8_text;
+  x11_proto_bridge_post_key(xid,
+                            is_down ? 1 : 0,
+                            keycode,
+                            modifiers);
 }
+
 
 void x11_post_pointer_button(uint32_t xid,
                              bool is_press,
@@ -790,56 +791,13 @@ void x11_post_pointer_button(uint32_t xid,
                              uint32_t buttons,
                              uint32_t modifiers)
 {
-  x11_backend_lock();
-  
-  // Maintain canonical button state here instead of trusting the caller.
-  // Some call sites send a release while the local mask still includes the bit,
-  // so we force the bit on press and clear it on release.
-  const uint32_t old_buttons = g_srv.buttons;
-
-  uint32_t mask = buttons;
-  if (button >= 1 && button <= 31) {
-      const uint32_t bit = (1u << (uint32_t)(button - 1u));
-      if (is_press) {
-          mask |= bit;
-      } else {
-          mask &= ~bit;
-      }
-  }
-
-  // EXTRA-CORRECT: a click implies pointer ownership for routing.
-  if (is_press) {
-      g_srv.pointer_xid = xid;
-  }
-
-  // Canonical after-state button mask.
-  g_srv.buttons = mask;
-
-  // Drag ownership is derived from transitions of the canonical mask.
-  if (old_buttons == 0 && g_srv.buttons != 0) {
-      g_srv.drag_xid = xid;
-  } else if (old_buttons != 0 && g_srv.buttons == 0) {
-      g_srv.drag_xid = 0;
-  }
-
-  const uint32_t buttons_snapshot = g_srv.buttons;
-
-  x11_backend_unlock();
-
-//  x11_event_t ev = {0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid  = xid;
-//  ev.type = X11_EV_POINTER_BUTTON;
-//  ev.size = sizeof(ev.u.button);
-//  
-//  ev.u.button.x_px = x_px;
-//  ev.u.button.y_px = y_px;
-//  ev.u.button.button = button;
-//  ev.u.button.is_press = is_press ? 1 : 0;
-//  ev.u.button.buttons = buttons_snapshot;
-//  ev.u.button.modifiers = modifiers;
-//  
-//  (void)x11_events_push(&ev);
+  if (xid == 0) return;
+  x11_proto_bridge_post_pointer_button(xid,
+                                       is_press ? 1 : 0,
+                                       button,
+                                       x_px, y_px,
+                                       buttons,
+                                       modifiers);
 }
 
 void x11_post_scroll_ticks(uint32_t xid,
@@ -850,172 +808,45 @@ void x11_post_scroll_ticks(uint32_t xid,
                            uint32_t buttons,
                            uint32_t modifiers)
 {
-  // Deterministic scroll routing (match MOVE routing): drag > focus > pointer.
-  // Also snapshot canonical button state instead of trusting the caller.
-  uint32_t drag = 0;
-  uint32_t focus = 0;
-  uint32_t pointer = 0;
-  uint32_t buttons_snapshot = 0;
-
-  x11_backend_lock();
-  drag = g_srv.drag_xid;
-  focus = g_srv.focus_xid;
-  pointer = g_srv.pointer_xid;
-  buttons_snapshot = g_srv.buttons;
-  x11_backend_unlock();
-
-  uint32_t target = 0;
-  if (drag != 0) {
-    target = drag;
-  } else if (pointer != 0) {
-    target = pointer;
-  } else {
-    target = focus;
-  }
-
-  if (target == 0) {
-    return;
-  }
-
-  if (target != xid) {
-    xid = target;
-  }
-  
-  
-//  x11_event_t ev = {0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid  = xid;
-//  ev.type = X11_EV_SCROLL;
-//  ev.size = sizeof(ev.u.scroll);
-//  
-//  ev.u.scroll.x_px = x_px;
-//  ev.u.scroll.y_px = y_px;
-//  ev.u.scroll.axis = (uint8_t)axis; // store as byte in the struct
-//  ev.u.scroll.ticks = ticks;
-//  ev.u.scroll.buttons = buttons_snapshot;
-//  ev.u.scroll.modifiers = modifiers;
-//  
-//  (void)x11_events_push(&ev);
+  if (xid == 0) return;
+  x11_proto_bridge_post_scroll(xid,
+                               (uint8_t)axis,
+                               ticks,
+                               x_px, y_px,
+                               buttons,
+                               modifiers);
 }
+
 
 void x11_post_focus_event(uint32_t xid, bool focused)
 {
-  uint32_t prev_focus = 0;
-  uint32_t prev_ptr = 0;
-  uint32_t prev_drag = 0;
-
-  x11_backend_lock();
-  prev_focus = g_srv.focus_xid;
-  prev_ptr   = g_srv.pointer_xid;
-  prev_drag  = g_srv.drag_xid;
-
-  if (focused) {
-    g_srv.focus_xid = xid;
-    g_srv.pointer_xid = xid;
-  } else {
-    if (g_srv.focus_xid == xid) g_srv.focus_xid = 0;
-    if (g_srv.pointer_xid == xid && g_srv.drag_xid == 0) g_srv.pointer_xid = 0;
-  }
-
-  #ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] FOCUS xid=0x%X focused=%d (prev_focus=0x%X) ptr=0x%X->0x%X drag=0x%X\n",
-          xid, focused ? 1 : 0, prev_focus, prev_ptr, g_srv.pointer_xid, prev_drag);
-  #endif
-
-  x11_backend_unlock();
-  
-  
-//  x11_event_t ev = {0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_FOCUS;
-//  ev.size = sizeof(ev.u.focus);
-//  ev.u.focus.focused = focused ? 1 : 0;
-//  (void)x11_events_push(&ev);
+  if (xid == 0) return;
+  x11_proto_bridge_post_focus(xid, focused ? 1 : 0);
 }
+
 
 void x11_post_pointer_enter(uint32_t xid,
                             int32_t x_px,
                             int32_t y_px,
                             uint32_t modifiers)
 {
-  uint32_t prev = 0;
-  uint32_t drag = 0;
-  x11_backend_lock();
-  prev = g_srv.pointer_xid;
-  drag = g_srv.drag_xid;
-  if (drag == 0) {
-    g_srv.pointer_xid = xid;
-  }
-  #ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] ENTER xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
-          xid, prev, g_srv.pointer_xid, drag);
-  #endif
-  x11_backend_unlock();
-  
-#ifndef NDEBUG
-  x11_debug_dump_routing_snapshot("pointer_enter");
-#endif
-  
-//  x11_event_t ev = {0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_POINTER_ENTER;
-//  ev.size = sizeof(ev.u.crossing);
-//  
-//  ev.u.crossing.x_px = x_px;
-//  ev.u.crossing.y_px = y_px;
-//  ev.u.crossing.modifiers = modifiers;
-//  
-//  (void)x11_events_push(&ev);
+  if (xid == 0) return;
+  x11_proto_bridge_post_enter(xid, x_px, y_px, modifiers);
 }
+
 
 void x11_post_pointer_leave(uint32_t xid,
                             int32_t x_px,
                             int32_t y_px,
                             uint32_t modifiers)
 {
-  uint32_t prev = 0;
-  uint32_t drag = 0;
-  x11_backend_lock();
-  prev = g_srv.pointer_xid;
-  drag = g_srv.drag_xid;
-  if (drag == 0 && g_srv.pointer_xid == xid) {
-    g_srv.pointer_xid = 0;
-  }
-  #ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] LEAVE xid=0x%X (ptr 0x%X->0x%X) drag=0x%X\n",
-          xid, prev, g_srv.pointer_xid, drag);
-  #endif
-  x11_backend_unlock();
-  
-#ifndef NDEBUG
-  x11_debug_dump_routing_snapshot("pointer_leave");
-#endif
-  
-//  x11_event_t ev = {0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_POINTER_LEAVE;
-//  ev.size = sizeof(ev.u.crossing);
-//  
-//  ev.u.crossing.x_px = x_px;
-//  ev.u.crossing.y_px = y_px;
-//  ev.u.crossing.modifiers = modifiers;
-//  
-//  (void)x11_events_push(&ev);
+  if (xid == 0) return;
+  x11_proto_bridge_post_leave(xid, x_px, y_px, modifiers);
 }
 
+
 void x11_post_window_raise(uint32_t xid)
-{
-//    x11_event_t ev = {0};
-//    ev.timestamp_ns = x11_now_ns();
-//    ev.xid = xid;
-//    ev.type = X11_EV_WINDOW_RAISE;
-//    ev.size = sizeof(ev.u.raise);
-//  (void)x11_events_push(&ev);
-  
+{  
     x11_ui_push_raise(xid);
 }
 
@@ -1061,14 +892,6 @@ void x11_post_window_map(uint32_t xid)
   }
   x11_backend_unlock();
 
-  // ALWAYS enqueue MAP so Swift can perform the side-effect (show window).
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_MAP;
-//  ev.size = sizeof(ev.u.win_map);
-//  (void)x11_events_push(&ev);
-  
   x11_ui_push_map(xid);
   x11_server_wakeup();
 }
@@ -1088,13 +911,6 @@ void x11_post_window_unmap(uint32_t xid)
   }
   x11_backend_unlock();
 
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_UNMAP;
-//  ev.size = sizeof(ev.u.win_unmap);
-//  (void)x11_events_push(&ev);
-  
   x11_ui_push_unmap(xid);
 }
 
@@ -1136,21 +952,6 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
         (unsigned)xid, (int)w_px, (int)h_px, ok);
 #endif
   
-  // Resizing implies we need a repaint.
-  // Actually, we will rely on the marking of damage in 
-  // x11_xproto_apply_rootless_resize_on_server_thread
-  // x11_backend_mark_damage(xid);
-
-  // Emit event for Swift-side observers/logging.
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_RESIZE;
-//  ev.size = sizeof(ev.u.win_resize);
-//  ev.u.win_resize.width_px  = w_px;
-//  ev.u.win_resize.height_px = h_px;
-//  (void)x11_events_push(&ev);
-
   
   x11_ui_push_resize(xid, w_px, h_px);
   // Wake repaint loop so the resize shows immediately.
@@ -1232,17 +1033,6 @@ void x11_server_emit_window_damage(uint32_t xid)
   if (!ok) return;
   
   // Backend event: DAMAGE (distinct from request queue)
-  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_DAMAGE;
-//  ev.size = sizeof(ev.u.win_damage);
-//  ev.u.win_damage.x_px = 0;
-//  ev.u.win_damage.y_px = 0;
-//  ev.u.win_damage.w_px = 0;
-//  ev.u.win_damage.h_px = 0;
-//  (void)x11_events_push(&ev);
-
   
   x11_ui_push_damage(xid, 0, 0, 0, 0);
   x11_server_wakeup();
@@ -1547,19 +1337,6 @@ void x11_window_set_title(uint32_t xid, const char* title_utf8)
   x11_backend_unlock();
   if (!exists) return;
 
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_TITLE;
-//  ev.size = sizeof(ev.u.win_title);
-
-//  size_t n = strnlen(title_utf8, X11_TEXT_MAX);
-//  ev.u.win_title.title_len = (uint8_t)n;
-//  memcpy(ev.u.win_title.title_utf8, title_utf8, n);
-
-//  (void)x11_events_push(&ev);
-
-
   x11_ui_push_title(xid, title_utf8);
   // Wake so the UI sees it promptly.
   x11_server_wakeup();
@@ -1594,14 +1371,6 @@ void x11_server_apply_map_request(uint32_t xid)
   x11_backend_unlock();
 
   if (!did_map) return;
-
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_MAP;
-//  ev.size = sizeof(ev.u.win_map);
-//  (void)x11_events_push(&ev);
-
   
   x11_ui_push_map(xid);
   x11_server_wakeup();
@@ -1624,13 +1393,6 @@ void x11_server_apply_unmap_request(uint32_t xid)
   x11_backend_unlock();
 
   if (!did_unmap) return;
-
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_UNMAP;
-//  ev.size = sizeof(ev.u.win_unmap);
-//  (void)x11_events_push(&ev);
   
   x11_ui_push_unmap(xid);
 }
@@ -1672,16 +1434,6 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
           "[SwiftX11] apply_configure_request: xid=0x%08X did=1 mapped=%d -> resize event\n",
           (unsigned)xid, mapped);
 #endif
-
-//  x11_event_t ev = (x11_event_t){0};
-//  ev.timestamp_ns = x11_now_ns();
-//  ev.xid = xid;
-//  ev.type = X11_EV_WINDOW_RESIZE;
-//  ev.size = sizeof(ev.u.win_resize);
-//  ev.u.win_resize.width_px  = w_px;
-//  ev.u.win_resize.height_px = h_px;
-//  (void)x11_events_push(&ev);
-
   
   x11_ui_push_resize(xid, w_px, h_px);
   if (mapped) x11_server_wakeup();
