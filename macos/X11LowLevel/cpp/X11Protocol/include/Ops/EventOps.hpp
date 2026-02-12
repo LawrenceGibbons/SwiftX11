@@ -11,8 +11,8 @@
 #include <cstddef>
 #include <array>
 
-#include "XProtoTransport.hpp"
-#include "XProtoContext.hpp"
+#include <Transport/XProtoTransport.hpp>
+#include <Core/XProtoContext.hpp>
 
 namespace x11 {
   
@@ -89,6 +89,21 @@ namespace x11 {
                           uint32_t wid,
                           int32_t root_x, int32_t root_y,
                           uint32_t buttons, uint32_t mods);
+    
+    // mouse buttons
+    void sendButtonEvent(XProtoContext& ctx,
+                         uint32_t wid,
+                         bool is_press,
+                         uint8_t button,
+                         int32_t root_x, int32_t root_y,
+                         uint32_t buttons, uint32_t mods);
+
+    // keyboard events
+    void sendKeyEvent(XProtoContext& ctx,
+                      uint32_t wid,
+                      bool is_press,
+                      uint8_t keycode,
+                      uint32_t buttons, uint32_t mods);
     
   private:
     XProtoContext& ctx_;

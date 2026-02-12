@@ -18,6 +18,11 @@
 #include "x11_backend_internal.h"
 #include "x11_parameters.h"
 
+// XXX temp ----
+#include "SwiftX11Bridge.h"
+#include "x11_shim.h"
+// XXX ---- temp
+
 // Backend truth + lock live here now.
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static x11_win_state_t g_windows[X11_MAX_WINDOWS];

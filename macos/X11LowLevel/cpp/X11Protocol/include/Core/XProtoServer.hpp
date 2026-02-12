@@ -12,13 +12,16 @@
 #include <memory>
 
 // scaffold
-#include "XProtoContext.hpp"
-#include "XProtoTransport.hpp"
-#include "XProtoRegistrar.hpp"
-#include "ReplyWriter.hpp"
-#include "ByteReader.hpp"
-#include "WindowTable.hpp"
-#include "PixmapTable.hpp"
+#include <Core/XProtoContext.hpp>
+#include <Transport/XProtoTransport.hpp>
+#include <Core/XProtoRegistrar.hpp>
+#include <Ops/ReplyWriter.hpp>
+#include <Utils/ByteReader.hpp>
+#include <Core/WindowTable.hpp>
+#include <Core/PixmapTable.hpp>
+#include <Core/FontTable.hpp>
+#include <Core/CursorTable.hpp>
+
 
 namespace x11 {
 
@@ -64,6 +67,10 @@ public:
   XProtoTransport& transport() { return transport_; }
   EventOps& eventOps() { return *eventOps_; }
 
+  // ---- Fonts ----
+  FontTable& fonts() { return fonts_; }
+  const FontTable& fonts() const { return fonts_; }
+
   // ---- Test support ----
   // Populate a fake window snapshot map used when no WindowLookupFn is installed.
   void setTestWindow(const WindowView& w);
@@ -99,6 +106,12 @@ private:
   WindowLookupFn injected_lookup_ = nullptr;
   void* injected_lookup_user_ = nullptr;
 
+  // Fonts
+  FontTable fonts_;
+  
+  // Cursor
+  x11::CursorTable cursors_;
+  
   // Test-only backing store (used when injected_lookup_ == nullptr).
   // Kept in the .cpp to avoid exposing <unordered_map> in public headers.
   struct Impl;

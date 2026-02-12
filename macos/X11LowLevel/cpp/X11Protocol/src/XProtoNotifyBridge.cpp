@@ -5,10 +5,10 @@
 //  Created by Lawrence Gibbons on 1/20/26.
 //
 
-#include "XProtoNotifyQueue.hpp"
-#include "EventOps.hpp"
-#include "XProtoContext.hpp"   // whatever you currently have
-#include "WindowTable.hpp"
+#include "Core/XProtoNotifyQueue.hpp"
+#include "Ops/EventOps.hpp"
+#include "Core/XProtoContext.hpp"   // whatever you currently have
+#include "Core/WindowTable.hpp"
 #include "XProtoMotionRoute.hpp"
 
 #include <atomic>

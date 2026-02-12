@@ -36,7 +36,8 @@ final class X11MTKView: MTKView {
 
 final class X11View: NSView {
     // MARK: - Mode
-    private var usingMetal: Bool = false
+    var usingMetal: Bool = false
+    var wantsMetal: Bool = false
 
     // MARK: - Software path
     private var imageLayer: CALayer?
@@ -52,6 +53,7 @@ final class X11View: NSView {
     // Avoid triggering MTKView delegate callbacks during NSView.layout (can cause layout recursion).
     private var pendingDrawableSize: CGSize?
     private var drawableSizeUpdateScheduled: Bool = false
+    private var pendingEnableMetal = false
 
     // MARK: -- interface to X11
     private var buttonMask: UInt32 = 0
@@ -135,29 +137,24 @@ final class X11View: NSView {
 
     private var inLayout: Bool { Self.layoutDepthTLS.value > 0 }
 
-    override func layout() {
-        Self.layoutDepthTLS.value += 1
-        defer { Self.layoutDepthTLS.value -= 1 }
-        super.layout()
-
-        imageLayer?.frame = bounds
-        mtkView?.frame = bounds
-      
-        // Keep Metal drawableSize in sync with view bounds (in pixels).
-        // SwiftUI can transiently layout with a 0-height; guard to avoid warnings.
-        if let mv = mtkView, mv.window != nil {
-          let scale = window?.backingScaleFactor ?? 1.0
-          let wF = bounds.size.width * scale
-          let hF = bounds.size.height * scale
-          guard wF > 0, hF > 0 else { return }
-          let ds = CGSize(width: floor(wF), height: floor(hF))
-
-          // Defer changing drawableSize until after layout completes.
-          if mv.drawableSize != ds {
-              scheduleDrawableSizeUpdate(ds)
-          }
-        }
+  override func layout() {
+    Self.layoutDepthTLS.value += 1
+    defer { Self.layoutDepthTLS.value -= 1 }
+    super.layout()
+    
+    imageLayer?.frame = bounds
+    mtkView?.frame = bounds
+    
+    if pendingEnableMetal, wantsMetal,
+       self.window != nil,
+       bounds.width >= 1, bounds.height >= 1 {
+      pendingEnableMetal = false
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.setUseMetal(true)
+      }
     }
+  }
   
   final class LayoutLogGate {
       static let shared = LayoutLogGate()
@@ -302,22 +299,36 @@ final class X11View: NSView {
   
     // MARK: - Public
     func setUseMetal(_ enabled: Bool) {
-        if enabled, let dev = MTLCreateSystemDefaultDevice() {
-            // Switch to Metal
-            if !usingMetal {
-                setupMetal(device: dev)
-                usingMetal = true
-            }
-            imageLayer?.isHidden = true
-            mtkView?.isHidden = false
-        } else {
-            // Switch to Software
-            usingMetal = false
-            mtkView?.isHidden = true
-            imageLayer?.isHidden = false
+      wantsMetal = enabled
+      if enabled {
+          // Defer Metal until we have a real AppKit window and non-zero bounds
+          guard self.window != nil else {
+              pendingEnableMetal = true
+              return
+          }
+          guard bounds.width >= 1, bounds.height >= 1 else {
+              pendingEnableMetal = true
+              return
+          }
+      }
+
+      if enabled, let dev = MTLCreateSystemDefaultDevice() {
+        // Switch to Metal
+        if !usingMetal {
+          setupMetal(device: dev)
+          usingMetal = true
         }
+        imageLayer?.isHidden = true
+        mtkView?.isHidden = false
+      } else {
+        // Switch to Software
+        usingMetal = false
+        mtkView?.isHidden = true
+        imageLayer?.isHidden = false
+      }
       
-        refreshTrackingArea()
+      // refreshTrackingArea()
+      requestTrackingRefreshCoalesced()
     }
 
     /// Back-compat entrypoint used by older callers.
@@ -407,46 +418,71 @@ final class X11View: NSView {
     }
 
     // MARK: - Metal setup
-    private func setupMetal(device: MTLDevice) {
-      self.device = device
-  
-      let view = X11MTKView(frame: bounds, device: device)
-      view.owner = self
-      view.xid = self.xid
-      view.autoresizingMask = [.width, .height]
-  
-      let del = X11Renderer(owner: self)
-      del.setXid(self.xid)
-      self.mtkDelegate = del
-      view.delegate = del
-  
-      view.enableSetNeedsDisplay = true
-      view.isPaused = true
-      view.framebufferOnly = false
-      view.colorPixelFormat = .bgra8Unorm
-      view.preferredFramesPerSecond = 0
-  
-      self.renderer = X11MetalRenderer(device: device)
-  
-      addSubview(view, positioned: .above, relativeTo: nil)
-      self.mtkView = view
-  
-      // init drawableSize using the *actual* window scale (now more likely non-nil)
-      let scale = self.window?.backingScaleFactor ?? 1.0
-      let wF = bounds.size.width * scale
-      let hF = bounds.size.height * scale
-      if wF > 0, hF > 0 {
-          let ds = CGSize(width: floor(wF), height: floor(hF))
-        print("[MTK] drawableSize about to set xid=\(view.xid) size=\(ds) window=\(String(describing: view.window))")
-          view.drawableSize = ds
-          del.mtkView(view, drawableSizeWillChange: ds)   // force presentable notification
-      }
-      
-      // kick once so X11Renderer posts presentable+resize immediately
-      view.setNeedsDisplay(view.bounds)
-      view.draw()
-    }
+  private func setupMetal(device: MTLDevice) {
+    self.device = device
 
+    let view = X11MTKView(frame: bounds, device: device)
+    
+    print("[MTK] create MTKView xid=\(xid) bounds=\(bounds) window=\(String(describing: self.window)) backingScale=\(self.window?.backingScaleFactor ?? -1)")
+
+    view.owner = self
+    view.xid = self.xid
+    view.autoresizingMask = [.width, .height]
+
+    let del = X11Renderer(owner: self)
+    del.setXid(self.xid)
+    self.mtkDelegate = del
+    view.delegate = del
+
+    view.enableSetNeedsDisplay = true
+    view.isPaused = true
+    view.framebufferOnly = false
+    view.colorPixelFormat = .bgra8Unorm
+    view.preferredFramesPerSecond = 0
+
+    self.renderer = X11MetalRenderer(device: device)
+
+    addSubview(view, positioned: .above, relativeTo: nil)
+    self.mtkView = view
+
+    //if let win = self.window {
+    //  let scale = win.backingScaleFactor
+    //  let wF = bounds.width * scale
+    //  let hF = bounds.height * scale
+    //  if wF >= 1, hF >= 1 {
+    //    view.drawableSize = CGSize(width: floor(wF), height: floor(hF))
+    //  }
+    //}
+
+    // DO NOT touch drawableSize or setNeedsDisplay here.
+    // Wait for MTKViewDelegate.mtkView(_:drawableSizeWillChange:) once the view is real.
+    //// ✅ DO NOT kick draw synchronously here
+    //DispatchQueue.main.async { [weak self] in
+    //  guard let self else { return }
+    //  guard let mv = self.mtkView else { return }
+    //  guard mv.window != nil else { return }
+//
+    //  let scale = mv.window?.backingScaleFactor ?? 1.0
+    //  let wF = mv.bounds.width * scale
+    //  let hF = mv.bounds.height * scale
+    //  guard wF >= 1, hF >= 1 else { return }
+//
+    //  let ds = CGSize(width: floor(wF), height: floor(hF))
+    //  if mv.drawableSize != ds { mv.drawableSize = ds }
+//
+    //  mv.setNeedsDisplay(mv.bounds)
+    //}
+  }
+
+  private func kickMetalOnceIfReady() {
+    guard usingMetal, let mv = mtkView else { return }
+    guard mv.window != nil else { return }
+    let ds = mv.drawableSize
+    guard ds.width >= 1, ds.height >= 1 else { return }
+    mv.setNeedsDisplay(mv.bounds)
+  }
+  
+  
     private func refreshTrackingArea() {
       logIfInLayout("refreshTrackingArea (usingMetal=\(usingMetal))", view: self)
 
@@ -486,6 +522,7 @@ final class X11View: NSView {
       // Single, authoritative presentation path:
       // MTKView calls X11Renderer.draw(in:), which forwards here.
       guard usingMetal else { return }
+      guard view.drawableSize.width >= 1, view.drawableSize.height >= 1 else { return }
       guard let renderer = self.renderer else { return }
       print("MTK draw(in:) xid=\(xid) hasTex=\(renderer.hasTexture) drawable=\(String(describing: view.currentDrawable))")
       renderer.draw(on: view)
@@ -746,12 +783,14 @@ struct X11WindowHost: NSViewRepresentable {
   
   func makeNSView(context: Context) -> X11View {
     let v = X11View(frame: .zero)
+    v.wantsMetal = useMetal
     v.setUseMetal(useMetal)
     onViewReady(v)
     return v
   }
   
   func updateNSView(_ nsView: X11View, context: Context) {
+    nsView.wantsMetal = useMetal
     nsView.setUseMetal(useMetal)
   }
 }
@@ -760,55 +799,89 @@ struct X11WindowHost: NSViewRepresentable {
 final class X11Renderer: NSObject, MTKViewDelegate {
   private weak var owner: X11View?
   private var xid: UInt32 = 0
-
+  
   private var didNotifyPresentable = false
   private var lastDrawablePx: (w: Int32, h: Int32) = (0, 0)
-
+  
   init(owner: X11View) {
     self.owner = owner
     super.init()
   }
-
+  
   func setXid(_ xid: UInt32) {
     self.xid = xid
     self.didNotifyPresentable = false
     self.lastDrawablePx = (0, 0)
   }
-
+  
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+#if DEBUG
+    let w = Int(size.width.rounded())
+    let h = Int(size.height.rounded())
+    if h == 0 || w <= 4 || h <= 4 {
+      print("[MTK] drawableSizeWillChange (pre guard) xid=\(String(xid, radix:16)) -> \(w)x\(h) window=\(String(describing: view.window)) frame=\(view.frame)")
+    }
+#endif
+    
+    let wPx = Int32(size.width.rounded(.down))
+    let hPx = Int32(size.height.rounded(.down))
+    guard wPx >= 1, hPx >= 1 else { return }
+    guard size.width >= 1, size.height >= 1 else { return }
+    
+#if DEBUG
+    if h == 0 || w <= 4 || h <= 4 {
+      print("[MTK] drawableSizeWillChange (post guard) xid=\(String(xid, radix:16)) -> \(w)x\(h) window=\(String(describing: view.window)) frame=\(view.frame)")
+    }
+#endif
+    
     handleDrawableSize(size)
   }
-
+  
   func draw(in view: MTKView) {
-    // Do NOT call handleDrawableSize here
+    // Hard gate: never draw with invalid drawableSize
+    let ds = view.drawableSize
+    guard ds.width >= 1, ds.height >= 1 else { return }
+    guard view.currentDrawable != nil else { return } // optional but helps
+                                                      // Do NOT call handleDrawableSize here
     owner?.metalDraw(in: view)
   }
   
   private var pendingResizeTask: DispatchWorkItem? = nil
   private var pendingSize: (w: Int32, h: Int32)? = nil
-
+  
   private func handleDrawableSize(_ size: CGSize) {
     guard xid != 0 else { return }
-
+    
     // MTKView drawable sizes are already in pixels.
     let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
     let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
-
+    
+    // ---- HARD GATES ----
+    // 1) Ignore transient invalid sizes coming from AppKit/Metal attach/layout.
     guard wPx >= 1, hPx >= 1 else { return }
-
+    
+    // 2) Ignore tiny “bootstrap” drawable sizes (this is your 2x2 spam).
+    // Pick a floor that is always safe. Since you now create host windows at 64x64,
+    // 16 is conservative; 32 is fine too.
+    guard wPx >= 16, hPx >= 16 else { return }
+    
+    // 3) If MTKView isn't attached yet, don't feed resize back to the server.
+    // (You can remove this if you can't access the MTKView here.)
+    guard owner?.window != nil else { return }
+    
     // Presentable: once.
     if !didNotifyPresentable {
       didNotifyPresentable = true
       x11_post_window_presentable(xid)
     }
-
+    
     if wPx == lastDrawablePx.w && hPx == lastDrawablePx.h { return }
     lastDrawablePx = (wPx, hPx)
-
+    
     // Debounce resize feedback (coalesce bursts)
     pendingResizeTask?.cancel()
     pendingSize = (wPx, hPx)
-
+    
     let task = DispatchWorkItem { [weak self] in
       guard let self = self, let s = self.pendingSize else { return }
       x11_post_window_resize(self.xid, s.w, s.h)

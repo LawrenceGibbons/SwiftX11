@@ -5,4 +5,4 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "XProtoTrace.hpp"
+#include "Core/XProtoTrace.hpp"

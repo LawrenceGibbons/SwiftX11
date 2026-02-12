@@ -5,19 +5,21 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "DrawOps.hpp"
+#include "Ops/DrawOps.hpp"
 
 #include <cstddef>
 #include <cstdint>
 
-#include "XProtoContext.hpp"
-#include "XProtoTransport.hpp"
-#include "ByteReader.hpp"
-#include "PixmapTable.hpp"   // adjust include path to your project
-#include "WindowTable.hpp"
-#include "GCTable.hpp"
-#include "DrawableRW.hpp"
-#include "DrawOps.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Transport/XProtoTransport.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Core/PixmapTable.hpp"   // adjust include path to your project
+#include "Core/WindowTable.hpp"
+#include "Core/GCTable.hpp"
+#include "Core/DrawableRW.hpp"
+#include "Ops/DrawOps.hpp"
+#include "Core/X11CoreOpcodes.hpp"
+#include "UI/UICommandQueue.hpp"
 
 // bridging
 #include "x11_backend_fb.h"
@@ -115,12 +117,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     return;
   }
 
-  // Destination: if drawable is a WINDOW, skip for now (we’ll add later).
-  // xeyes uses pixmaps here.
-  if (ctx.windows().exists(drawable)) {
-    br.skip(br.remaining());
-    return;
-  }
+  const bool dstIsWindow = ctx.windows().exists(drawable);
 
   // Destination pixmap must be depth=1 (packed bits).
   uint16_t pw = 0, ph = 0;
@@ -143,6 +140,11 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   const uint8_t* src = br.ptr();   // raw packed bitmap data
   br.skip(br.remaining());         // consume rest (including request padding)
 
+  // xxx temp ---
+  ctx.tracef("[PutImage] drawable=0x%08X dstIsWindow=%d w=%u h=%u depth=%u fmt=%u\n",
+             drawable, dstIsWindow ? 1 : 0, pw, ph, depth, format);
+  // xxx --- temp
+  
   // Copy bits from src into dstBits (both LSBFirst as per SetupSuccess).
   // NOTE: PutImage uses leftPad in *source bit indexing*.
   for (uint16_t yy = 0; yy < height; yy++) {
@@ -175,7 +177,22 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     }
   }
 
-  // IMPORTANT: pixmaps are not presentable; do not enqueue damage here.
+// xxx maybe temp  if (dstIsWindow) {
+// xxx maybe temp    ctx.tracef("[DAMAGE_ROUTE] PutImage wid=%d stays unrouted\n", drawable);
+// xxx maybe temp    if (ctx.windows().isReadyToPresent(drawable)) {
+// xxx maybe temp      // IMPORTANT: damage must be attributed to the drawable that changed (drawable),
+// xxx maybe temp      // NOT the host. Swift will map wid -> host and choose source correctly.
+// xxx maybe temp      x11_requests_push_damage(drawable);
+// xxx maybe temp    } else {
+// xxx maybe temp      ctx.windows().markDirty(drawable);
+// xxx maybe temp    }
+// xxx maybe temp  }
+  // xxx maybe temp ---- 
+  if (dstIsWindow) {
+    x11_requests_push_damage(drawable);
+  }
+  // xxx ---- maybe temp 
+  
   (void)need;
 }
 
@@ -294,13 +311,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     // ------------------------------------------------------------
     // Damage only if destination is a window (pixmaps present when copied into a window)
     // ------------------------------------------------------------
-    if (dstIsWindow) {
-      if (ctx.windows().isReadyToPresent(dst)) {
-        x11_requests_push_damage(dst);
-      } else {
-        ctx.windows().markDirty(dst);
-      }
-    }
+    damageOrDirty(ctx, dst );
   }
   
   
@@ -322,36 +333,36 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     //   CARD16 height
     //   CARD32 bitPlane
     if (br.remaining() < 28) { br.skip(br.remaining()); return; }
-
+    
     const uint32_t src = br.readU32();
     const uint32_t dst = br.readU32();
     const uint32_t gc  = br.readU32();
-
+    
     const int16_t srcX = (int16_t)br.readU16();
     const int16_t srcY = (int16_t)br.readU16();
     const int16_t dstX = (int16_t)br.readU16();
     const int16_t dstY = (int16_t)br.readU16();
-
+    
     const uint16_t wpx = br.readU16();
     const uint16_t hpx = br.readU16();
-
+    
     const uint32_t bitPlane = br.readU32();
     br.skip(br.remaining());
-
+    
     if (wpx == 0 || hpx == 0) return;
-
+    
     // Minimal: only support plane 1 (the usual for depth-1 pixmaps).
     if (bitPlane != 1u) return;
-
+    
     // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
     const bool BIT_ORDER_LSB_FIRST = true;
-
+    
     // ------------------------------------------------------------
     // Resolve GC fg/bg
     // ------------------------------------------------------------
     uint32_t fg = 0xFF000000u;
     uint32_t bg = 0xFFFFFFFFu;
-
+    
     GCState gst{};
     if (GCTable::instance().find(gc, gst)) {
       fg = gst.fg;
@@ -369,10 +380,10 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     int srcW = 0, srcH = 0;
     uint32_t srcStrideBytes = 0;
     bool srcDepth1 = false;
-
+    
     const bool srcIsWin = ctx.windows().exists(src);
     const bool srcIsPix = ctx.pixmaps().exists(src);
-
+    
     if (srcIsWin) {
       uint32_t* wPix = nullptr;
       uint32_t wW = 0, wH = 0;
@@ -386,7 +397,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       if (!ctx.pixmaps().snapshot(src, pv)) return;
       srcW = (int)pv.w;
       srcH = (int)pv.h;
-
+      
       if (pv.depth == 1) {
         if (!pv.bits || pv.stride_bytes == 0) return;
         srcBits = pv.bits;
@@ -417,7 +428,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     uint32_t dstStrideBytes = 0;
     bool dstDepth1 = false;
     bool dstIsWindow = false;
-
+    
     if (ctx.windows().exists(dst)) {
       uint32_t* wPix = nullptr;
       uint32_t wW = 0, wH = 0;
@@ -449,7 +460,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
         dstIsWindow = false;
       }
     }
-
+    
     // ------------------------------------------------------------
     // Raster loop: interpret src as 1-bit plane and write to dst:
     //  - if dstDepth1: write packed bit
@@ -460,15 +471,15 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       const int dy = (int)dstY + yy;
       if ((unsigned)sy >= (unsigned)srcH) continue;
       if ((unsigned)dy >= (unsigned)dstH) continue;
-
+      
       for (int xx = 0; xx < (int)wpx; xx++) {
         const int sx = (int)srcX + xx;
         const int dx = (int)dstX + xx;
         if ((unsigned)sx >= (unsigned)srcW) continue;
         if ((unsigned)dx >= (unsigned)dstW) continue;
-
+        
         int on = 0;
-
+        
         if (srcDepth1) {
           const size_t byteIndex = (size_t)sy * (size_t)srcStrideBytes + ((size_t)sx >> 3);
           const int bitInByte = BIT_ORDER_LSB_FIRST ? (sx & 7) : (7 - (sx & 7));
@@ -489,15 +500,11 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
         }
       }
     }
-
+    
     // Damage only if destination is a window.
-    if (dstIsWindow) {
-      if (ctx.windows().isReadyToPresent(dst)) {
-        x11_requests_push_damage(dst);
-      } else {
-        ctx.windows().markDirty(dst);
-      }
-    }  }
+    damageOrDirty(ctx, dst );
+      
+  }
   
   
   void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t /*seq*/, uint8_t exposures, ByteReader& br)
@@ -553,11 +560,23 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     }
 
     // Damage -> present
-    if (ctx.windows().isReadyToPresent(wid)) {
-      x11_requests_push_damage(wid);
-    } else {
-      ctx.windows().markDirty(wid);
+    {
+// xxx maybe temp      ctx.tracef("[DAMAGE_ROUTE] ClearArea sticks with wid=0x%08X \n", wid);
+// xxx maybe temp      if (ctx.windows().isReadyToPresent(wid)) {
+// xxx maybe temp         // IMPORTANT: damage must be attributed to the drawable that changed (wid),
+// xxx maybe temp         // NOT the host. Swift will map wid -> host and choose source correctly.
+// xxx maybe temp         x11_requests_push_damage(wid);
+// xxx maybe temp       } else {
+// xxx maybe temp         ctx.windows().markDirty(wid);
+// xxx maybe temp       }
+// xxx maybe temp ---- 
+      if (ctx.windows().exists(wid)) {
+        x11_requests_push_damage((wid));
+      }
+// xxx ---- maybe temp 
     }
+
+    
     // Optional Expose event (only if client asked for exposures and selected ExposureMask)
     if (exposures) {
       if (const WindowView* vw = ctx.window(wid)) {

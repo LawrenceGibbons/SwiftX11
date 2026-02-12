@@ -5,7 +5,7 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "XProtoNotifyQueue.hpp"
+#include "Core/XProtoNotifyQueue.hpp"
 #include <cstddef>
 
 namespace x11 {

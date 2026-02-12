@@ -5,17 +5,18 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "AtomOps.hpp"
-#include "AtomTable.hpp"
-#include "XProtoContext.hpp"
-#include "ReplyWriter.hpp"
-#include "ByteReader.hpp"
+#include "Ops/AtomOps.hpp"
+#include "Core/AtomTable.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Ops/ReplyWriter.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 namespace x11 {
 
 AtomOps::AtomOps(XProtoRegistrar& reg) {
-  reg.registerMajor(16, &AtomOps::onMajor, this); // InternAtom
-  reg.registerMajor(17, &AtomOps::onMajor, this); // GetAtomName
+  reg.registerMajor(x11::opcode::InternAtom , &AtomOps::onMajor, this); // InternAtom
+  reg.registerMajor(x11::opcode::GetAtomName, &AtomOps::onMajor, this); // GetAtomName
 }
 
 void AtomOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -74,6 +75,7 @@ void AtomOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     const uint32_t atom = br.readU32();
     br.skip(br.remaining());
+    ctx.tracef("[AtomOps] GetAtomName seq=%u atom=0x%08X\n", (unsigned)seq, (unsigned)atom);
 
     uint32_t nameLen = 0;
     const char* name = AtomTable::instance().name(atom, &nameLen);

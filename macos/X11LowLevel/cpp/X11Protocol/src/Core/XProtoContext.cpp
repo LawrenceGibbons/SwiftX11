@@ -9,10 +9,10 @@
 #include <cstdlib>
 #include <cassert>
 
-#include "XProtoContext.hpp"
-#include "ReplyWriter.hpp"
-#include "XProtoTransport.hpp"
-#include "WindowTable.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Ops/ReplyWriter.hpp"
+#include "Transport/XProtoTransport.hpp"
+#include "Core/WindowTable.hpp"
 
 namespace x11 {
 

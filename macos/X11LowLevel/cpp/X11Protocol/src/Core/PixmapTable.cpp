@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <cstring>
 
-#include "PixmapTable.hpp"
+#include "Core/PixmapTable.hpp"
 
 
 namespace x11 {

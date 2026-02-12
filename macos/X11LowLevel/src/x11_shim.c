@@ -67,7 +67,7 @@ static void x11_srv_ctor_defaults(void) {
 }
 
 
-static inline uint64_t x11_now_ns(void)
+uint64_t x11_now_ns(void)
 {
   static mach_timebase_info_data_t s_tb = {0,0};
   if (s_tb.denom == 0) {
@@ -87,8 +87,11 @@ struct x11_destroy_arg { uint32_t xid; };
 static void x11_emit_window_create(uint32_t xid, uint32_t parent_xid, const char* title, int32_t w, int32_t h)
 {
   // ensure nonzero
-  int32_t ww = (w < 1) ? 1 : w;
-  int32_t hh = (h < 1) ? 1 : h;
+  //int32_t ww = (w < 1) ? 1 : w;
+  //int32_t hh = (h < 1) ? 1 : h;
+  // insure a sane size to avoid thrashing at beginning of run
+  int32_t ww = (w < 64) ? 64 : w;
+  int32_t hh = (h < 64) ? 64 : h;
 
 #ifndef NDEBUG
   fprintf(stderr, "[SwiftX11] emit_window_create: xid=0x%08X title=\"%s\" size=%dx%d\n",
@@ -292,9 +295,7 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
   // C side only emits DAMAGE events when the xproto framebuffer changes.
 
 #ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] repaint: SKIP (rootless presenter disabled) xid=0x%08X\n",
-          (unsigned)xwin_id);
+  fprintf(stderr, "[REQ_DAMAGE] xid=0x%08X -> UI_DAMAGE\n", xwin_id);
 #endif
 }
 
@@ -633,32 +634,39 @@ void x11_mark_damage(uint32_t xid)
 // -----------------------------------------------------------------------------
 void x11_server_emit_window_damage(uint32_t xid)
 {
+  fprintf(stderr, "[EMIT DAMAGE] entering with xid=%d", xid);
   if (xid == 0) return;
 
-  // Gate on existence and "not closing" so stale damage doesn't resurrect windows.
   int ok = 0;
   int exists = 0;
   int closing = 0;
+  int32_t w_px = 0, h_px = 0;
+
   x11_backend_lock();
   exists = x11_backend_window_exists_locked(xid);
   closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;
   if (exists && !closing) {
     x11_backend_mark_damage_locked(xid);
+
+    // Get current size so UI_DAMAGE is not degenerate.
+    // Use whatever your backend API is here:
+    (void)x11_xproto_get_fb_size(xid, &w_px, &h_px);
     ok = 1;
   }
   x11_backend_unlock();
 
 #ifndef NDEBUG
   fprintf(stderr,
-          "[SwiftX11] x11_server_emit_window_damage: xid=0x%08X exists=%d closing=%d ok=%d\n",
-          (unsigned)xid, exists, closing, ok);
+          "[SwiftX11] x11_server_emit_window_damage: xid=0x%08X exists=%d closing=%d ok=%d size=%dx%d\n",
+          (unsigned)xid, exists, closing, ok, (int)w_px, (int)h_px);
 #endif
 
   if (!ok) return;
-  
-  // Backend event: DAMAGE (distinct from request queue)
-  
-  x11_ui_push_damage(xid, 0, 0, 0, 0);
+
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
+
+  x11_ui_push_damage(xid, 0, 0, w_px, h_px);
   x11_server_wakeup();
 }
 

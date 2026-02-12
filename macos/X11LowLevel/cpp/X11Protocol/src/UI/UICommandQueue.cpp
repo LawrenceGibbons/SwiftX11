@@ -5,7 +5,7 @@
 //  Created by Lawrence Gibbons on 2/6/26.
 //
 
-#include "UICommandQueue.hpp"
+#include "UI/UICommandQueue.hpp"
 
 extern "C" {
   #include "x11_requests.h"

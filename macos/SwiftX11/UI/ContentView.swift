@@ -99,6 +99,7 @@ struct ContentView: View {
 
       Task { @MainActor in
         WindowRegistry.shared.useMetalForNewWindows = settings.useMetal
+        WindowRegistry.shared.setUseMetalForAllWindows(settings.useMetal)
       }
 
       

@@ -235,6 +235,7 @@ final class XServerController: ObservableObject {
   
   @MainActor
   private func handleUICommand(_ cmd: x11_ui_cmd_t) {
+    print("[UI_CMD] type=\(cmd.type) xid=0x\(String(cmd.xid, radix:16))")
     switch cmd.type {
 
     case X11_UI_TITLE:
@@ -259,6 +260,8 @@ final class XServerController: ObservableObject {
       WindowRegistry.shared.unmapWindow(xid: cmd.xid)
 
     case X11_UI_RESIZE:
+      // xxx temp
+      print("[SIZE][UI_CMD] applyX11Resize xid=0x\(String(format:"%X", cmd.xid)) wPx=\(cmd.w_px) hPx=\(cmd.h_px)")
       WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wPx: cmd.w_px, hPx: cmd.h_px)
 
     case X11_UI_CREATE:
@@ -274,6 +277,7 @@ final class XServerController: ObservableObject {
       WindowRegistry.shared.noteX11WindowDestroyed(xid: cmd.xid)
 
     case X11_UI_DAMAGE:
+      print("[UI_CMD] DAMAGE xid=0x\(String(cmd.xid, radix:16)) rect=\(cmd.x_px),\(cmd.y_px) \(cmd.w_px)x\(cmd.h_px)")
       // Convert to your existing damage handler signature.
       // If you want, you can change WindowRegistry.handleDamageEvent to take raw fields instead.
       WindowRegistry.shared.noteDamageRect(xid: cmd.xid, x: cmd.x_px, y: cmd.y_px, w: cmd.w_px, h: cmd.h_px)

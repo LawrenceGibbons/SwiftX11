@@ -4,14 +4,15 @@
 //  Created by Lawrence Gibbons on 1/24/26.
 //
 
-#include "WindowOps.hpp"
+#include "Ops/WindowOps.hpp"
 
-#include "XProtoContext.hpp"
-#include "ByteReader.hpp"
-#include "XProtoTransport.hpp"
-#include "WindowTable.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Transport/XProtoTransport.hpp"
+#include "Core/WindowTable.hpp"
 #include "x11_requests.h"
-#include "HostResize.hpp"
+#include "Core/HostResize.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 // bridge
 extern "C" {
@@ -28,50 +29,13 @@ extern "C" {
 
 namespace x11 {
 
-
-//// Host resized native surface for wid; update server truth + FB + notify + redraw.
-//// Preconditions: called on server/protocol thread (same as old function name implied).
-//static void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t h_px)
-//{
-//  if (wid == 0) return;
-//  if (w_px < 1) w_px = 1;
-//  if (h_px < 1) h_px = 1;
-//
-//  const WindowView* vw0 = ctx.window(wid);
-//  if (!vw0) return;
-//
-//  const uint16_t old_w = vw0->w;
-//  const uint16_t old_h = vw0->h;
-//
-//  const uint16_t new_w = (uint16_t)((w_px > 65535) ? 65535 : w_px);
-//  const uint16_t new_h = (uint16_t)((h_px > 65535) ? 65535 : h_px);
-//
-//  if (new_w == old_w && new_h == old_h) return;
-//
-//  // 1) Resize C backing pixels first (so subsequent drawing uses correct buffer).
-//  x11_backend_fb_resize(wid, new_w, new_h);
-//
-//  // 2) Update authoritative geometry in WindowTable (x/y unchanged).
-//  ctx.windows().setGeometry(wid, vw0->x, vw0->y, new_w, new_h);
-//
-//  // 3) Notify owning client if they selected masks.
-//  if (const WindowView* vw = ctx.window(wid)) {
-//    const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);              // StructureNotifyMask
-//    const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0)); // ExposureMask
-//    if (wantCfg || wantExp) ctx.transport().queueNotify(wid, wantCfg, wantExp);
-//  }
-//
-//  // 4) Ensure UI redraw (gated by ready/presentable).
-//  damageOrDirty(ctx, wid);
-//}
-
   
 WindowOps::WindowOps(XProtoRegistrar& reg) {
-  reg.registerMajor(1,  &WindowOps::onMajor, this);  // CreateWindow
-  reg.registerMajor(4,  &WindowOps::onMajor, this);  // DestroyWindow
-  reg.registerMajor(8,  &WindowOps::onMajor, this);  // MapWindow
-  reg.registerMajor(9,  &WindowOps::onMajor, this);  // MapSubwindows
-  reg.registerMajor(10, &WindowOps::onMajor, this);  // UnmapWindow
+  reg.registerMajor(x11::opcode::CreateWindow,  &WindowOps::onMajor, this);  // CreateWindow
+  reg.registerMajor(x11::opcode::DestroyWindow, &WindowOps::onMajor, this);  // DestroyWindow
+  reg.registerMajor(x11::opcode::MapWindow,     &WindowOps::onMajor, this);  // MapWindow
+  reg.registerMajor(x11::opcode::MapSubwindows, &WindowOps::onMajor, this);  // MapSubwindows
+  reg.registerMajor(x11::opcode::UnmapWindow  , &WindowOps::onMajor, this);  // UnmapWindow
 }
 
 void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -81,11 +45,11 @@ void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 1:  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
-    case 4:  handleDestroyWindow(ctx, dc.seq, dc.br); return;
-    case 8:  handleMapWindow(ctx, dc.seq, dc.br); return;
-    case 9:  handleMapSubwindows(ctx, dc.seq, dc.br); return;
-    case 10: handleUnmapWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::CreateWindow :  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
+    case x11::opcode::DestroyWindow:  handleDestroyWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::MapWindow    :  handleMapWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::MapSubwindows:  handleMapSubwindows(ctx, dc.seq, dc.br); return;
+    case x11::opcode::UnmapWindow  : handleUnmapWindow(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -277,7 +241,7 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
   x11_backend_fb_resize(wid, new_w, new_h);
 
   // 2) Update authoritative geometry in C++ (x/y unchanged).
-  ctx.windows().setGeometry(wid, vw0->x, vw0->y, new_w, new_h);
+  ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
 
   // 3) Notify owning client if selected.
   if (const WindowView* vw = ctx.window(wid)) {

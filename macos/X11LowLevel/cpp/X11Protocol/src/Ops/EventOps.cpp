@@ -8,12 +8,15 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "EventOps.hpp"
-#include "XProtoTransport.hpp"
-#include "XProtoContext.hpp"
-#include "ByteReader.hpp"
-#include "ReplyWriter.hpp"
-#include "WireLE.hpp"
+#include "Ops/EventOps.hpp"
+#include "Transport/XProtoTransport.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Ops/ReplyWriter.hpp"
+#include "Utils/WireLE.hpp"
+#include "Core/WindowTable.hpp"
+#include "Core/X11Modifiers.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 namespace x11 {
   
@@ -28,6 +31,36 @@ namespace x11 {
 //    p[2] = (uint8_t)((v >> 16) & 0xFF);
 //    p[3] = (uint8_t)((v >> 24) & 0xFF);
 //  }
+  
+  static bool computeAbsXY(XProtoContext& ctx, uint32_t xid, int32_t& outX, int32_t& outY) {
+    outX = 0; outY = 0;
+    uint32_t cur = xid;
+    for (int depth = 0; depth < 64 && cur != 0; depth++) {
+      WindowView vw{};
+      if (!ctx.windows().snapshot(cur, vw)) return false;
+      outX += vw.x;
+      outY += vw.y;
+      cur = vw.parent_xid;
+    }
+    return true;
+  }
+  
+//  static uint16_t toX11State(uint32_t buttonsMask, uint32_t modsMask) {
+//    uint16_t st = 0;
+//
+//    // buttons: Button1Mask starts at bit 8 in X11 state
+//    // simplest bring-up: map your button bits to Button1..Button5
+//    // (optional now; shift is the priority)
+//
+//    // modifiers
+//    if (modsMask & X11_MOD_SHIFT) st |= (1u << 0);  // ShiftMask
+//    if (modsMask & X11_MOD_CTRL)  st |= (1u << 2);  // ControlMask
+//    if (modsMask & X11_MOD_ALT)   st |= (1u << 3);  // Mod1Mask
+//    if (modsMask & X11_MOD_CMD)   st |= (1u << 6);  // Mod4Mask
+//
+//    return st;
+//  }
+  
   
   void EventOps::handle(uint8_t majorOpcode, uint8_t minorOpcode, ByteReader& br) {
     // For now, no core “event opcodes” exist in core X11.
@@ -197,8 +230,8 @@ namespace x11 {
 
     // Sequence: if you have a stored "last seq" in transport, use it. Otherwise 0 is acceptable.
     // If you *do* have a method, replace 0 with that.
-    wire::wr16_le(ev + 2, 0);
-
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+    
     // Time (ms). 0 is acceptable for bring-up.
     wire::wr32_le(ev + 4, 0);
 
@@ -216,10 +249,18 @@ namespace x11 {
     wire::wr16_le(ev + 22, (uint16_t)ry);
 
     // eventX/eventY
-    // For now, treat same as root coords. (Enough for xeyes; later subtract window origin.)
-    wire::wr16_le(ev + 24, (uint16_t)rx);
-    wire::wr16_le(ev + 26, (uint16_t)ry);
-
+    int32_t wx0=0, wy0=0;
+    int16_t ex=0, ey=0;
+    if (computeAbsXY(ctx, wid, wx0, wy0)) {
+      ex = clamp16(root_x - wx0);
+      ey = clamp16(root_y - wy0);
+    } else {
+      ex = clamp16(root_x);
+      ey = clamp16(root_y);
+    }
+    wire::wr16_le(ev + 24, (uint16_t)ex);
+    wire::wr16_le(ev + 26, (uint16_t)ey);
+    
     // state: combine button/modifier masks from Swift (you already encode these)
     wire::wr16_le(ev + 28, (uint16_t)(buttons | mods));
 
@@ -228,5 +269,93 @@ namespace x11 {
 
     ctx.transport().sendEvent32(wid, ev);
   }
-} // namespace x11
 
+
+void EventOps::sendButtonEvent(XProtoContext& ctx,
+                               uint32_t wid,
+                               bool is_press,
+                               uint8_t button,
+                               int32_t root_x, int32_t root_y,
+                               uint32_t buttons, uint32_t mods)
+{
+  auto clamp16 = [](int32_t v) -> int16_t {
+    if (v < -32768) return -32768;
+    if (v >  32767) return  32767;
+    return (int16_t)v;
+  };
+
+  const int16_t rx = clamp16(root_x);
+  const int16_t ry = clamp16(root_y);
+
+  uint8_t ev[32] = {0};
+
+  ev[0] = is_press ? 4 : 5; // ButtonPress=4, ButtonRelease=5
+  ev[1] = button;           // detail = button number
+  wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+  wire::wr32_le(ev + 4, 0); // time (ms)
+
+  wire::wr32_le(ev + 8, 1);     // root
+  wire::wr32_le(ev + 12, wid);  // event
+  wire::wr32_le(ev + 16, 0);    // child (none for now)
+
+  wire::wr16_le(ev + 20, (uint16_t)rx); // rootX
+  wire::wr16_le(ev + 22, (uint16_t)ry); // rootY
+  
+  int32_t wx0=0, wy0=0;
+  int16_t ex=0, ey=0;
+  if (computeAbsXY(ctx, wid, wx0, wy0)) {
+    ex = clamp16(root_x - wx0);
+    ey = clamp16(root_y - wy0);
+  } else {
+    ex = clamp16(root_x);
+    ey = clamp16(root_y);
+  }
+  wire::wr16_le(ev + 24, (uint16_t)ex);
+  wire::wr16_le(ev + 26, (uint16_t)ey);
+
+  wire::wr16_le(ev + 28, (uint16_t)(buttons | mods)); // state
+  ev[30] = 1; // sameScreen
+  ev[31] = 0;
+
+  ctx.transport().sendEvent32(wid, ev);
+}
+
+void EventOps::sendKeyEvent(XProtoContext& ctx,
+                            uint32_t wid,
+                            bool is_press,
+                            uint8_t keycode,
+                            uint32_t buttons, uint32_t mods)
+{
+  uint8_t ev[32] = {0};
+
+  ev[0] = is_press ? 2 : 3; // KeyPress=2, KeyRelease=3
+  ev[1] = keycode;          // detail = keycode (bring-up)
+  wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+  wire::wr32_le(ev + 4, 0); // time (ms)
+
+  wire::wr32_le(ev + 8, 1);    // root
+  wire::wr32_le(ev + 12, wid); // event
+  wire::wr32_le(ev + 16, 0);   // child
+
+  // rootX/rootY and eventX/eventY: use last known pointer root position if you want.
+  // Clamp to 16-bit signed coordinate range used by core events
+  auto clamp16 = [](int32_t v) -> int16_t {
+    if (v < -32768) return -32768;
+    if (v >  32767) return  32767;
+    return (int16_t)v;
+  };
+  int16_t rx = clamp16(ctx.input().root_x);
+  int16_t ry = clamp16(ctx.input().root_y);
+  wire::wr16_le(ev + 20, (uint16_t)rx);
+  wire::wr16_le(ev + 22, (uint16_t)ry);
+  wire::wr16_le(ev + 24, (uint16_t)rx);
+  wire::wr16_le(ev + 26, (uint16_t)ry);
+  
+  wire::wr16_le(ev + 28, (uint16_t)(buttons | mods)); // state
+  ev[30] = 1;
+  ev[31] = 0;
+
+  ctx.transport().sendEvent32(wid, ev);
+}
+
+} // namespace x11

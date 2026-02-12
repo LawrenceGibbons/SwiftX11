@@ -12,8 +12,8 @@
 #include <cstdarg>
 #include <cassert>
 
-#include "WindowView.hpp"
-#include "InputState.hpp"
+#include <Core/WindowView.hpp>
+#include <Core/InputState.hpp>
 
 namespace x11 {
 
@@ -22,6 +22,8 @@ class ReplyWriter;
 class WindowTable;
 class PixmapTable;
 class UICommandQueue;
+class FontTable;
+class CursorTable;
   
 using WindowLookupFn = bool (*)(uint32_t xid, WindowView* out, void* user);
 
@@ -74,6 +76,16 @@ public:
   UICommandQueue& ui() { assert(ui_); return *ui_; }
   const UICommandQueue& ui() const { assert(ui_); return *ui_; }
   
+  // Font Table
+  void setFontTable(FontTable* ft) { font_table_ = ft; }
+  FontTable& fonts() { assert(font_table_); return *font_table_; }
+  const FontTable& fonts() const { assert(font_table_); return *font_table_; }
+
+  // Cursor handling
+  void setCursorTable(CursorTable* ct) { cursor_table_ = ct; }
+  CursorTable& cursors() { assert(cursor_table_); return *cursor_table_; }
+  const CursorTable& cursors() const { assert(cursor_table_); return *cursor_table_; }
+  
 private:
   XProtoTransport* transport_ = nullptr;
   ReplyWriter* reply_ = nullptr;
@@ -94,6 +106,12 @@ private:
   
   // User Interface
   UICommandQueue* ui_ = nullptr;
+  
+  // Fonts
+  FontTable* font_table_ = nullptr;
+  
+  // Cursor
+  CursorTable* cursor_table_ = nullptr;
 };
 
 } // namespace x11

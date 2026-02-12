@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <cstddef>
 
-#include "XProtoRegistrar.hpp"
+#include <Core/XProtoRegistrar.hpp>
 
 namespace x11 {
 

@@ -1,5 +1,5 @@
 //
-//  ReplyOps.hpp
+//  ReplyWriter.hpp
 //  X11LowLevel
 //
 //  Created by Lawrence Gibbons on 1/23/26.
@@ -10,7 +10,7 @@
 #include <array>
 #include <cstddef>
 
-#include "XProtoTransport.hpp"
+#include <Transport/XProtoTransport.hpp>
 
 namespace x11 {
 
@@ -41,12 +41,13 @@ public:
   bool sendInternAtomReply(uint16_t seq, uint32_t atom);
   bool sendGetAtomNameReply(uint16_t seq, const char* name, uint16_t nameLen);
   
+  bool sendBytes(const void* bytes, std::size_t n); // no padding
   bool sendPaddedBytes(const void* bytes, std::size_t n); // pads to 4 bytes
   bool sendReply32Bytes(const void* rep32);  // expects 32 bytes
   bool sendReplyWithPaddedPayload(const void* rep32,
                                  const void* payload,
                                  std::size_t payloadBytes);  // pads payload to 4
-  
+  bool sendReplyRaw(const void* rep, std::size_t nbytes); // sends exactly nbytes
   
   template <typename FillFn>
   bool sendReply32(uint16_t seq, FillFn fill) {

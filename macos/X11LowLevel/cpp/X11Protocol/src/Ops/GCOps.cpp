@@ -1,15 +1,16 @@
-#include "GCOps.hpp"
+#include "Ops/GCOps.hpp"
 
-#include "XProtoContext.hpp"
-#include "ByteReader.hpp"
-#include "GCTable.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Core/GCTable.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 namespace x11 {
 
 GCOps::GCOps(XProtoRegistrar& reg) {
-  reg.registerMajor(55, &GCOps::onMajor, this); // CreateGC
-  reg.registerMajor(56, &GCOps::onMajor, this); // ChangeGC
-  reg.registerMajor(60, &GCOps::onMajor, this); // FreeGC
+  reg.registerMajor(x11::opcode::CreateGC, &GCOps::onMajor, this); // CreateGC
+  reg.registerMajor(x11::opcode::ChangeGC, &GCOps::onMajor, this); // ChangeGC
+  reg.registerMajor(x11::opcode::FreeGC,   &GCOps::onMajor, this); // FreeGC
 }
 
 void GCOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -19,9 +20,9 @@ void GCOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void GCOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 55: handleCreateGC(ctx, dc.seq, dc.br); return;
-    case 56: handleChangeGC(ctx, dc.seq, dc.br); return;
-    case 60: handleFreeGC(ctx, dc.seq, dc.br); return;
+    case x11::opcode::CreateGC: handleCreateGC(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ChangeGC: handleChangeGC(ctx, dc.seq, dc.br); return;
+    case x11::opcode::FreeGC  : handleFreeGC(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[GCOps] unexpected major=%u\n", (unsigned)dc.major);

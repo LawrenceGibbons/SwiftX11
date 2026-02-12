@@ -19,6 +19,7 @@
 #include <sys/socket.h>   // send()
 #include <sys/types.h>
 
+
 #include <CoreGraphics/CoreGraphics.h>
 
 #include "x11_requests.h"
@@ -308,6 +309,34 @@ static int x11_send_all_fd(int fd, const void* buf, size_t n)
 {
 
   const uint8_t* p = (const uint8_t*)buf;
+  
+#ifndef NDEBUG
+  {
+    const uint8_t* b = (const uint8_t*)buf;
+
+    // alignment check
+    if ((n % 4) != 0) {
+      fprintf(stderr, "[SENDALL BADALIGN] n=%zu head=", n);
+      for (size_t i = 0; i < 16 && i < n; i++) fprintf(stderr, "%02X", b[i]);
+      fprintf(stderr, "\n");
+      fflush(stderr);
+    }
+
+    if (n == 32) {
+      uint8_t b0 = b[0];
+      uint16_t seq = (uint16_t)(b[2] | ((uint16_t)b[3] << 8));
+      uint32_t lenw = (uint32_t)(b[4] | ((uint32_t)b[5] << 8) | ((uint32_t)b[6] << 16) | ((uint32_t)b[7] << 24));
+      fprintf(stderr, "[SENDALL 32] b0=%u seq=%u lenw=%u (%u bytes) b1=%u\n",
+              (unsigned)b0, (unsigned)seq, (unsigned)lenw, (unsigned)(lenw*4u), (unsigned)b[1]);
+      fflush(stderr);
+    } else {
+      fprintf(stderr, "[SENDALL CHUNK] n=%zu head=", n);
+      for (size_t i = 0; i < 16 && i < n; i++) fprintf(stderr, "%02X", b[i]);
+      fprintf(stderr, "\n");
+      fflush(stderr);
+    }
+  }
+#endif
   while (n) {
     ssize_t w = send(fd, p, n, MSG_NOSIGNAL);
     if (w < 0) {
@@ -614,7 +643,6 @@ void x11_send_setup_success_minimal_little_endian(int fd)
 // Tiny Atom table (enough for InternAtom/GetAtomName)
 // ----------------------------------------------------------------------------
 
-#include <string.h> // memcpy
 
 void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h)
 {
@@ -623,7 +651,13 @@ void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h)
   if (new_h == 0) new_h = 1;
 
   x11_fb_slot_t* s = fb_find(wid);
-  if (!s) return;
+  if (!s) {
+#ifndef NDEBUG
+    fprintf(stderr, "[FB_RESIZE] wid=0x%08X -> %ux%u (NO SLOT)\n",
+            (unsigned)wid, (unsigned)new_w, (unsigned)new_h);
+#endif
+    return;
+  }
 
   const uint32_t old_w = s->width;
   const uint32_t old_h = s->height;
@@ -631,13 +665,42 @@ void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h)
   const uint32_t w = (uint32_t)new_w;
   const uint32_t h = (uint32_t)new_h;
 
-  if (w == old_w && h == old_h) return;
+#ifndef NDEBUG
+  fprintf(stderr, "[FB_RESIZE] wid=0x%08X %ux%u -> %ux%u slot=%p pix=%p tid=%p\n",
+          (unsigned)wid,
+          (unsigned)old_w, (unsigned)old_h,
+          (unsigned)new_w, (unsigned)new_h,
+          (void*)s, (void*)s->pixels, (void*)pthread_self());
+#endif
+
+  if (w == old_w && h == old_h) {
+#ifndef NDEBUG
+    fprintf(stderr, "[FB_RESIZE] wid=0x%08X (NOOP same size)\n", (unsigned)wid);
+#endif
+    return;
+  }
 
   const size_t new_npx = (size_t)w * (size_t)h;
 
+#ifndef NDEBUG
+  fprintf(stderr, "[FB_RESIZE] wid=0x%08X new_npx=%zu bytes=%zu\n",
+          (unsigned)wid, new_npx, new_npx * sizeof(uint32_t));
+#endif
+
   // Allocate-first; leave old buffer intact on failure.
   uint32_t* new_pixels = (uint32_t*)malloc(new_npx * sizeof(uint32_t));
-  if (!new_pixels) return;
+  if (!new_pixels) {
+#ifndef NDEBUG
+    fprintf(stderr, "[FB_RESIZE] wid=0x%08X malloc FAIL bytes=%zu\n",
+            (unsigned)wid, new_npx * sizeof(uint32_t));
+#endif
+    return;
+  }
+
+#ifndef NDEBUG
+  fprintf(stderr, "[FB_RESIZE] wid=0x%08X malloc OK new_pixels=%p\n",
+          (unsigned)wid, (void*)new_pixels);
+#endif
 
   // Init white.
   for (size_t i = 0; i < new_npx; i++) new_pixels[i] = 0xFFFFFFFFu;
@@ -645,6 +708,11 @@ void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h)
   // Preserve overlap.
   const uint32_t copy_w = (old_w < w) ? old_w : w;
   const uint32_t copy_h = (old_h < h) ? old_h : h;
+
+#ifndef NDEBUG
+  fprintf(stderr, "[FB_RESIZE] wid=0x%08X copy_w=%u copy_h=%u\n",
+          (unsigned)wid, (unsigned)copy_w, (unsigned)copy_h);
+#endif
 
   if (s->pixels && copy_w && copy_h) {
     for (uint32_t yy = 0; yy < copy_h; yy++) {
@@ -654,86 +722,33 @@ void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h)
     }
   }
 
+#ifndef NDEBUG
+  fprintf(stderr, "[FB_RESIZE] wid=0x%08X free old_pixels=%p\n",
+          (unsigned)wid, (void*)s->pixels);
+#endif
+
   free(s->pixels);
   s->pixels = new_pixels;
   s->width  = w;
   s->height = h;
+#ifndef NDEBUG
+  fprintf(stderr, "[FB_RESIZE] wid=0x%08X DONE new=%ux%u pix=%p\n",
+          (unsigned)wid, (unsigned)s->width, (unsigned)s->height, (void*)s->pixels);
+#endif
+
 }
 
 
+int x11_xproto_get_fb_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px)
+{
+  if (out_w_px) *out_w_px = 0;
+  if (out_h_px) *out_h_px = 0;
+  if (xid == 0) return 0;
 
+  x11_fb_slot_t* s = fb_find(xid);
+  if (!s) return 0;
 
-
-// Copies current framebuffer bytes for xid into out_bytes.
-// Returns 1 on success, 0 on failure.
-// If out_bytes is NULL or out_cap too small, returns 0 but fills out_w/out_h/out_bpr.
-//int x11_backend_copy_window_bgra(uint32_t xid,
-//                                 uint8_t* out_bytes,
-//                                 int32_t out_cap,
-//                                 int32_t* out_w,
-//                                 int32_t* out_h,
-//                                 int32_t* out_bpr)
-//{
-//  const ssize_t idx = fb_index(xid);
-//  x11_fb_slot_t* fb = (idx >= 0) ? &g_fb[(size_t)idx] : NULL;
-//
-//  if (!fb || !fb->pixels || fb->width == 0 || fb->height == 0) {
-//    if (out_w) *out_w = 0;
-//    if (out_h) *out_h = 0;
-//    if (out_bpr) *out_bpr = 0;
-//    return 0;
-//  }
-//
-//  int32_t w = (int32_t)fb->width;
-//  int32_t h = (int32_t)fb->height;
-//  int32_t bpr = w * 4;
-//  int64_t needed64 = (int64_t)bpr * (int64_t)h;
-//  if (needed64 <= 0 || needed64 > INT32_MAX) return 0;
-//  int32_t needed = (int32_t)needed64;
-//
-//  if (out_w) *out_w = w;
-//  if (out_h) *out_h = h;
-//  if (out_bpr) *out_bpr = bpr;
-//
-//  if (!out_bytes || out_cap < needed) return 0;
-//
-//#ifndef NDEBUG
-//  {
-//    // Sample a few pixels so we can confirm the server-drawn FB is what the UI copies.
-//    const int32_t sx_c = w / 2;
-//    const int32_t sy_c = h / 2;
-//    const int32_t sx_l = w / 4;
-//    const int32_t sx_r = (w * 3) / 4;
-//    const int32_t sy_m = h / 2;
-//
-//    uint32_t sp_c = 0, sp_l = 0, sp_r = 0;
-//    if (sx_c >= 0 && sy_c >= 0 && sx_c < w && sy_c < h) {
-//      sp_c = fb->pixels[(size_t)sy_c * (size_t)fb->width + (size_t)sx_c];
-//    }
-//    if (sx_l >= 0 && sy_m >= 0 && sx_l < w && sy_m < h) {
-//      sp_l = fb->pixels[(size_t)sy_m * (size_t)fb->width + (size_t)sx_l];
-//    }
-//    if (sx_r >= 0 && sy_m >= 0 && sx_r < w && sy_m < h) {
-//      sp_r = fb->pixels[(size_t)sy_m * (size_t)fb->width + (size_t)sx_r];
-//    }
-//
-//    // Count non-white pixels (very cheap sanity check for "did we draw anything?")
-//    size_t nonwhite = 0;
-//    const size_t npx = (size_t)fb->width * (size_t)fb->height;
-//    for (size_t i = 0; i < npx; i++) {
-//      if (fb->pixels[i] != 0xFFFFFFFFu) nonwhite++;
-//    }
-//
-//    fprintf(stderr,
-//            "[SwiftX11] copy_window_bgra: xid=0x%08X fb=%p %dx%d nonwhite=%zu sample L/C/R=0x%08X 0x%08X 0x%08X\n",
-//            (unsigned)xid, (void*)fb->pixels, (int)w, (int)h,
-//            nonwhite, (unsigned)sp_l, (unsigned)sp_c, (unsigned)sp_r);
-//  }
-//#endif
-//
-//  memcpy(out_bytes, (const void*)fb->pixels, (size_t)needed);
-//  return 1;
-//}
-
-
-
+  if (out_w_px) *out_w_px = (int32_t)s->width;
+  if (out_h_px) *out_h_px = (int32_t)s->height;
+  return 1;
+}

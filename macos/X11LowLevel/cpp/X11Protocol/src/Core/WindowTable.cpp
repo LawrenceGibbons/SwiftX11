@@ -9,8 +9,8 @@
 #include <algorithm>
 #include <functional>
 
-#include "WindowTable.hpp"
-#include "WindowView.hpp"
+#include "Core/WindowTable.hpp"
+#include "Core/WindowView.hpp"
 
 namespace x11 {
 
@@ -48,6 +48,24 @@ uint32_t WindowTable::topLevelAncestorLocked(uint32_t xid) const {
   }
 }
 
+  
+  uint32_t WindowTable::topLevelAncestorOf(uint32_t xid) const {
+    if (xid == 0) return 0;
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = map_.find(xid);
+    if (it == map_.end()) return xid;
+
+    uint32_t cur = xid;
+    for (;;) {
+      auto it2 = map_.find(cur);
+      if (it2 == map_.end()) return cur;
+      uint32_t p = it2->second.parent;
+      if (p == 0 || p == 1) return cur; // 1 = root
+      cur = p;
+    }
+  }  
+  
+  
 void WindowTable::upsert(uint32_t xid, uint32_t parent,
                          int16_t x, int16_t y,
                          uint16_t w, uint16_t h,
@@ -236,6 +254,17 @@ void WindowTable::setGeometry(uint32_t xid,
   st->serial++;
 }
   
+void WindowTable::setGeometryRootlessHost(uint32_t xid,
+                                          int16_t x, int16_t y,
+                                          uint16_t w, uint16_t h)
+{
+  // First: set host geometry
+  setGeometry(xid, x, y, w, h);
+
+  // Then: enforce rootless constraint policy
+  clampDescendantsToParent(xid);
+}
+  
   
 bool WindowTable::queryTree(uint32_t wid,
                             uint32_t* outParent,
@@ -354,4 +383,54 @@ std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
 
     return xids;
   }
+  
+  
+  void WindowTable::clampDescendantsToParent(uint32_t rootXid)
+  {
+    if (rootXid == 0) return;
+
+    std::lock_guard<std::mutex> lock(mu_);
+    auto itRoot = map_.find(rootXid);
+    if (itRoot == map_.end()) return;
+
+    // BFS from rootXid (direct-parent clamping)
+    std::vector<uint32_t> queue;
+    queue.push_back(rootXid);
+
+    while (!queue.empty()) {
+      const uint32_t parentXid = queue.back();
+      queue.pop_back();
+
+      auto itP = map_.find(parentXid);
+      if (itP == map_.end()) continue;
+      const WindowState& p = itP->second;
+
+      for (auto& kv : map_) {
+        WindowState& c = kv.second;
+        if (c.parent != parentXid) continue;
+
+        // Enqueue this child so we clamp its children too
+        queue.push_back(c.xid);
+
+        // Clamp child size to fit inside its *direct* parent.
+        int32_t maxW = (int32_t)p.w - (int32_t)c.x;
+        int32_t maxH = (int32_t)p.h - (int32_t)c.y;
+        if (maxW < 1) maxW = 1;
+        if (maxH < 1) maxH = 1;
+
+        uint16_t newW = c.w;
+        uint16_t newH = c.h;
+
+        if ((int32_t)newW > maxW) newW = (uint16_t)maxW;
+        if ((int32_t)newH > maxH) newH = (uint16_t)maxH;
+
+        if (newW != c.w || newH != c.h) {
+          c.w = newW;
+          c.h = newH;
+          c.serial++;
+        }
+      }
+    }
+  }
+  
 } // namespace x11

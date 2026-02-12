@@ -6,17 +6,18 @@
 //
 
 
-#include "PixmapOps.hpp"
+#include "Ops/PixmapOps.hpp"
 
-#include "XProtoContext.hpp"
-#include "ByteReader.hpp"
-#include "PixmapTable.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Core/PixmapTable.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 namespace x11 {
 
 PixmapOps::PixmapOps(XProtoRegistrar& reg) {
-  reg.registerMajor(53, &PixmapOps::onMajor, this); // CreatePixmap
-  reg.registerMajor(54, &PixmapOps::onMajor, this); // FreePixmap
+  reg.registerMajor(x11::opcode::CreatePixmap, &PixmapOps::onMajor, this); // CreatePixmap
+  reg.registerMajor(x11::opcode::FreePixmap  , &PixmapOps::onMajor, this); // FreePixmap
 }
 
 void PixmapOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -26,8 +27,8 @@ void PixmapOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void PixmapOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 53: handleCreatePixmap(ctx, dc.minor /*depth*/, dc.br); return;
-    case 54: handleFreePixmap(ctx, dc.br); return;
+    case x11::opcode::CreatePixmap: handleCreatePixmap(ctx, dc.minor /*depth*/, dc.br); return;
+    case x11::opcode::FreePixmap  : handleFreePixmap(ctx, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[PixmapOps] unexpected major=%u\n", (unsigned)dc.major);

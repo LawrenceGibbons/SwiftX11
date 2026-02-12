@@ -5,17 +5,18 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "ShapeOps.hpp"
+#include "Ops/ShapeOps.hpp"
 
 #include <cmath>
 #include <algorithm>
 
-#include "XProtoContext.hpp"
-#include "ByteReader.hpp"
-#include "PixmapTable.hpp"
-#include "GCTable.hpp"
-#include "WindowTable.hpp"
-#include "DrawableRW.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Core/PixmapTable.hpp"
+#include "Core/GCTable.hpp"
+#include "Core/WindowTable.hpp"
+#include "Core/DrawableRW.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 // bridge to C and Swift
 #include "x11_requests.h"
@@ -44,9 +45,9 @@ static inline bool angle_in_arc(float theta, float start, float extent) {
 }
 
 ShapeOps::ShapeOps(XProtoRegistrar& reg) {
-  reg.registerMajor(68, &ShapeOps::onMajor, this); // PolyArc
-  reg.registerMajor(70, &ShapeOps::onMajor, this); // PolyFillRectangle
-  reg.registerMajor(71, &ShapeOps::onMajor, this); // PolyFillArc
+  reg.registerMajor(x11::opcode::PolyArc,           &ShapeOps::onMajor, this); // PolyArc
+  reg.registerMajor(x11::opcode::PolyFillRectangle, &ShapeOps::onMajor, this); // PolyFillRectangle
+  reg.registerMajor(x11::opcode::PolyFillArc      , &ShapeOps::onMajor, this); // PolyFillArc
 }
 
 void ShapeOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -56,9 +57,9 @@ void ShapeOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 68: handlePolyArc(ctx, dc.seq, dc.br); return;
-    case 70: handlePolyFillRectangle(ctx, dc.seq, dc.br); return;
-    case 71: handlePolyFillArc(ctx, dc.seq, dc.br); return;
+    case x11::opcode::PolyArc          : handlePolyArc(ctx, dc.seq, dc.br); return;
+    case x11::opcode::PolyFillRectangle: handlePolyFillRectangle(ctx, dc.seq, dc.br); return;
+    case x11::opcode::PolyFillArc      : handlePolyFillArc(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[ShapeOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -125,13 +126,7 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     br.skip(br.remaining());
 
     // Present only if destination is a window (pixmaps get presented when copied to window)
-    if (dst.is_window) {
-      if (ctx.windows().isReadyToPresent(drawable)) {
-        x11_requests_push_damage(drawable);
-      } else {
-        ctx.windows().markDirty(drawable);
-      }
-    }
+    damageOrDirty(ctx, drawable );
   }
   
 // -----------------------------------------------------------------------------
@@ -213,13 +208,7 @@ void ShapeOps::handlePolyFillArc(XProtoContext& ctx, uint16_t, ByteReader& br) {
   }
 
   br.skip(br.remaining());
-  if (dstIsWindow) {
-    if (ctx.windows().isReadyToPresent(drawable)) {
-      x11_requests_push_damage(drawable);
-    } else {
-      ctx.windows().markDirty(drawable);
-    }
-  }
+  damageOrDirty(ctx, drawable );
 }
 
 // -----------------------------------------------------------------------------
@@ -300,13 +289,7 @@ void ShapeOps::handlePolyArc(XProtoContext& ctx, uint16_t, ByteReader& br) {
   }
 
   br.skip(br.remaining());
-  if (dstIsWindow) {
-    if (ctx.windows().isReadyToPresent(drawable)) {
-      x11_requests_push_damage(drawable);
-    } else {
-      ctx.windows().markDirty(drawable);
-    }
-  }
+  damageOrDirty(ctx, drawable );
 }
 
 } // namespace x11

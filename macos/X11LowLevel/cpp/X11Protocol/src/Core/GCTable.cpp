@@ -5,7 +5,7 @@
 //  Created by Lawrence Gibbons on 1/27/26.
 //
 
-#include "GCTable.hpp"
+#include "Core/GCTable.hpp"
 
 namespace x11 {
 

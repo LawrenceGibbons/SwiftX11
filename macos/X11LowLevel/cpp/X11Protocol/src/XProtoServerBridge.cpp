@@ -19,19 +19,20 @@ extern "C" {
 #include "x11_requests.h"
 #include "x11_backend_fb.h"   // adjust path to wherever you placed it
 }
-#include "XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
-#include "QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
-#include "WindowTable.hpp"
-#include "XProtoModules.hpp"
-#include "XProtoContext.hpp"
+#include "Core/XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
+#include "Ops/QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
+#include "Core/WindowTable.hpp"
+#include "Core/XProtoModules.hpp"
+#include "Core/XProtoContext.hpp"
 //#include "x11_window_set_mapped.h"
-#include "GCTable.hpp"
-#include "HostResize.hpp"
-#include "XProtoDaemon.hpp"
-#include "WindowView.hpp"
-#include "EventOps.hpp"
+#include "Core/GCTable.hpp"
+#include "Core/HostResize.hpp"
+#include "Transport/XProtoDaemon.hpp"
+#include "Core/WindowView.hpp"
+#include "Ops/EventOps.hpp"
 #include "XProtoNotifyBridge.hpp"
-
+#include "Core/XEventMask.hpp"
+#include "Core/X11Modifiers.hpp"
 
 // ---- Host-command queue (server thread -> xproto thread) ----
 namespace {
@@ -203,6 +204,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
   // ---- drain host commands on xproto thread ----
   {
     auto cmds = hostcmd_take_all();
+    uint32_t host;
     for (const auto& c : cmds) {
       switch (c.type) {
         case HostCmdType::RootlessResize:
@@ -248,7 +250,22 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // Canonicalize buttons + drag grab semantics in InputState
           ctx.input().button(c.xid, c.isDown != 0, c.button, c.buttonsMask);
 
-          // (Optional) deliver ButtonPress/Release X11 events later
+          const uint32_t target = ctx.input().routePointer(c.xid);
+          if (const x11::WindowView* vw = ctx.window(target)) {
+            if (vw->owner_fd <= 0) break;
+            const uint32_t mask = vw->event_mask;
+            const bool wantPress   = (mask & x11::mask::ButtonPress) != 0;
+            const bool wantRelease = (mask & x11::mask::ButtonRelease) != 0;
+            if ((c.isDown && wantPress) || (!c.isDown && wantRelease)) {
+              // Keep InputState mods in sync (optional, but nice)
+              ctx.input().mods = c.modsMask;
+              
+              srv->eventOps().sendButtonEvent(ctx, target,
+                                              c.isDown != 0, c.button,
+                                              ctx.input().root_x, ctx.input().root_y,
+                                              ctx.input().buttons, c.modsMask);
+            }
+          }
           break;
         }
 
@@ -265,9 +282,30 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // Route keys to focus if xid==0 (legacy behavior)
           uint32_t target = c.xid;
           if (target == 0) target = ctx.input().focus_xid;
-          (void)target;
 
-          // (Optional) deliver key events later
+          if (target) {
+            if (const x11::WindowView* vw = ctx.window(target)) {
+              if (vw->owner_fd <= 0) break;
+              const uint32_t mask = vw->event_mask;
+              const bool wantPress   = (mask & x11::mask::KeyPress) != 0;
+              const bool wantRelease = (mask & x11::mask::KeyRelease) != 0;
+              uint32_t kc32 = c.keyCode + 8u;
+              if (kc32 < 8u) kc32 = 8u;
+              if (kc32 > 255u) kc32 = 255u;
+              uint8_t x11_kc = (uint8_t)kc32;  // map mac 0.. -> X11 8..
+              if ((c.isDown && wantPress) || (!c.isDown && wantRelease)) {
+                // Keep InputState mods in sync (optional, but nice)
+                ctx.input().mods = c.modsMask;
+
+                fprintf(stderr, "[KEY] modsMask=0x%X state=0x%X\n",
+                        (unsigned)c.modsMask,
+                        (unsigned)x11::input::toX11State(ctx.input().buttons, c.modsMask));
+                srv->eventOps().sendKeyEvent(ctx, target,
+                                             c.isDown != 0,
+                                             (uint8_t)kc32,
+                                             ctx.input().buttons, c.modsMask);              }
+            }
+          }
           break;
         }
           

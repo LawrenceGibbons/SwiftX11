@@ -49,6 +49,10 @@ public:
                    int16_t x, int16_t y,
                    uint16_t w, uint16_t h);
   
+  // Rootless host geometry update: update host geometry AND clamp descendants
+  // to fit within their direct parent. Does NOT set dirty (present gating) flags.
+  void setGeometryRootlessHost(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h);
+  
   // Erase all windows owned by owner_fd.
   // Returns erased XIDs in child-first order (deepest children first).
   std::vector<uint32_t> eraseOwnedBy(int owner_fd);
@@ -70,6 +74,13 @@ public:
 
   // tracking subwindows
   std::vector<uint32_t> descendantsOf(uint32_t root) const;
+  
+  // Bring-up behavior: keep each descendant's x/y (relative to parent) unchanged,
+  // but clamp w/h so the child fits within its *direct* parent’s bounds.
+  // Marks dirty when a child's size changes.
+  void clampDescendantsToParent(uint32_t rootXid);
+  
+  uint32_t topLevelAncestorOf(uint32_t xid) const;
 
 
 private:

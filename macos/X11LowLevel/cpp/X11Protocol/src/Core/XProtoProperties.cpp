@@ -5,4 +5,4 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "XProtoProperties.hpp"
+#include "Core/XProtoProperties.hpp"

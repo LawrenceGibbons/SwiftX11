@@ -47,8 +47,10 @@
 			membershipExceptions = (
 				cpp/X11Protocol/README_XPROTO.md,
 				cpp/X11Protocol/src/Utils/Damage.hpp,
+				Resources/fonts/fixed.bdf,
 			);
 			privateHeaders = (
+				cpp/X11Protocol/include/Core/AtomTable.hpp,
 				cpp/X11Protocol/include/Core/DrawableRW.hpp,
 				cpp/X11Protocol/include/Core/GCTable.hpp,
 				cpp/X11Protocol/include/Core/HostResize.hpp,
@@ -83,7 +85,6 @@
 				cpp/X11Protocol/include/Extensions/XKBOps.hpp,
 				cpp/X11Protocol/include/Extensions/XRenderOps.hpp,
 				cpp/X11Protocol/include/Ops/AtomOps.hpp,
-				cpp/X11Protocol/include/Ops/AtomTable.hpp,
 				cpp/X11Protocol/include/Ops/DrawOps.hpp,
 				cpp/X11Protocol/include/Ops/EventOps.hpp,
 				cpp/X11Protocol/include/Ops/GCOps.hpp,
@@ -551,6 +552,10 @@
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
 				ENABLE_MODULE_VERIFIER = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/X11LowLevel/include",
+					"$(SRCROOT)/X11LowLevel/cpp/X11Protocol/include",
+				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -585,6 +590,10 @@
 				"GCC_PREPROCESSOR_DEFINITIONS[arch=*]" = "NDEBUG=1";
 				"GCC_PREPROCESSOR_DEFINITIONS_NOT_USED_IN_PRECOMPS[arch=*]" = "NDEBUG=1";
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/X11LowLevel/include",
+					"$(SRCROOT)/X11LowLevel/cpp/X11Protocol/include",
+				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				LD_RUNPATH_SEARCH_PATHS = (

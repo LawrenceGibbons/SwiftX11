@@ -9,11 +9,28 @@
 #include <unordered_map>
 #include <exception>
 
-#include "ReplyWriter.hpp"
-#include "XProtoServer.hpp"
-#include "ByteReader.hpp"
-#include "EventOps.hpp"
-#include "UICommandQueue.hpp"
+#include "Ops/ReplyWriter.hpp"
+#include "Core/XProtoServer.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Ops/EventOps.hpp"
+#include "UI/UICommandQueue.hpp"
+#include "x11_server_internal.h"
+
+
+static inline uint16_t rd16_le(const uint8_t* p) {
+  return (uint16_t)p[0] | (uint16_t(p[1]) << 8);
+}
+static inline uint16_t rd16_be(const uint8_t* p) {
+  return (uint16_t)p[1] | (uint16_t(p[0]) << 8);
+}
+static inline uint32_t rd32_le(const uint8_t* p) {
+  return (uint32_t)p[0] | (uint32_t(p[1])<<8) | (uint32_t(p[2])<<16) | (uint32_t(p[3])<<24);
+}
+static inline uint32_t rd32_be(const uint8_t* p) {
+  return (uint32_t)p[3] | (uint32_t(p[2])<<8) | (uint32_t(p[1])<<16) | (uint32_t(p[0])<<24);
+}
+
+
 
 namespace x11 {
 
@@ -38,9 +55,17 @@ XProtoServer::XProtoServer()
   ctx_.setWindowTable(&windows_);
   ctx_.setPixmapTable(&pixmapTable_);
   ctx_.setUI(&g_ui);
+  ctx_.setFontTable(&fonts_);
+  ctx_.setCursorTable(&cursors_);
   
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
+  
+  // load fonts
+  std::string err;
+  if (!fonts_.loadBuiltins(&err)) {
+    ctx_.tracef("[FontTable] loadBuiltins failed: %s\n", err.c_str());
+  }
 }
 
 x11::XProtoServer::~XProtoServer() = default;
@@ -50,10 +75,64 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                            const uint8_t* payload, std::size_t remain)
 {
   ByteReader br(payload, remain);
-
-  // If we don't have a handler registered for this major opcode, caller should fall back to C.
+  
+#ifndef NDEBUG
+  fprintf(stderr, "[DISPATCH] major=%u minor=%u seq=%u remain=%zu\n",
+          (unsigned)major, (unsigned)minor, (unsigned)seq, remain);
+#endif
+  if ( major == 91 ) {
+#ifndef NDEBUG
+    {
+      const uint8_t* p = br.ptr();
+      const size_t n = br.remaining();
+      if (n >= 12) {
+        uint32_t cmap_le = rd32_le(p+0), cmap_be = rd32_be(p+0);
+        uint16_t n_le    = rd16_le(p+4), n_be    = rd16_be(p+4);
+        uint32_t pix_le  = rd32_le(p+8), pix_be  = rd32_be(p+8);
+        
+        fprintf(stderr,
+                "[QC SANITY] seq=%u raw=%02X%02X%02X%02X %02X%02X %02X%02X %02X%02X%02X%02X "
+                "cmap(le=%08X be=%08X) n(le=%u be=%u) pix(le=%08X be=%08X)\n",
+                (unsigned)seq,
+                p[0],p[1],p[2],p[3], p[4],p[5], p[6],p[7], p[8],p[9],p[10],p[11],
+                (unsigned)cmap_le, (unsigned)cmap_be,
+                (unsigned)n_le, (unsigned)n_be,
+                (unsigned)pix_le, (unsigned)pix_be
+                );
+      }
+    }
+    {
+      const uint8_t* p = br.ptr();
+      if (br.remaining() >= 6) {
+        // Copy reader so we don’t advance the real one
+        ByteReader tmp = br;
+        tmp.skip(4);
+        uint16_t v = tmp.readU16();
+        fprintf(stderr, "[QC READU16] bytes=%02X%02X -> readU16()=%u\n",
+                p[4], p[5], (unsigned)v);
+      }
+    }
+#endif
+  }
+  
+  // If we don't have a handler registered for this major opcode, log a message
   const Entry& e = table_[major];
+  transport_.last_request_major_ = major;
+  transport_.last_request_minor_ = minor;
+  transport_.last_request_seq_   = seq;
   if (!e.fn) {
+#ifndef NDEBUG
+    static uint64_t last_warn_ns = 0;
+    uint64_t now = x11_now_ns();
+    if (now - last_warn_ns > 500000000ULL) { // 0.5s throttle
+      last_warn_ns = now;
+      fprintf(stderr,
+              "[DISPATCH] UNHANDLED major=%u minor=%u seq=%u (no C++ handler)\n",
+              (unsigned)major,
+              (unsigned)minor,
+              (unsigned)seq);
+    }
+#endif
     return 0;
   }
 
@@ -93,6 +172,13 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
   
 
 void XProtoServer::registerMajor(uint8_t major, HandlerFn fn, void* user) {
+#ifndef NDEBUG
+  if (table_[major].fn) {
+    fprintf(stderr,
+            "[REG] WARNING: major=%u already registered (old user=%p) -> overwriting with user=%p\n",
+            (unsigned)major, table_[major].user, user);
+  }
+#endif
   table_[major].fn = fn;
   table_[major].user = user;
 }

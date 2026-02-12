@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "x11_events.h"
+#include <x11_events.h>
 
 #ifdef __cplusplus
 extern "C" {

@@ -7,7 +7,7 @@
 #pragma once
 
 #include <cstdint>
-#include "XProtoRegistrar.hpp"
+#include <Core/XProtoRegistrar.hpp>
 
 namespace x11 {
 

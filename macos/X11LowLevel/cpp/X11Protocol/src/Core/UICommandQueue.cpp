@@ -16,6 +16,9 @@ extern "C" {
 #include "SwiftX11Bridge.h"
 }
 
+// xxx temp
+#include "WindowTable.hpp"
+
 namespace {
 
 // Keep this reasonably large; it’s cheap.
@@ -207,6 +210,10 @@ extern "C" void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int
   if (xid == 0) return;
   clamp_wh(w_px, h_px);
 
+  // xxx temp ---
+  fprintf(stderr, "[UI_DAMAGE] xid=0x%08X rect=(%d,%d %dx%d)\n",
+          (unsigned)xid, (int)x_px, (int)y_px, (int)w_px, (int)h_px);
+  // xxx ---- temp
   x11_ui_cmd_t c = make_empty();
   c.type = X11_UI_DAMAGE;
   c.xid = xid;

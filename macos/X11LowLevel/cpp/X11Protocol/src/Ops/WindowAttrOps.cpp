@@ -5,15 +5,16 @@
 //  Created by Lawrence Gibbons on 1/26/26.
 //
 
-#include "WindowAttrOps.hpp"
+#include "Ops/WindowAttrOps.hpp"
 
-#include "XProtoContext.hpp"
-#include "WindowTable.hpp"
-#include "ByteReader.hpp"
-#include "ReplyWriter.hpp"
-#include "XProtoTransport.hpp"
-#include "XConstants.hpp"
-#include "WireLE.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Core/WindowTable.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Ops/ReplyWriter.hpp"
+#include "Transport/XProtoTransport.hpp"
+#include "Core/XConstants.hpp"
+#include "Utils/WireLE.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 // Bridge -- Update C-side 
 #include "XProtoServerBridge.h"
@@ -34,10 +35,10 @@ static constexpr uint32_t kRootCmap  = 0x00000020u; // defaultColormap advertise
 namespace x11 {
 
 WindowAttrOps::WindowAttrOps(XProtoRegistrar& reg) {
-  reg.registerMajor( 2, &WindowAttrOps::onMajor, this); // ChangeWindowAttributes
-  reg.registerMajor( 3, &WindowAttrOps::onMajor, this);
-  reg.registerMajor(12, &WindowAttrOps::onMajor, this);  // ConfigureWindow
-  reg.registerMajor(14, &WindowAttrOps::onMajor, this);  // GetGeometry
+  reg.registerMajor(x11::opcode::ChangeWindowAttributes, &WindowAttrOps::onMajor, this); // ChangeWindowAttributes
+  reg.registerMajor(x11::opcode::GetWindowAttributes   , &WindowAttrOps::onMajor, this);
+  reg.registerMajor(x11::opcode::ConfigureWindow,        &WindowAttrOps::onMajor, this);  // ConfigureWindow
+  reg.registerMajor(x11::opcode::GetGeometry,            &WindowAttrOps::onMajor, this);  // GetGeometry
 
 }
 
@@ -48,10 +49,10 @@ void WindowAttrOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc)
 
 void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case  2: handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
-    case  3: handleGetWindowAttributes(ctx, dc.seq, dc.br); return;
-    case 12: handleConfigureWindow(ctx, dc.seq, dc.br); return;
-    case 14: handleGetGeometry(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ChangeWindowAttributes: handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
+    case x11::opcode::GetWindowAttributes   : handleGetWindowAttributes(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ConfigureWindow       : handleConfigureWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::GetGeometry           : handleGetGeometry(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowAttrOps] unexpected major=%u\n", (unsigned)dc.major);

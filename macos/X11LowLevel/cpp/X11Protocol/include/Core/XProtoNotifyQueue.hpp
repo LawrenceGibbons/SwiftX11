@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <pthread.h>
  
-#include "XProtoPendingNotify.hpp"
+#include <Core/XProtoPendingNotify.hpp>
 
 namespace x11 {
 

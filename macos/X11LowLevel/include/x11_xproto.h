@@ -20,6 +20,10 @@ int x11_xproto_copy_window_bgra(uint32_t xid,
                                 int32_t* out_h,
                                 int32_t* out_bpr);
   
+// Get the size of the requested frame buffer  
+int x11_xproto_get_fb_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px);
+
+
 #ifdef __cplusplus
 }
 #endif

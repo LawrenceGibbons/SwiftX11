@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-#include "XProtoRegistrar.hpp"
+#include <Core/XProtoRegistrar.hpp>
 
 namespace x11 {
 
@@ -21,13 +21,15 @@ private:
   static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
 
   // Handles core “query” requests by major opcode:
-  // 14 GetGeometry
-  // 15 QueryTree
-  // 38 QueryPointer
-  // 43 GetInputFocus
-  // 91 QueryColors
-  // 98 QueryExtension
-  // 99 ListExtensions
+  //  14 GetGeometry
+  //  15 QueryTree
+  //  38 QueryPointer
+  //  43 GetInputFocus
+  //  91 QueryColors
+  //  98 QueryExtension
+  //  99 ListExtensions
+  // 101 GetKeyboardMapping
+  // 119 GetModifierMapping
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
 
@@ -39,7 +41,8 @@ private:
   void handleQueryColors(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleQueryExtension(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br);
-
+  void handleGetKeyboardMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 101
+  void handleGetModifierMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 119
 private:
 };
 

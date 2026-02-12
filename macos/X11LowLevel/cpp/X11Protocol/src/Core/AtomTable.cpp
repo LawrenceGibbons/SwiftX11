@@ -5,7 +5,7 @@
 //  Created by Lawrence Gibbons on 1/24/26.
 //
 
-#include "AtomTable.hpp"
+#include "Core/AtomTable.hpp"
 
 #include <cstring>
 #include <string>

@@ -6,7 +6,7 @@
 //
 
 
-#include "PropOps.hpp"
+#include "Ops/PropOps.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,10 +16,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "XProtoContext.hpp"
-#include "ReplyWriter.hpp"
-#include "ByteReader.hpp"
-#include "WireLE.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Ops/ReplyWriter.hpp"
+#include "Utils/ByteReader.hpp"
+#include "Utils/WireLE.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 
 namespace x11 {
 
@@ -108,8 +109,8 @@ private:
 // PropOps wiring
 // -----------------------------
 PropOps::PropOps(XProtoRegistrar& reg) {
-  reg.registerMajor(18, &PropOps::onMajor, this); // ChangeProperty
-  reg.registerMajor(20, &PropOps::onMajor, this); // GetProperty
+  reg.registerMajor(x11::opcode::ChangeProperty, &PropOps::onMajor, this); // ChangeProperty
+  reg.registerMajor(x11::opcode::GetProperty,    &PropOps::onMajor, this); // GetProperty
 }
 
 void PropOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -119,8 +120,8 @@ void PropOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void PropOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 18: handleChangeProperty(ctx, dc.seq, dc.minor /*mode*/, dc.br); return;
-    case 20: handleGetProperty(ctx, dc.seq, dc.minor /*deleteFlag*/, dc.br); return;
+    case x11::opcode::ChangeProperty: handleChangeProperty(ctx, dc.seq, dc.minor /*mode*/, dc.br); return;
+    case x11::opcode::GetProperty   : handleGetProperty(ctx, dc.seq, dc.minor /*deleteFlag*/, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[PropOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -223,10 +224,10 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   // Type mismatch => empty (but property exists)
   if (reqType != 0 && p.type != reqType) {
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
-      rep[1] = 0;                       // format
-      wire::wr32_le(rep.data()+8,  0); // type=None
-      wire::wr32_le(rep.data()+12, 0); // bytesAfter
-      wire::wr32_le(rep.data()+16, 0); // nItems
+      rep[1] = 0;                          // format = 0
+      wire::wr32_le(rep.data()+8,  p.type); // type = actual property type
+      wire::wr32_le(rep.data()+12, 0);      // bytesAfter = 0
+      wire::wr32_le(rep.data()+16, 0);      // nItems = 0
     });
     return;
   }
@@ -265,24 +266,34 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   const uint32_t bytesAfter = remainBytes - sendBytes;
   const uint32_t nItems = (unitBytes ? (sendBytes / unitBytes) : 0);
 
-  const uint32_t padBytes = (sendBytes + 3u) & ~3u;
-  const uint32_t lengthWords = padBytes / 4u;
+  const uint32_t paddedBytes = (sendBytes + 3u) & ~3u;
+  const uint32_t lengthWords = paddedBytes / 4u;
 
-  // Send header
-  const bool okHdr = ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
-    rep[1] = p.format;
-    wire::wr32_le(rep.data()+4,  lengthWords);
-    wire::wr32_le(rep.data()+8,  p.type);
-    wire::wr32_le(rep.data()+12, bytesAfter);
-    wire::wr32_le(rep.data()+16, nItems);
-  });
-  if (!okHdr) return;
+  std::array<uint8_t,32> rep{};
+  rep.fill(0);
+  rep[0] = 1;
+  rep[2] = (uint8_t)(seq & 0xFF);
+  rep[3] = (uint8_t)((seq >> 8) & 0xFF);
 
-  // Send payload + pad
+  rep[1] = p.format;
+  wire::wr32_le(rep.data()+4,  lengthWords);
+  wire::wr32_le(rep.data()+8,  p.type);
+  wire::wr32_le(rep.data()+12, bytesAfter);
+  wire::wr32_le(rep.data()+16, nItems);
+
+  // Build contiguous payload (unpadded), let ReplyWriter pad once if needed
+  std::vector<uint8_t> payload;
+  payload.resize(sendBytes);
   if (sendBytes) {
-    (void)ctx.reply().sendPaddedBytes(p.data.data() + sendOff, sendBytes);
+    memcpy(payload.data(), p.data.data() + sendOff, sendBytes);
   }
 
+  const void* payloadPtr = payload.empty() ? nullptr : payload.data();
+  const bool ok = ctx.reply().sendReplyWithPaddedPayload(rep.data(),
+                                                        payloadPtr,
+                                                        payload.size());
+  if (!ok) return;
+  
   // Delete property if requested and we returned the entire property starting at offset 0
   if (deleteFlag && longOff == 0 && sendOff == 0 && sendBytes == totalBytes) {
     PropertyTable::instance().erase(wid, atom);

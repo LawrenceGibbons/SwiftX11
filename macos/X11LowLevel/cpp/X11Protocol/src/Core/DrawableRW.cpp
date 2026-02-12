@@ -5,11 +5,11 @@
 //  Created by Lawrence Gibbons on 1/31/26.
 //
 
-#include "DrawableRW.hpp"
+#include "Core/DrawableRW.hpp"
 
-#include "XProtoContext.hpp"
-#include "PixmapTable.hpp"
-#include "WindowTable.hpp"
+#include "Core/XProtoContext.hpp"
+#include "Core/PixmapTable.hpp"
+#include "Core/WindowTable.hpp"
 
 // C bridge for window framebuffer access
 extern "C" int x11_xproto_window_fb_rw(uint32_t xid,

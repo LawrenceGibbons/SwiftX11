@@ -16,6 +16,9 @@ public:
   uint16_t readU16();
   uint32_t readU32();
 
+  // non-advancing peek
+  const uint8_t* peekBytes(std::size_t n) const;
+
   const uint8_t* ptr() const { return p_; }
 
 private:

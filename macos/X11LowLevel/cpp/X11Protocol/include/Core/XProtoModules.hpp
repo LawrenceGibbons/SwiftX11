@@ -6,15 +6,18 @@
 //
 
 #pragma once
-#include "QueryOps.hpp"
-#include "AtomOps.hpp"
-#include "WindowOps.hpp"
-#include "WindowAttrOps.hpp"
-#include "PropOps.hpp"
-#include "GCOps.hpp"
-#include "DrawOps.hpp"
-#include "PixmapOps.hpp"
-#include "ShapeOps.hpp"
+#include <Ops/QueryOps.hpp>
+#include <Ops/AtomOps.hpp>
+#include <Ops/WindowOps.hpp>
+#include <Ops/WindowAttrOps.hpp>
+#include <Ops/PropOps.hpp>
+#include <Ops/GCOps.hpp>
+#include <Ops/DrawOps.hpp>
+#include <Ops/PixmapOps.hpp>
+#include <Ops/ShapeOps.hpp>
+#include <Ops/FontOps.hpp>
+#include <Ops/ColorOps.hpp>
+#include <Ops/CursorOps.hpp>
 
 namespace x11 {
   
@@ -28,6 +31,9 @@ namespace x11 {
     DrawOps       drawOps;
     PixmapOps     pixmapOps;
     ShapeOps      shapeOps;
+    FontOps       fontOps;
+    ColorOps      colorOps;
+    CursorOps     cursorOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
@@ -40,6 +46,9 @@ namespace x11 {
     , drawOps(reg)
     , pixmapOps(reg)
     , shapeOps(reg)
+    , fontOps(reg)
+    , colorOps(reg)
+    , cursorOps(reg)
     {}
   };
 }

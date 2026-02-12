@@ -5,7 +5,7 @@
 //  Created by Lawrence Gibbons on 1/21/26.
 //
 
-#include "ByteReader.hpp"
+#include "Utils/ByteReader.hpp"
 #include <stdexcept>
 
 namespace x11 {
@@ -44,4 +44,11 @@ uint32_t ByteReader::readU32() {
   return v;
 }
 
+  const uint8_t* ByteReader::peekBytes(std::size_t n) const {
+    if (n > remaining()) {
+      return nullptr;
+    }
+    return p_;
+  }
+  
 } // namespace x11

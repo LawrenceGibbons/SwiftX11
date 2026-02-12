@@ -5,12 +5,29 @@
 //  Created by Lawrence Gibbons on 1/23/26.
 //
 
-#include "ReplyWriter.hpp"
-#include "XProtoTransport.hpp"
-#include "WireLE.hpp"
+#include "Ops/ReplyWriter.hpp"
+#include "Transport/XProtoTransport.hpp"
+#include "Utils/WireLE.hpp"
 
 namespace x11 {
 
+  static inline bool requestHasReply(uint8_t major, uint8_t minor) {
+    switch (major) {
+      case 16: return true;  // InternAtom
+      case 17: return true;  // GetAtomName
+      case 20: return true;  // GetProperty
+      case 47: return true;  // QueryFont
+      case 98: return true;  // QueryExtension
+      case 3:  return true;  // GetWindowAttributes
+      case 14: return true;  // GetGeometry
+      case 43: return true;  // GetInputFocus
+      case 101: return true; // GetKeyboardMapping
+      case 102: return true; // GetModifierMapping
+      default:
+        return false;        // everything else is void
+    }
+  }
+  
 bool ReplyWriter::sendGetGeometryReply(uint16_t seq,
                                    uint32_t root,
                                    int16_t x, int16_t y,
@@ -75,37 +92,100 @@ bool ReplyWriter::sendInternAtomReply(uint16_t seq, uint32_t atom) {
   return sendReply32Bytes(rep.data());
 }
 
-bool ReplyWriter::sendGetAtomNameReply(uint16_t seq, const char* name, uint16_t nameLen) {
-  if (!name) { name = ""; nameLen = 0; }
+  bool ReplyWriter::sendGetAtomNameReply(uint16_t seq, const char* name, uint16_t nameLen) {
+    if (!name) { name = ""; nameLen = 0; }
 
-  const uint32_t padBytes = (uint32_t)((nameLen + 3u) & ~3u);
-  const uint32_t extraWords = padBytes / 4u;
+    const uint32_t padded = (uint32_t)((nameLen + 3u) & ~3u);
+    const uint32_t words  = padded / 4u;
 
-  std::array<uint8_t, 32> rep{};
-  rep.fill(0);
-  rep[0] = 1;
-  wire::wr16_le(rep.data() + 2, seq);
-  wire::wr32_le(rep.data() + 4, extraWords);
+    std::array<uint8_t, 32> rep{};
+    rep.fill(0);
+    rep[0] = 1;
+    rep[2] = (uint8_t)(seq & 0xFF);
+    rep[3] = (uint8_t)((seq >> 8) & 0xFF);
+    // length_words
+    rep[4] = (uint8_t)(words & 0xFF);
+    rep[5] = (uint8_t)((words >> 8) & 0xFF);
+    rep[6] = (uint8_t)((words >> 16) & 0xFF);
+    rep[7] = (uint8_t)((words >> 24) & 0xFF);
 
-  // bytes 8..9 = nameLen
-  wire::wr16_le(rep.data() + 8, nameLen);
+    // nameLen in rep[8..9] (CARD16)
+    rep[8] = (uint8_t)(nameLen & 0xFF);
+    rep[9] = (uint8_t)((nameLen >> 8) & 0xFF);
 
-  return sendReplyWithPaddedPayload(rep.data(), name, nameLen);
-  
-}
-  
+#ifndef NDEBUG
+  const uint32_t pad = (4u - (uint32_t(nameLen) & 3u)) & 3u;
+  fprintf(stderr,
+          "[SEND] GetAtomNameReply seq=%u nameLen=%u words=%u pad=%u first='%c%c%c%c'\n",
+          (unsigned)seq,
+          (unsigned)nameLen,
+          (unsigned)words,
+          (unsigned)pad,
+          (nameLen > 0 ? name[0] : '.'),
+          (nameLen > 1 ? name[1] : '.'),
+          (nameLen > 2 ? name[2] : '.'),
+          (nameLen > 3 ? name[3] : '.'));
+#endif
+    
+    // payload is the raw name bytes (unpadded) - function will pad if needed
+    return sendReplyWithPaddedPayload(rep.data(), nameLen ? name : nullptr, (size_t)nameLen);
+  }  
   
 bool ReplyWriter::sendReply32Bytes(const void* rep32) {
   return t_.sendReplyBytes(rep32, 32);
 }
 
 bool ReplyWriter::sendReplyWithPaddedPayload(const void* rep32,
-                                            const void* payload,
-                                            std::size_t payloadBytes) {
+                                             const void* payload,
+                                             std::size_t payloadBytes)
+{
+#ifndef NDEBUG
+  const uint8_t major = t_.last_request_major_;
+  const uint8_t minor = t_.last_request_minor_;
+  const uint16_t seq  = t_.last_request_seq_;
+
+  if (!requestHasReply(major, minor)) {
+    fprintf(stderr,
+      "[PROTO BUG] Reply sent for NO-REPLY request "
+      "major=%u minor=%u seq=%u\n",
+      (unsigned)major, (unsigned)minor, (unsigned)seq
+    );
+    __builtin_trap();  // or assert(false)
+  }
+#endif
+
+  // 1) Send 32-byte reply header
   if (!sendReply32Bytes(rep32)) return false;
-  if (payloadBytes == 0) return true;
-  return sendPaddedBytes(payload, payloadBytes); // already pads to 4
-} 
+
+  // 2) Send payload exactly
+  if (payloadBytes && payload) {
+    if (!t_.sendReplyBytes(payload, payloadBytes)) return false;
+  }
+
+  // 3) Pad ONLY if needed
+  const std::size_t pad = (4 - (payloadBytes & 3)) & 3;
+  if (pad) {
+    static const uint8_t zeros[4] = {0,0,0,0};
+    if (!t_.sendReplyBytes(zeros, pad)) return false;
+  }
+
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[ReplyWriter] Query reply sent payload=%zu pad=%zu total=%zu\n",
+          payloadBytes, pad, payloadBytes + pad);
+#endif
+
+  return true;
+}  
+  
+bool ReplyWriter::sendBytes(const void* bytes, std::size_t n) {
+  if (!bytes || n == 0) return true;
+  return t_.sendReplyBytes(bytes, n);
+}
+  
+bool ReplyWriter::sendReplyRaw(const void* rep, std::size_t nbytes) {
+  return t_.sendReplyBytes(rep, nbytes);
+}
   
 } // namespace x11
 

@@ -5,7 +5,7 @@
 //  Created by Lawrence Gibbons on 2/3/26.
 //
 
-#include "XProtoDaemon.hpp"
+#include "Transport/XProtoDaemon.hpp"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -16,7 +16,7 @@
 
 #include "XProtoServerBridge.h"   // reuse begin/end if you want initially
 // If you don’t want to use begin/end bridge functions anymore, we’ll inline that logic next.
-#include "XProtoServer.hpp"
+#include "Core/XProtoServer.hpp"
 #include "x11_setup.h"
 
 namespace x11 {
@@ -204,8 +204,8 @@ namespace x11 {
       if (hr == -2) continue; // timeout -> loop again (flush runs at top)
       if (hr <= 0) break;     // disconnect or error
       
-      const uint8_t major = hdr[0];
-      const uint8_t minor = hdr[1];
+      const uint8_t major         = hdr[0];
+      const uint8_t data_or_minor = hdr[1];
       const uint16_t len_words = (uint16_t)(hdr[2] | ((uint16_t)hdr[3] << 8));
       if (len_words == 0) break;
       
@@ -216,6 +216,24 @@ namespace x11 {
       seq = (uint16_t)(seq + 1);
       x11_proto_bridge_note_last_seq(seq);
       
+      if (seq == 53) {
+        fprintf(stderr, "[REQHDR seq=53] %02X %02X %02X %02X  (major=%u data/minor=%u lenw=%u remain=%zu)\n",
+                hdr[0], hdr[1], hdr[2], hdr[3],
+                (unsigned)hdr[0], (unsigned)hdr[1], (unsigned)len_words, remain);
+      }
+      
+      if (seq == 10) {
+        if (major < 128) {
+          fprintf(stderr, "[REQHDR seq=10] %02X %02X %02X %02X (major=%u data=%u lenw=%u remain=%zu)\n",
+                  hdr[0], hdr[1], hdr[2], hdr[3],
+                  (unsigned)major, (unsigned)data_or_minor, (unsigned)len_words, remain);
+        } else {
+          fprintf(stderr, "[REQHDR seq=10] %02X %02X %02X %02X (extMajor=%u minor=%u lenw=%u remain=%zu)\n",
+                  hdr[0], hdr[1], hdr[2], hdr[3],
+                  (unsigned)major, (unsigned)data_or_minor, (unsigned)len_words, remain);
+        }
+      }
+
       uint8_t stack_buf[4096];
       uint8_t* payload = stack_buf;
       std::unique_ptr<uint8_t[]> heap;
@@ -227,8 +245,18 @@ namespace x11 {
       }
       
       if (remain && !recv_waitall(cfd, payload, remain)) break;
+      if (seq == 53) {
+        fprintf(stderr, "[REQBODY12 seq=53] ");
+        for (size_t i = 0; i < remain; i++) fprintf(stderr, "%02X", payload[i]);
+        fprintf(stderr, "\n");
+      }
+      if (seq == 10) {
+        fprintf(stderr, "[REQBODY8 seq=10] ");
+        for (int i=0;i<8 && i<(int)remain;i++) fprintf(stderr, "%02X", payload[i]);
+        fprintf(stderr, "\n");
+      }
       
-      (void)x11_proto_bridge_dispatch(major, minor, seq, payload, remain);
+      (void)x11_proto_bridge_dispatch(major, data_or_minor, seq, payload, remain);
       
       x11_proto_bridge_flush_notify_queue();
     }

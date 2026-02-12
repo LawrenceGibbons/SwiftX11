@@ -10,8 +10,8 @@
 #include <cstddef>
 #include <pthread.h>
 
-#include "XProtoNotifyQueue.hpp"
-#include "XProtoPendingNotify.hpp"
+#include <Core/XProtoNotifyQueue.hpp>
+#include <Core/XProtoPendingNotify.hpp>
 
 namespace x11 {
 
@@ -28,7 +28,8 @@ public:
   // Called by drain_requests when it knows it is on xproto thread
   void setXprotoThreadSelf();
 
-  // Update “last seq seen” (same behavior as your g_last_seq)
+  // Update “last seq seen” 
+  uint16_t nextEventSeq();
   void noteLastSeq(uint16_t seq);
 
   // Queue coalesced notification for later flush on xproto thread
@@ -55,7 +56,7 @@ public:
 
   // Expose for EventOps
   int clientFd() const { return client_fd_; }
-  uint16_t lastSeqOr1() const;
+  uint16_t lastSeq() const;
 
   void queueExposeRect(uint32_t wid,
                        uint16_t x, uint16_t y,
@@ -64,6 +65,13 @@ public:
   
   //Accessor(s)
   XProtoNotifyQueue& notifyQueue() { return notifyQueue_; }
+
+  // remember the last event we handled
+  uint8_t last_request_major_ = 0;
+  uint8_t last_request_minor_ = 0;
+  uint16_t last_request_seq_  = 0;
+  
+  void debugResetReplyTracker(); // call on begin/end session
 
 private:
   XProtoContext& ctx_;
@@ -76,12 +84,22 @@ private:
   bool xproto_thread_valid_ = false;
 
   // Last request sequence
-  uint16_t last_seq_ = 0;
-
+  uint16_t last_seq_  = 0;
+  uint16_t event_seq_ = 0;
+  
   XProtoNotifyQueue notifyQueue_;
 
   // Internal helper: coalesce by wid
   void coalesceLocked(uint32_t wid, bool wantConfigure, bool wantExpose);
-};
+  
+#ifndef NDEBUG
+  pthread_t xproto_tid_{};
+  bool     dbg_haveOpenReply_   = false;
+  uint16_t dbg_openSeq_         = 0;
+  uint32_t dbg_openExpectBytes_ = 0; // bytes expected after 32-byte header
+  uint32_t dbg_openSentBytes_   = 0; // bytes sent so far after header
+#endif
+  
+}; // class
 
 } // namespace x11

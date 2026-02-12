@@ -12,10 +12,19 @@ namespace x11 {
 class XProtoContext;
 
 inline void damageOrDirty(XProtoContext& ctx, uint32_t wid) {
-  if (ctx.windows().isReadyToPresent(wid)) {
+  ctx.tracef("[DAMAGE_ROUTE] damageOrDirty wid=0x%08X stays unrouted\n", wid);
+  // xxx maybe temp  if (ctx.windows().isReadyToPresent(wid)) {
+  // xxx maybe temp    x11_requests_push_damage(wid);
+  // xxx maybe temp  } else {
+  // xxx maybe temp    ctx.windows().markDirty(wid);
+  // xxx maybe temp  }
+  // xxx maybe temp}
+  // xxx temp ----
+  if (ctx.windows().exists(wid)) {
     x11_requests_push_damage(wid);
-  } else {
-    ctx.windows().markDirty(wid);
+    return;
   }
+  // xxx ---- temp
 }
+  
 } // namespace x11
