@@ -71,23 +71,68 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 // PolyFillRectangle (70)
 // -----------------------------------------------------------------------------
   void ShapeOps::handlePolyFillRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-    // Request body after 4-byte header:
-    //   CARD32 drawable
-    //   CARD32 gc
-    //   LISTofxRectangle (each 8 bytes: INT16 x, INT16 y, CARD16 w, CARD16 h)
-
+    if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+    
+    const uint32_t drawable = br.readU32();
+    const uint32_t gcXid    = br.readU32();
+    
+    const std::size_t nRects = br.remaining() / 8u;
+    if (nRects == 0) { br.skip(br.remaining()); return; }
+    
+    DrawableRW dst{};
+    if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+    
+    uint32_t fg = 0xFF000000u;
+    {
+      GCState gst{};
+      if (GCTable::instance().find(gcXid, gst)) fg = gst.fg;
+    }
+    
+    for (std::size_t i = 0; i < nRects; i++) {
+      const int16_t rx = br.readI16();
+      const int16_t ry = br.readI16();
+      const uint16_t rw = br.readU16();
+      const uint16_t rh = br.readU16();
+      if (rw == 0 || rh == 0) continue;
+      
+      const int32_t rx0 = rx;
+      const int32_t ry0 = ry;
+      const int32_t rx1 = rx0 + (int32_t)rw;
+      const int32_t ry1 = ry0 + (int32_t)rh;
+      
+      int32_t x0 = std::max<int32_t>(0, rx0);
+      int32_t y0 = std::max<int32_t>(0, ry0);
+      int32_t x1 = std::min<int32_t>((int32_t)dst.w, rx1);
+      int32_t y1 = std::min<int32_t>((int32_t)dst.h, ry1);
+      if (x0 >= x1 || y0 >= y1) continue;
+      
+      for (int32_t y = y0; y < y1; y++) {
+        uint32_t* row = dst.pixels32 + (std::size_t)y * (std::size_t)dst.w;
+        for (int32_t x = x0; x < x1; x++) row[(size_t)x] = fg;
+      }
+    }
+    
+    br.skip(br.remaining());
+    
+    // Only present if destination is a window.
+    if (dst.isWindow) {
+      damageOrDirty(ctx, drawable);
+    }
+  }
+  
+// -----------------------------------------------------------------------------
+// PolyFillArc (71)
+// -----------------------------------------------------------------------------
+  void ShapeOps::handlePolyFillArc(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
     const uint32_t drawable = br.readU32();
-    const uint32_t gcXid     = br.readU32();
+    const uint32_t gc_id    = br.readU32();
 
-    // Remaining bytes are rect list
-    const std::size_t listBytes = br.remaining();
-    const std::size_t nRects = listBytes / 8u;
-    if (nRects == 0) { br.skip(br.remaining()); return; }
+    const std::size_t narcs = br.remaining() / 12u;
+    if (narcs == 0) { br.skip(br.remaining()); return; }
 
-    // Resolve dst drawable -> writable 32bpp pixels
-    // NOTE: This must reject depth-1 pixmaps (like your old resolve_drawable_pixels_rw did).
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -95,201 +140,148 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // GC fg
     uint32_t fg = 0xFF000000u;
     {
-      GCState gst{};
-      if (GCTable::instance().find(gcXid, gst)) fg = gst.fg;
+      GCState st{};
+      if (GCTable::instance().find(gc_id, st)) fg = st.fg;
     }
 
-    // Fill
-    for (std::size_t i = 0; i < nRects; i++) {
-      const int16_t rx = (int16_t)br.readU16();
-      const int16_t ry = (int16_t)br.readU16();
-      const uint16_t rw = br.readU16();
-      const uint16_t rh = br.readU16();
+    const int dstW = (int)dst.w;
+    const int dstH = (int)dst.h;
+    uint32_t* dstPixels = dst.pixels32;
 
-      if (rw == 0 || rh == 0) continue;
+    for (std::size_t i = 0; i < narcs; i++) {
+      const int16_t  ax = br.readI16();
+      const int16_t  ay = br.readI16();
+      const uint16_t aw = br.readU16();
+      const uint16_t ah = br.readU16();
+      const int16_t  a1 = br.readI16();
+      const int16_t  a2 = br.readI16();
 
-      int x0 = std::max(0, (int)rx);
-      int y0 = std::max(0, (int)ry);
-      int x1 = std::min((int)dst.w, (int)rx + (int)rw);
-      int y1 = std::min((int)dst.h, (int)ry + (int)rh);
+      if (aw == 0 || ah == 0) continue;
+
+      const float start  = (float)a1 / 64.0f;
+      const float extent = (float)a2 / 64.0f;
+      const bool full = std::fabs(extent) >= (360.0f - (1.0f / 64.0f));
+
+      const float rx = (float)aw * 0.5f;
+      const float ry = (float)ah * 0.5f;
+      if (rx <= 0.0f || ry <= 0.0f) continue;
+
+      const float cx = (float)ax + rx;
+      const float cy = (float)ay + ry;
+
+      int x0 = std::max(0, (int)ax);
+      int y0 = std::max(0, (int)ay);
+      int x1 = std::min(dstW, (int)ax + (int)aw);
+      int y1 = std::min(dstH, (int)ay + (int)ah);
       if (x0 >= x1 || y0 >= y1) continue;
 
-      for (int y = y0; y < y1; y++) {
-        uint32_t* row = dst.pixels32 + (std::size_t)y * (std::size_t)dst.w;
-        for (int x = x0; x < x1; x++) {
-          row[x] = fg;
+      for (int py = y0; py < y1; py++) {
+        const float ny = (((float)py + 0.5f) - cy) / ry;
+        for (int px = x0; px < x1; px++) {
+          const float nx = (((float)px + 0.5f) - cx) / rx;
+          if (nx*nx + ny*ny > 1.0f) continue;
+
+          if (!full) {
+            const float dx = ((float)px + 0.5f) - cx;
+            const float dy = ((float)py + 0.5f) - cy;
+            const float theta = norm360(std::atan2(-dy, dx) * (180.0f / (float)M_PI));
+            if (!angle_in_arc(theta, start, extent)) continue;
+          }
+
+          dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg;
         }
       }
     }
 
-    // consume any trailing bytes (if listBytes not multiple of 8)
     br.skip(br.remaining());
 
-    // Present only if destination is a window (pixmaps get presented when copied to window)
-    damageOrDirty(ctx, drawable );
-  }
-  
-// -----------------------------------------------------------------------------
-// PolyFillArc (71)
-// -----------------------------------------------------------------------------
-void ShapeOps::handlePolyFillArc(XProtoContext& ctx, uint16_t, ByteReader& br) {
-  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
-
-  const uint32_t drawable = br.readU32();
-  const uint32_t gc_id    = br.readU32();
-
-  // Resolve destination
-  uint32_t* dstPixels = nullptr;
-  int dstW = 0, dstH = 0;
-  bool dstIsWindow = false;
-
-  if (ctx.windows().exists(drawable)) {
-    uint32_t* px = nullptr; uint32_t w=0,h=0;
-    if (!x11_xproto_window_fb_rw(drawable, &px, &w, &h) || !px) {
-      br.skip(br.remaining()); return;
-    }
-    dstPixels = px; dstW = (int)w; dstH = (int)h; dstIsWindow = true;
-  } else {
-    uint16_t pw=0, ph=0;
-    dstPixels = ctx.pixmaps().mutablePixels(drawable, &pw, &ph);
-    if (!dstPixels) { br.skip(br.remaining()); return; }
-    dstW = (int)pw; dstH = (int)ph; dstIsWindow = false;
-  }
-
-  // GC fg
-  uint32_t fg = 0xFF000000u;
-  GCState st{};
-  if (GCTable::instance().find(gc_id, st)) fg = st.fg;
-
-  const size_t listBytes = br.remaining();
-  const size_t narcs = listBytes / 12u;
-  if (narcs == 0) { br.skip(br.remaining()); return; }
-
-  for (size_t i = 0; i < narcs; i++) {
-    const int16_t  ax = (int16_t)br.readU16();
-    const int16_t  ay = (int16_t)br.readU16();
-    const uint16_t aw = br.readU16();
-    const uint16_t ah = br.readU16();
-    const int16_t  a1 = (int16_t)br.readU16();
-    const int16_t  a2 = (int16_t)br.readU16();
-
-    if (aw == 0 || ah == 0) continue;
-
-    const float start = (float)a1 / 64.0f;
-    const float extent = (float)a2 / 64.0f;
-    const bool full = std::fabs(extent) >= (360.0f - (1.0f/64.0f));
-
-    const float rx = aw * 0.5f;
-    const float ry = ah * 0.5f;
-    const float cx = ax + rx;
-    const float cy = ay + ry;
-
-    int x0 = std::max(0, (int)ax);
-    int y0 = std::max(0, (int)ay);
-    int x1 = std::min((int)dstW, ax + (int)aw);
-    int y1 = std::min((int)dstH, ay + (int)ah);
-    if (x0 >= x1 || y0 >= y1) continue;
-
-    for (int py = y0; py < y1; py++) {
-      const float ny = ((float)py + 0.5f - cy) / ry;
-      for (int px = x0; px < x1; px++) {
-        const float nx = ((float)px + 0.5f - cx) / rx;
-        if (nx*nx + ny*ny > 1.0f) continue;
-
-        if (!full) {
-          const float dx = (float)px + 0.5f - cx;
-          const float dy = (float)py + 0.5f - cy;
-          float theta = norm360(std::atan2(-dy, dx) * (180.0f / (float)M_PI));
-          if (!angle_in_arc(theta, start, extent)) continue;
-        }
-        dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg;
-      }
+    // Only present if destination is a window.
+    if (dst.isWindow) {
+      damageOrDirty(ctx, drawable);
     }
   }
-
-  br.skip(br.remaining());
-  damageOrDirty(ctx, drawable );
-}
 
 // -----------------------------------------------------------------------------
 // PolyArc (68) — outline
 // -----------------------------------------------------------------------------
-void ShapeOps::handlePolyArc(XProtoContext& ctx, uint16_t, ByteReader& br) {
-  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  void ShapeOps::handlePolyArc(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+    if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
-  const uint32_t drawable = br.readU32();
-  const uint32_t gc_id    = br.readU32();
+    const uint32_t drawable = br.readU32();
+    const uint32_t gc_id    = br.readU32();
 
-  uint32_t* dstPixels = nullptr;
-  int dstW = 0, dstH = 0;
-  bool dstIsWindow = false;
+    const std::size_t narcs = br.remaining() / 12u;
+    if (narcs == 0) { br.skip(br.remaining()); return; }
 
-  if (ctx.windows().exists(drawable)) {
-    uint32_t* px=nullptr; uint32_t w=0,h=0;
-    if (!x11_xproto_window_fb_rw(drawable, &px, &w, &h) || !px) {
-      br.skip(br.remaining()); return;
+    DrawableRW dst{};
+    if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+    // GC fg
+    uint32_t fg = 0xFF000000u;
+    {
+      GCState st{};
+      if (GCTable::instance().find(gc_id, st)) fg = st.fg;
     }
-    dstPixels = px; dstW=(int)w; dstH=(int)h; dstIsWindow=true;
-  } else {
-    uint16_t pw=0, ph=0;
-    dstPixels = ctx.pixmaps().mutablePixels(drawable, &pw, &ph);
-    if (!dstPixels) { br.skip(br.remaining()); return; }
-    dstW=(int)pw; dstH=(int)ph; dstIsWindow=false;
-  }
 
-  uint32_t fg = 0xFF000000u;
-  GCState st{};
-  if (GCTable::instance().find(gc_id, st)) fg = st.fg;
+    const int dstW = (int)dst.w;
+    const int dstH = (int)dst.h;
+    uint32_t* dstPixels = dst.pixels32;
 
-  const size_t narcs = br.remaining() / 12u;
-  if (narcs == 0) { br.skip(br.remaining()); return; }
+    for (std::size_t i = 0; i < narcs; i++) {
+      const int16_t  ax = br.readI16();
+      const int16_t  ay = br.readI16();
+      const uint16_t aw = br.readU16();
+      const uint16_t ah = br.readU16();
+      const int16_t  a1 = br.readI16();
+      const int16_t  a2 = br.readI16();
+      if (aw == 0 || ah == 0) continue;
 
-  for (size_t i = 0; i < narcs; i++) {
-    const int16_t  ax = (int16_t)br.readU16();
-    const int16_t  ay = (int16_t)br.readU16();
-    const uint16_t aw = br.readU16();
-    const uint16_t ah = br.readU16();
-    const int16_t  a1 = (int16_t)br.readU16();
-    const int16_t  a2 = (int16_t)br.readU16();
+      const float start  = (float)a1 / 64.0f;
+      const float extent = (float)a2 / 64.0f;
+      const bool full = std::fabs(extent) >= (360.0f - (1.0f / 64.0f));
 
-    if (aw == 0 || ah == 0) continue;
+      const float rx = (float)aw * 0.5f;
+      const float ry = (float)ah * 0.5f;
+      if (rx <= 0.0f || ry <= 0.0f) continue;
 
-    const float start = (float)a1 / 64.0f;
-    const float extent = (float)a2 / 64.0f;
-    const bool full = std::fabs(extent) >= (360.0f - (1.0f/64.0f));
+      const float cx = (float)ax + rx;
+      const float cy = (float)ay + ry;
 
-    const float rx = aw * 0.5f;
-    const float ry = ah * 0.5f;
-    const float cx = ax + rx;
-    const float cy = ay + ry;
+      int x0 = std::max(0, (int)ax);
+      int y0 = std::max(0, (int)ay);
+      int x1 = std::min(dstW, (int)ax + (int)aw);
+      int y1 = std::min(dstH, (int)ay + (int)ah);
+      if (x0 >= x1 || y0 >= y1) continue;
 
-    int x0 = std::max(0, (int)ax);
-    int y0 = std::max(0, (int)ay);
-    int x1 = std::min(dstW, ax + (int)aw);
-    int y1 = std::min(dstH, ay + (int)ah);
+      const float eps = std::max(1.0f / std::max(rx, 1.0f),
+                                 1.0f / std::max(ry, 1.0f));
 
-    const float eps = std::max(1.0f / std::max(rx, 1.0f),
-                               1.0f / std::max(ry, 1.0f));
+      for (int py = y0; py < y1; py++) {
+        const float ny = (((float)py + 0.5f) - cy) / ry;
+        for (int px = x0; px < x1; px++) {
+          const float nx = (((float)px + 0.5f) - cx) / rx;
 
-    for (int py = y0; py < y1; py++) {
-      const float ny = ((float)py + 0.5f - cy) / ry;
-      for (int px = x0; px < x1; px++) {
-        const float nx = ((float)px + 0.5f - cx) / rx;
-        if (std::fabs(nx*nx + ny*ny - 1.0f) > eps) continue;
+          // Thin ring test
+          if (std::fabs(nx*nx + ny*ny - 1.0f) > eps) continue;
 
-        if (!full) {
-          const float dx = (float)px + 0.5f - cx;
-          const float dy = (float)py + 0.5f - cy;
-          float theta = norm360(std::atan2(-dy, dx) * (180.0f / (float)M_PI));
-          if (!angle_in_arc(theta, start, extent)) continue;
+          if (!full) {
+            const float dx = ((float)px + 0.5f) - cx;
+            const float dy = ((float)py + 0.5f) - cy;
+            const float theta = norm360(std::atan2(-dy, dx) * (180.0f / (float)M_PI));
+            if (!angle_in_arc(theta, start, extent)) continue;
+          }
+
+          dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg;
         }
-        dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg;
       }
     }
+
+    br.skip(br.remaining());
+
+    if (dst.isWindow) {
+      damageOrDirty(ctx, drawable);
+    }
   }
-
-  br.skip(br.remaining());
-  damageOrDirty(ctx, drawable );
-}
-
+  
 } // namespace x11

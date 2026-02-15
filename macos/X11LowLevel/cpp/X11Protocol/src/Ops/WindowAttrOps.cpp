@@ -26,6 +26,7 @@ extern "C" {
 
 // util
 #include "Damage.hpp"
+#include "Debug/x11_backend_fb_dbg.hpp"
 
 
 
@@ -66,106 +67,219 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 //   LISTofCARD32 valueList
 //
 // We only implement CWEventMask (bit 11) for now.
-void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  ctx.tracef("[CWA] ENTER remain=%zu\n", br.remaining());
-  fprintf(stderr, "[CWA] ENTER remain=%zu\n", br.remaining());
-  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+    ctx.tracef("[CWA] ENTER remain=%zu\n", br.remaining());
+    fprintf(stderr, "[CWA] ENTER remain=%zu\n", br.remaining());
+    if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
-  const uint32_t wid   = br.readU32();
-  const uint32_t vmask = br.readU32();
-  ctx.tracef("[CWA] GATE1 wid=0x%08X remain=%zu\n", wid, br.remaining());
+    const uint32_t wid   = br.readU32();
+    const uint32_t vmask = br.readU32();
 
-  // Value list is 32-bit items in increasing bit order.
-  // We only care about bit 11, but we still must consume correctly.
-  uint32_t cur_mask = 0;
+    // Snapshot current values so partial updates preserve unspecified fields,
+    // and so we can detect "ExposureMask enabled post-map" (common in xterm bring-up).
+    uint32_t old_mask = 0;
+    bool wasMapped = false;
 
-  // Start from current value if we have it (nice to keep stable when partial updates happen)
-  if (const WindowView* vw = ctx.window(wid)) {
-    cur_mask = vw->event_mask;
-  }
+    if (const WindowView* vw = ctx.window(wid)) {
+      old_mask = vw->event_mask;
+      wasMapped = vw->mapped;
+    }
 
-  for (uint32_t bit = 0; bit < 32 && br.remaining() >= 4; bit++) {
-    if ((vmask & (1u << bit)) == 0) continue;
-    const uint32_t val = br.readU32();
-    if (bit == 11) {
-      cur_mask = val; // CWEventMask
+    ctx.tracef("[CWA] GATE1 wid=0x%08X vmask=0x%08X remain=%zu old_mask=0x%08X mapped=%d\n",
+               wid, vmask, br.remaining(), old_mask, (int)wasMapped);
+
+    // Value list is 32-bit items in increasing bit order.
+    // We only care about bit 11 (CWEventMask) for now, but we still must consume correctly.
+    uint32_t cur_mask = old_mask;
+
+    for (uint32_t bit = 0; bit < 32 && br.remaining() >= 4; bit++) {
+      if ((vmask & (1u << bit)) == 0) continue;
+      const uint32_t val = br.readU32();
+      if (bit == 11) {
+        cur_mask = val; // CWEventMask
+        ctx.tracef("[CWA] CWEventMask wid=0x%08X val=0x%08X\n", wid, cur_mask);
+      }
+    }
+
+    // Consume any trailing bytes (padding or unparsed values if malformed)
+    br.skip(br.remaining());
+
+    // If CWEventMask wasn’t present, we do nothing.
+    if ((vmask & (1u << 11)) == 0) return;
+
+    // Update C++ authoritative table
+    ctx.windows().setEventMask(wid, cur_mask);
+
+    // ------------------------------------------------------------
+    // Rootless bring-up / xterm unstick:
+    //
+    // If ExposureMask is enabled after the window is already mapped,
+    // some clients then block in XNextEvent waiting for their first Expose.
+    // We can safely queue a one-shot Expose here to kick the event loop.
+    //
+    // ExposureMask is bit 15 in the *event mask*.
+    // ------------------------------------------------------------
+    const bool hadExposure = ((old_mask & (1u << 15)) != 0);
+    const bool wantExpose  = ((cur_mask & (1u << 15)) != 0);
+
+    if (wasMapped && !hadExposure && wantExpose) {
+      ctx.tracef("[CWA] ExposureMask enabled post-map; queue initial Expose wid=0x%08X\n", wid);
+      ctx.transport().queueNotify(wid, /*wantCfg=*/false, /*wantExp=*/true);
     }
   }
-
-  // Consume any trailing bytes (padding or unparsed values if malformed)
-  br.skip(br.remaining());
-
-  // If CWEventMask wasn’t present, we do nothing.
-  if ((vmask & (1u << 11)) == 0) return;
-
-  // Update C++ authoritative table
-  ctx.windows().setEventMask(wid, cur_mask);
-
-}
-
+  
+  
   void WindowAttrOps::handleConfigureWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
     // Body (after 4-byte header):
     //   CARD32 window
     //   CARD16 valueMask
     //   CARD16 pad
-    //   LISTofCARD32 values
+    //   LISTofCARD32 values  (in increasing bit order of valueMask)
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
     const uint32_t wid   = br.readU32();
     const uint16_t vmask = br.readU16();
     (void)br.readU16(); // pad
 
+    // Compute host once (rootless policy pivot).
+    const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+
     // Pull current values (so “partial configure” keeps the rest)
-    int16_t  x = 0, y = 0;
-    uint16_t w = 1, h = 1;
+    int32_t  x32 = 0, y32 = 0;
+    uint32_t w32 = 1, h32 = 1;
+
+    // Keep old size around so we can decide whether to resize the FB.
+    // (This avoids extra churn, and makes the intent explicit.)
+    uint16_t oldW = 1, oldH = 1;
 
     if (const WindowView* vw = ctx.window(wid)) {
-      x = vw->x;
-      y = vw->y;
-      w = vw->w ? vw->w : 1;
-      h = vw->h ? vw->h : 1;
+      x32  = vw->x;
+      y32  = vw->y;
+      w32  = vw->w ? vw->w : 1;
+      h32  = vw->h ? vw->h : 1;
+      oldW = vw->w ? vw->w : 1;
+      oldH = vw->h ? vw->h : 1;
     }
+
+    auto clamp_i16 = [](int32_t v) -> int16_t {
+      if (v < (int32_t)INT16_MIN) return INT16_MIN;
+      if (v > (int32_t)INT16_MAX) return INT16_MAX;
+      return (int16_t)v;
+    };
+    auto clamp_u16_nonzero = [](uint32_t v) -> uint16_t {
+      if (v == 0) return 1;
+      if (v > 65535u) return 65535u;
+      return (uint16_t)v;
+    };
+
+    // Track whether this request actually supplies Width/Height.
+    // (We only resize FBs when the request is truly a size change request.)
+    bool sawWidth  = false;
+    bool sawHeight = false;
 
     // Values are 32-bit units in bit order 0..15
     for (uint32_t bit = 0; bit < 16; bit++) {
-      if ((vmask & (1u << bit)) == 0) continue;
+      if ((vmask & (uint16_t)(1u << bit)) == 0) continue;
       if (br.remaining() < 4) break;
+
       const uint32_t v = br.readU32();
 
       switch (bit) {
-        case 0: x = (int16_t)v; break;          // X
-        case 1: y = (int16_t)v; break;          // Y
-        case 2: w = (uint16_t)v; if (w == 0) w = 1; break; // Width
-        case 3: h = (uint16_t)v; if (h == 0) h = 1; break; // Height
-        default: break; // ignore others for now
+        case 0: x32 = (int32_t)v; break; // X
+        case 1: y32 = (int32_t)v; break; // Y
+        case 2: w32 = v; sawWidth  = true; break; // Width
+        case 3: h32 = v; sawHeight = true; break; // Height
+        default:
+          // Ignore others (stacking/border/etc) for now.
+          break;
       }
     }
 
     // Consume any trailing bytes (defensive)
     br.skip(br.remaining());
 
-    // Update authoritative WindowTable
-    ctx.windows().setGeometry(wid, x, y, w, h);
-    
-    // keep C canonical state in sync (this is what makes drawing correct)
-    x11_backend_fb_resize(wid, w, h);
-    // resizing affects presentation, so request redraw (gated)
-    damageOrDirty(ctx, wid);
+    const int16_t  x = clamp_i16(x32);
+    const int16_t  y = clamp_i16(y32);
+    const uint16_t w = clamp_u16_nonzero(w32);
+    const uint16_t h = clamp_u16_nonzero(h32);
 
+    ctx.tracef("[CONFIGURE] wid=0x%08X x=%d y=%d w=%u h=%u host=0x%08X\n",
+               wid, (int)x, (int)y, (unsigned)w, (unsigned)h, host);
 
-    // Tell Swift/shim side about configure (existing behavior)
-    x11_requests_push_configure(wid, (int32_t)w, (int32_t)h);
+    // ------------------------------------------------------------------
+    // 1) Update WindowTable geometry (X11 semantics)
+    // ------------------------------------------------------------------
+    //
+    // NOTE: For host windows, we apply rootless clamp policy (descendants clamped)
+    // via setGeometryRootlessHost(). For children, we apply the geometry directly.
+    //
+    if (host != 0 && host == wid) {
+      // Host geometry update should clamp descendants (bring-up behavior).
+      ctx.windows().setGeometryRootlessHost(wid, x, y, w, h);
+    } else {
+      // Prefer the debug-tagged setter if available so logs show "ConfigureWindow"
+      // instead of a generic "setGeometry".
+      //
+      // If your WindowTable doesn't expose setGeometryDbg, replace this with setGeometry().
+      ctx.windows().setGeometryDbg(wid, x, y, w, h, "ConfigureWindow", __FILE__, __LINE__);
+    }
 
-    // Queue notifies based on latest window snapshot
+    // ------------------------------------------------------------------
+    // 2) Rootless policy:
+    //
+    //    - Only HOST owns the Cocoa NSWindow (top-level surface).
+    //    - Child ConfigureWindow must NOT resize the host framebuffer.
+    //
+    //    HOWEVER:
+    //    - In host-only present mode, the C compositor still composites mapped
+    //      descendants by blitting each child's *own* FB over the host.
+    //    - Therefore, whenever a child window's geometry changes in W/H, we MUST
+    //      keep that child's FB slot in sync with its WindowTable geometry.
+    //
+    //    This is the invariant:
+    //      for mapped windows: geom(w,h) == fb(w,h)
+    // ------------------------------------------------------------------
+    const bool sizeChanged = (w != oldW) || (h != oldH);
+    const bool requestTouchesSize = (sawWidth || sawHeight); // request included W/H fields
+
+    if (host != 0 && host == wid) {
+      // HOST: keep C canonical FB in sync for the host only.
+      FB_RESIZE(wid, w, h, "handleConfigureWindow(host)");
+
+      // Host geometry change affects presentation.
+      damageOrDirty(ctx, wid);
+
+      // Only the top-level host drives Cocoa resize.
+      x11_requests_push_configure(wid, (int32_t)w, (int32_t)h);
+
+    } else if (host != 0) {
+      // CHILD:
+      // - Must NOT resize the host framebuffer.
+      // - Must resize the CHILD FB when W/H is configured, otherwise the compositor
+      //   sees geom(new) with fb(old) and you get the "top-left only / stripe" artifacts.
+      //
+      // We only do this when the request actually carries W/H (ConfigureWindow can be
+      // position-only, stacking-only, etc).
+      if (requestTouchesSize && sizeChanged) {
+        FB_RESIZE(wid, w, h, "handleConfigureWindow(child)");
+      }
+
+      // Child geometry changed: it affects what the host should present.
+      // Trigger present pipeline on the host (gated).
+      damageOrDirty(ctx, host);
+    }
+
+    // ------------------------------------------------------------------
+    // 3) ConfigureNotify / ExposeNotify selection on THE WINDOW BEING CONFIGURED
+    // ------------------------------------------------------------------
     if (const WindowView* vw2 = ctx.window(wid)) {
-      const bool wantCfg = ((vw2->event_mask & (1u << 17)) != 0);
-      const bool wantExp = ((vw2->event_mask & (1u << 15)) != 0); // don’t gate on mapped here
+      const bool wantCfg = ((vw2->event_mask & (1u << 17)) != 0); // StructureNotifyMask
+      const bool wantExp = ((vw2->event_mask & (1u << 15)) != 0); // ExposureMask
       if (wantCfg || wantExp) {
         ctx.transport().queueNotify(wid, wantCfg, wantExp);
       }
     }
   }
-  
   
   void WindowAttrOps::handleGetWindowAttributes(XProtoContext& ctx, uint16_t seq, ByteReader& br)
   {

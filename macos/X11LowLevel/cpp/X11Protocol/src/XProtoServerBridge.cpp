@@ -665,3 +665,95 @@ extern "C" void x11_proto_bridge_post_focus(uint32_t xid,
   c.focused = focused ? 1 : 0;
   hostcmd_push(c);
 }
+
+
+namespace {
+  // Global pointer set once on the protocol/server thread.
+  // Required so C can query window tree.
+  const x11::WindowTable* g_windows = nullptr;
+}
+
+// Call this once after ctx is created (server/protocol thread).
+extern "C" void x11_cpp_set_window_table(const x11::WindowTable* wt) {
+  g_windows = wt;
+}
+
+extern "C" uint32_t x11_cpp_list_descendants(uint32_t host, uint32_t* out, uint32_t cap)
+{
+  if (!g_windows) return 0;
+  if (!out || cap == 0) return 0;
+  if (host == 0) return 0;
+
+  std::vector<uint32_t> kids = g_windows->descendantsOf(host);
+
+  const uint32_t n = (uint32_t)std::min<size_t>(kids.size(), cap);
+  for (uint32_t i = 0; i < n; i++) out[i] = kids[i];
+  return n;
+}
+
+extern "C" int x11_cpp_get_window_geom(uint32_t xid,
+                                      uint32_t* out_parent,
+                                      int16_t* out_x,
+                                      int16_t* out_y,
+                                      uint16_t* out_w,
+                                      uint16_t* out_h,
+                                      int* out_mapped)
+{
+  if (!g_windows) return 0;
+  if (xid == 0) return 0;
+
+  x11::WindowView vw{};
+  if (!g_windows->snapshot(xid, vw)) return 0;
+
+  if (out_parent) *out_parent = vw.parent_xid;
+  if (out_x)      *out_x      = vw.x;
+  if (out_y)      *out_y      = vw.y;
+  if (out_w)      *out_w      = vw.w;
+  if (out_h)      *out_h      = vw.h;
+  if (out_mapped) *out_mapped = vw.mapped ? 1 : 0;
+
+  return 1;
+}
+
+extern "C" int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
+                                          int32_t* out_abs_x,
+                                          int32_t* out_abs_y)
+{
+  if (!g_windows) return 0;
+  if (!out_abs_x || !out_abs_y) return 0;
+  if (host == 0 || xid == 0) return 0;
+
+  // Walk from xid up to host, accumulating relative x/y.
+  int32_t ax = 0;
+  int32_t ay = 0;
+  uint32_t cur = xid;
+
+  // Safety to avoid infinite loops if parent pointers get weird.
+  for (int hop = 0; hop < 256; hop++) {
+    x11::WindowView vw{};
+    if (!g_windows->snapshot(cur, vw)) return 0;
+
+    // Add this node’s offset in its parent.
+    ax += (int32_t)vw.x;
+    ay += (int32_t)vw.y;
+
+    if (cur == host) {
+      // We included host’s own x/y above; in typical X11, host x/y is relative to root.
+      // For “position within host”, we should NOT include host’s offset.
+      // So subtract host.x/host.y back out:
+      ax -= (int32_t)vw.x;
+      ay -= (int32_t)vw.y;
+
+      *out_abs_x = ax;
+      *out_abs_y = ay;
+      return 1;
+    }
+
+    // Stop if we hit root-ish without reaching host.
+    if (vw.parent_xid == 0 || vw.parent_xid == 1) return 0;
+
+    cur = vw.parent_xid;
+  }
+
+  return 0;
+}

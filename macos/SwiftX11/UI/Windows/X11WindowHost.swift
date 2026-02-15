@@ -81,7 +81,6 @@ final class X11View: NSView {
     // MARK: -- suppress circular rootless resize calls
     // When the server drives a configure resize, we suppress rootless resize callbacks
     // until the drawable reaches the expected pixel size (or a small budget expires).
-    private var suppressExpectedPx: (w: Int32, h: Int32)? = nil
     private var suppressBudget: Int = 0
   
     override init(frame frameRect: NSRect) {
@@ -92,7 +91,12 @@ final class X11View: NSView {
     }
 
   
-  
+    // MARK: -- debug
+#if DEBUG
+    private var swFrameSeq: UInt64 = 0
+    private var swLastAppliedSeq: UInt64 = 0
+    private var swLastAppliedWH: (w: Int, h: Int, bpr: Int) = (0, 0, 0)
+#endif
   
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
@@ -136,6 +140,7 @@ final class X11View: NSView {
     private static var layoutDepthTLS = ThreadLocalInt()
 
     private var inLayout: Bool { Self.layoutDepthTLS.value > 0 }
+    var isInLayoutPass: Bool { inLayout }
 
   override func layout() {
     Self.layoutDepthTLS.value += 1
@@ -197,36 +202,25 @@ final class X11View: NSView {
   
     private var pendingMakeFirstResponder = false
   
-    private func requestFirstResponderCoalesced() {
-        guard !pendingMakeFirstResponder else { return }
-        pendingMakeFirstResponder = true
-  
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.pendingMakeFirstResponder = false
-  
-            guard let win = self.window else { return }
-  
-            // Only attempt if we’re not already first responder.
-            if win.firstResponder !== self {
-                logIfInLayout("About to makeFirstResponder for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self)
-              print("[FRSTRESP] abiout to makeFirstResponder window=\(String(describing: self.window))")
-
-                win.makeFirstResponder(self)
-            }
-        }
-    }  
-//    override func viewDidMoveToWindow() {
-//        super.viewDidMoveToWindow()
-//        window?.acceptsMouseMovedEvents = true
-//        requestFirstResponderCoalesced()
-//        isPointerInside = false
-//      
-//        // Defer to next runloop turn (avoids “already being laid out” warnings)
-//        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(_refreshTrackingAreas), object: nil)
-//        perform(#selector(_refreshTrackingAreas), with: nil, afterDelay: 0.0)
-//    }
-  
+  private func requestFirstResponderCoalesced() {
+    guard !pendingMakeFirstResponder else { return }
+    pendingMakeFirstResponder = true
+    
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.pendingMakeFirstResponder = false
+      
+      guard let win = self.window else { return }
+      
+      // Only attempt if we’re not already first responder.
+      if win.firstResponder !== self {
+        logIfInLayout("About to makeFirstResponder for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self)
+        print("[FRSTRESP] abiout to makeFirstResponder window=\(String(describing: self.window))")
+        
+        win.makeFirstResponder(self)
+      }
+    }
+  }  
   
     private var attachSettleScheduled = false
     private weak var lastKnownWindow: NSWindow?
@@ -244,24 +238,55 @@ final class X11View: NSView {
         scheduleAttachSettle()
     }
   
-    private func scheduleAttachSettle() {
-        guard !attachSettleScheduled else { return }
-        attachSettleScheduled = true
   
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.attachSettleScheduled = false
+  private func syncSoftwareLayerScale() {
+    let s = window?.backingScaleFactor ?? 1.0
+    // Make both the root layer and the image sublayer match.
+    self.layer?.contentsScale = s
+    self.imageLayer?.contentsScale = s
+  }
   
-            // All “attach-time” mutating work happens here, never inside viewDidMoveToWindow.
-            self.window?.acceptsMouseMovedEvents = true
   
-            // Don’t set responder synchronously on attach; coalesce.
-            self.requestFirstResponderCoalesced()
+  override func viewDidChangeBackingProperties() {
+    super.viewDidChangeBackingProperties()
+    syncSoftwareLayerScale()
+  }
   
-            // Don’t refresh tracking areas synchronously on attach; coalesce.
-            self.requestTrackingRefreshCoalesced()
-        }
+  
+  private func notifyPresentableOnce() {
+    guard !didNotifyPresentable else { return }
+    guard self.window != nil else { return }
+    guard xid != 0 else { return }
+    didNotifyPresentable = true
+    x11_post_window_presentable(xid)
+  }
+  
+  private func scheduleAttachSettle() {
+    guard !attachSettleScheduled else { return }
+    attachSettleScheduled = true
+    
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.attachSettleScheduled = false
+      
+      // fix scale once we truly have a window
+      self.syncSoftwareLayerScale()
+      
+      // All “attach-time” mutating work happens here, never inside viewDidMoveToWindow.
+      self.window?.acceptsMouseMovedEvents = true
+      
+      // Don’t set responder synchronously on attach; coalesce.
+      self.requestFirstResponderCoalesced()
+      
+      // Don’t refresh tracking areas synchronously on attach; coalesce.
+      self.requestTrackingRefreshCoalesced()
+      
+      
+      // make host presentable in software or metal mode
+      self.notifyPresentableOnce()
+      
     }
+  }
   
 
     private var trackingRefreshScheduled = false
@@ -282,12 +307,16 @@ final class X11View: NSView {
         refreshTrackingArea()
     }
   
-    override func updateTrackingAreas() {
-      logIfInLayout("updateTrackingAreas()", view: self)
-
-        super.updateTrackingAreas()
-        refreshTrackingArea()
-    }  
+  override func updateTrackingAreas() {
+    logIfInLayout("updateTrackingAreas()", view: self)
+    
+    super.updateTrackingAreas()
+    // DO NOT mutate tracking areas synchronously here.
+    // updateTrackingAreas is often invoked during layout.
+    requestTrackingRefreshCoalesced()
+    
+    //        refreshTrackingArea()
+  }  
   
     override func hitTest(_ point: NSPoint) -> NSView? {
       // When Metal is active, route input to the MTKView so it can forward to us.
@@ -300,6 +329,11 @@ final class X11View: NSView {
     // MARK: - Public
     func setUseMetal(_ enabled: Bool) {
       wantsMetal = enabled
+      
+      if !enabled {
+        pendingEnableMetal = false   // ✅ cancel any deferred enable
+      }
+
       if enabled {
           // Defer Metal until we have a real AppKit window and non-zero bounds
           guard self.window != nil else {
@@ -371,6 +405,13 @@ final class X11View: NSView {
             // Ask MTKView to draw exactly once (draw(in:) will use currentDrawable and present).
             mv.setNeedsDisplay(mv.bounds)
         } else {
+#if DEBUG
+          swFrameSeq &+= 1
+          let seq = swFrameSeq
+          let tid = pthread_mach_thread_np(pthread_self())
+          print(String(format: "[SWFRAME] recv xid=0x%08X seq=%llu wh=%dx%d bpr=%d tid=0x%X main=%d",
+                       xid, seq, width, height, bytesPerRow, tid, Thread.isMainThread ? 1 : 0))
+#endif
             // Software path: build a CGImage and put it into the layer.
             presentSoftware(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
         }
@@ -411,9 +452,60 @@ final class X11View: NSView {
             intent: .defaultIntent
         ) else { return }
 
-        DispatchQueue.main.async { [weak self] in
-            self?.lastFrameData = data
-            self?.imageLayer?.contents = cgImage
+#if DEBUG
+      let seq = swFrameSeq   // or capture from caller
+      let recvWH = (w: width, h: height, bpr: bytesPerRow)
+#endif
+
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+#if DEBUG
+        let tid = pthread_mach_thread_np(pthread_self())
+        let last = self.swLastAppliedWH
+        let lastSeq = self.swLastAppliedSeq
+        let isStaleBySeq = seq < lastSeq
+        let isStaleBySize = (recvWH.w < last.w || recvWH.h < last.h) && (last.w > 0 && last.h > 0)
+        
+        print(String(format:
+                      "[SWFRAME] apply xid=0x%08X seq=%llu (last=%llu) wh=%dx%d bpr=%d lastWh=%dx%d lastBpr=%d staleSeq=%d staleSize=%d tid=0x%X",
+                     self.xid, seq, lastSeq,
+                     recvWH.w, recvWH.h, recvWH.bpr,
+                     last.w, last.h, last.bpr,
+                     isStaleBySeq ? 1 : 0,
+                     isStaleBySize ? 1 : 0,
+                     tid))
+
+        self.swLastAppliedSeq = max(self.swLastAppliedSeq, seq)
+        self.swLastAppliedWH = recvWH
+#endif
+        self.lastFrameData = data
+        
+#if DEBUG
+        let layer = self.imageLayer
+        print("""
+        [LAYERMAP] xid=0x\(String(self.xid, radix:16)) \
+        gravity=\(layer?.contentsGravity.rawValue ?? "nil") \
+        contentsRect=\(layer?.contentsRect ?? .zero) \
+        contentsCenter=\(layer?.contentsCenter ?? .zero) \
+        contentsScale=\(layer?.contentsScale ?? -1) \
+        winScale=\(self.window?.backingScaleFactor ?? -1)
+        """)
+        let winScale = self.window?.backingScaleFactor ?? -1
+        let layerScale = layer?.contentsScale ?? -2
+        let grav = layer?.contentsGravity.rawValue ?? "nil"
+        let b = self.bounds
+        let lf = layer?.frame ?? .zero
+        print("""
+[SWAPPLY] xid=0x\(String(self.xid, radix:16)) \
+img=\(width)x\(height) bpr=\(bytesPerRow) \
+view.bounds=\(b) layer.frame=\(lf) \
+winScale=\(winScale) layerScale=\(layerScale) gravity=\(grav) \
+main=\(Thread.isMainThread)
+""")
+#endif
+
+        syncSoftwareLayerScale()
+        self.imageLayer?.contents = cgImage
         }
     }
 
@@ -483,30 +575,36 @@ final class X11View: NSView {
   }
   
   
-    private func refreshTrackingArea() {
-      logIfInLayout("refreshTrackingArea (usingMetal=\(usingMetal))", view: self)
-
-        if let trackingArea {
-            trackingHost?.removeTrackingArea(trackingArea)
-            self.trackingArea = nil
-            trackingHost = nil
-        }
-
-        let target: NSView = (usingMetal ? (mtkView ?? self) : self)
-
-        let opts: NSTrackingArea.Options = [
-          .mouseEnteredAndExited,
-          .mouseMoved,
-          .activeInActiveApp,
-          .enabledDuringMouseDrag,
-          .inVisibleRect
-        ]
-
-        let area = NSTrackingArea(rect: .zero, options: opts, owner: self, userInfo: nil)
-        target.addTrackingArea(area)
-        self.trackingArea = area
-        self.trackingHost = target
+  private func refreshTrackingArea() {
+    // Hard gate: never mutate tracking areas during layout.
+    if inLayout {
+      requestTrackingRefreshCoalesced()
+      return
     }
+    
+    logIfInLayout("refreshTrackingArea (usingMetal=\(usingMetal))", view: self)
+    
+    if let trackingArea {
+      trackingHost?.removeTrackingArea(trackingArea)
+      self.trackingArea = nil
+      trackingHost = nil
+    }
+    
+    let target: NSView = (usingMetal ? (mtkView ?? self) : self)
+    
+    let opts: NSTrackingArea.Options = [
+      .mouseEnteredAndExited,
+      .mouseMoved,
+      .activeInActiveApp,
+      .enabledDuringMouseDrag,
+      .inVisibleRect
+    ]
+    
+    let area = NSTrackingArea(rect: .zero, options: opts, owner: self, userInfo: nil)
+    target.addTrackingArea(area)
+    self.trackingArea = area
+    self.trackingHost = target
+  }
   
     // (ensureTexture removed; now handled by X11MetalRenderer)
   
@@ -547,8 +645,8 @@ private func mods(_ flags: NSEvent.ModifierFlags) -> UInt32 {
     let scale = window?.backingScaleFactor ?? 1.0
 
     // Backing pixel dimensions of this view
-    let wPx = max(1, Int(floor(bounds.width * scale)))
-    let hPx = max(1, Int(floor(bounds.height * scale)))
+    let wPt = max(1, Int(floor(bounds.width * scale)))
+    let hPt = max(1, Int(floor(bounds.height * scale)))
 
     // Convert to pixels in Cocoa-up coordinates
     var xF = p.x * scale
@@ -561,17 +659,17 @@ private func mods(_ flags: NSEvent.ModifierFlags) -> UInt32 {
       xF = clampedXPt * scale
       yF = clampedYPt * scale
 
-      // Clamp in pixels to [0 .. sizePx-1] (still Cocoa-up)
-      xF = min(max(xF, 0), CGFloat(wPx - 1))
-      yF = min(max(yF, 0), CGFloat(hPx - 1))
+      // Clamp in pixels to [0 .. sizePt-1] (still Cocoa-up)
+      xF = min(max(xF, 0), CGFloat(wPt - 1))
+      yF = min(max(yF, 0), CGFloat(hPt - 1))
     }
 
     // Flip Y to X11 top-down (0 at top)
-    yF = CGFloat(hPx - 1) - yF
+    yF = CGFloat(hPt - 1) - yF
 
     if clampToView {
       // After flip, ensure still in range (paranoia)
-      yF = min(max(yF, 0), CGFloat(hPx - 1))
+      yF = min(max(yF, 0), CGFloat(hPt - 1))
     }
 
     return (Int32(floor(xF)), Int32(floor(yF)))
@@ -592,10 +690,10 @@ private func mods(_ flags: NSEvent.ModifierFlags) -> UInt32 {
     let scale = screen?.backingScaleFactor ?? 1.0
 
     // Root coords in pixels, top-left origin of virtual desktop
-    let xPx = Int32(((gp.x - vminX) * scale).rounded(.toNearestOrAwayFromZero))
-    let yPx = Int32(((vmaxY - gp.y) * scale).rounded(.toNearestOrAwayFromZero)) - 1
+    let xPt = Int32(((gp.x - vminX) * scale).rounded(.toNearestOrAwayFromZero))
+    let yPt = Int32(((vmaxY - gp.y) * scale).rounded(.toNearestOrAwayFromZero)) - 1
 
-    return (max(0, xPx), max(0, yPx))
+    return (max(0, xPt), max(0, yPt))
   }
   
   
@@ -801,7 +899,7 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   private var xid: UInt32 = 0
   
   private var didNotifyPresentable = false
-  private var lastDrawablePx: (w: Int32, h: Int32) = (0, 0)
+  private var lastDrawablePt: (w: Int32, h: Int32) = (0, 0)
   
   init(owner: X11View) {
     self.owner = owner
@@ -811,7 +909,7 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   func setXid(_ xid: UInt32) {
     self.xid = xid
     self.didNotifyPresentable = false
-    self.lastDrawablePx = (0, 0)
+    self.lastDrawablePt = (0, 0)
   }
   
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -823,9 +921,9 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     }
 #endif
     
-    let wPx = Int32(size.width.rounded(.down))
-    let hPx = Int32(size.height.rounded(.down))
-    guard wPx >= 1, hPx >= 1 else { return }
+    let wPt = Int32(size.width.rounded(.down))
+    let hPt = Int32(size.height.rounded(.down))
+    guard wPt >= 1, hPt >= 1 else { return }
     guard size.width >= 1, size.height >= 1 else { return }
     
 #if DEBUG
@@ -853,17 +951,17 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     guard xid != 0 else { return }
     
     // MTKView drawable sizes are already in pixels.
-    let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
-    let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
+    let wPt = Int32(size.width.rounded(.toNearestOrAwayFromZero))
+    let hPt = Int32(size.height.rounded(.toNearestOrAwayFromZero))
     
     // ---- HARD GATES ----
     // 1) Ignore transient invalid sizes coming from AppKit/Metal attach/layout.
-    guard wPx >= 1, hPx >= 1 else { return }
+    guard wPt >= 1, hPt >= 1 else { return }
     
     // 2) Ignore tiny “bootstrap” drawable sizes (this is your 2x2 spam).
     // Pick a floor that is always safe. Since you now create host windows at 64x64,
     // 16 is conservative; 32 is fine too.
-    guard wPx >= 16, hPx >= 16 else { return }
+    guard wPt >= 16, hPt >= 16 else { return }
     
     // 3) If MTKView isn't attached yet, don't feed resize back to the server.
     // (You can remove this if you can't access the MTKView here.)
@@ -875,12 +973,12 @@ final class X11Renderer: NSObject, MTKViewDelegate {
       x11_post_window_presentable(xid)
     }
     
-    if wPx == lastDrawablePx.w && hPx == lastDrawablePx.h { return }
-    lastDrawablePx = (wPx, hPx)
+    if wPt == lastDrawablePt.w && hPt == lastDrawablePt.h { return }
+    lastDrawablePt = (wPt, hPt)
     
     // Debounce resize feedback (coalesce bursts)
     pendingResizeTask?.cancel()
-    pendingSize = (wPx, hPx)
+    pendingSize = (wPt, hPt)
     
     let task = DispatchWorkItem { [weak self] in
       guard let self = self, let s = self.pendingSize else { return }

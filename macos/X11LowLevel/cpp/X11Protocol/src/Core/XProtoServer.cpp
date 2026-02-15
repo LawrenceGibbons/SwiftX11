@@ -15,6 +15,16 @@
 #include "Ops/EventOps.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "x11_server_internal.h"
+#include "x11_backend_fb.h"
+
+static void fb_event_observer(uint32_t xid, uint16_t w, uint16_t h,
+                              const char* op, const char* why,
+                              const char* file, int line, void* user)
+{
+  auto* wt = static_cast<x11::WindowTable*>(user);
+  if (wt) wt->noteFbResizeDbg(xid, why, file, line);
+  // optional: also print op/w/h here if you want
+}
 
 
 static inline uint16_t rd16_le(const uint8_t* p) {
@@ -30,7 +40,7 @@ static inline uint32_t rd32_be(const uint8_t* p) {
   return (uint32_t)p[3] | (uint32_t(p[2])<<8) | (uint32_t(p[1])<<16) | (uint32_t(p[0])<<24);
 }
 
-
+extern "C" void x11_cpp_set_window_table(const x11::WindowTable* wt);
 
 namespace x11 {
 
@@ -60,12 +70,16 @@ XProtoServer::XProtoServer()
   
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
+  x11_backend_fb_set_event_observer(&fb_event_observer, &windows_);
+
   
   // load fonts
   std::string err;
   if (!fonts_.loadBuiltins(&err)) {
     ctx_.tracef("[FontTable] loadBuiltins failed: %s\n", err.c_str());
   }
+  
+  x11_cpp_set_window_table(&ctx_.windows());
 }
 
 x11::XProtoServer::~XProtoServer() = default;

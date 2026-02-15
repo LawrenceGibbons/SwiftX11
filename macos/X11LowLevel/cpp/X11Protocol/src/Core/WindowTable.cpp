@@ -26,45 +26,33 @@ const WindowTable::WindowState* WindowTable::findLocked(uint32_t xid) const {
   return &it->second;
 }
 
-// Root is XID 0x00000001 in your server.
-static constexpr uint32_t kRootXid = 0x00000001u;
 
-uint32_t WindowTable::topLevelAncestorLocked(uint32_t xid) const {
-  uint32_t cur = xid;
-
-  for (;;) {
-    auto it = map_.find(cur);
-    if (it == map_.end()) {
-      // If we don't know, fall back to original xid.
-      return xid;
-    }
-
-    const uint32_t p = it->second.parent;
-
-    // If parent is root/none, cur is top-level.
-    if (p == 0 || p == kRootXid) return cur;
-
-    cur = p;
-  }
-}
-
-  
   uint32_t WindowTable::topLevelAncestorOf(uint32_t xid) const {
     if (xid == 0) return 0;
     std::lock_guard<std::mutex> lock(mu_);
-    auto it = map_.find(xid);
-    if (it == map_.end()) return xid;
+    return topLevelAncestorLocked(xid);
+  }
 
+  uint32_t WindowTable::topLevelAncestorLocked(uint32_t xid) const {
+    // Root is XID 0x00000001 in your server.
+    static constexpr uint32_t kRootXid = 0x00000001u;
     uint32_t cur = xid;
+
     for (;;) {
-      auto it2 = map_.find(cur);
-      if (it2 == map_.end()) return cur;
-      uint32_t p = it2->second.parent;
-      if (p == 0 || p == 1) return cur; // 1 = root
+      auto it = map_.find(cur);
+      if (it == map_.end()) {
+        // If we don't know the chain, fall back to the original xid.
+        return xid;
+      }
+
+      const uint32_t p = it->second.parent;
+
+      // If parent is root/none, cur is top-level.
+      if (p == 0 || p == kRootXid) return cur;
+
       cur = p;
     }
   }  
-  
   
 void WindowTable::upsert(uint32_t xid, uint32_t parent,
                          int16_t x, int16_t y,
@@ -231,40 +219,131 @@ void WindowTable::setEventMask(uint32_t xid, uint32_t event_mask) {
   st->serial++;
 }
 
+// Assumes mu_ is held.
+void WindowTable::setGeomLocked_(WindowState& st,
+                                int16_t x, int16_t y,
+                                uint16_t w, uint16_t h,
+                                const char* why,
+                                const char* file,
+                                int line)
+{
+  if (w == 0) w = 1;
+  if (h == 0) h = 1;
+
+  const uint16_t oldW = st.w;
+  const uint16_t oldH = st.h;
+
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[WT] setGeometry xid=0x%08X old=(%d,%d %ux%u) new=(%d,%d %ux%u) why=%s @%s:%d\n",
+          (unsigned)st.xid,
+          (int)st.x, (int)st.y, (unsigned)st.w, (unsigned)st.h,
+          (int)x, (int)y, (unsigned)w, (unsigned)h,
+          why ? why : "?", file ? file : "?", line);
+#endif
+
+  st.x = x;
+  st.y = y;
+  st.w = w;
+  st.h = h;
+
+  // IMPORTANT: only stamp lastGeom* when SIZE changes (keeps clampXY from stomping it)
+  if (oldW != w || oldH != h) {
+    st.lastGeomWhy  = why;
+    st.lastGeomFile = file;
+    st.lastGeomLine = line;
+#ifndef NDEBUG
+    fprintf(stderr,
+            "[WT] setGeometry SIZE xid=0x%08X parent=0x%08X old=%ux%u new=%ux%u why=%s @%s:%d\n",
+            (unsigned)st.xid,
+            (unsigned)st.parent,
+            (unsigned)oldW, (unsigned)oldH,
+            (unsigned)w, (unsigned)h,
+            why ? why : "?", file ? file : "?", line);
+#endif
+  }
+
+  st.serial++;
+}
+
+// Assumes mu_ is held. Does NOT touch lastGeom* (position-only changes).
+void WindowTable::setXYLocked_(WindowState& st,
+                               int16_t x, int16_t y,
+                               const char* why,
+                               const char* file,
+                               int line)
+{
+  if (x == st.x && y == st.y) return;
+
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[WT] clampXY xid=0x%08X old=(%d,%d) new=(%d,%d) why=%s @%s:%d\n",
+          (unsigned)st.xid,
+          (int)st.x, (int)st.y,
+          (int)x, (int)y,
+          why ? why : "?", file ? file : "?", line);
+#endif
+
+  st.x = x;
+  st.y = y;
+  st.serial++;
+}
 void WindowTable::setGeometry(uint32_t xid,
                               int16_t x, int16_t y,
                               uint16_t w, uint16_t h)
 {
+  setGeometryDbg(xid, x, y, w, h, "setGeometry", __FILE__, __LINE__);
+}
+  
+void WindowTable::setGeometryDbg(uint32_t xid,
+                                 int16_t x, int16_t y,
+                                 uint16_t w, uint16_t h,
+                                 const char* why,
+                                 const char* file,
+                                 int line)
+{
   if (xid == 0) return;
-  if (w == 0) w = 1;
-  if (h == 0) h = 1;
 
   std::lock_guard<std::mutex> lock(mu_);
   WindowState* st = findLocked(xid);
   if (!st) return;
 
-  st->x = x;
-  st->y = y;
-  st->w = w;
-  st->h = h;
-
-  // Do NOT touch st->dirty here.
-  // st->dirty is for “damage happened before ready-to-present” gating only.
-  // Geometry changes are handled by X11 Configure/Expose notifications
-  st->serial++;
+  setGeomLocked_(*st, x, y, w, h, why, file, line);
 }
+
   
 void WindowTable::setGeometryRootlessHost(uint32_t xid,
                                           int16_t x, int16_t y,
                                           uint16_t w, uint16_t h)
 {
   // First: set host geometry
-  setGeometry(xid, x, y, w, h);
+  setGeometryDbg(xid, x, y, w, h, "RootlessHost:setGeometry", __FILE__, __LINE__);
+//  setGeometry(xid, x, y, w, h);
 
   // Then: enforce rootless constraint policy
   clampDescendantsToParent(xid);
 }
   
+  
+void WindowTable::noteFbResizeDbg(uint32_t xid,
+                                 const char* why,
+                                 const char* file,
+                                 int line)
+{
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+
+  st->lastFbWhy  = why;
+  st->lastFbFile = file;
+  st->lastFbLine = line;
+
+#ifndef NDEBUG
+  fprintf(stderr, "[WT] noteFbResize xid=0x%08X why=%s @%s:%d\n",
+          (unsigned)xid, why ? why : "?", file ? file : "?", line);
+#endif
+}  
   
 bool WindowTable::queryTree(uint32_t wid,
                             uint32_t* outParent,
@@ -306,6 +385,7 @@ bool WindowTable::queryTree(uint32_t wid,
   if (outNChildren) *outNChildren = n;
   return true;
 }
+  
   
 
 std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
@@ -405,6 +485,7 @@ std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
       if (itP == map_.end()) continue;
       const WindowState& p = itP->second;
 
+      // Clamp children of this parent.
       for (auto& kv : map_) {
         WindowState& c = kv.second;
         if (c.parent != parentXid) continue;
@@ -412,25 +493,27 @@ std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
         // Enqueue this child so we clamp its children too
         queue.push_back(c.xid);
 
-        // Clamp child size to fit inside its *direct* parent.
-        int32_t maxW = (int32_t)p.w - (int32_t)c.x;
-        int32_t maxH = (int32_t)p.h - (int32_t)c.y;
-        if (maxW < 1) maxW = 1;
-        if (maxH < 1) maxH = 1;
+        // ---- Option B: Clamp x/y only; DO NOT modify c.w/c.h ----
+        // Keep child origin inside parent. If parent is 1px wide/high, origin must be 0.
+        const int32_t maxX = (p.w > 0) ? ((int32_t)p.w - 1) : 0;
+        const int32_t maxY = (p.h > 0) ? ((int32_t)p.h - 1) : 0;
 
-        uint16_t newW = c.w;
-        uint16_t newH = c.h;
+        int32_t nx = (int32_t)c.x;
+        int32_t ny = (int32_t)c.y;
 
-        if ((int32_t)newW > maxW) newW = (uint16_t)maxW;
-        if ((int32_t)newH > maxH) newH = (uint16_t)maxH;
+        if (nx < 0) nx = 0;
+        if (ny < 0) ny = 0;
+        if (nx > maxX) nx = maxX;
+        if (ny > maxY) ny = maxY;
 
-        if (newW != c.w || newH != c.h) {
-          c.w = newW;
-          c.h = newH;
-          c.serial++;
+        const int16_t newX = (int16_t)nx;
+        const int16_t newY = (int16_t)ny;
+
+        if (newX != c.x || newY != c.y) {
+          setXYLocked_(c, newX, newY, "ClampDescendantsToParent", __FILE__, __LINE__);
         }
       }
     }
   }
-  
+    
 } // namespace x11

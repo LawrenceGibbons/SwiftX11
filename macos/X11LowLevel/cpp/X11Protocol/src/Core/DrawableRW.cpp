@@ -19,55 +19,43 @@ extern "C" int x11_xproto_window_fb_rw(uint32_t xid,
 
 namespace x11 {
 
-bool resolveDrawableRW(XProtoContext& ctx,
-                       uint32_t drawable,
-                       DrawableRW& out)
-{
-  out = {}; // reset
+  bool resolveDrawableRW(XProtoContext& ctx,
+                         uint32_t drawable,
+                         DrawableRW& out)
+  {
+    out = {}; // clear
 
-  // ------------------------------------------------------------
-  // 1) Pixmap (preferred: pure C++)
-  // ------------------------------------------------------------
-  if (ctx.pixmaps().exists(drawable)) {
-    uint16_t w = 0, h = 0;
+    if (ctx.windows().exists(drawable)) {
+      uint32_t* pix = nullptr;
+      uint32_t w = 0, h = 0;
+      if (!x11_xproto_window_fb_rw(drawable, &pix, &w, &h) || !pix)
+        return false;
 
-    // Try depth-1 first
-    uint32_t stride = 0;
-    if (uint8_t* bits = ctx.pixmaps().mutableBits(drawable, &w, &h, &stride)) {
-      out.is_window = false;
-      out.bits1 = bits;
-      out.stride_bytes = stride;
-      out.w = w;
-      out.h = h;
+      out.pixels32 = pix;
+      out.w = (uint16_t)w;
+      out.h = (uint16_t)h;
+      out.isWindow = true;
+      out.isPixmap = false;
+      out.depth = 32;   // if that’s what you use
       return true;
     }
 
-    // Otherwise depth>1
-    if (uint32_t* px = ctx.pixmaps().mutablePixels(drawable, &w, &h)) {
-      out.is_window = false;
-      out.pixels32 = px;
-      out.w = w;
-      out.h = h;
+    if (ctx.pixmaps().exists(drawable)) {
+      uint16_t pw = 0, ph = 0;
+      uint32_t* pix = ctx.pixmaps().mutablePixels(drawable, &pw, &ph);
+      if (!pix) return false;
+
+      out.pixels32 = pix;
+      out.w = pw;
+      out.h = ph;
+      out.isWindow = false;
+      out.isPixmap = true;
+      out.depth = 32;   // or whatever pixmap depth is
       return true;
     }
 
     return false;
   }
-
-  // ------------------------------------------------------------
-  // 2) Window (C framebuffer via bridge)
-  // ------------------------------------------------------------
-  uint32_t* px = nullptr;
-  uint32_t w = 0, h = 0;
-  if (x11_xproto_window_fb_rw(drawable, &px, &w, &h) && px) {
-    out.is_window = true;
-    out.pixels32 = px;
-    out.w = (uint16_t)w;
-    out.h = (uint16_t)h;
-    return true;
-  }
-
-  return false;
-}
+  
 
 } // namespace x11

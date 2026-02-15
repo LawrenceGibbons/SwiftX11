@@ -26,16 +26,18 @@ extern "C" {
 #include "XProtoServerBridge.h"
 #include "x11_backend_fb.h"
 #include <cstdio>   // snprintf
+#include "Debug/x11_backend_fb_dbg.hpp"
 
 namespace x11 {
 
   
 WindowOps::WindowOps(XProtoRegistrar& reg) {
-  reg.registerMajor(x11::opcode::CreateWindow,  &WindowOps::onMajor, this);  // CreateWindow
-  reg.registerMajor(x11::opcode::DestroyWindow, &WindowOps::onMajor, this);  // DestroyWindow
-  reg.registerMajor(x11::opcode::MapWindow,     &WindowOps::onMajor, this);  // MapWindow
-  reg.registerMajor(x11::opcode::MapSubwindows, &WindowOps::onMajor, this);  // MapSubwindows
-  reg.registerMajor(x11::opcode::UnmapWindow  , &WindowOps::onMajor, this);  // UnmapWindow
+  reg.registerMajor(x11::opcode::CreateWindow,    &WindowOps::onMajor, this);  // CreateWindow
+  reg.registerMajor(x11::opcode::DestroyWindow,   &WindowOps::onMajor, this);  // DestroyWindow
+  reg.registerMajor(x11::opcode::MapWindow,       &WindowOps::onMajor, this);  // MapWindow
+  reg.registerMajor(x11::opcode::MapSubwindows,   &WindowOps::onMajor, this);  // MapSubwindows
+  reg.registerMajor(x11::opcode::UnmapWindow  ,   &WindowOps::onMajor, this);  // UnmapWindow
+  reg.registerMajor(x11::opcode::UnmapSubwindows, &WindowOps::onMajor, this);  // UnmapSubwindows
 }
 
 void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -45,11 +47,12 @@ void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case x11::opcode::CreateWindow :  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
-    case x11::opcode::DestroyWindow:  handleDestroyWindow(ctx, dc.seq, dc.br); return;
-    case x11::opcode::MapWindow    :  handleMapWindow(ctx, dc.seq, dc.br); return;
-    case x11::opcode::MapSubwindows:  handleMapSubwindows(ctx, dc.seq, dc.br); return;
-    case x11::opcode::UnmapWindow  : handleUnmapWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::CreateWindow    :  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
+    case x11::opcode::DestroyWindow   :  handleDestroyWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::MapWindow       :  handleMapWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::MapSubwindows   :  handleMapSubwindows(ctx, dc.seq, dc.br); return;
+    case x11::opcode::UnmapWindow     : handleUnmapWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::UnmapSubwindows : handleUnmapSubwindows(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -108,6 +111,9 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
     ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
     return;
   }
+  // FB exists now; record the callsite that *actually* established it.
+  ctx.windows().noteFbResizeDbg(wid, "CreateWindow", __FILE__, __LINE__);
+  
   if (dirty) ctx.windows().markDirty(wid);
 
   // Enqueue Swift window creation (same behavior as enqueue_create_window)
@@ -141,63 +147,96 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   
   
 void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  // Request body: CARD32 window
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t wid = br.readU32();
   br.skip(br.remaining());
+  if (wid == 0) return;
 
   // 1) Update authoritative table
   ctx.windows().setMapped(wid, true);
 
-  // 2) Swift-side event (existing behavior)
-  x11_requests_push_map(wid);
+  // Rootless rule: only top-level host windows drive Cocoa.
+  const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
 
-  // 3) Expose to client *if client selected ExposureMask*
-  // We don't have the C w->event_mask anymore, so query via ctx.window()
+  // 2) Swift-side map only for the host
+  if (host == wid) {
+    x11_requests_push_map(wid);
+  }
+
+  // 3) Notify client if selected (always on wid, not host)
   if (const WindowView* vw = ctx.window(wid)) {
-    const bool wantExp = vw->mapped && ((vw->event_mask & (1u<<15)) != 0);
-    const bool wantCfg =               ((vw->event_mask & (1u<<17)) != 0);
+    const bool wantExp = vw->mapped && ((vw->event_mask & (1u << 15)) != 0);
+    const bool wantCfg =               ((vw->event_mask & (1u << 17)) != 0);
     if (wantExp || wantCfg) {
       ctx.transport().queueNotify(wid, wantCfg, wantExp);
     }
   }
 
-  // 4) If drawing happened before map/presentable, flush once now
-  if (ctx.windows().consumeDirtyIfReady(wid)) {
-    x11_requests_push_damage(wid);
+  // 4) If anything drew before presentable, flush once now (route to host)
+  if (host != 0) {
+    if (ctx.windows().consumeDirtyIfReady(host)) {
+      x11_requests_push_damage(host);
+    }
   }
 }
-
+  
+  
 void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t parent = br.readU32();
   br.skip(br.remaining());
+  if (parent == 0) return;
+
+  // Rootless host for this subtree.
+  const uint32_t host = ctx.windows().topLevelAncestorOf(parent);
 
   // Map all descendants (not including the parent itself)
   auto desc = ctx.windows().descendantsOf(parent);
+
+  // Track whether anything changed and whether we should flush host dirty once.
+  bool anyMapped = false;
+
   for (uint32_t xid : desc) {
     // Skip if already mapped
-    const WindowView* before = ctx.window(xid);
-    if (before && before->mapped) continue;
+    if (const WindowView* before = ctx.window(xid)) {
+      if (before->mapped) continue;
+    }
+
+    anyMapped = true;
 
     // 1) Authoritative state
     ctx.windows().setMapped(xid, true);
 
-    // 2) Swift side map event (rootless visibility)
-    x11_requests_push_map(xid);
-
-    // 3) Expose/ConfigureNotify to client if selected
+    // 2) Notify client if selected (per-window)
     if (const WindowView* vw = ctx.window(xid)) {
-      const bool wantExp = ((vw->event_mask & (1u << 15)) != 0); // ExposureMask
-      const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
+      const bool wantExp = vw->mapped && ((vw->event_mask & (1u << 15)) != 0); // ExposureMask
+      const bool wantCfg =               ((vw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
       if (wantExp || wantCfg) {
         ctx.transport().queueNotify(xid, wantCfg, wantExp);
       }
     }
 
-    // 4) If it drew before being ready-to-present, flush once now
-    if (ctx.windows().consumeDirtyIfReady(xid)) {
-      x11_requests_push_damage(xid);
+    // 3) If this window had "dirty before presentable", we want a host flush.
+    // Consume on host, not xid (child windows are not presentable in rootless).
+    // Marking host dirty is also fine; consumeDirtyIfReady(host) will handle it later.
+    if (host != 0) {
+      // If you keep dirty flags on children (legacy), convert them into host-dirty here:
+      // NOTE: consumeDirtyIfReady(xid) is wrong for child windows in rootless.
+      // Prefer: ctx.windows().markDirty(host);
+      // But to preserve "consume once" semantics, do it this way:
+      // (We don't have a "isDirty(xid)" accessor, so just always mark host dirty on map.)
+      ctx.windows().markDirty(host);
+    }
+  }
+
+  // 4) Cocoa visibility: only map the host (once).
+  if (anyMapped && host != 0) {
+    // If the host itself is being mapped elsewhere, this is harmless (Swift side should de-dupe).
+    x11_requests_push_map(host);
+
+    // If anything was dirty, flush once now if host is ready.
+    if (ctx.windows().consumeDirtyIfReady(host)) {
+      x11_requests_push_damage(host);
     }
   }
 }
@@ -207,51 +246,126 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t wid = br.readU32();
   br.skip(br.remaining());
+  if (wid == 0) return;
 
+  // 1) Update authoritative table
   ctx.windows().setMapped(wid, false);
 
-  // ensure it will repaint after next map/presentable
-  ctx.windows().markDirty(wid);
-
-  x11_requests_push_unmap(wid);
-}
-
-// Host resized native surface for wid; update server truth + backing FB + notify + redraw.
-// Called on server/protocol thread.
-void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t h_px)
-{
-  if (wid == 0) return;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
-
-  const WindowView* vw0 = ctx.window(wid);
-  if (!vw0) return;
-
-  const uint16_t old_w = vw0->w;
-  const uint16_t old_h = vw0->h;
-
-  uint16_t new_w = (uint16_t)((w_px > 65535) ? 65535 : w_px);
-  uint16_t new_h = (uint16_t)((h_px > 65535) ? 65535 : h_px);
-
-  if (new_w == 0) new_w = 1;
-  if (new_h == 0) new_h = 1;
-  if (new_w == old_w && new_h == old_h) return;
-
-  // 1) Resize backing FB (C owns pixels).
-  x11_backend_fb_resize(wid, new_w, new_h);
-
-  // 2) Update authoritative geometry in C++ (x/y unchanged).
-  ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
-
-  // 3) Notify owning client if selected.
-  if (const WindowView* vw = ctx.window(wid)) {
-    const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);                 // StructureNotifyMask
-    const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0)); // ExposureMask
-    if (wantCfg || wantExp) ctx.transport().queueNotify(wid, wantCfg, wantExp);
+  // 2) Rootless: route "needs repaint later" to host, not child.
+  const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+  if (host != 0) {
+    ctx.windows().markDirty(host);
+  } else {
+    // fallback (shouldn't happen)
+    ctx.windows().markDirty(wid);
   }
 
-  // 5) Redraw/present (gated).
-  damageOrDirty(ctx, wid);
+  // 3) Swift/UI visibility: only top-level host should actually be hidden.
+  // If wid is a child, Cocoa window should remain; compositing will omit it.
+  if (host == wid) {
+    x11_requests_push_unmap(wid);
+  } else if (host != 0) {
+    // Optional: if you maintain per-xid Swift state, you may still want to tell Swift
+    // "child is unmapped" for hit-testing, but do NOT hide the NSWindow.
+    // For now, keep it simple: no Swift event for children.
+  }
 }
   
+// -----------------------------
+// UnmapSubwindows (major 11)
+// -----------------------------
+void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Request body: CARD32 parent
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t parent = br.readU32();
+  br.skip(br.remaining());
+  if (parent == 0) return;
+
+  // Unmap all descendants (not including the parent itself)
+  auto desc = ctx.windows().descendantsOf(parent);
+
+  for (uint32_t xid : desc) {
+    const WindowView* before = ctx.window(xid);
+    if (before && !before->mapped) continue; // already unmapped
+
+    // 1) Authoritative state
+    ctx.windows().setMapped(xid, false);
+
+    // 2) Rootless: ensure the host will repaint to reflect the child disappearing
+    const uint32_t host = ctx.windows().topLevelAncestorOf(xid);
+    if (host != 0) ctx.windows().markDirty(host);
+
+    // 3) (Optional future) UnmapNotify to client if StructureNotifyMask selected.
+    // You probably don’t have UnmapNotify event wiring yet, so omit for now.
+  }
+
+  // If the parent itself is a top-level host, you may optionally mark it dirty too
+  // (helpful if descendantsOf() missed something).
+  const uint32_t hostP = ctx.windows().topLevelAncestorOf(parent);
+  if (hostP != 0) ctx.windows().markDirty(hostP);
+}
+  
+  
+// Host resized native surface for wid; update server truth + backing FB + notify + redraw.
+// Called on server/protocol thread.
+  void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t h_px)
+  {
+    if (wid == 0) return;
+    if (w_px < 1) w_px = 1;
+    if (h_px < 1) h_px = 1;
+
+    const WindowView* vw0 = ctx.window(wid);
+    if (!vw0) return;
+
+    const uint16_t old_w = vw0->w;
+    const uint16_t old_h = vw0->h;
+
+    uint16_t new_w = (uint16_t)((w_px > 65535) ? 65535 : w_px);
+    uint16_t new_h = (uint16_t)((h_px > 65535) ? 65535 : h_px);
+    if (new_w == 0) new_w = 1;
+    if (new_h == 0) new_h = 1;
+    if (new_w == old_w && new_h == old_h) return;
+
+  #ifndef NDEBUG
+    const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host != wid) {
+      ctx.tracef("[PROTO BUG] applyRootlessResize called on non-host wid=0x%08X host=0x%08X\n",
+                 (unsigned)wid, (unsigned)host);
+    }
+  #endif
+
+    // 1) Resize backing FB (C owns pixels).
+    FB_RESIZE(wid, new_w, new_h, "applyRootlessResize on wid (step 1)");
+    //x11_backend_fb_resize(wid, new_w, new_h);
+
+    // 2) Update authoritative geometry in C++.
+    ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
+
+    // Optional: if your policy is to clamp child windows on host resize, do it here.
+    // ctx.windows().clampDescendantsToParent(wid);
+
+    // 3) Sync descendant FB sizes to authoritative geometry.
+    {
+      auto kids = ctx.windows().descendantsOf(wid);
+      for (uint32_t kid : kids) {
+        WindowView kv{};
+        if (!ctx.windows().snapshot(kid, kv)) continue;
+
+        const uint16_t kw = kv.w ? kv.w : 1;
+        const uint16_t kh = kv.h ? kv.h : 1;
+        FB_RESIZE(kid, kw, kh, "applyRootlessResize on descendant kid (step 3)");
+        //x11_backend_fb_resize(kid, kw, kh);
+      }
+    }
+
+    // 4) Notify owning client if selected.
+    if (const WindowView* vw = ctx.window(wid)) {
+      const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);
+      const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0));
+      if (wantCfg || wantExp) ctx.transport().queueNotify(wid, wantCfg, wantExp);
+    }
+
+    // 5) Redraw/present (gated).
+    damageOrDirty(ctx, wid);
+  }
 } // namespace x11

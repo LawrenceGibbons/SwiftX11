@@ -5,14 +5,14 @@
 //  Created by Lawrence Gibbons on 1/19/26.
 //
 
-#include "Ops/DrawOps.hpp"
 
 #include <cstddef>
 #include <cstdint>
 
+#include "Utils/ByteReader.hpp"
+#include "Ops/DrawOps.hpp"
 #include "Core/XProtoContext.hpp"
 #include "Transport/XProtoTransport.hpp"
-#include "Utils/ByteReader.hpp"
 #include "Core/PixmapTable.hpp"   // adjust include path to your project
 #include "Core/WindowTable.hpp"
 #include "Core/GCTable.hpp"
@@ -102,10 +102,12 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
   const uint16_t width  = br.readU16();
   const uint16_t height = br.readU16();
-  const int16_t  dstX   = (int16_t)br.readU16();
-  const int16_t  dstY   = (int16_t)br.readU16();
-
+  const int16_t dstX = br.readI16();
+  const int16_t dstY = br.readI16();
+  
   const uint8_t leftPad = br.readU8();
+  if (leftPad > 7) { br.skip(br.remaining()); return; }
+
   const uint8_t depth   = br.readU8();
   br.skip(2); // pad0/pad1
 
@@ -117,7 +119,14 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     return;
   }
 
+  // Is destination a window?
   const bool dstIsWindow = ctx.windows().exists(drawable);
+
+  // PutImage-to-window not implemented yet (we only support depth-1 pixmaps)
+  if (dstIsWindow) {
+    br.skip(br.remaining());
+    return;
+  }
 
   // Destination pixmap must be depth=1 (packed bits).
   uint16_t pw = 0, ph = 0;
@@ -127,7 +136,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     br.skip(br.remaining());
     return;
   }
-
+  
   const uint32_t srcStride = computeStrideBytesXY1(width, leftPad);
   const uint64_t need64 = (uint64_t)srcStride * (uint64_t)height;
   if (need64 > br.remaining()) {
@@ -140,10 +149,10 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   const uint8_t* src = br.ptr();   // raw packed bitmap data
   br.skip(br.remaining());         // consume rest (including request padding)
 
-  // xxx temp ---
-  ctx.tracef("[PutImage] drawable=0x%08X dstIsWindow=%d w=%u h=%u depth=%u fmt=%u\n",
+#ifndef NDEBUG
+  ctx.tracef("[PutImage] drawable=0x%08X dstIsWindow=%d pw=%u ph=%u depth=%u fmt=%u\n",
              drawable, dstIsWindow ? 1 : 0, pw, ph, depth, format);
-  // xxx --- temp
+#endif
   
   // Copy bits from src into dstBits (both LSBFirst as per SetupSuccess).
   // NOTE: PutImage uses leftPad in *source bit indexing*.
@@ -167,8 +176,9 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       const bool on = (sb & smask) != 0;
 
       // Destination packed bit at (dx, dy)
-      const uint32_t dByte = ((uint32_t)dx) >> 3;
-      const uint32_t dBit  = ((uint32_t)dx) & 7u;
+      const uint32_t ux = (uint32_t)dx;
+      const uint32_t dByte = ux >> 3;
+      const uint32_t dBit  = ux & 7u;
       const uint8_t  dmask = kBitmapBitOrderLSBFirst ? (uint8_t)(1u << dBit) : (uint8_t)(1u << (7u - dBit));
 
       uint8_t* drow = dstBits + (std::size_t)dy * (std::size_t)dstStride;
@@ -176,24 +186,6 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       else    drow[dByte] &= (uint8_t)~dmask;
     }
   }
-
-// xxx maybe temp  if (dstIsWindow) {
-// xxx maybe temp    ctx.tracef("[DAMAGE_ROUTE] PutImage wid=%d stays unrouted\n", drawable);
-// xxx maybe temp    if (ctx.windows().isReadyToPresent(drawable)) {
-// xxx maybe temp      // IMPORTANT: damage must be attributed to the drawable that changed (drawable),
-// xxx maybe temp      // NOT the host. Swift will map wid -> host and choose source correctly.
-// xxx maybe temp      x11_requests_push_damage(drawable);
-// xxx maybe temp    } else {
-// xxx maybe temp      ctx.windows().markDirty(drawable);
-// xxx maybe temp    }
-// xxx maybe temp  }
-  // xxx maybe temp ---- 
-  if (dstIsWindow) {
-    x11_requests_push_damage(drawable);
-  }
-  // xxx ---- maybe temp 
-  
-  (void)need;
 }
 
 
@@ -218,11 +210,11 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const uint32_t dst = br.readU32();
     (void)br.readU32(); // gc
 
-    const int16_t srcX = (int16_t)br.readU16();
-    const int16_t srcY = (int16_t)br.readU16();
-    const int16_t dstX = (int16_t)br.readU16();
-    const int16_t dstY = (int16_t)br.readU16();
-
+    const int16_t srcX = br.readI16();
+    const int16_t srcY = br.readI16();
+    const int16_t dstX = br.readI16();
+    const int16_t dstY = br.readI16();
+    
     const uint16_t wpx = br.readU16();
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
@@ -267,8 +259,6 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const bool dstIsWin = ctx.windows().exists(dst);
     const bool dstIsPix = ctx.pixmaps().exists(dst);
 
-    bool dstIsWindow = false;
-
     if (dstIsWin) {
       uint32_t* wPixels = nullptr;
       uint32_t wW = 0, wH = 0;
@@ -276,14 +266,12 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       dstPixels = wPixels;
       dstW = (int)wW;
       dstH = (int)wH;
-      dstIsWindow = true;
     } else if (dstIsPix) {
       uint16_t pw = 0, ph = 0;
       dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
       if (!dstPixels) return;
       dstW = (int)pw;
       dstH = (int)ph;
-      dstIsWindow = false;
     } else {
       return; // unknown drawable
     }
@@ -311,7 +299,9 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     // ------------------------------------------------------------
     // Damage only if destination is a window (pixmaps present when copied into a window)
     // ------------------------------------------------------------
-    damageOrDirty(ctx, dst );
+    if (dstIsWin) {
+      damageOrDirty(ctx, dst );
+    }
   }
   
   
@@ -338,10 +328,10 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const uint32_t dst = br.readU32();
     const uint32_t gc  = br.readU32();
     
-    const int16_t srcX = (int16_t)br.readU16();
-    const int16_t srcY = (int16_t)br.readU16();
-    const int16_t dstX = (int16_t)br.readU16();
-    const int16_t dstY = (int16_t)br.readU16();
+    const int16_t srcX = br.readI16();
+    const int16_t srcY = br.readI16();
+    const int16_t dstX = br.readI16();
+    const int16_t dstY = br.readI16();
     
     const uint16_t wpx = br.readU16();
     const uint16_t hpx = br.readU16();
@@ -351,8 +341,9 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     
     if (wpx == 0 || hpx == 0) return;
     
-    // Minimal: only support plane 1 (the usual for depth-1 pixmaps).
-    if (bitPlane != 1u) return;
+    // For depth-1 sources the only meaningful plane is 1.
+    // Accept any single-bit plane to be permissive, but behavior is identical.
+    if ((bitPlane == 0) || (bitPlane & (bitPlane - 1)) != 0) return; // must be power of two
     
     // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
     const bool BIT_ORDER_LSB_FIRST = true;
@@ -502,95 +493,71 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     }
     
     // Damage only if destination is a window.
-    damageOrDirty(ctx, dst );
-      
+    if ( dstIsWindow ) {
+      damageOrDirty(ctx, dst );
+    }
   }
   
   
   void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t /*seq*/, uint8_t exposures, ByteReader& br)
   {
-    // Body after 4-byte header (12 bytes):
-    //   CARD32 window
-    //   INT16  x
-    //   INT16  y
-    //   CARD16 width
-    //   CARD16 height
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
     const uint32_t wid = br.readU32();
-    const int16_t  x   = (int16_t)br.readU16();
-    const int16_t  y   = (int16_t)br.readU16();
+    const int16_t  x   = br.readI16();
+    const int16_t  y   = br.readI16();
     const uint16_t wpx = br.readU16();
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
 
     if (wid == 0) return;
-
-    // ClearArea targets WINDOW only (bring-up).
     if (!ctx.windows().exists(wid)) return;
 
-    // Get window framebuffer (C-side storage)
     uint32_t* pixels = nullptr;
     uint32_t fbW = 0, fbH = 0;
     if (!x11_xproto_window_fb_rw(wid, &pixels, &fbW, &fbH) || !pixels || fbW == 0 || fbH == 0) return;
 
-    // X11 semantics: width/height == 0 means “to the right/bottom edge”
     int x0 = (int)x;
     int y0 = (int)y;
 
+    // clamp start
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x0 > (int)fbW) x0 = (int)fbW;
+    if (y0 > (int)fbH) y0 = (int)fbH;
+
+    // width/height == 0 => to edge from clamped origin
     int x1 = (wpx == 0) ? (int)fbW : (x0 + (int)wpx);
     int y1 = (hpx == 0) ? (int)fbH : (y0 + (int)hpx);
 
-    // Clamp
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
+    // clamp end
     if (x1 > (int)fbW) x1 = (int)fbW;
     if (y1 > (int)fbH) y1 = (int)fbH;
 
     if (x0 >= x1 || y0 >= y1) return;
 
-    // Bring-up background: opaque white (matches your existing C behavior).
     const uint32_t bg = 0xFFFFFFFFu;
-
     for (int yy = y0; yy < y1; yy++) {
       uint32_t* row = pixels + (size_t)yy * (size_t)fbW;
-      for (int xx = x0; xx < x1; xx++) {
-        row[xx] = bg;
-      }
+      for (int xx = x0; xx < x1; xx++) row[xx] = bg;
     }
 
-    // Damage -> present
-    {
-// xxx maybe temp      ctx.tracef("[DAMAGE_ROUTE] ClearArea sticks with wid=0x%08X \n", wid);
-// xxx maybe temp      if (ctx.windows().isReadyToPresent(wid)) {
-// xxx maybe temp         // IMPORTANT: damage must be attributed to the drawable that changed (wid),
-// xxx maybe temp         // NOT the host. Swift will map wid -> host and choose source correctly.
-// xxx maybe temp         x11_requests_push_damage(wid);
-// xxx maybe temp       } else {
-// xxx maybe temp         ctx.windows().markDirty(wid);
-// xxx maybe temp       }
-// xxx maybe temp ---- 
-      if (ctx.windows().exists(wid)) {
-        x11_requests_push_damage((wid));
-      }
-// xxx ---- maybe temp 
-    }
+    // Damage -> present (rootless routing + presentable gating)
+    damageOrDirty(ctx, wid);
 
-    
-    // Optional Expose event (only if client asked for exposures and selected ExposureMask)
     if (exposures) {
       if (const WindowView* vw = ctx.window(wid)) {
         const bool wantsExpose = vw->mapped && ((vw->event_mask & (1u << 15)) != 0);
         if (wantsExpose) {
-          // Count=0 for bring-up (matches prior behavior)
-          ctx.transport().queueExposeRect(wid,
-                                         (uint16_t)x0, (uint16_t)y0,
-                                         (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
-                                         0);
+          ctx.transport().queueExposeRect(
+            wid,
+            (uint16_t)x0, (uint16_t)y0,
+            (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
+            0
+          );
         }
       }
     }
   }
-  
   
 } // namespace x11

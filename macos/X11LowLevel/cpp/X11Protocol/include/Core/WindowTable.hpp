@@ -49,9 +49,29 @@ public:
                    int16_t x, int16_t y,
                    uint16_t w, uint16_t h);
   
+  void setGeometryDbg(uint32_t xid, 
+                      int16_t x, int16_t y,
+                      uint16_t w, uint16_t h,
+                      const char* why, const char* file, int line);
+
+  
+#define WT_GEOM_SET(xid,x,y,w,h,why) \
+  ctx.windows().setGeometryDbg((xid),(x),(y),(w),(h),(why),__FILE__,__LINE__)
+
+#define WT_NOTE_FB_RESIZE(xid,why) \
+  ctx.windows().noteFbResizeDbg((xid),(why),__FILE__,__LINE__)
+  
   // Rootless host geometry update: update host geometry AND clamp descendants
   // to fit within their direct parent. Does NOT set dirty (present gating) flags.
   void setGeometryRootlessHost(uint32_t xid, int16_t x, int16_t y, uint16_t w, uint16_t h);
+  
+  void noteFbResizeDbg(uint32_t xid,
+                       const char* why,
+                       const char* file,
+                       int line);
+  
+  // “Top-level” in rootless world = parent chain ends at 1 (root). Return the highest non-root window.
+  uint32_t topLevelAncestorOf(uint32_t xid) const;
   
   // Erase all windows owned by owner_fd.
   // Returns erased XIDs in child-first order (deepest children first).
@@ -80,8 +100,6 @@ public:
   // Marks dirty when a child's size changes.
   void clampDescendantsToParent(uint32_t rootXid);
   
-  uint32_t topLevelAncestorOf(uint32_t xid) const;
-
 
 private:
   struct WindowState {
@@ -100,6 +118,16 @@ private:
     int owner_fd = -1;
 
     uint64_t serial = 0;
+    
+    // debug breadcrumbs
+    const char* lastGeomWhy = nullptr;
+    const char* lastGeomFile = nullptr;
+    int         lastGeomLine = 0;
+
+    const char* lastFbWhy = nullptr;
+    const char* lastFbFile = nullptr;
+    int         lastFbLine = 0;
+
   };
 
   mutable std::mutex mu_;
@@ -109,6 +137,19 @@ private:
   WindowState* findLocked(uint32_t xid);
   const WindowState* findLocked(uint32_t xid) const;
   uint32_t topLevelAncestorLocked(uint32_t xid) const;
+  
+  void setGeomLocked_(WindowState& st,
+                      int16_t x, int16_t y,
+                      uint16_t w, uint16_t h,
+                      const char* why,
+                      const char* file,
+                      int line);
+  
+  void setXYLocked_(WindowState& st,
+                    int16_t x, int16_t y,
+                    const char* why,
+                    const char* file,
+                    int line);
 };
 
 } // namespace x11

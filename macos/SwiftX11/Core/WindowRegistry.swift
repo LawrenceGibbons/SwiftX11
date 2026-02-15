@@ -53,9 +53,6 @@ final class WindowRegistry {
   // Budget of how many callbacks to suppress before giving up (layout can generate intermediate sizes)
   private var suppressBudget: [UInt32: Int] = [:]
 
-  // De-dupe for rootless resize enqueue
-  private var lastRootlessSent: [UInt32: (w: Int32, h: Int32)] = [:]
-
   // resize related
   private var pendingX11Resize: [UInt32: (w: CGFloat, h: CGFloat)] = [:]
   private var resizeWorkScheduled: Set<UInt32> = []
@@ -101,7 +98,12 @@ final class WindowRegistry {
   
   private var windows: [UInt32: X11WindowController] = [:]
   private var repaintWorkItemByXid: [UInt32: DispatchWorkItem] = [:]
-  private var latestPixelSizeByXid: [UInt32: (w: Int32, h: Int32)] = [:]
+  private var latestHostSizePxByXid: [UInt32: (w: Int32, h: Int32)] = [:]
+  private var latestHostSizePtByXid: [UInt32: (w: Int32, h: Int32)] = [:]
+  // Tracks the last host size we actually *sent* to X11 via Configure.
+  // This is distinct from the latest observed Cocoa sizes.
+  private var lastSentHostSizePxByXid: [UInt32: (w: Int32, h: Int32)] = [:]
+  private var lastSentHostSizePtByXid: [UInt32: (w: Int32, h: Int32)] = [:]
   private var lastRepaintTimeByXid: [UInt32: CFTimeInterval] = [:]
   private var windowObserversByXid: [UInt32: [NSObjectProtocol]] = [:]
   private var suppressNextRaiseFromCocoa: Set<UInt32> = []
@@ -210,11 +212,64 @@ final class WindowRegistry {
     // Now that X11 says mapped, allow Cocoa resizes to flow back to X11.
     ignoreCocoaResizeUntilMapped.remove(host)
 
+//    // (C) One-time sync: tell X11 what Cocoa’s current pixel size is.
+//    if let sz = latestHostSizePxByXid[host] {
+//      sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
+//    }
+    
     // (C) One-time sync: tell X11 what Cocoa’s current pixel size is.
-    if let sz = latestPixelSizeByXid[host] {
-      sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
-    }
+    //
+    // During initial window construction/layout, Cocoa may report transient tiny sizes
+    // (often 1x1pt -> 2x2px). Never seed X11 with those, or the host FB collapses.
+    if let sz = latestHostSizePxByXid[host] {
+      let minStablePx: Int32 = 32
+//      if sz.w < minStablePx || sz.h < minStablePx {
+//        logAppend?(
+//          "[CFG_SYNC] IGNORE tiny initial Cocoa size host=0x\(String(host,radix:16)) " +
+//          "sz=\(sz.w)x\(sz.h) (waiting for real size)"
+//        )
+//      } else {
+//        sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
+//      }
+      if sz.w < minStablePx || sz.h < minStablePx {
+        // Try to seed host from a meaningful child size (xterm's child window is usually the real geometry).
+        var best: (w: Int32, h: Int32)? = nil
 
+        if let kids = childrenByParent[host] {
+          for kid in kids {
+            if let info = infoByXid[kid] {
+              let w = Int32(max(1, info.width))
+              let h = Int32(max(1, info.height))
+              if w >= minStablePx, h >= minStablePx {
+                if best == nil || (w * h) > (best!.w * best!.h) {
+                  best = (w: w, h: h)
+                }
+              }
+            }
+          }
+        }
+
+        if let b = best {
+          logAppend?(
+            "[CFG_SYNC] tiny Cocoa size \(sz.w)x\(sz.h); " +
+            "seeding host from child \(b.w)x\(b.h) host=0x\(String(host,radix:16))"
+          )
+          sendConfigureAsync(xid: host, w: b.w, h: b.h)
+        } else {
+          // Last-resort default so we don't get stuck with a 1x1 host forever.
+          let defW: Int32 = 640
+          let defH: Int32 = 480
+          logAppend?(
+            "[CFG_SYNC] tiny Cocoa size \(sz.w)x\(sz.h); " +
+            "seeding host default \(defW)x\(defH) host=0x\(String(host,radix:16))"
+          )
+          sendConfigureAsync(xid: host, w: defW, h: defH)
+        }
+      } else {
+        sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
+      }
+    }
+    
     mappedXids.insert(host)
 
     X11View.logIfInLayout("mapWindow: orderFront host=0x\(String(host, radix: 16))",
@@ -289,7 +344,8 @@ final class WindowRegistry {
     // 2) Cancel resize/debounce workitems keyed by this xid.
     repaintWorkItemByXid[xid]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: xid)
-    latestPixelSizeByXid.removeValue(forKey: xid)
+    latestHostSizePxByXid.removeValue(forKey: xid)
+    latestHostSizePtByXid.removeValue(forKey: xid)
     lastRepaintTimeByXid.removeValue(forKey: xid)
 
     // 3) Remove hierarchy bookkeeping (child link + child set).
@@ -422,7 +478,8 @@ final class WindowRegistry {
     pendingPresentByXid.remove(host)
     mappedXids.remove(host)
 
-    latestPixelSizeByXid.removeValue(forKey: host)
+    latestHostSizePxByXid.removeValue(forKey: host)
+    latestHostSizePtByXid.removeValue(forKey: host)
     lastRepaintTimeByXid.removeValue(forKey: host)
 
     closingXids.insert(host)
@@ -511,6 +568,7 @@ final class WindowRegistry {
       return (data, ok)
     }
 
+    logAppend?("[SNAP_Q] host=0x\(String(presentXid,radix:16)) source=0x\(String(sourceXid,radix:16)) sz=\(sz.w)x\(sz.h) bpr=\(sz.bpr)")
     let a1 = copyFrame(sz: sz)
     if !a1.ok {
       guard let newSz = querySize() else { return }
@@ -533,10 +591,9 @@ final class WindowRegistry {
           "samples=\(samplesStr)"
         )
       }
+      
       presentBGRA(xid: presentXid, data: dataToPresent,
                   width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
-//      presentBGRA(xid: presentXid, data: a2.data,
-//                  width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
       return
     }
 
@@ -557,9 +614,6 @@ final class WindowRegistry {
     }
     presentBGRA(xid: presentXid, data: dataToPresent,
                 width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
-
-//    presentBGRA(xid: presentXid, data: a1.data,
-//                width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
   }
   
   
@@ -660,38 +714,70 @@ final class WindowRegistry {
   }
   
   private func sendConfigureAsync(xid: UInt32, w: Int32, h: Int32) {
-    // xxx temp ----
+    // Normalize to the top-level host. Configure/resize only applies to Cocoa host windows.
     let host = hostXid(xid)
-    if host != xid {
-      print("[SIZE] WARNING sendConfigureAsync called with child xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16))")
+
+    if debugSnapshotRouting, host != xid {
+      logAppend?("[SIZE] normalize sendConfigureAsync child=0x\(String(xid, radix:16)) -> host=0x\(String(host, radix:16))")
     }
-    // xxx ---- temp
+
     let w = max(1, w)
     let h = max(1, h)
+
+    let scale = windows[host]?.window?.backingScaleFactor ?? -1
+    logAppend?("[CFG_SEND] host=0x\(String(host,radix:16)) sendPx=\(w)x\(h) winScale=\(scale)")
     
-    suppressExpectedSize[xid] = (w: w, h: h)
-    suppressBudget[xid] = 8   // swallow a few intermediate callbacks
+    // Record the size we are *actually sending* to X11 for the HOST.
+    lastSentHostSizePxByXid[host] = (w: w, h: h)
+
+    // Suppress Cocoa echo for the HOST (these are keyed by the window id we resize).
+    suppressExpectedSize[host] = (w: w, h: h)
+    suppressBudget[host] = 8   // swallow a few intermediate callbacks
 
     DispatchQueue.main.async {
-      x11_post_window_resize(xid, w, h)
+      x11_post_window_resize(host, w, h)
     }
   }
   
-  func windowResized(xid: UInt32, sizePoints _: CGSize, sizePixels: CGSize, scale _: CGFloat) {
+  func windowResized(xid: UInt32, sizePoints: CGSize, sizePixels: CGSize, scale _: CGFloat) {
 
     let host = topLevelAncestor(of: xid)
     
     // Ignore bogus transient sizes (prevents Metal 0-height)
-    if sizePixels.width < 1 || sizePixels.height < 1 {
-      return
+    guard sizePoints.width >= 1, sizePoints.height >= 1 else { return }
+    guard sizePixels.width >= 1, sizePixels.height >= 1 else { return }
+
+    
+    // Logical (points) — ok to store for UI/debug if you want
+    let wPt = Int32(max(1, Int(sizePoints.width.rounded(.down))))
+    let hPt = Int32(max(1, Int(sizePoints.height.rounded(.down))))
+
+    // Pixels — MUST be used for protocol/configure
+    let wPx = Int32(max(1, Int(sizePixels.width.rounded(.down))))
+    let hPx = Int32(max(1, Int(sizePixels.height.rounded(.down))))
+    
+    let tinyLimit: Int32 = 32
+    if wPx < tinyLimit || hPx < tinyLimit {
+      let ls  = lastSentHostSizePxByXid[host]
+      let prev = latestHostSizePxByXid[host]
+      let exp = suppressCocoaResizeExpected[host]
+      let msg =
+        "[DBG] windowResized tiny host=0x\(String(host, radix:16)) " +
+        "wPx=\(wPx) hPx=\(hPx) " +
+        "mapped=\(mappedXids.contains(host)) " +
+        "ignoreUntilMapped=\(ignoreCocoaResizeUntilMapped.contains(host)) " +
+        "applyingX11=\(applyingX11Resize.contains(host)) " +
+        "suppressExpected=\(String(describing: exp)) " +
+        "lastSent=\(String(describing: ls)) " +
+        "prevCocoa=\(String(describing: prev))"
+      print(msg)
+      logAppend?(msg)
     }
-
-    let w = Int32(max(1, Int(sizePixels.width.rounded(.down))))
-    let h = Int32(max(1, Int(sizePixels.height.rounded(.down))))
-
+    
     // HARD GATE: until X11 maps the host window, never echo Cocoa→X11 resizes.
     if !mappedXids.contains(host) {
-      latestPixelSizeByXid[host] = (w: w, h: h)
+      latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+      latestHostSizePtByXid[host] = (w: wPt, h: hPt)
       return
     }
 
@@ -699,54 +785,37 @@ final class WindowRegistry {
     // Just remember the latest pixel size and return.
 //    if ignoreCocoaResizeUntilMapped.contains(xid) {
     if ignoreCocoaResizeUntilMapped.contains(host) {
-      let w = Int32(max(1, Int(sizePixels.width.rounded(.down))))
-      let h = Int32(max(1, Int(sizePixels.height.rounded(.down))))
-//      latestPixelSizeByXid[xid] = (w: w, h: h)
-      latestPixelSizeByXid[host] = (w: w, h: h)
+      latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+      latestHostSizePtByXid[host] = (w: wPt, h: hPt)
       return
     }
-    
+        
     // If we’re in an X11-driven resize cascade, never echo Cocoa→X11.
     // BUT we DO want to observe convergence and clear suppression.
     //if let exp = suppressCocoaResizeExpected[xid] {
     if let exp = suppressCocoaResizeExpected[host] {
 
-      if exp.wPx == w && exp.hPx == h {
-        // Converged: clear suppression + allow normal resizes again.
-        //suppressCocoaResizeExpected.removeValue(forKey: xid)
-        //suppressCocoaResizeBudget.removeValue(forKey: xid)
-        //suppressNextResizeFromCocoa.remove(xid)
-        //applyingX11Resize.remove(xid)
-        //// Keep latestPixelSize in sync
-        //latestPixelSizeByXid[xid] = (w: w, h: h)
+      if exp.wPx == wPx && exp.hPx == hPx {
         suppressCocoaResizeExpected.removeValue(forKey: host)
         suppressCocoaResizeBudget.removeValue(forKey: host)
         suppressNextResizeFromCocoa.remove(host)
         applyingX11Resize.remove(host)
-        // Keep latestPixelSize in sync
-        latestPixelSizeByXid[host] = (w: w, h: h)
+        // Keep latestHostSizePxByXid in sync
+        latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+        latestHostSizePtByXid[host] = (w: wPt, h: hPt)
         return
       }
 
-//      let b = suppressCocoaResizeBudget[xid] ?? 0
-//      if b > 0 {
-//        suppressCocoaResizeBudget[xid] = b - 1
-//        // Still updating latest helps later “no change” checks
-//        latestPixelSizeByXid[xid] = (w: w, h: h)
-//        return
-//      }
       let b = suppressCocoaResizeBudget[host] ?? 0
       if b > 0 {
         suppressCocoaResizeBudget[host] = b - 1
         // Still updating latest helps later “no change” checks
-        latestPixelSizeByXid[host] = (w: w, h: h)
+        latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+        latestHostSizePtByXid[host] = (w: wPt, h: hPt)
         return
       }
 
       // Fail-safe: give up suppression if it never converges.
-//      suppressCocoaResizeExpected.removeValue(forKey: xid)
-//      suppressCocoaResizeBudget.removeValue(forKey: xid)
-//      suppressNextResizeFromCocoa.insert(xid)
       suppressCocoaResizeExpected.removeValue(forKey: host)
       suppressCocoaResizeBudget.removeValue(forKey: host)
       suppressNextResizeFromCocoa.insert(host)
@@ -755,48 +824,66 @@ final class WindowRegistry {
       // but we still want to avoid immediate ping-pong for 1 callback.
     }
 
+    // --------------------------------------------------------------------
+    // Stage Manager / transient layout collapse guard:
+    //
+    // Sometimes Cocoa reports a tiny content size (e.g. 1x1pt -> 2x2px) during
+    // window transitions. If we echo that back into X11, the host FB collapses
+    // to 2x2 and clients (xterm) appear to "hang" because the window is invisible.
+    //
+    // Policy:
+    //   If the host is mapped and we have previously sent a reasonable size to X11,
+    //   ignore any new Cocoa sizes that are "tiny".
+    // --------------------------------------------------------------------
+    let ls = lastSentHostSizePxByXid[host]
+    let minStablePx: Int32 = 32
+    if suppressCocoaResizeExpected[host] == nil,
+       let lastSent = lastSentHostSizePxByXid[host] {
+      let lastW = lastSent.w
+      let lastH = lastSent.h
+      if lastW >= minStablePx, lastH >= minStablePx,
+         (wPx < minStablePx || hPx < minStablePx) {
+
+        logAppend?(
+          "[RESIZE Cocoa→X11] IGNORE tiny \(wPx)x\(hPx) " +
+          "(lastSent \(lastW)x\(lastH)) host=0x\(String(host, radix:16))"
+        )
+
+        // Still record latest observed sizes for debugging, but do NOT send Configure.
+        latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+        latestHostSizePtByXid[host] = (w: wPt, h: hPt)
+        return
+      }
+    }
+
+    
     // If we are actively applying X11 resize, swallow Cocoa callbacks.
-//    if applyingX11Resize.contains(xid) {
-//      latestPixelSizeByXid[xid] = (w: w, h: h)
-//      return
-//    }
     if applyingX11Resize.contains(host) {
-      latestPixelSizeByXid[host] = (w: w, h: h)
+      latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+      latestHostSizePtByXid[host] = (w: wPt, h: hPt)
       return
     }
 
     // One-shot suppression damping
-//    if shouldSuppressResizeFromCocoa(xid: xid) {
-//      latestPixelSizeByXid[xid] = (w: w, h: h)
-//      return
-//    }
     if shouldSuppressResizeFromCocoa(xid: host) {
-      latestPixelSizeByXid[host] = (w: w, h: h)
+      latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+      latestHostSizePtByXid[host] = (w: wPt, h: hPt)
       return
     }
 
-//    // Now “no change” short-circuit is safe
-//    if let last = latestPixelSizeByXid[xid], last.w == w && last.h == h {
-//      return
-//    }
-//
-//    latestPixelSizeByXid[xid] = (w: w, h: h)
+    // Update latest observed sizes.
+    latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+    latestHostSizePtByXid[host] = (w: wPt, h: hPt)
 
-    // Now “no change” short-circuit is safe
-    if let last = latestPixelSizeByXid[host], last.w == w && last.h == h {
-      return
-    }
-
-    latestPixelSizeByXid[host] = (w: w, h: h)
+    // Only act if the observed pixel size differs from what we've last sent to X11.
+    let lastSent = lastSentHostSizePxByXid[host]
+    let changed = (lastSent?.w != wPx || lastSent?.h != hPx)
+    if !changed { return }
 
     // Throttle: allow at most ~30fps during live resize
     let now = CACurrentMediaTime()
-//    let lastT = lastRepaintTimeByXid[xid] ?? 0
     let lastT = lastRepaintTimeByXid[host] ?? 0
     if now - lastT >= (1.0 / 30.0) {
-//      lastRepaintTimeByXid[xid] = now
-//      repaintWorkItemByXid[xid]?.cancel()
-//      repaintWorkItemByXid.removeValue(forKey: xid)
       lastRepaintTimeByXid[host] = now
       repaintWorkItemByXid[host]?.cancel()
       repaintWorkItemByXid.removeValue(forKey: host)
@@ -806,33 +893,23 @@ final class WindowRegistry {
       //if !mappedXids.contains(xid) { return }
 
       // Debug
-      let xidHex = String(format:"0x%X", xid)
-      print("[SIZE][Cocoa→X11] xid=\(xidHex) host=0x\(String(host, radix:16)) px=\(w)x\(h)")
+      logAppend?("[RESIZE Cocoa→X11] xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) wPx=\(wPx) hPx=\(hPx) wPt=\(wPt) hPt=\(hPt)")
 
-//      sendConfigureAsync(xid: xid, w: w, h: h)
-      sendConfigureAsync(xid: host, w: w, h: h)
+      sendConfigureAsync(xid: host, w: wPx, h: hPx)
       return
     }
 
     // Debounce to the final size shortly
-//    repaintWorkItemByXid[xid]?.cancel()
     repaintWorkItemByXid[host]?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
-      //guard let sz = self.latestPixelSizeByXid[xid] else { return }
-      //
-      //guard self.mappedXids.contains(xid) else { return }
-//
-      //self.lastRepaintTimeByXid[xid] = CACurrentMediaTime()
-      //self.sendConfigureAsync(xid: xid, w: sz.w, h: sz.h)
-      guard let sz = self.latestPixelSizeByXid[host] else { return }
+      guard let sz = self.latestHostSizePxByXid[host] else { return }
       
       guard self.mappedXids.contains(host) else { return }
 
       self.lastRepaintTimeByXid[host] = CACurrentMediaTime()
       self.sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
     }
-    //repaintWorkItemByXid[xid] = work
     repaintWorkItemByXid[host] = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
   }
@@ -889,6 +966,15 @@ final class WindowRegistry {
         return
       }
       
+      // Right before win.setContentSize(...)
+      if let v = controller.x11View, v.isInLayoutPass {
+        // try again next tick
+        DispatchQueue.main.async { [weak self] in
+          self?.applyX11Resize(xid: host, wPx: wPx, hPx: hPx)
+        }
+        return
+      }
+      
       // Mark “we are applying” and keep it set until windowResized sees convergence.
       self.applyingX11Resize.insert(host)
       win.setContentSize(NSSize(width: sz.w, height: sz.h))
@@ -901,7 +987,7 @@ final class WindowRegistry {
     repaintWorkItemByXid[host]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: host)
 
-    guard let sz = latestPixelSizeByXid[host] else { return }
+    guard let sz = latestHostSizePxByXid[host] else { return }
     guard mappedXids.contains(host) else { return }   // IMPORTANT: don’t resize unmapped hosts
 
     sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
@@ -960,8 +1046,12 @@ final class WindowRegistry {
   }
   
   func noteDamage(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
-    // later: union dirty rects here
-    schedulePresent(xid: xid)
+    // later: union dirty rects here (preferably per-host)
+    let host = topLevelAncestor(of: xid)
+    if debugSnapshotRouting, host != xid {
+      logAppend?("[DAMAGE] xid=0x\(String(xid, radix:16)) -> host=0x\(String(host, radix:16))")
+    }
+    schedulePresent(xid: host)
   }
   
   private var pendingPresentByHost: Set<UInt32> = []
@@ -982,17 +1072,31 @@ final class WindowRegistry {
   
   private func schedulePresent(xid: UInt32) {
     let host = topLevelAncestor(of: xid)
-    self.logAppend?("PRESENT_REQ xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) mappedHost=\(self.mappedXids.contains(host)) hasWin=\(self.windows[host] != nil)")
 
+    if debugSnapshotRouting {
+      self.logAppend?(
+        "PRESENT_REQ xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) " +
+        "mappedHost=\(self.mappedXids.contains(host)) hasWin=\(self.windows[host] != nil)"
+      )
+    }
+
+    // Hard gates
     guard !closingXids.contains(host) else { return }
     guard windows[host] != nil else { return }
     guard mappedXids.contains(host) else { return }
 
-    // Track the most recent source drawable for this host.
-    latestSourceByHost[host] = xid
+    // Host-only compositor mode:
+    // We intentionally do NOT track latestSourceByHost here, because the C compositor
+    // will always composite host + mapped descendants.
     if debugSnapshotRouting {
-      logAppend?("[PRESENT_DBG] set latestSourceByHost[0x\(String(host, radix:16))] = 0x\(String(xid, radix:16))")
+      let last = latestSourceByHost[host] ?? host
+      self.logAppend?(
+        "[PRESENT_DBG] (host-only) ignoring source update; " +
+        "lastSource[0x\(String(host, radix:16))]=0x\(String(last, radix:16))"
+      )
     }
+
+    // De-dupe per-host present scheduling
     if pendingPresentByXid.contains(host) { return }
     pendingPresentByXid.insert(host)
 
@@ -1002,55 +1106,26 @@ final class WindowRegistry {
       // CRITICAL: never leave host stuck “pending”
       defer { self.pendingPresentByXid.remove(host) }
 
+      // Re-check gates at fire time
       guard !self.closingXids.contains(host) else { return }
       guard self.windows[host] != nil else { return }
       guard self.mappedXids.contains(host) else { return }
 
-      let source = self.latestSourceByHost[host] ?? host
-      if debugSnapshotRouting {
-        self.logAppend?("[PRESENT_DBG] firing host=0x\(String(host, radix:16)) source=0x\(String(source, radix:16)) tl(source)=0x\(String(self.topLevelAncestor(of: source), radix:16))")
+      if self.debugSnapshotRouting {
+        self.logAppend?("[PRESENT_DBG] (host-only) firing host=0x\(String(host, radix:16))")
       }
-      // TEMP: for xeyes only: if host has a latestSource and it's a child, snapshot it
-      let src = latestSourceByHost[host] ?? host
-      snapshotAndPresentNow(sourceXid: src, presentXid: host)
-// xxx temp      self.snapshotAndPresentNow(sourceXid: source, presentXid: host)
+
+      // Always snapshot/present the HOST. The C side composites children onto host.
+      self.snapshotAndPresentNow(sourceXid: host, presentXid: host)
     }
-    //DispatchQueue.main.async { [weak self] in
-    //  guard let self else { return }
-    //  self.pendingPresentByXid.remove(host)
-    //  guard !self.closingXids.contains(host) else { return }
-    //  guard self.windows[host] != nil else { return }
-    //  guard self.mappedXids.contains(host) else { return }
-    //  
-    //  let source = self.latestSourceByHost[host] ?? host
-    //  // Sanity guard: only present a source drawable that belongs to this host.
-    //  // xxx temp ----
-    //  if self.topLevelAncestor(of: source) != host {
-    //    self.logAppend?("⚠️ PRESENT source mismatch: host=0x\(String(host, radix:16)) source=0x\(String(source, radix:16)) topLevel(source)=0x\(String(self.topLevelAncestor(of: source), radix:16)) parentKnown=\(self.parentByXid[source] != nil)")
-    //  }
-    //  // xxx ---- temp
-    //  // xxx temp for debugging if self.topLevelAncestor(of: source) != host {
-    //  // xxx temp for debugging   source = host
-    //  // xxx temp for debugging   self.latestSourceByHost[host] = host
-    //  // xxx temp for debugging }
-    //  // xxx temp for debugging logAppend?("[PRESENT_FIRE] host=0x\(String(host, radix:16)) source=0x\(String(source, radix:16))")
-    //  // xxx temp for debugging self.snapshotAndPresentNow(sourceXid: source, presentXid: host)    }
-    //  // xxx temp ----
-    //  //let source = self.latestSourceByHost[host] ?? host
-    //  let src = self.latestSourceByHost[host] ?? host
-    //  self.logAppend?("[PRESENT_FIRE] host=0x\(String(host, radix:16)) src=0x\(String(src, radix:16)) tl(src)=0x\(String(self.topLevelAncestor(of: src), radix:16))")
-    //  self.snapshotAndPresentNow(sourceXid: source, presentXid: host)
-    //  // xxx ---- temp
-    //}
-  }
-  
+  }  
   
   @MainActor
-  func shouldSuppressRootlessResize(xid: UInt32, w_px: Int32, h_px: Int32) -> Bool {
+  func shouldSuppressRootlessResize(xid: UInt32, w_pt: Int32, h_pt: Int32) -> Bool {
       guard let exp = suppressExpectedSize[xid] else { return false }
 
       // If we've reached the requested size, consume suppression.
-      if exp.w == w_px && exp.h == h_px {
+      if exp.w == w_pt && exp.h == h_pt {
           suppressExpectedSize.removeValue(forKey: xid)
           suppressBudget.removeValue(forKey: xid)
           return true

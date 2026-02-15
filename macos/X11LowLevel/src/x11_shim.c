@@ -592,6 +592,8 @@ void x11_apply_window_configure(uint32_t xid, int32_t w_px, int32_t h_px)
   if (w_px < 1) w_px = 1;
   if (h_px < 1) h_px = 1;
 
+  fprintf(stderr, "[CFG_APPLY] xid=0x%08X new=%dx%d\n", xid, w_px, h_px);
+  
   x11_backend_lock();
   const int exists = x11_backend_window_exists_locked(xid);
   const int closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;

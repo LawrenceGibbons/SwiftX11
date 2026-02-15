@@ -35,7 +35,7 @@ typedef struct {
   x11_ui_cmd_type_t type;
   uint32_t          xid;
   uint32_t          parent_xid;
-  int32_t           x_px, y_px, w_px, h_px;  // used by DAMAGE/RESIZE/CREATE
+  int32_t           x_u, y_u, w_u, h_u;  // used by DAMAGE/RESIZE/CREATE
   uint8_t           title_len;
   char              title_utf8[32];
 } x11_ui_cmd_t;

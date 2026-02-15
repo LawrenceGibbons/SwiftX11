@@ -47,31 +47,31 @@ static inline bool coalesce_tail(x11_ui_cmd_t& tail, const x11_ui_cmd_t& in) {
         return true;
 
       case X11_UI_RESIZE:
-        tail.w_px = in.w_px;
-        tail.h_px = in.h_px;
+        tail.w_u = in.w_u;
+        tail.h_u = in.h_u;
         return true;
 
       case X11_UI_DAMAGE: {
         // union rectangles
-        const int32_t ax0 = tail.x_px;
-        const int32_t ay0 = tail.y_px;
-        const int32_t ax1 = tail.x_px + tail.w_px;
-        const int32_t ay1 = tail.y_px + tail.h_px;
+        const int32_t ax0 = tail.x_u;
+        const int32_t ay0 = tail.y_u;
+        const int32_t ax1 = tail.x_u + tail.w_u;
+        const int32_t ay1 = tail.y_u + tail.h_u;
 
-        const int32_t bx0 = in.x_px;
-        const int32_t by0 = in.y_px;
-        const int32_t bx1 = in.x_px + in.w_px;
-        const int32_t by1 = in.y_px + in.h_px;
+        const int32_t bx0 = in.x_u;
+        const int32_t by0 = in.y_u;
+        const int32_t bx1 = in.x_u + in.w_u;
+        const int32_t by1 = in.y_u + in.h_u;
 
         const int32_t ux0 = std::min(ax0, bx0);
         const int32_t uy0 = std::min(ay0, by0);
         const int32_t ux1 = std::max(ax1, bx1);
         const int32_t uy1 = std::max(ay1, by1);
 
-        tail.x_px = ux0;
-        tail.y_px = uy0;
-        tail.w_px = std::max<int32_t>(1, ux1 - ux0);
-        tail.h_px = std::max<int32_t>(1, uy1 - uy0);
+        tail.x_u = ux0;
+        tail.y_u = uy0;
+        tail.w_u = std::max<int32_t>(1, ux1 - ux0);
+        tail.h_u = std::max<int32_t>(1, uy1 - uy0);
         return true;
       }
 
@@ -173,28 +173,28 @@ extern "C" void x11_ui_push_unmap(uint32_t xid) {
   push_cmd(c);
 }
 
-extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px) {
+extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_u, int32_t h_u) {
   if (xid == 0) return;
-  clamp_wh(w_px, h_px);
+  clamp_wh(w_u, h_u);
 
   x11_ui_cmd_t c = make_empty();
   c.type = X11_UI_RESIZE;
   c.xid = xid;
-  c.w_px = w_px;
-  c.h_px = h_px;
+  c.w_u = w_u;
+  c.h_u = h_u;
   push_cmd(c);
 }
 
-extern "C" void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t h_px) {
+extern "C" void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_u, int32_t h_u) {
   if (xid == 0) return;
-  clamp_wh(w_px, h_px);
+  clamp_wh(w_u, h_u);
 
   x11_ui_cmd_t c = make_empty();
   c.type = X11_UI_CREATE;
   c.xid = xid;
   c.parent_xid = parent_xid;
-  c.w_px = w_px;
-  c.h_px = h_px;
+  c.w_u = w_u;
+  c.h_u = h_u;
   push_cmd(c);
 }
 
@@ -206,20 +206,20 @@ extern "C" void x11_ui_push_destroy(uint32_t xid) {
   push_cmd(c);
 }
 
-extern "C" void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px) {
+extern "C" void x11_ui_push_damage(uint32_t xid, int32_t x_u, int32_t y_u, int32_t w_u, int32_t h_u) {
   if (xid == 0) return;
-  clamp_wh(w_px, h_px);
+  clamp_wh(w_u, h_u);
 
   // xxx temp ---
   fprintf(stderr, "[UI_DAMAGE] xid=0x%08X rect=(%d,%d %dx%d)\n",
-          (unsigned)xid, (int)x_px, (int)y_px, (int)w_px, (int)h_px);
+          (unsigned)xid, (int)x_u, (int)y_u, (int)w_u, (int)h_u);
   // xxx ---- temp
   x11_ui_cmd_t c = make_empty();
   c.type = X11_UI_DAMAGE;
   c.xid = xid;
-  c.x_px = x_px;
-  c.y_px = y_px;
-  c.w_px = w_px;
-  c.h_px = h_px;
+  c.x_u = x_u;
+  c.y_u = y_u;
+  c.w_u = w_u;
+  c.h_u = h_u;
   push_cmd(c);
 }

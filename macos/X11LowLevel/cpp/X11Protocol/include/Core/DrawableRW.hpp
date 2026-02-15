@@ -23,7 +23,9 @@ namespace x11 {
 class XProtoContext;
   
 struct DrawableRW {
-  bool is_window = false;
+  bool isWindow = false;
+  bool isPixmap = false;          // optional but useful
+  uint8_t depth = 0;              // optional, but good future-proofing
 
   uint16_t w = 0;
   uint16_t h = 0;

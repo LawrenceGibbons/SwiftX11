@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		5225BDE32F05AF2B009E510B /* X11LowLevel.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; };
 		5225BDE42F05AF2B009E510B /* X11LowLevel.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		52814A6B2F3E931C003CF94A /* TODO.md in Resources */ = {isa = PBXBuildFile; fileRef = 52814A6A2F3E931C003CF94A /* TODO.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -38,6 +39,7 @@
 /* Begin PBXFileReference section */
 		5225BD772F0489A9009E510B /* SwiftX11.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftX11.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = X11LowLevel.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		52814A6A2F3E931C003CF94A /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = TODO.md; path = docs/TODO.md; sourceTree = "<group>"; };
 		528AC14E2F33B94300186633 /* TylerFit */ = {isa = PBXFileReference; lastKnownFileType = text; path = TylerFit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -126,6 +128,13 @@
 			);
 			target = 5225BD762F0489A9009E510B /* SwiftX11 */;
 		};
+		52814A712F40D69F003CF94A /* Exceptions for "Ignore documents" folder in "X11LowLevel" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Handoff Conversation 2 → 3",
+			);
+			target = 5225BDDA2F05AF2B009E510B /* X11LowLevel */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -141,6 +150,14 @@
 				5225BDE52F05AF2B009E510B /* Exceptions for "X11LowLevel" folder in "X11LowLevel" target */,
 			);
 			path = X11LowLevel;
+			sourceTree = "<group>";
+		};
+		52814A6D2F40D674003CF94A /* Ignore documents */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				52814A712F40D69F003CF94A /* Exceptions for "Ignore documents" folder in "X11LowLevel" target */,
+			);
+			path = "Ignore documents";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -167,6 +184,8 @@
 		5225BD6E2F0489A9009E510B = {
 			isa = PBXGroup;
 			children = (
+				52814A6D2F40D674003CF94A /* Ignore documents */,
+				52814A6A2F3E931C003CF94A /* TODO.md */,
 				528AC14E2F33B94300186633 /* TylerFit */,
 				5225BD792F0489A9009E510B /* SwiftX11 */,
 				5225BDDC2F05AF2B009E510B /* X11LowLevel */,
@@ -212,6 +231,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				5225BD792F0489A9009E510B /* SwiftX11 */,
+				52814A6D2F40D674003CF94A /* Ignore documents */,
 			);
 			name = SwiftX11;
 			packageProductDependencies = (
@@ -287,6 +307,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				52814A6B2F3E931C003CF94A /* TODO.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

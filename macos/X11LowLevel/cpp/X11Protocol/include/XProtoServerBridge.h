@@ -87,6 +87,20 @@ void x11_proto_bridge_post_pointer_move2(uint32_t xid,
 
   void x11_proto_bridge_post_focus(uint32_t xid,
                                    uint8_t focused);
+  
+  uint32_t x11_cpp_list_descendants(uint32_t host, uint32_t* out, uint32_t cap);
+
+  int x11_cpp_get_window_geom(uint32_t xid,
+                              uint32_t* out_parent,
+                              int16_t* out_x,
+                              int16_t* out_y,
+                              uint16_t* out_w,
+                              uint16_t* out_h,
+                              int* out_mapped);
+  
+  int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
+                                  int32_t* out_abs_x,
+                                  int32_t* out_abs_y);
 #ifdef __cplusplus
 }
 #endif

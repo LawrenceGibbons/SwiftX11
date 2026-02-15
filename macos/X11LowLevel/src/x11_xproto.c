@@ -45,6 +45,28 @@ static inline void wr32_le(uint8_t* p, uint32_t v) {
   p[3] = (uint8_t)((v >> 24) & 0xFFu);
 }
 
+#ifndef NDEBUG
+static size_t fb_count_nonwhite(const uint32_t* px, size_t npx) {
+  size_t nw = 0;
+  for (size_t i = 0; i < npx; i++) {
+    if (px[i] != 0xFFFFFFFFu) nw++;
+  }
+  return nw;
+}
+
+static void fb_sample3(const uint32_t* px, uint32_t w, uint32_t h,
+                       uint32_t* outL, uint32_t* outC, uint32_t* outR) {
+  if (!px || w == 0 || h == 0) { *outL = *outC = *outR = 0; return; }
+  const uint32_t y = h / 2;
+  const uint32_t xL = w / 4;
+  const uint32_t xC = w / 2;
+  const uint32_t xR = (w * 3) / 4;
+  *outL = px[(size_t)y * (size_t)w + (size_t)xL];
+  *outC = px[(size_t)y * (size_t)w + (size_t)xC];
+  *outR = px[(size_t)y * (size_t)w + (size_t)xR];
+}
+#endif
+
 static void x11_get_virtual_desktop_px(uint16_t* outW, uint16_t* outH,
                                        uint16_t* outWmm, uint16_t* outHmm)
 {
@@ -188,9 +210,68 @@ static ssize_t fb_add(uint32_t xid)
   return (ssize_t)idx;
 }
 
+// -----------------------------
+// C++ bridge helpers (implemented in C++)
+// -----------------------------
+extern uint32_t x11_cpp_list_descendants(uint32_t host, uint32_t* out, uint32_t cap);
+extern int x11_cpp_get_window_geom(uint32_t xid,
+                                   uint32_t* out_parent,
+                                   int16_t* out_x,
+                                   int16_t* out_y,
+                                   uint16_t* out_w,
+                                   uint16_t* out_h,
+                                   int* out_mapped);
+extern int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
+                                       int32_t* out_abs_x,
+                                       int32_t* out_abs_y);
 
+// -----------------------------
+// Opaque blit child FB over host scratch
+// -----------------------------
+static void blit_child_over_host(uint32_t* hostPx, int hostW, int hostH,
+                                 const uint32_t* childPx, int childW, int childH,
+                                 int32_t dstX, int32_t dstY)
+{
+  if (!hostPx || !childPx) return;
+  if (hostW <= 0 || hostH <= 0 || childW <= 0 || childH <= 0) return;
 
+  // Host-space rect for child
+  int32_t x0 = dstX;
+  int32_t y0 = dstY;
+  int32_t x1 = dstX + (int32_t)childW;
+  int32_t y1 = dstY + (int32_t)childH;
 
+  // Clip to host
+  int32_t cx0 = (x0 < 0) ? 0 : x0;
+  int32_t cy0 = (y0 < 0) ? 0 : y0;
+  int32_t cx1 = (x1 > hostW) ? hostW : x1;
+  int32_t cy1 = (y1 > hostH) ? hostH : y1;
+
+  if (cx0 >= cx1 || cy0 >= cy1) return;
+
+  // Source offset if clipped
+  int32_t sx0 = cx0 - x0;
+  int32_t sy0 = cy0 - y0;
+
+  const int32_t copyW = cx1 - cx0;
+  const int32_t copyH = cy1 - cy0;
+
+  for (int32_t yy = 0; yy < copyH; yy++) {
+    const uint32_t* srcRow = childPx
+      + (size_t)(sy0 + yy) * (size_t)childW
+      + (size_t)sx0;
+
+    uint32_t* dstRow = hostPx
+      + (size_t)(cy0 + yy) * (size_t)hostW
+      + (size_t)cx0;
+
+    memcpy(dstRow, srcRow, (size_t)copyW * sizeof(uint32_t));
+  }
+}
+
+// -----------------------------
+// x11_xproto_copy_window_bgra: subtree composite (rootless)
+// -----------------------------
 int x11_xproto_copy_window_bgra(uint32_t xid,
                                 uint8_t* out_bytes,
                                 int32_t out_cap,
@@ -199,27 +280,26 @@ int x11_xproto_copy_window_bgra(uint32_t xid,
                                 int32_t* out_bpr)
 {
 #ifndef NDEBUG
-fprintf(stderr, "[SwiftX11] xproto: copy_window_bgra ENTER xid=0x%08X out_bytes=%p cap=%d\n",
-        (unsigned)xid, (void*)out_bytes, (int)out_cap);
-  fprintf(stderr,
-          "[SwiftX11] xproto_copy_window_bgra: ************************************************************************* gets called\n");
+  fprintf(stderr, "[SwiftX11] xproto: copy_window_bgra ENTER xid=0x%08X out_bytes=%p cap=%d\n",
+          (unsigned)xid, (void*)out_bytes, (int)out_cap);
 #endif
 
-  const ssize_t idx = fb_index(xid);
-  x11_fb_slot_t* fb = (idx >= 0) ? &g_fb[(size_t)idx] : NULL;
+  const ssize_t host_idx = fb_index(xid);
+  x11_fb_slot_t* host = (host_idx >= 0) ? &g_fb[(size_t)host_idx] : NULL;
 
-  if (!fb || !fb->pixels || fb->width == 0 || fb->height == 0) {
+  if (!host || !host->pixels || host->width == 0 || host->height == 0) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
     if (out_bpr) *out_bpr = 0;
     return 0;
   }
 
-  int32_t w = (int32_t)fb->width;
-  int32_t h = (int32_t)fb->height;
-  int32_t bpr = w * 4;
+  const int32_t w   = (int32_t)host->width;
+  const int32_t h   = (int32_t)host->height;
+  const int32_t bpr = w * 4;
 
-  int64_t needed64 = (int64_t)bpr * (int64_t)h;
+  // validate needed size
+  const int64_t needed64 = (int64_t)bpr * (int64_t)h;
   if (needed64 <= 0 || needed64 > INT32_MAX) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
@@ -232,50 +312,80 @@ fprintf(stderr, "[SwiftX11] xproto: copy_window_bgra ENTER xid=0x%08X out_bytes=
   if (out_h) *out_h = h;
   if (out_bpr) *out_bpr = bpr;
 
-  // Allow a size-only query: caller passes out_bytes==NULL and/or out_cap==0.
-  // In that case, we return success after reporting w/h/bpr.
+  // size-only query
   if (!out_bytes || out_cap == 0) return 1;
-
-  // If the caller provided a buffer, it must be large enough.
   if (out_cap < needed) return 0;
 
+  // Scratch composited buffer
+  const size_t npx = (size_t)host->width * (size_t)host->height;
+  const size_t bytes = npx * sizeof(uint32_t);
+
+  uint32_t* scratch = (uint32_t*)malloc(bytes);
+  if (!scratch) return 0;
+
+  memcpy(scratch, host->pixels, bytes);
+
+  // Composite mapped descendants onto scratch.
+  // (Cap is a bring-up choice; increase if needed.)
+  uint32_t kids[2048];
+  const uint32_t nk = x11_cpp_list_descendants(xid, kids, (uint32_t)(sizeof(kids)/sizeof(kids[0])));
+
+  
+  for (uint32_t i = 0; i < nk; i++) {
+    const uint32_t kid = kids[i];
+
+    uint32_t parent = 0;
+    int16_t relx = 0, rely = 0;
+    uint16_t kw = 0, kh = 0;
+    int mapped = 0;
+
+    if (!x11_cpp_get_window_geom(kid, &parent, &relx, &rely, &kw, &kh, &mapped))
+      continue;
+    if (!mapped) continue;
+
+    const ssize_t kidx = fb_index(kid);
+    if (kidx < 0) continue;
+
+    x11_fb_slot_t* kfb = &g_fb[(size_t)kidx];
+    if (!kfb->pixels || kfb->width == 0 || kfb->height == 0) continue;
+
+    int32_t absx = 0, absy = 0;
+    if (!x11_cpp_get_abs_pos_in_host(xid, kid, &absx, &absy))
+      continue;
+
 #ifndef NDEBUG
-  {
-    // Sample a few pixels so we can confirm the xproto FB is what the UI copies.
-    const int32_t sx_c = w / 2;
-    const int32_t sy_c = h / 2;
-    const int32_t sx_l = w / 4;
-    const int32_t sx_r = (w * 3) / 4;
-    const int32_t sy_m = h / 2;
-
-    uint32_t sp_c = 0, sp_l = 0, sp_r = 0;
-    if (sx_c >= 0 && sy_c >= 0 && sx_c < w && sy_c < h) {
-      sp_c = fb->pixels[(size_t)sy_c * (size_t)fb->width + (size_t)sx_c];
-    }
-    if (sx_l >= 0 && sy_m >= 0 && sx_l < w && sy_m < h) {
-      sp_l = fb->pixels[(size_t)sy_m * (size_t)fb->width + (size_t)sx_l];
-    }
-    if (sx_r >= 0 && sy_m >= 0 && sx_r < w && sy_m < h) {
-      sp_r = fb->pixels[(size_t)sy_m * (size_t)fb->width + (size_t)sx_r];
-    }
-
-    // Count non-white pixels (cheap sanity check for "did we draw anything?")
-    size_t nonwhite = 0;
-    const size_t npx = (size_t)fb->width * (size_t)fb->height;
-    for (size_t i = 0; i < npx; i++) {
-      if (fb->pixels[i] != 0xFFFFFFFFu) nonwhite++;
-    }
-
     fprintf(stderr,
-            "[SwiftX11] xproto_copy_window_bgra: xid=0x%08X fb=%p %dx%d nonwhite=%zu sample L/C/R=0x%08X 0x%08X 0x%08X\n",
-            (unsigned)xid, (void*)fb->pixels, (int)w, (int)h,
-            nonwhite, (unsigned)sp_l, (unsigned)sp_c, (unsigned)sp_r);
+            "[COMPDBG] host=0x%08X kid=0x%08X mapped=%d geom=%ux%u fb=%ux%u abs=(%d,%d)\n",
+            (unsigned)xid,
+            (unsigned)kid,
+            mapped,
+            (unsigned)kw, (unsigned)kh,
+            (unsigned)kfb->width, (unsigned)kfb->height,
+            (int)absx, (int)absy);
+#endif
+    
+    
+    blit_child_over_host(
+      scratch, (int)host->width, (int)host->height,
+      (const uint32_t*)kfb->pixels, (int)kfb->width, (int)kfb->height,
+      absx, absy
+    );
   }
+
+#ifndef NDEBUG
+  // Optional: verify nonwhite in composited result (cheap sanity)
+  size_t nonwhite = 0;
+  for (size_t i = 0; i < npx; i++) if (scratch[i] != 0xFFFFFFFFu) nonwhite++;
+  fprintf(stderr, "[SwiftX11] xproto_copy_window_bgra: COMPOSITE xid=0x%08X %dx%d nonwhite=%zu\n",
+          (unsigned)xid, (int)w, (int)h, nonwhite);
 #endif
 
-  memcpy(out_bytes, (const void*)fb->pixels, (size_t)needed);
+  memcpy(out_bytes, (const void*)scratch, (size_t)needed);
+  free(scratch);
   return 1;
 }
+
+
 
 
 #ifndef NDEBUG
@@ -644,7 +754,7 @@ void x11_send_setup_success_minimal_little_endian(int fd)
 // ----------------------------------------------------------------------------
 
 
-void x11_backend_fb_resize(uint32_t wid, uint16_t new_w, uint16_t new_h)
+void x11_backend_fb_resize_impl(uint32_t wid, uint16_t new_w, uint16_t new_h)
 {
   if (wid == 0) return;
   if (new_w == 0) new_w = 1;
@@ -751,4 +861,34 @@ int x11_xproto_get_fb_size(uint32_t xid, int32_t* out_w_px, int32_t* out_h_px)
   if (out_w_px) *out_w_px = (int32_t)s->width;
   if (out_h_px) *out_h_px = (int32_t)s->height;
   return 1;
+}
+
+#include "x11_backend_fb.h"
+
+static x11_fb_event_fn g_obs = 0;
+static void* g_obs_user = 0;
+
+void x11_backend_fb_set_event_observer(x11_fb_event_fn fn, void* user) {
+  g_obs = fn;
+  g_obs_user = user;
+}
+
+void x11_backend_fb_resize_dbg(uint32_t wid, uint16_t new_w, uint16_t new_h,
+                               const char* why, const char* file, int line)
+{
+  x11_backend_fb_resize_impl(wid, new_w, new_h);
+  if (g_obs) g_obs(wid, new_w, new_h, "resize", why, file, line, g_obs_user);
+}
+
+int x11_backend_fb_create_slot_dbg(uint32_t wid, uint16_t wpx, uint16_t hpx,
+                                  int owner_fd, int* out_dirty,
+                                  const char* why, const char* file, int line)
+{
+  int ok = x11_backend_fb_create_slot(wid, wpx, hpx, owner_fd, out_dirty);
+  if (ok && g_obs) {
+    uint16_t fw = wpx ? wpx : 1;
+    uint16_t fh = hpx ? hpx : 1;
+    g_obs(wid, fw, fh, "create", why, file, line, g_obs_user);
+  }
+  return ok;
 }

@@ -16,12 +16,17 @@
 #include "Core/XProtoPendingNotify.hpp"
 #include "Ops/EventOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Utils/WireLE.hpp" // your wire::wr16_le / wr32_le etc
 
 // Your existing dbg_require_xproto_thread is currently in C.
 // Expose it as an extern so C++ can call it.
 extern "C" void dbg_require_xproto_thread(const char* what);
 
 namespace x11 {
+
+static constexpr uint8_t kUnmapNotify = 18;
+static constexpr uint8_t kMapNotify   = 19;
+
 
 XProtoTransport::XProtoTransport(XProtoContext& ctx, EventOps& evOps)
   : ctx_(ctx), evOps_(evOps), last_seq_(0), event_seq_(0) {
@@ -236,259 +241,34 @@ bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
 #endif
 }
 
-//bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
-//{
-//#ifndef NDEBUG
-//  const uint8_t* in = static_cast<const uint8_t*>(buf);
-//
-//  // ---- stream state (DEBUG ONLY) ----
-//  static bool     haveOpen   = false;
-//  static uint16_t openSeq    = 0;
-//  static uint32_t openExpect = 0;   // bytes expected after 32-byte header
-//  static uint32_t openSent   = 0;   // bytes sent so far after header
-//
-//  static bool     haveHdrFrag = false;
-//  static uint8_t  hdrBuf[32];
-//  static uint32_t hdrHave = 0;
-//
-//  auto dumpHex = [&](const char* tag, const uint8_t* p, std::size_t nn) {
-//    fprintf(stderr, "%s ", tag);
-//    for (std::size_t i = 0; i < nn; i++) fprintf(stderr, "%02X", p[i]);
-//    fprintf(stderr, "\n");
-//  };
-//
-//  if (n == 32) {
-//    
-//    const uint16_t seq = (uint16_t)(in[2] | (uint16_t(in[3]) << 8));
-//    if (seq == 53) {
-//      fprintf(stderr, "[REPLYHDRHEX seq=53] ");
-//      for (int i = 0; i < 32; i++) fprintf(stderr, "%02X", in[i]);
-//      fprintf(stderr, "\n");
-//    }
-//  }
-//  
-//  auto parseAndLogHeader = [&](const uint8_t* h) {
-//    const uint8_t  r0   = h[0];
-//    const uint8_t  rep1 = h[1];
-//    const uint16_t seq  = (uint16_t)(h[2] | (uint16_t(h[3]) << 8));
-//    const uint32_t lenw =
-//      uint32_t(h[4]) |
-//      (uint32_t(h[5]) << 8) |
-//      (uint32_t(h[6]) << 16) |
-//      (uint32_t(h[7]) << 24);
-//
-//    if (r0 != 1) {
-//      fprintf(stderr, "[PROTO BUG] Reply header but r0=%u\n", (unsigned)r0);
-//      dumpHex("[PROTO BUG] hdr=", h, 32);
-//      abort();
-//    }
-//
-//    if (haveOpen) {
-//      fprintf(stderr,
-//              "[PROTO BUG] New reply header before finishing prior payload: "
-//              "prev seq=%u sent=%u/%u\n",
-//              (unsigned)openSeq, (unsigned)openSent, (unsigned)openExpect);
-//      abort();
-//    }
-//    
-//    if ( n == 32 ) {
-//      // Sanity: a reply asking for an absurd payload is almost certainly corruption.
-//      // Tune threshold if you want, but 1 MiB is already huge for core replies.
-//      const uint64_t bytes = uint64_t(lenw) * 4ull;
-//      if (bytes > (1ull << 20)) {
-//        fprintf(stderr,
-//                "[PROTO BUG] absurd reply length: seq=%u lenw=%u (%llu bytes)\n",
-//                (unsigned)seq, (unsigned)lenw, (unsigned long long)bytes);
-//        fprintf(stderr, "[PROTO BUG] hdr32 = ");
-//        for (int i = 0; i < 32; i++) fprintf(stderr, "%02X", in[i]);
-//        fprintf(stderr, "\n");
-//        abort();
-//      }
-//    }
-//    openSeq    = seq;
-//    openExpect = lenw * 4u;
-//    openSent   = 0;
-//    haveOpen   = true;
-//
-//    fprintf(stderr,
-//            "[REPLYHDR] seq=%u lenw=%u (%u bytes) rep1=%u\n",
-//            (unsigned)seq, (unsigned)lenw, (unsigned)openExpect, (unsigned)rep1);
-//
-//    if (seq == 3)  dumpHex("[REPLYHDRHEX seq=3]",  h, 32);
-//    if (seq == 10) dumpHex("[REPLYHDRHEX seq=10]", h, 32);
-//
-//    if (openExpect == 0) {
-//      fprintf(stderr, "[REPLYDONE] seq=%u payload=0\n", (unsigned)openSeq);
-//      haveOpen = false;
-//    }
-//  };
-//
-//  // ---- update debug state machine while forwarding bytes ----
-//  std::size_t off = 0;
-//  while (off < n) {
-//
-//    // If no reply open and not assembling header, next byte must be r0==1 (reply header).
-//    if (!haveOpen && !haveHdrFrag) {
-//      if (in[off] != 1) {
-//        fprintf(stderr,
-//                "[PROTO BUG] sendReplyBytes saw non-reply byte r0=%u while no reply open (n=%zu off=%zu)\n",
-//                (unsigned)in[off], n, off);
-//        dumpHex("[PROTO BUG] bytes16=", in + off, std::min<std::size_t>(16, n - off));
-//        abort();
-//      }
-//      haveHdrFrag = true;
-//      hdrHave = 0;
-//    }
-//
-//    // Assemble header bytes (but DO NOT block sending — sending happens after the loop).
-//    if (haveHdrFrag) {
-//      const std::size_t want = 32 - hdrHave;
-//      const std::size_t take = std::min(want, n - off);
-//      memcpy(hdrBuf + hdrHave, in + off, take);
-//      hdrHave += (uint32_t)take;
-//      off += take;
-//
-//      if (hdrHave == 32) {
-//        haveHdrFrag = false;
-//        parseAndLogHeader(hdrBuf);
-//      }
-//      continue;
-//    }
-//
-//    // Payload bytes for current reply:
-//    if (haveOpen) {
-//      const uint32_t remain = openExpect - openSent;
-//      const std::size_t take = std::min<std::size_t>(remain, n - off);
-//
-//      openSent += (uint32_t)take;
-//
-//      fprintf(stderr,
-//              "[REPLYPAY] seq=%u chunk=%zu total=%u/%u\n",
-//              (unsigned)openSeq, take, (unsigned)openSent, (unsigned)openExpect);
-//
-//      off += take;
-//
-//      if (openSent == openExpect) {
-//        fprintf(stderr, "[REPLYDONE] seq=%u payload=%u\n",
-//                (unsigned)openSeq, (unsigned)openExpect);
-//        haveOpen = false;
-//      }
-//      continue;
-//    }
-//
-//    // If we’re here, we should be starting a new reply header but didn’t.
-//    fprintf(stderr, "[PROTO BUG] state machine fell through\n");
-//    abort();
-//  }
-//
-//  // CRITICAL: actually forward the bytes we just analyzed.
-//  return sendAll(buf, n);
-//
-//#else
-//  return sendAll(buf, n);
-//#endif
-//}
-  
-// xxx old but seemed to work  bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
-// xxx old but seemed to work{
-// xxx old but seemed to work  const uint8_t* r = static_cast<const uint8_t*>(buf);
-// xxx old but seemed to work
-// xxx old but seemed to work#ifndef NDEBUG
-// xxx old but seemed to work  static uint16_t last_reply_seq = 0xFFFF;
-// xxx old but seemed to work#endif
-// xxx old but seemed to work
-// xxx old but seemed to work  // -----------------------------
-// xxx old but seemed to work  // Reply header (must be 32 bytes)
-// xxx old but seemed to work  // -----------------------------
-// xxx old but seemed to work  if (n == 32) {
-// xxx old but seemed to work    const uint8_t* r = (const uint8_t*)buf;
-// xxx old but seemed to work    uint16_t seq = (uint16_t)(r[2] | (uint16_t(r[3])<<8));
-// xxx old but seemed to work    if (seq == 3) {
-// xxx old but seemed to work      fprintf(stderr, "[REPLYHDRHEX seq=3] ");
-// xxx old but seemed to work      for (int i=0;i<32;i++) fprintf(stderr, "%02X", r[i]);
-// xxx old but seemed to work      fprintf(stderr, "\n");
-// xxx old but seemed to work    }
-// xxx old but seemed to work  }
-// xxx old but seemed to work  if (n >= 32) {
-// xxx old but seemed to work    const uint8_t* r = (const uint8_t*)buf;
-// xxx old but seemed to work    if (r[0] == 1) {
-// xxx old but seemed to work      uint16_t seq = (uint16_t)(r[2] | (uint16_t(r[3]) << 8));
-// xxx old but seemed to work      uint32_t lenw = (uint32_t)(r[4] |
-// xxx old but seemed to work                                (uint32_t(r[5]) << 8) |
-// xxx old but seemed to work                                (uint32_t(r[6]) << 16) |
-// xxx old but seemed to work                                (uint32_t(r[7]) << 24));
-// xxx old but seemed to work      fprintf(stderr, "[REPLYHDR] n=%zu seq=%u lenw=%u (%u bytes) rep1=%u\n",
-// xxx old but seemed to work              n, (unsigned)seq, (unsigned)lenw, (unsigned)(lenw*4u), (unsigned)r[1]);
-// xxx old but seemed to work
-// xxx old but seemed to work      if (seq == 10) {
-// xxx old but seemed to work        fprintf(stderr, "[REPLYHDRHEX seq=10] ");
-// xxx old but seemed to work        for (int i = 0; i < 32; i++) fprintf(stderr, "%02X", r[i]);
-// xxx old but seemed to work        fprintf(stderr, "\n");
-// xxx old but seemed to work      }
-// xxx old but seemed to work    }
-// xxx old but seemed to work  }
-// xxx old but seemed to work  if (n == 32) {
-// xxx old but seemed to work    const uint8_t  r0   = r[0];
-// xxx old but seemed to work    const uint8_t  rep1 = r[1];
-// xxx old but seemed to work    const uint16_t seq  = uint16_t(r[2] | (uint16_t(r[3]) << 8));
-// xxx old but seemed to work    const uint32_t lenw =
-// xxx old but seemed to work      uint32_t(r[4]) |
-// xxx old but seemed to work      (uint32_t(r[5]) << 8) |
-// xxx old but seemed to work      (uint32_t(r[6]) << 16) |
-// xxx old but seemed to work      (uint32_t(r[7]) << 24);
-// xxx old but seemed to work
-// xxx old but seemed to work    // Invariant 1: reply header must have r0 == 1
-// xxx old but seemed to work    if (r0 != 1) {
-// xxx old but seemed to work      fprintf(stderr,
-// xxx old but seemed to work              "[PROTO BUG] sendReplyBytes called with 32-byte packet but r0=%u (seq=%u)\n",
-// xxx old but seemed to work              (unsigned)r0, (unsigned)seq);
-// xxx old but seemed to work      fprintf(stderr, "[PROTO BUG] header bytes: ");
-// xxx old but seemed to work      for (int i = 0; i < 32; i++) fprintf(stderr, "%02X", r[i]);
-// xxx old but seemed to work      fprintf(stderr, "\n");
-// xxx old but seemed to work      abort();
-// xxx old but seemed to work    }
-// xxx old but seemed to work
-// xxx old but seemed to work#ifndef NDEBUG
-// xxx old but seemed to work    // Invariant 2: exactly one reply per sequence
-// xxx old but seemed to work    if (seq == last_reply_seq) {
-// xxx old but seemed to work      fprintf(stderr,
-// xxx old but seemed to work              "[PROTO BUG] duplicate reply header for seq=%u\n",
-// xxx old but seemed to work              (unsigned)seq);
-// xxx old but seemed to work      abort();
-// xxx old but seemed to work    }
-// xxx old but seemed to work    last_reply_seq = seq;
-// xxx old but seemed to work#endif
-// xxx old but seemed to work
-// xxx old but seemed to work    fprintf(stderr,
-// xxx old but seemed to work            "[REPLY] seq=%u lenw=%u (%u bytes) rep1=%u\n",
-// xxx old but seemed to work            (unsigned)seq,
-// xxx old but seemed to work            (unsigned)lenw,
-// xxx old but seemed to work            (unsigned)(lenw * 4u),
-// xxx old but seemed to work            (unsigned)rep1);
-// xxx old but seemed to work
-// xxx old but seemed to work    return sendAll(buf, n);
-// xxx old but seemed to work  }
-// xxx old but seemed to work
-// xxx old but seemed to work  // -----------------------------
-// xxx old but seemed to work  // Payload (must follow a reply)
-// xxx old but seemed to work  // -----------------------------
-// xxx old but seemed to work  fprintf(stderr, "[REPLY_PAYLOAD] n=%zu\n", n);
-// xxx old but seemed to work  return sendAll(buf, n);
-// xxx old but seemed to work}
-  
+
   
 bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
     
 #ifndef NDEBUG
-  fprintf(stderr,
-          "[EVENT] type=%u wid=0x%08X seq=%u bytes0-8=%02X%02X%02X%02X%02X%02X%02X%02X\n",
-          (unsigned)ev[0],
-          (unsigned)targetWid,
-          (unsigned)lastSeq(),
-          ev[0], ev[1], ev[2], ev[3], ev[4], ev[5], ev[6], ev[7]);
-  if (ev[0] == 0) {
-    fprintf(stderr, "[FATAL] sending event type 0 (invalid)\n");
-    abort();
+  const uint8_t type = ev[0];
+  if (type == 22) { // ConfigureNotify
+    auto rd16 = [&](int off) -> uint16_t {
+      return (uint16_t)(ev[off] | (uint16_t(ev[off+1]) << 8));
+    };
+    auto rd32 = [&](int off) -> uint32_t {
+      return (uint32_t)(ev[off] |
+                        (uint32_t(ev[off+1]) << 8) |
+                        (uint32_t(ev[off+2]) << 16) |
+                        (uint32_t(ev[off+3]) << 24));
+    };
+
+    const uint32_t eventWin  = rd32(4);
+    const uint32_t windowWin = rd32(8);
+    const int16_t x = (int16_t)rd16(16);
+    const int16_t y = (int16_t)rd16(18);
+    const uint16_t w = rd16(20);
+    const uint16_t h = rd16(22);
+
+    fprintf(stderr,
+            "[CFG_EVT] target=0x%08X event=0x%08X window=0x%08X xy=%d,%d wh=%u,%u\n",
+            (unsigned)targetWid, (unsigned)eventWin, (unsigned)windowWin,
+            (int)x, (int)y, (unsigned)w, (unsigned)h);
   }
 #endif
     
@@ -570,6 +350,47 @@ void XProtoTransport::queueExposeRect(uint32_t wid,
   if (wid == 0) return;
   if (w == 0 || h == 0) return;
   notifyQueue_.queueExposeRect(wid, x, y, w, h, count);
+}
+  
+
+inline void sendMapNotify(XProtoContext& ctx,
+                          uint16_t seq,
+                          uint32_t event,
+                          uint32_t window,
+                          bool overrideRedirect)
+{
+  std::array<uint8_t,32> ev{};
+  ev.fill(0);
+
+  ev[0] = kMapNotify;
+  ev[1] = 0; // unused for MapNotify
+
+  wire::wr16_le(ev.data() + 2, seq);
+  wire::wr32_le(ev.data() + 4, event);
+  wire::wr32_le(ev.data() + 8, window);
+  ev[12] = overrideRedirect ? 1 : 0;
+
+  (void)ctx.transport().sendEvent32(window, ev.data());
+}
+  
+  
+inline void sendUnmapNotify(XProtoContext& ctx,
+                            uint16_t seq,
+                            uint32_t event,
+                            uint32_t window,
+                            bool fromConfigure)
+{
+  std::array<uint8_t,32> ev{};
+  ev.fill(0);
+
+  ev[0] = kUnmapNotify;
+  ev[1] = fromConfigure ? 1 : 0; // fromConfigure lives in byte 1
+
+  wire::wr16_le(ev.data() + 2, seq);
+  wire::wr32_le(ev.data() + 4, event);
+  wire::wr32_le(ev.data() + 8, window);
+
+  (void)ctx.transport().sendEvent32(window, ev.data());
 }
   
 } // namespace x11

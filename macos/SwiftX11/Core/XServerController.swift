@@ -261,26 +261,26 @@ final class XServerController: ObservableObject {
 
     case X11_UI_RESIZE:
       // xxx temp
-      print("[SIZE][UI_CMD] applyX11Resize xid=0x\(String(format:"%X", cmd.xid)) wPx=\(cmd.w_px) hPx=\(cmd.h_px)")
-      WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wPx: cmd.w_px, hPx: cmd.h_px)
+      print("[SIZE][UI_CMD] applyX11Resize xid=0x\(String(format:"%X", cmd.xid)) wPx=\(cmd.w_u) hPx=\(cmd.h_u)")
+      WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wPx: cmd.w_u, hPx: cmd.h_u)
 
     case X11_UI_CREATE:
       WindowRegistry.shared.noteX11WindowCreated(
         xid: cmd.xid,
         parentXid: cmd.parent_xid,
         title: "SwiftX11 Window",
-        width: Int(cmd.w_px),
-        height: Int(cmd.h_px)
+        width: Int(cmd.w_u),
+        height: Int(cmd.h_u)
       )
 
     case X11_UI_DESTROY:
       WindowRegistry.shared.noteX11WindowDestroyed(xid: cmd.xid)
 
     case X11_UI_DAMAGE:
-      print("[UI_CMD] DAMAGE xid=0x\(String(cmd.xid, radix:16)) rect=\(cmd.x_px),\(cmd.y_px) \(cmd.w_px)x\(cmd.h_px)")
+      print("[UI_CMD] DAMAGE xid=0x\(String(cmd.xid, radix:16)) rect=\(cmd.x_u),\(cmd.y_u) \(cmd.w_u)x\(cmd.h_u)")
       // Convert to your existing damage handler signature.
       // If you want, you can change WindowRegistry.handleDamageEvent to take raw fields instead.
-      WindowRegistry.shared.noteDamageRect(xid: cmd.xid, x: cmd.x_px, y: cmd.y_px, w: cmd.w_px, h: cmd.h_px)
+      WindowRegistry.shared.noteDamageRect(xid: cmd.xid, x: cmd.x_u, y: cmd.y_u, w: cmd.w_u, h: cmd.h_u)
 
     default:
       break
@@ -297,7 +297,7 @@ final class XServerController: ObservableObject {
 
       switch ev.type {
       case X11_UI_CREATE:
-        return "X11_UI_CREATE xid=\(xid) parent=\(parent_xid) \(ev.w_px)x\(ev.h_px)"
+        return "X11_UI_CREATE xid=\(xid) parent=\(parent_xid) \(ev.w_u)x\(ev.h_u)"
           
       case X11_UI_DESTROY:
           return "EV_WINDOW_DESTROY xid=\(xid)"
@@ -323,10 +323,10 @@ final class XServerController: ObservableObject {
           return "X11_UI_UNMAP xid=\(xid)"
         
       case X11_UI_RESIZE:
-        return "X11_UI_RESIZE xid=\(xid) \(ev.w_px)x\(ev.h_px)"
+        return "X11_UI_RESIZE xid=\(xid) \(ev.w_u)x\(ev.h_u)"
         
       case X11_UI_DAMAGE:
-        return "X11_UI_DAMAGE xid=\(xid) rect=(\(ev.x_px),\(ev.y_px)) \(ev.w_px)x\(ev.h_px)"
+        return "X11_UI_DAMAGE xid=\(xid) rect=(\(ev.x_u),\(ev.y_u)) \(ev.w_u)x\(ev.h_u)"
         
       default:
           return "unknown UI type=\(ev.type.rawValue) xid=\(xid)"

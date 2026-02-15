@@ -450,7 +450,7 @@ int x11_requests_push_damage(uint32_t xid)
 #ifndef NDEBUG
   // ok==0 means the queue was full and we dropped the request.
   // ok==1 means enqueued OR coalesced (req_push_locked coalesces adjacent DAMAGE for same xid).
-  fprintf(stderr, "[SwiftX11] x11_requests_push_damage: xid=0x%08X ok=%d\n",
+  fprintf(stderr, "[REQ_DAMAGE_ENQ] x11_requests_push_damage: xid=0x%08X ok=%d\n",
           (unsigned)xid, ok);
 #endif
 
