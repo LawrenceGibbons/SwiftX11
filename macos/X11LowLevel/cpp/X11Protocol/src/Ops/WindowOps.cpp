@@ -27,6 +27,9 @@ extern "C" {
 #include "x11_backend_fb.h"
 #include <cstdio>   // snprintf
 #include "Debug/x11_backend_fb_dbg.hpp"
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
 
 namespace x11 {
 
@@ -146,39 +149,46 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 }
   
   
-void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
-  const uint32_t wid = br.readU32();
-  br.skip(br.remaining());
-  if (wid == 0) return;
+  void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+    const uint32_t wid = br.readU32();
+    br.skip(br.remaining());
+    if (wid == 0) return;
 
-  // 1) Update authoritative table
-  ctx.windows().setMapped(wid, true);
+    // 1) Update authoritative table
+    ctx.windows().setMapped(wid, true);
 
-  // Rootless rule: only top-level host windows drive Cocoa.
-  const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    // Rootless rule: only top-level host windows drive Cocoa.
+    const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
 
-  // 2) Swift-side map only for the host
-  if (host == wid) {
-    x11_requests_push_map(wid);
-  }
+    // 2) Swift-side map + authoritative resize only for the host (UI command queue)
+    if (host == wid) {
+      x11_ui_push_map(wid);
 
-  // 3) Notify client if selected (always on wid, not host)
-  if (const WindowView* vw = ctx.window(wid)) {
-    const bool wantExp = vw->mapped && ((vw->event_mask & (1u << 15)) != 0);
-    const bool wantCfg =               ((vw->event_mask & (1u << 17)) != 0);
-    if (wantExp || wantCfg) {
-      ctx.transport().queueNotify(wid, wantCfg, wantExp);
+      // After mapping a top-level host, emit an authoritative resize to Swift.
+      // This ensures Cocoa host is sized from X11 geometry and avoids relying on transient Cocoa sizes.
+      WindowView vw{};
+      if (ctx.windows().snapshot(wid, vw)) {
+        x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);
+      }
+    }
+    
+    // 3) Notify client if selected (always on wid, not host)
+    if (const WindowView* vw = ctx.window(wid)) {
+      const bool wantExp = vw->mapped && ((vw->event_mask & (1u << 15)) != 0);
+      const bool wantCfg =               ((vw->event_mask & (1u << 17)) != 0);
+      if (wantExp || wantCfg) {
+        ctx.transport().queueNotify(wid, wantCfg, wantExp);
+      }
+    }
+
+    // 4) If anything drew before presentable, flush once now (route to host)
+    if (host != 0) {
+      if (ctx.windows().consumeDirtyIfReady(host)) {
+        x11_requests_push_damage(host);
+      }
     }
   }
-
-  // 4) If anything drew before presentable, flush once now (route to host)
-  if (host != 0) {
-    if (ctx.windows().consumeDirtyIfReady(host)) {
-      x11_requests_push_damage(host);
-    }
-  }
-}
   
   
 void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
@@ -215,25 +225,25 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
         ctx.transport().queueNotify(xid, wantCfg, wantExp);
       }
     }
-
-    // 3) If this window had "dirty before presentable", we want a host flush.
-    // Consume on host, not xid (child windows are not presentable in rootless).
-    // Marking host dirty is also fine; consumeDirtyIfReady(host) will handle it later.
-    if (host != 0) {
-      // If you keep dirty flags on children (legacy), convert them into host-dirty here:
-      // NOTE: consumeDirtyIfReady(xid) is wrong for child windows in rootless.
-      // Prefer: ctx.windows().markDirty(host);
-      // But to preserve "consume once" semantics, do it this way:
-      // (We don't have a "isDirty(xid)" accessor, so just always mark host dirty on map.)
-      ctx.windows().markDirty(host);
-    }
   }
 
-  // 4) Cocoa visibility: only map the host (once).
+  // 4) Cocoa visibility: only mark and map the host (once).
+  bool hostWasMapped = false;
+  if (host != 0) {
+    if (const WindowView* hv0 = ctx.window(host)) hostWasMapped = hv0->mapped;
+  }
   if (anyMapped && host != 0) {
+    ctx.windows().markDirty(host);
+    
     // If the host itself is being mapped elsewhere, this is harmless (Swift side should de-dupe).
-    x11_requests_push_map(host);
+    if (!hostWasMapped) x11_ui_push_map(host);
 
+    // Also push authoritative resize for the host (same reasoning as MapWindow)
+    WindowView hv{};
+    if (ctx.windows().snapshot(host, hv)) {
+      x11_ui_push_resize(host, (int32_t)hv.w, (int32_t)hv.h);
+    }
+    
     // If anything was dirty, flush once now if host is ready.
     if (ctx.windows().consumeDirtyIfReady(host)) {
       x11_requests_push_damage(host);

@@ -212,63 +212,7 @@ final class WindowRegistry {
     // Now that X11 says mapped, allow Cocoa resizes to flow back to X11.
     ignoreCocoaResizeUntilMapped.remove(host)
 
-//    // (C) One-time sync: tell X11 what Cocoa’s current pixel size is.
-//    if let sz = latestHostSizePxByXid[host] {
-//      sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
-//    }
-    
-    // (C) One-time sync: tell X11 what Cocoa’s current pixel size is.
-    //
-    // During initial window construction/layout, Cocoa may report transient tiny sizes
-    // (often 1x1pt -> 2x2px). Never seed X11 with those, or the host FB collapses.
-    if let sz = latestHostSizePxByXid[host] {
-      let minStablePx: Int32 = 32
-//      if sz.w < minStablePx || sz.h < minStablePx {
-//        logAppend?(
-//          "[CFG_SYNC] IGNORE tiny initial Cocoa size host=0x\(String(host,radix:16)) " +
-//          "sz=\(sz.w)x\(sz.h) (waiting for real size)"
-//        )
-//      } else {
-//        sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
-//      }
-      if sz.w < minStablePx || sz.h < minStablePx {
-        // Try to seed host from a meaningful child size (xterm's child window is usually the real geometry).
-        var best: (w: Int32, h: Int32)? = nil
-
-        if let kids = childrenByParent[host] {
-          for kid in kids {
-            if let info = infoByXid[kid] {
-              let w = Int32(max(1, info.width))
-              let h = Int32(max(1, info.height))
-              if w >= minStablePx, h >= minStablePx {
-                if best == nil || (w * h) > (best!.w * best!.h) {
-                  best = (w: w, h: h)
-                }
-              }
-            }
-          }
-        }
-
-        if let b = best {
-          logAppend?(
-            "[CFG_SYNC] tiny Cocoa size \(sz.w)x\(sz.h); " +
-            "seeding host from child \(b.w)x\(b.h) host=0x\(String(host,radix:16))"
-          )
-          sendConfigureAsync(xid: host, w: b.w, h: b.h)
-        } else {
-          // Last-resort default so we don't get stuck with a 1x1 host forever.
-          let defW: Int32 = 640
-          let defH: Int32 = 480
-          logAppend?(
-            "[CFG_SYNC] tiny Cocoa size \(sz.w)x\(sz.h); " +
-            "seeding host default \(defW)x\(defH) host=0x\(String(host,radix:16))"
-          )
-          sendConfigureAsync(xid: host, w: defW, h: defH)
-        }
-      } else {
-        sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
-      }
-    }
+    logAppend?("[MAP] host=0x\(String(host, radix:16)) mapped; awaiting X11_UI_RESIZE")
     
     mappedXids.insert(host)
 
@@ -757,22 +701,6 @@ final class WindowRegistry {
     let hPx = Int32(max(1, Int(sizePixels.height.rounded(.down))))
     
     let tinyLimit: Int32 = 32
-    if wPx < tinyLimit || hPx < tinyLimit {
-      let ls  = lastSentHostSizePxByXid[host]
-      let prev = latestHostSizePxByXid[host]
-      let exp = suppressCocoaResizeExpected[host]
-      let msg =
-        "[DBG] windowResized tiny host=0x\(String(host, radix:16)) " +
-        "wPx=\(wPx) hPx=\(hPx) " +
-        "mapped=\(mappedXids.contains(host)) " +
-        "ignoreUntilMapped=\(ignoreCocoaResizeUntilMapped.contains(host)) " +
-        "applyingX11=\(applyingX11Resize.contains(host)) " +
-        "suppressExpected=\(String(describing: exp)) " +
-        "lastSent=\(String(describing: ls)) " +
-        "prevCocoa=\(String(describing: prev))"
-      print(msg)
-      logAppend?(msg)
-    }
     
     // HARD GATE: until X11 maps the host window, never echo Cocoa→X11 resizes.
     if !mappedXids.contains(host) {
