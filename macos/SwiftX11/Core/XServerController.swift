@@ -261,8 +261,8 @@ final class XServerController: ObservableObject {
 
     case X11_UI_RESIZE:
       // xxx temp
-      print("[SIZE][UI_CMD] applyX11Resize xid=0x\(String(format:"%X", cmd.xid)) wPx=\(cmd.w_u) hPx=\(cmd.h_u)")
-      WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wPx: cmd.w_u, hPx: cmd.h_u)
+      print("[SIZE][UI_CMD] applyX11Resize xid=0x\(String(format:"%X", cmd.xid)) wX11=\(cmd.w_u) hX11=\(cmd.h_u)")
+      WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wX11: cmd.w_u, hX11: cmd.h_u)
 
     case X11_UI_CREATE:
       WindowRegistry.shared.noteX11WindowCreated(

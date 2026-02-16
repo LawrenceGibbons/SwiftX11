@@ -952,45 +952,44 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   private var pendingResizeTask: DispatchWorkItem? = nil
   private var pendingSize: (w: Int32, h: Int32)? = nil
   
+  
+  
   private func handleDrawableSize(_ size: CGSize) {
     guard xid != 0 else { return }
     
-    // MTKView drawable sizes are already in pixels.
-    let wPt = Int32(size.width.rounded(.toNearestOrAwayFromZero))
-    let hPt = Int32(size.height.rounded(.toNearestOrAwayFromZero))
+    // MTKView drawableSize is in *pixels*.
+    let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
+    let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
     
     // ---- HARD GATES ----
-    // 1) Ignore transient invalid sizes coming from AppKit/Metal attach/layout.
-    guard wPt >= 1, hPt >= 1 else { return }
-    
-    // 2) Ignore tiny “bootstrap” drawable sizes (this is your 2x2 spam).
-    // Pick a floor that is always safe. Since you now create host windows at 64x64,
-    // 16 is conservative; 32 is fine too.
-    guard wPt >= 16, hPt >= 16 else { return }
-    
-    // 3) If MTKView isn't attached yet, don't feed resize back to the server.
-    // (You can remove this if you can't access the MTKView here.)
+    guard wPx >= 1, hPx >= 1 else { return }
+    guard wPx >= 16, hPx >= 16 else { return }
     guard owner?.window != nil else { return }
     
-    // Presentable: once.
     if !didNotifyPresentable {
       didNotifyPresentable = true
       x11_post_window_presentable(xid)
     }
     
-    if wPt == lastDrawablePt.w && hPt == lastDrawablePt.h { return }
-    lastDrawablePt = (wPt, hPt)
+    if wPx == lastDrawablePt.w && hPx == lastDrawablePt.h { return }
+    lastDrawablePt = (wPx, hPx)
     
-    // Debounce resize feedback (coalesce bursts)
     pendingResizeTask?.cancel()
-    pendingSize = (wPt, hPt)
+    pendingSize = (w: wPx, h: hPx)
     
     let task = DispatchWorkItem { [weak self] in
       guard let self = self, let s = self.pendingSize else { return }
-      x11_post_window_resize(self.xid, s.w, s.h)
+      
+      // Convert backing pixels -> X11 units (points) under the new model.
+      let scale = self.owner?.window?.backingScaleFactor ?? 1.0
+      let wX11 = Int32(max(1, Int((CGFloat(s.w) / scale).rounded(.down))))
+      let hX11 = Int32(max(1, Int((CGFloat(s.h) / scale).rounded(.down))))
+      
+      x11_post_window_resize(self.xid, wX11, hX11)
     }
+    
     pendingResizeTask = task
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task) // 50ms
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task)
   }
 }
 

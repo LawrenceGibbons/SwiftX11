@@ -58,7 +58,7 @@ final class WindowRegistry {
   private var resizeWorkScheduled: Set<UInt32> = []
   
   // When X11 drives a resize, swallow Cocoa resize callbacks until we converge.
-  private var suppressCocoaResizeExpected: [UInt32: (wPx: Int32, hPx: Int32)] = [:]
+  private var suppressCocoaResizeExpected: [UInt32: (wX11: Int32, hX11: Int32)] = [:]
   private var suppressCocoaResizeBudget:   [UInt32: Int] = [:]
   // xxx temp
   private var lastSizePrintTimeByXid: [UInt32: CFTimeInterval] = [:]
@@ -669,10 +669,10 @@ final class WindowRegistry {
     let h = max(1, h)
 
     let scale = windows[host]?.window?.backingScaleFactor ?? -1
-    logAppend?("[CFG_SEND] host=0x\(String(host,radix:16)) sendPx=\(w)x\(h) winScale=\(scale)")
+    logAppend?("[CFG_SEND] host=0x\(String(host,radix:16)) sendX11=\(w)x\(h)pt winScale=\(scale)")
     
     // Record the size we are *actually sending* to X11 for the HOST.
-    lastSentHostSizePxByXid[host] = (w: w, h: h)
+    lastSentHostSizePtByXid[host] = (w: w, h: h)
 
     // Suppress Cocoa echo for the HOST (these are keyed by the window id we resize).
     suppressExpectedSize[host] = (w: w, h: h)
@@ -699,9 +699,7 @@ final class WindowRegistry {
     // Pixels — MUST be used for protocol/configure
     let wPx = Int32(max(1, Int(sizePixels.width.rounded(.down))))
     let hPx = Int32(max(1, Int(sizePixels.height.rounded(.down))))
-    
-    let tinyLimit: Int32 = 32
-    
+        
     // HARD GATE: until X11 maps the host window, never echo Cocoa→X11 resizes.
     if !mappedXids.contains(host) {
       latestHostSizePxByXid[host] = (w: wPx, h: hPx)
@@ -723,7 +721,7 @@ final class WindowRegistry {
     //if let exp = suppressCocoaResizeExpected[xid] {
     if let exp = suppressCocoaResizeExpected[host] {
 
-      if exp.wPx == wPx && exp.hPx == hPx {
+      if exp.wX11 == wPt && exp.hX11 == hPt {
         suppressCocoaResizeExpected.removeValue(forKey: host)
         suppressCocoaResizeBudget.removeValue(forKey: host)
         suppressNextResizeFromCocoa.remove(host)
@@ -763,7 +761,6 @@ final class WindowRegistry {
     //   If the host is mapped and we have previously sent a reasonable size to X11,
     //   ignore any new Cocoa sizes that are "tiny".
     // --------------------------------------------------------------------
-    let ls = lastSentHostSizePxByXid[host]
     let minStablePx: Int32 = 32
     if suppressCocoaResizeExpected[host] == nil,
        let lastSent = lastSentHostSizePxByXid[host] {
@@ -804,8 +801,8 @@ final class WindowRegistry {
     latestHostSizePtByXid[host] = (w: wPt, h: hPt)
 
     // Only act if the observed pixel size differs from what we've last sent to X11.
-    let lastSent = lastSentHostSizePxByXid[host]
-    let changed = (lastSent?.w != wPx || lastSent?.h != hPx)
+    let lastSent = lastSentHostSizePtByXid[host]
+    let changed = (lastSent?.w != wPt || lastSent?.h != hPt)
     if !changed { return }
 
     // Throttle: allow at most ~30fps during live resize
@@ -823,7 +820,7 @@ final class WindowRegistry {
       // Debug
       logAppend?("[RESIZE Cocoa→X11] xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) wPx=\(wPx) hPx=\(hPx) wPt=\(wPt) hPt=\(hPt)")
 
-      sendConfigureAsync(xid: host, w: wPx, h: hPx)
+      sendConfigureAsync(xid: host, w: wPt, h: hPt)
       return
     }
 
@@ -831,7 +828,7 @@ final class WindowRegistry {
     repaintWorkItemByXid[host]?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
-      guard let sz = self.latestHostSizePxByXid[host] else { return }
+      guard let sz = self.latestHostSizePtByXid[host] else { return }
       
       guard self.mappedXids.contains(host) else { return }
 
@@ -844,7 +841,7 @@ final class WindowRegistry {
   
   
   @MainActor
-  func applyX11Resize(xid: UInt32, wPx: Int32, hPx: Int32) {
+  func applyX11Resize(xid: UInt32, wX11: Int32, hX11: Int32) {
     
     let host = topLevelAncestor(of: xid)
 
@@ -853,13 +850,15 @@ final class WindowRegistry {
           let _ = controller.x11View else { return }
 
     // Suppress Cocoa echo immediately
-    suppressCocoaResizeExpected[host] = (wPx: wPx, hPx: hPx)
+    suppressCocoaResizeExpected[host] = (wX11: wX11, hX11: hX11)
     suppressCocoaResizeBudget[host] = 12
     suppressNextResizeFromCocoa.insert(host)
 
     let scale = win.backingScaleFactor
-    let wPoints = max(1.0, CGFloat(wPx) / scale)
-    let hPoints = max(1.0, CGFloat(hPx) / scale)
+    let wPoints = max(1.0, CGFloat(wX11))
+    let hPoints = max(1.0, CGFloat(hX11))
+    //let wPoints = max(1.0, CGFloat(wPx) / scale)
+    //let hPoints = max(1.0, CGFloat(hPx) / scale)
 
     pendingX11Resize[host] = (wPoints, hPoints)
     guard !resizeWorkScheduled.contains(host) else { return }
@@ -878,7 +877,7 @@ final class WindowRegistry {
         self.pendingX11Resize[host] = sz
         self.resizeWorkScheduled.insert(host)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak self] in
-          self?.applyX11Resize(xid: host, wPx: wPx, hPx: hPx)
+          self?.applyX11Resize(xid: host, wX11: wX11, hX11: hX11)
         }
         return
       }
@@ -898,7 +897,7 @@ final class WindowRegistry {
       if let v = controller.x11View, v.isInLayoutPass {
         // try again next tick
         DispatchQueue.main.async { [weak self] in
-          self?.applyX11Resize(xid: host, wPx: wPx, hPx: hPx)
+          self?.applyX11Resize(xid: host, wX11: wX11, hX11: hX11)
         }
         return
       }
@@ -915,7 +914,7 @@ final class WindowRegistry {
     repaintWorkItemByXid[host]?.cancel()
     repaintWorkItemByXid.removeValue(forKey: host)
 
-    guard let sz = latestHostSizePxByXid[host] else { return }
+    guard let sz = latestHostSizePtByXid[host] else { return }
     guard mappedXids.contains(host) else { return }   // IMPORTANT: don’t resize unmapped hosts
 
     sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
@@ -954,22 +953,24 @@ final class WindowRegistry {
     }
     return false
   }
-  
+
   func setUseMetalForAllWindows(_ enabled: Bool) {
     useMetalForNewWindows = enabled
-    
+
     for (xid, controller) in windows {
       controller.setUseMetal(enabled)
-      
-      if let win = controller.window {
-        let sizePoints = win.contentLayoutRect.size
-        let scale = win.backingScaleFactor
-        let wPx = Int32(max(1, Int((sizePoints.width * scale).rounded(.down))))
-        let hPx = Int32(max(1, Int((sizePoints.height * scale).rounded(.down))))
-        let host = hostXid(xid)
-        guard mappedXids.contains(host) else { continue }
-        sendConfigureAsync(xid: host, w: wPx, h: hPx)
-      }
+
+      guard let win = controller.window else { continue }
+      let sizePoints = win.contentLayoutRect.size
+
+      let wX11 = Int32(max(1, Int(sizePoints.width.rounded(.down))))
+      let hX11 = Int32(max(1, Int(sizePoints.height.rounded(.down))))
+
+      let host = hostXid(xid)
+      guard mappedXids.contains(host) else { continue }
+
+      // X11 units are points now
+      sendConfigureAsync(xid: host, w: wX11, h: hX11)
     }
   }
   
