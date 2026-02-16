@@ -20,11 +20,15 @@
 #include "Ops/DrawOps.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "UI/UICommandQueue.hpp"
+#include "Fonts/BDF.hpp"
+#include "Core/FontTable.hpp"
 
 // bridging
 #include "x11_backend_fb.h"
 #include "x11_requests.h"
 #include "XProtoServerBridge.h"
+#include "Core/Font8x8.hpp"
+
 
 // util
 #include "Damage.hpp"
@@ -35,10 +39,12 @@ static constexpr uint32_t kBitmapScanlinePadBits = 32;   // matches SetupSuccess
 static constexpr bool     kBitmapBitOrderLSBFirst = true;
 
 DrawOps::DrawOps(XProtoRegistrar& reg) {
-  reg.registerMajor(61, &DrawOps::onMajor, this); // ClearArea
-  reg.registerMajor(62, &DrawOps::onMajor, this); // CopyArea
-  reg.registerMajor(63, &DrawOps::onMajor, this); // CopyPlane
-  reg.registerMajor(72, &DrawOps::onMajor, this); // PutImage
+  reg.registerMajor(x11::opcode::ClearArea, &DrawOps::onMajor, this);  // 61
+  reg.registerMajor(x11::opcode::CopyArea,  &DrawOps::onMajor, this);  // 62
+  reg.registerMajor(x11::opcode::CopyPlane, &DrawOps::onMajor, this);  // 63
+  reg.registerMajor(x11::opcode::PutImage,  &DrawOps::onMajor, this);  // 72
+  reg.registerMajor(x11::opcode::PolyText8,  &DrawOps::onMajor, this); // 74
+  reg.registerMajor(x11::opcode::ImageText8, &DrawOps::onMajor, this); // 76
 }
 
 void DrawOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -48,10 +54,12 @@ void DrawOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void DrawOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case 61: handleClearArea(ctx, dc.seq, dc.minor /*exposures*/, dc.br); return;
-    case 62: handleCopyArea(ctx, dc.seq, dc.br); return;
-    case 63: handleCopyPlane(ctx, dc.seq, dc.br); return;
-    case 72: handlePutImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
+    case x11::opcode::ClearArea: handleClearArea(ctx, dc.seq, dc.minor /*exposures*/, dc.br); return;
+    case x11::opcode::CopyArea:  handleCopyArea(ctx, dc.seq, dc.br); return;
+    case x11::opcode::CopyPlane: handleCopyPlane(ctx, dc.seq, dc.br); return;
+    case x11::opcode::PutImage:  handlePutImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
+    case x11::opcode::PolyText8:  handlePolyText8(ctx, dc.seq, dc.br); return; // 74
+    case x11::opcode::ImageText8: handleImageText8(ctx, dc.seq, dc.minor /*n*/, dc.br); return; // 76, dc.minor is string length
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[DrawOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -66,11 +74,87 @@ uint32_t DrawOps::computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits) {
 }
   
   
-
+// ---------------------------
+// helpers
+// ---------------------------
   
-  static inline int clampi(int v, int lo, int hi) {
-    return (v < lo) ? lo : (v > hi) ? hi : v;
+static inline void fillRectBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
+                                int x, int y, int w, int h,
+                                uint32_t color)
+{
+  if (!pix || fbW == 0 || fbH == 0) return;
+  if (w <= 0 || h <= 0) return;
+
+  int rx = x, ry = y, rw = w, rh = h;
+
+  if (rx < 0) { rw += rx; rx = 0; }
+  if (ry < 0) { rh += ry; ry = 0; }
+  if (rx + rw > (int)fbW) rw = (int)fbW - rx;
+  if (ry + rh > (int)fbH) rh = (int)fbH - ry;
+  if (rw <= 0 || rh <= 0) return;
+
+  for (int yy = 0; yy < rh; yy++) {
+    uint32_t* row = pix + (size_t)(ry + yy) * fbW + (size_t)rx;
+    for (int xx = 0; xx < rw; xx++) row[xx] = color;
   }
+}
+
+static inline void drawGlyph1bppBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
+                                     int dstLeftX, int dstTopY,
+                                     const x11::font::Glyph& g,
+                                     uint32_t fg)
+{
+  const int bw = g.bbx_w;
+  const int bh = g.bbx_h;
+  if (bw <= 0 || bh <= 0) return;
+
+  const int stride = g.rowStrideBytes();
+  const uint8_t* bm = g.bitmap.data();
+  if (!bm) return;
+
+  for (int gy = 0; gy < bh; gy++) {
+    const int yy = dstTopY + gy;
+    if ((unsigned)yy >= fbH) continue;
+
+    const uint8_t* row = bm + gy * stride;
+
+    for (int gx = 0; gx < bw; gx++) {
+      const int xx = dstLeftX + gx;
+      if ((unsigned)xx >= fbW) continue;
+
+      const uint8_t byte = row[gx >> 3];
+      const uint8_t bit  = 0x80u >> (gx & 7);
+      if (byte & bit) {
+        pix[(size_t)yy * fbW + (size_t)xx] = fg;
+      }
+    }
+  }
+}  
+
+
+static inline bool getGC(uint32_t gcXid, x11::GCState& out) {
+  return x11::GCTable::instance().find(gcXid, out);
+}
+
+static inline const x11::font::BdfFont* resolveFont(x11::XProtoContext& ctx, const x11::GCState& gc) {
+  const x11::font::BdfFont* f = nullptr;
+  if (gc.font != 0) f = ctx.fonts().get(gc.font);
+  if (!f) f = ctx.fonts().findByName("fixed");
+  return f;
+}
+
+static inline const x11::font::Glyph* resolveGlyph(const x11::font::BdfFont* f, uint8_t ch) {
+  if (!f) return nullptr;
+  const x11::font::Glyph* g = f->getGlyph((int)ch);
+  if (!g) g = f->getGlyph(f->defaultChar);
+  if (!g) g = f->getGlyph((int)'?');
+  return g;
+}
+  
+  
+static inline int clampi(int v, int lo, int hi) {
+  return (v < lo) ? lo : (v > hi) ? hi : v;
+}
 
   
   
@@ -558,6 +642,167 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
         }
       }
     }
+  }
+  
+  
+  // -----------------------------
+  // PolyText8 (major 74)
+  // -----------------------------
+  void DrawOps::handlePolyText8(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br)
+  {
+    // Body:
+    //   CARD32 drawable
+    //   CARD32 gc
+    //   INT16 x
+    //   INT16 y
+    //   LISTof TEXTITEM8
+    if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+
+    const uint32_t drawable = br.readU32();
+    const uint32_t gcXid    = br.readU32();
+    const int16_t x0        = (int16_t)br.readU16();
+    const int16_t y         = (int16_t)br.readU16();
+
+    uint32_t* pix = nullptr;
+    uint32_t fbW = 0, fbH = 0;
+    if (!x11_xproto_window_fb_rw(drawable, &pix, &fbW, &fbH) || !pix) {
+      br.skip(br.remaining());
+      return;
+    }
+
+    x11::GCState gc{};
+    (void)getGC(gcXid, gc);
+
+    // Current font starts from GC font
+    const x11::font::BdfFont* f = resolveFont(ctx, gc);
+    if (!f) { br.skip(br.remaining()); return; }
+
+    int penX = (int)x0;
+
+    while (br.remaining() >= 2) {
+      const int8_t  delta = (int8_t)br.readU8();
+      const uint8_t len   = br.readU8();
+      penX += (int)delta;
+
+      if (len == 0) {
+        // Font change item: next CARD32 is font fid
+        if (br.remaining() < 4) break;
+        const uint32_t newFid = br.readU32();
+        x11::GCState tmp = gc;
+        tmp.font = newFid;
+        const x11::font::BdfFont* nf = resolveFont(ctx, tmp);
+        if (nf) f = nf;
+        continue;
+      }
+#ifndef NDEBUG
+fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
+        (unsigned)drawable, (unsigned)gcXid, (unsigned)gc.font,
+        f ? f->name.c_str() : "<null>",
+        f ? f->bbx_w : -1, f ? f->bbx_h : -1,
+        f ? f->ascent : -1, f ? f->descent : -1);
+#endif
+
+      if (br.remaining() < len) break;
+
+      for (uint8_t i = 0; i < len; i++) {
+        const uint8_t ch = br.readU8();
+        const x11::font::Glyph* g = resolveGlyph(f, ch);
+        if (!g) { penX += f->advanceFor((int)ch); continue; }
+
+        const int leftX = penX + g->bbx_xoff;
+        const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
+
+        drawGlyph1bppBGRA(pix, fbW, fbH, leftX, topY, *g, gc.fg);
+
+        penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor((int)ch);
+      }
+
+      // TEXTITEM8 strings are padded to even length (per X11 protocol struct packing)
+      if (len & 1u) {
+        if (br.remaining() > 0) br.readU8();
+      }
+    }
+
+    br.skip(br.remaining());
+    damageOrDirty(ctx, drawable);
+  }
+  
+  
+  // -----------------------------
+  // ImageText8 (major 76)
+  // -----------------------------
+  void DrawOps::handleImageText8(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br)
+  {
+    // Body:
+    //   CARD32 drawable
+    //   CARD32 gc
+    //   INT16 x
+    //   INT16 y
+    //   CHAR  string[n]
+    if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+
+    const uint32_t drawable = br.readU32();
+    const uint32_t gcXid    = br.readU32();
+    const int16_t x         = (int16_t)br.readU16();
+    const int16_t y         = (int16_t)br.readU16();
+
+    if (br.remaining() < n) { br.skip(br.remaining()); return; }
+    std::vector<uint8_t> text(n);
+    for (uint8_t i = 0; i < n; i++) text[i] = br.readU8();
+    br.skip(br.remaining());
+
+    // Get FB
+    uint32_t* pix = nullptr;
+    uint32_t fbW = 0, fbH = 0;
+    if (!x11_xproto_window_fb_rw(drawable, &pix, &fbW, &fbH) || !pix) return;
+
+    // Get GC
+    x11::GCState gc{};
+    (void)getGC(gcXid, gc); // if not found, defaults in GCState ctor
+
+    // Resolve font
+    const x11::font::BdfFont* f = resolveFont(ctx, gc);
+    if (!f) return;
+#ifndef NDEBUG
+fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
+        (unsigned)drawable, (unsigned)gcXid, (unsigned)gc.font,
+        f ? f->name.c_str() : "<null>",
+        f ? f->bbx_w : -1, f ? f->bbx_h : -1,
+        f ? f->ascent : -1, f ? f->descent : -1);
+#endif
+
+    const int fontAscent  = (f->ascent  > 0) ? f->ascent  : 12;
+    const int fontDescent = (f->descent > 0) ? f->descent : 4;
+
+    // Compute overall width (sum of advances)
+    int overallW = 0;
+    for (uint8_t ch : text) overallW += f->advanceFor((int)ch);
+
+    // ImageText fills background rectangle: [x .. x+overallW) × [y-ascent .. y+descent)
+    fillRectBGRA(pix, fbW, fbH,
+                 (int)x,
+                 (int)y - fontAscent,
+                 overallW,
+                 fontAscent + fontDescent,
+                 gc.bg);
+
+    // Draw glyphs
+    int penX = (int)x;
+    for (uint8_t ch : text) {
+      const x11::font::Glyph* g = resolveGlyph(f, ch);
+      if (!g) { penX += f->advanceFor((int)ch); continue; }
+
+      // Place bitmap using BBX offsets relative to baseline origin (penX,y)
+      const int leftX  = penX + g->bbx_xoff;
+      const int topY   = (int)y - g->bbx_yoff - (g->bbx_h - 1);
+
+      drawGlyph1bppBGRA(pix, fbW, fbH, leftX, topY, *g, gc.fg);
+
+      // Advance
+      penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor((int)ch);
+    }
+
+    damageOrDirty(ctx, drawable);
   }
   
 } // namespace x11

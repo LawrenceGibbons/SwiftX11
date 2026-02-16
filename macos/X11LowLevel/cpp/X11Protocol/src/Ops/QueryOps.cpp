@@ -160,8 +160,8 @@ namespace x11 {
   // ---- 43: GetInputFocus ----
   void QueryOps::handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining());
-    // Bring-up behavior: focus = root, revertTo=None(0)
-    (void)ctx.reply().sendGetInputFocusReply(seq, /*revertTo*/0, /*focus*/kRootXid);
+    const uint32_t f = ctx.input().focus_xid ? ctx.input().focus_xid : 0;
+    (void)ctx.reply().sendGetInputFocusReply(seq, /*revertTo*/0, /*focus*/f);
   }
   
   // ---- 38: QueryPointer ----

@@ -320,43 +320,148 @@ void FontOps::handleQueryFont(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
 //   CARD32 font (fid)
 //   STRING16 chars (if oddLength=0) else STRING8?  (core protocol uses odd flag)
 // Reply: fixed 32 bytes (xQueryTextExtentsReply)
-void FontOps::handleQueryTextExtents(XProtoContext& ctx, uint16_t seq, bool /*oddLength*/, ByteReader& br) {
-  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
-  const uint32_t fid = br.readU32();
-  (void)fid;
+  void FontOps::handleQueryTextExtents(XProtoContext& ctx, uint16_t seq, bool oddLength, ByteReader& br) {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+    const uint32_t fid = br.readU32();
 
-  // Consume remaining string (we ignore content; compute simple width)
-  const size_t nbytes = br.remaining();
-  br.skip(nbytes);
+    // Resolve font (authoritative)
+    const x11::font::BdfFont* f = ctx.fonts().get(fid);
+    if (!f) f = ctx.fonts().findByName("fixed");
+    if (!f) { br.skip(br.remaining()); return; }
 
-  // Very rough: assume 8px advance per byte (works well enough for bring-up)
-  const int32_t overallWidth = (int32_t)nbytes * 8;
+    // X11 QueryTextExtents request:
+    //  - oddLength==0: CHAR2B stream (2 bytes each)
+    //  - oddLength==1: CHAR8 stream, padded to even total bytes after font id
+    std::vector<uint16_t> codes;
 
-  // xQueryTextExtentsReply fields we care about:
-  //  rep[1] = drawDirection
-  //  rep[8..9]  = fontAscent
-  //  rep[10..11]= fontDescent
-  //  rep[12..13]= overallAscent
-  //  rep[14..15]= overallDescent
-  //  rep[16..17]= overallWidth
-  //  rep[18..19]= overallLeft
-  //  rep[20..21]= overallRight
-  const uint16_t ascent = 12;
-  const uint16_t descent = 4;
+    if (!oddLength) {
+      // CHAR2B stream (byte1, byte2)
+      const size_t n2 = br.remaining() / 2;
+      codes.reserve(n2);
+      for (size_t i = 0; i < n2; i++) {
+        const uint8_t b1 = br.readU8();
+        const uint8_t b2 = br.readU8();
+        const uint16_t code = (uint16_t(b1) << 8) | uint16_t(b2);
+        codes.push_back(code);
+      }
+      // Defensive: consume any trailing odd byte (should not happen)
+      br.skip(br.remaining());
+    } else {
+      // CHAR8 stream; if remaining is odd, last byte is pad to 2-byte boundary.
+      size_t n1 = br.remaining();
+      const bool hasPad = (n1 & 1u) != 0;
+      if (hasPad) n1 -= 1;
 
-  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-    rep[1] = 0; // LeftToRight
-    wire::wr16_le(rep.data() + 8, ascent);
-    wire::wr16_le(rep.data() + 10, descent);
-    wire::wr16_le(rep.data() + 12, ascent);
-    wire::wr16_le(rep.data() + 14, descent);
-    wire::wr16_le(rep.data() + 16, (uint16_t)overallWidth);
-    wire::wr16_le(rep.data() + 18, 0);
-    wire::wr16_le(rep.data() + 20, (uint16_t)overallWidth);
-    // length=0 words (fixed reply)
-    wire::wr32_le(rep.data() + 4, 0);
-  });
-}
+      codes.reserve(n1);
+      for (size_t i = 0; i < n1; i++) {
+        const uint8_t b = br.readU8();
+        codes.push_back(uint16_t(b));
+      }
+
+      if (hasPad && br.remaining() > 0) {
+        (void)br.readU8(); // consume pad
+      }
+      br.skip(br.remaining());
+    }
+
+    // Compute extents
+    int32_t overallWidth = 0;
+    int32_t overallAscent = 0;
+    int32_t overallDescent = 0;
+    int32_t overallLeft = 0;
+    int32_t overallRight = 0;
+
+    bool firstGlyph = true;
+    int32_t pen = 0;
+
+    auto glyphCharInfo = [&](uint16_t code) -> x11::font::CharInfo {
+      // Support 0..255 only (Latin-1); fallback otherwise.
+      int enc = (code <= 255u) ? int(code) : f->defaultChar;
+      if (enc < 0) enc = f->defaultChar;
+
+      const x11::font::Glyph* g = f->getGlyph(enc);
+      if (!g) g = f->getGlyph(f->defaultChar);
+      if (!g) g = f->getGlyph(int('?'));
+      if (g) return g->charInfo();
+
+      // Worst-case fallback
+      x11::font::CharInfo ci{};
+      const int w = (f->bbx_w > 0) ? f->bbx_w : 8;
+      ci.lsb = 0;
+      ci.rsb = (int16_t)w;
+      ci.width = (int16_t)w;
+      ci.ascent = (int16_t)((f->ascent > 0) ? f->ascent : 12);
+      ci.descent = (int16_t)((f->descent > 0) ? f->descent : 4);
+      ci.attr = 0;
+      return ci;
+    };
+
+    for (uint16_t code : codes) {
+      const auto ci = glyphCharInfo(code);
+
+      const int32_t left  = pen + ci.lsb;
+      const int32_t right = pen + ci.rsb;
+
+      if (firstGlyph) {
+        overallLeft = left;
+        overallRight = right;
+        firstGlyph = false;
+      } else {
+        if (left < overallLeft) overallLeft = left;
+        if (right > overallRight) overallRight = right;
+      }
+
+      if (ci.ascent > overallAscent) overallAscent = ci.ascent;
+      if (ci.descent > overallDescent) overallDescent = ci.descent;
+
+      const int adv = (ci.width != 0) ? ci.width : f->advanceFor(int(code & 0xFFu));
+      pen += adv;
+    }
+
+    overallWidth = pen;
+
+    const uint16_t fontAscent  = (uint16_t)((f->ascent  > 0) ? f->ascent  : overallAscent);
+    const uint16_t fontDescent = (uint16_t)((f->descent > 0) ? f->descent : overallDescent);
+
+    auto clamp16 = [](int32_t v) -> uint16_t {
+      if (v < -32768) v = -32768;
+      if (v >  32767) v =  32767;
+      return (uint16_t)(int16_t)v;
+    };
+
+  #ifndef NDEBUG
+    // Summary log: helps debug xterm geometry/columns decisions.
+    ctx.tracef("[FontOps] QueryTextExtents seq=%u fid=0x%08X odd=%u nchars=%zu "
+               "font=\"%s\" bbx=%dx%d ascent=%d descent=%d "
+               "W=%d L=%d R=%d A=%d D=%d\n",
+               (unsigned)seq,
+               (unsigned)fid,
+               (unsigned)(oddLength ? 1 : 0),
+               codes.size(),
+               f->name.c_str(),
+               f->bbx_w, f->bbx_h,
+               f->ascent, f->descent,
+               (int)overallWidth,
+               (int)overallLeft,
+               (int)overallRight,
+               (int)overallAscent,
+               (int)overallDescent);
+  #endif
+
+    (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+      rep[1] = 0; // drawDirection: LeftToRight
+      wire::wr32_le(rep.data() + 4, 0); // length=0 (fixed reply)
+
+      wire::wr16_le(rep.data() + 8,  fontAscent);
+      wire::wr16_le(rep.data() + 10, fontDescent);
+
+      wire::wr16_le(rep.data() + 12, clamp16(overallAscent));
+      wire::wr16_le(rep.data() + 14, clamp16(overallDescent));
+      wire::wr16_le(rep.data() + 16, clamp16(overallWidth));
+      wire::wr16_le(rep.data() + 18, clamp16(overallLeft));
+      wire::wr16_le(rep.data() + 20, clamp16(overallRight));
+    });
+  }  
 
 // MARK: ---- 97: QueryBestSize ----
 void FontOps::handleQueryBestSize(XProtoContext& ctx, uint16_t seq, uint8_t class_, ByteReader& br)

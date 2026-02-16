@@ -318,64 +318,75 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, Byte
   
 // Host resized native surface for wid; update server truth + backing FB + notify + redraw.
 // Called on server/protocol thread.
-  void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t h_px)
-  {
-    if (wid == 0) return;
-    if (w_px < 1) w_px = 1;
-    if (h_px < 1) h_px = 1;
+void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t h_px)
+{
+  if (wid == 0) return;
+  if (w_px < 1) w_px = 1;
+  if (h_px < 1) h_px = 1;
 
-    const WindowView* vw0 = ctx.window(wid);
-    if (!vw0) return;
+  const WindowView* vw0 = ctx.window(wid);
+  if (!vw0) return;
 
-    const uint16_t old_w = vw0->w;
-    const uint16_t old_h = vw0->h;
+  const uint16_t old_w = vw0->w;
+  const uint16_t old_h = vw0->h;
 
-    uint16_t new_w = (uint16_t)((w_px > 65535) ? 65535 : w_px);
-    uint16_t new_h = (uint16_t)((h_px > 65535) ? 65535 : h_px);
-    if (new_w == 0) new_w = 1;
-    if (new_h == 0) new_h = 1;
-    if (new_w == old_w && new_h == old_h) return;
+  uint16_t new_w = (uint16_t)((w_px > 65535) ? 65535 : w_px);
+  uint16_t new_h = (uint16_t)((h_px > 65535) ? 65535 : h_px);
+  if (new_w == 0) new_w = 1;
+  if (new_h == 0) new_h = 1;
+  if (new_w == old_w && new_h == old_h) return;
 
-  #ifndef NDEBUG
-    const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
-    if (host != wid) {
-      ctx.tracef("[PROTO BUG] applyRootlessResize called on non-host wid=0x%08X host=0x%08X\n",
-                 (unsigned)wid, (unsigned)host);
-    }
-  #endif
-
-    // 1) Resize backing FB (C owns pixels).
-    FB_RESIZE(wid, new_w, new_h, "applyRootlessResize on wid (step 1)");
-    //x11_backend_fb_resize(wid, new_w, new_h);
-
-    // 2) Update authoritative geometry in C++.
-    ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
-
-    // Optional: if your policy is to clamp child windows on host resize, do it here.
-    // ctx.windows().clampDescendantsToParent(wid);
-
-    // 3) Sync descendant FB sizes to authoritative geometry.
-    {
-      auto kids = ctx.windows().descendantsOf(wid);
-      for (uint32_t kid : kids) {
-        WindowView kv{};
-        if (!ctx.windows().snapshot(kid, kv)) continue;
-
-        const uint16_t kw = kv.w ? kv.w : 1;
-        const uint16_t kh = kv.h ? kv.h : 1;
-        FB_RESIZE(kid, kw, kh, "applyRootlessResize on descendant kid (step 3)");
-        //x11_backend_fb_resize(kid, kw, kh);
-      }
-    }
-
-    // 4) Notify owning client if selected.
-    if (const WindowView* vw = ctx.window(wid)) {
-      const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);
-      const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0));
-      if (wantCfg || wantExp) ctx.transport().queueNotify(wid, wantCfg, wantExp);
-    }
-
-    // 5) Redraw/present (gated).
-    damageOrDirty(ctx, wid);
+#ifndef NDEBUG
+  const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+  if (host != wid) {
+    ctx.tracef("[PROTO BUG] applyRootlessResize called on non-host wid=0x%08X host=0x%08X\n",
+               (unsigned)wid, (unsigned)host);
   }
+#endif
+
+  // 1) Resize backing FB (C owns pixels).
+  FB_RESIZE(wid, new_w, new_h, "applyRootlessResize on wid (step 1)");
+  //x11_backend_fb_resize(wid, new_w, new_h);
+
+  // 2a) Update authoritative geometry in C++.
+  ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
+  
+  // 2b) Deliver ConfigureNotify / Expose to the *host* after a host-driven resize,
+  // so clients like xterm recompute their grid and resize subwindows.
+  if (const x11::WindowView* vw = ctx.window(wid /*host*/)) {
+    const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
+    const bool wantExp = ((vw->event_mask & (1u << 15)) != 0); // ExposureMask
+    if (wantCfg || wantExp) {
+      ctx.transport().queueNotify(wid, wantCfg, wantExp);
+    }
+  }
+
+  // Optional: if your policy is to clamp child windows on host resize, do it here.
+  // ctx.windows().clampDescendantsToParent(wid);
+
+  // 3) Sync descendant FB sizes to authoritative geometry.
+  {
+    auto kids = ctx.windows().descendantsOf(wid);
+    for (uint32_t kid : kids) {
+      WindowView kv{};
+      if (!ctx.windows().snapshot(kid, kv)) continue;
+
+      const uint16_t kw = kv.w ? kv.w : 1;
+      const uint16_t kh = kv.h ? kv.h : 1;
+      FB_RESIZE(kid, kw, kh, "applyRootlessResize on descendant kid (step 3)");
+      //x11_backend_fb_resize(kid, kw, kh);
+    }
+  }
+
+  // 4) Notify owning client if selected.
+  if (const WindowView* vw = ctx.window(wid)) {
+    const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);
+    const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0));
+    if (wantCfg || wantExp) ctx.transport().queueNotify(wid, wantCfg, wantExp);
+  }
+
+  // 5) Redraw/present (gated).
+  damageOrDirty(ctx, wid);
+}
+  
 } // namespace x11

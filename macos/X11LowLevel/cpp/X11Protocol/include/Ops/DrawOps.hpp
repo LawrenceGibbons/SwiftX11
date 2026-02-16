@@ -26,10 +26,11 @@ private:
 
   // Major handlers
   void handleClearArea(XProtoContext& ctx, uint16_t seq, uint8_t exposures, ByteReader& br); // 61
-  void handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br);                     // 62 (stub)
-  void handleCopyPlane(XProtoContext& ctx, uint16_t seq, ByteReader& br);                    // 63 (stub)
+  void handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br);                     // 62
+  void handleCopyPlane(XProtoContext& ctx, uint16_t seq, ByteReader& br);                    // 63
   void handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, ByteReader& br);     // 72
-
+  void handlePolyText8(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br);                // 74
+  void handleImageText8(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br);    // 76
   // Helpers
   static uint32_t computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits); // bitmapScanlinePad=32
 };

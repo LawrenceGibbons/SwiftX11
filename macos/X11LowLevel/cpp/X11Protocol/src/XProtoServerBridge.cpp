@@ -33,6 +33,7 @@ extern "C" {
 #include "XProtoNotifyBridge.hpp"
 #include "Core/XEventMask.hpp"
 #include "Core/X11Modifiers.hpp"
+#include "Core/InputRouting.hpp"
 
 // ---- Host-command queue (server thread -> xproto thread) ----
 namespace {
@@ -204,7 +205,6 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
   // ---- drain host commands on xproto thread ----
   {
     auto cmds = hostcmd_take_all();
-    uint32_t host;
     for (const auto& c : cmds) {
       switch (c.type) {
         case HostCmdType::RootlessResize:
@@ -242,10 +242,28 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
         }
 
         case HostCmdType::Focus: {
-          ctx.input().setFocus(c.xid, c.focused != 0);
+          if (c.focused) {
+            ctx.input().focus_host = c.xid;
+
+            uint32_t target = ctx.input().pointer_xid;
+            if (target == 0 || ctx.windows().topLevelAncestorOf(target) != c.xid) {
+              target = x11::pickDeepestMappedWindowAtHostPoint(ctx, c.xid,
+                                                               ctx.input().win_x,
+                                                               ctx.input().win_y);
+            }
+            if (target == 0) target = c.xid;
+            ctx.input().focus_xid = target;
+
+            // Optionally: also make pointer_xid follow focus when not dragging
+            if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = target;
+          } else {
+            if (ctx.input().focus_host == c.xid) ctx.input().focus_host = 0;
+            ctx.input().focus_xid = 0;
+            if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
+          }
           break;
         }
-
+          
         case HostCmdType::Button: {
           // Canonicalize buttons + drag grab semantics in InputState
           ctx.input().button(c.xid, c.isDown != 0, c.button, c.buttonsMask);
@@ -279,33 +297,74 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
         }
 
         case HostCmdType::Key: {
-          // Route keys to focus if xid==0 (legacy behavior)
-          uint32_t target = c.xid;
-          if (target == 0) target = ctx.input().focus_xid;
+          const uint32_t host = (c.xid != 0) ? c.xid : ctx.input().focus_host;
 
-          if (target) {
-            if (const x11::WindowView* vw = ctx.window(target)) {
-              if (vw->owner_fd <= 0) break;
-              const uint32_t mask = vw->event_mask;
-              const bool wantPress   = (mask & x11::mask::KeyPress) != 0;
-              const bool wantRelease = (mask & x11::mask::KeyRelease) != 0;
-              uint32_t kc32 = c.keyCode + 8u;
-              if (kc32 < 8u) kc32 = 8u;
-              if (kc32 > 255u) kc32 = 255u;
-              uint8_t x11_kc = (uint8_t)kc32;  // map mac 0.. -> X11 8..
-              if ((c.isDown && wantPress) || (!c.isDown && wantRelease)) {
-                // Keep InputState mods in sync (optional, but nice)
-                ctx.input().mods = c.modsMask;
+          // Clamp X11 keycode: mac_vk + 8, range [8..255]
+          uint32_t kc32 = (uint32_t)c.keyCode + 8u;
+          if (kc32 < 8u)   kc32 = 8u;
+          if (kc32 > 255u) kc32 = 255u;
+          const uint8_t x11_kc = (uint8_t)kc32;
 
-                fprintf(stderr, "[KEY] modsMask=0x%X state=0x%X\n",
-                        (unsigned)c.modsMask,
-                        (unsigned)x11::input::toX11State(ctx.input().buttons, c.modsMask));
-                srv->eventOps().sendKeyEvent(ctx, target,
-                                             c.isDown != 0,
-                                             (uint8_t)kc32,
-                                             ctx.input().buttons, c.modsMask);              }
-            }
+          auto wantsKey = [&](uint32_t xid) -> bool {
+            if (!xid) return false;
+            const x11::WindowView* vw = ctx.window(xid);
+            if (!vw || vw->owner_fd <= 0) return false;
+            const uint32_t mask = vw->event_mask;
+            const bool wantPress   = (mask & x11::mask::KeyPress) != 0;
+            const bool wantRelease = (mask & x11::mask::KeyRelease) != 0;
+            return c.isDown ? wantPress : wantRelease;
+          };
+
+          const uint32_t focus = ctx.input().focus_xid;
+
+          uint32_t under = 0;
+          if (host != 0) {
+            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+                                                            ctx.input().win_x,
+                                                            ctx.input().win_y);
           }
+
+          // Preferred delivery:
+          //  - If focus is a real child and wants the event, use it.
+          //  - If focus is host (common in rootless bring-up) and 'under' is a child that wants it, use under.
+          //  - Otherwise fall back focus -> under -> host.
+          uint32_t target = 0;
+
+          const bool focusIsHost = (focus != 0 && focus == host);
+
+          if (!focusIsHost && wantsKey(focus)) {
+            target = focus;
+          } else if (focusIsHost && under != 0 && under != host && wantsKey(under)) {
+            target = under;
+          } else if (wantsKey(focus)) {
+            target = focus;
+          } else if (wantsKey(under)) {
+            target = under;
+          } else if (wantsKey(host)) {
+            target = host;
+          } else {
+            break; // nobody is selecting this key event
+          }
+
+          // Keep canonical mods in sync
+          ctx.input().mods = c.modsMask;
+
+        #ifndef NDEBUG
+          fprintf(stderr,
+                  "[KEY] host=0x%08X focus=0x%08X under=0x%08X deliver=0x%08X down=%d kc=%u mods=0x%X\n",
+                  (unsigned)host,
+                  (unsigned)focus,
+                  (unsigned)under,
+                  (unsigned)target,
+                  (int)(c.isDown != 0),
+                  (unsigned)x11_kc,
+                  (unsigned)c.modsMask);
+        #endif
+
+          srv->eventOps().sendKeyEvent(ctx, target,
+                                       c.isDown != 0,
+                                       x11_kc,
+                                       ctx.input().buttons, c.modsMask);
           break;
         }
           

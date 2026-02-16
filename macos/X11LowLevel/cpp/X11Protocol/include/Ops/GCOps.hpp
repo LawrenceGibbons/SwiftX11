@@ -17,6 +17,8 @@ namespace x11 {
 // Forward decls to avoid including everything in headers.
 class XProtoContext;
 class ByteReader;
+struct GCState;
+  
 
 // Core “GC ops” (Graphics Context):
 //   major 55 CreateGC
@@ -43,7 +45,7 @@ private:
   void handleFreeGC  (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 60
 
   static uint32_t mapPixelToARGB(uint32_t val);
-  static void applyValueMask(uint32_t vmask, ByteReader& br, uint32_t& io_fg, uint32_t& io_bg);
+  static void applyValueMask(uint32_t vmask, ByteReader& br, GCState& st);
 };
 
 } // namespace x11

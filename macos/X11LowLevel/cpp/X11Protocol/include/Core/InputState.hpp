@@ -21,10 +21,11 @@ namespace x11 {
     uint32_t buttons = 0;
     uint32_t mods = 0;
 
-    uint32_t last_xid = 0;     // host window xid last used for motion
-    uint32_t pointer_xid = 0;  // pointer owner (enter/click)
-    uint32_t focus_xid = 0;    // focused window
-    uint32_t drag_xid = 0;     // active grab window (nonzero buttons)
+    uint32_t last_xid = 0;    // host window xid last used for motion
+    uint32_t pointer_xid = 0; // pointer owner (enter/click)
+    uint32_t focus_xid = 0;   // current X input focus window
+    uint32_t focus_host = 0;  // top-level host that currently has Cocoa focus (optional)
+    uint32_t drag_xid = 0;    // active grab window (nonzero buttons)
 
     void updateMotion(uint32_t xid,
                       int32_t wx, int32_t wy,
@@ -40,16 +41,20 @@ namespace x11 {
       mods = m;
     }
 
-    void setFocus(uint32_t xid, bool focused) {
-      if (focused) {
-        focus_xid = xid;
-        pointer_xid = xid;
-      } else {
-        if (focus_xid == xid) focus_xid = 0;
-        if (pointer_xid == xid && drag_xid == 0) pointer_xid = 0;
-      }
+    void setFocusXid(uint32_t xid) { focus_xid = xid; }
+    
+    void setFocusHost(uint32_t host_xid) {
+      focus_host = host_xid;
+      // Do NOT set focus_xid here; caller decides (needs WindowTable).
     }
 
+    void clearFocusHost(uint32_t host_xid) {
+      if (focus_host == host_xid) focus_host = 0;
+      focus_xid = 0;
+      // pointer_xid: keep unless you want to clear when not dragging.
+      if (drag_xid == 0) pointer_xid = 0;
+    }
+    
     void enter(uint32_t xid) {
       if (drag_xid == 0) pointer_xid = xid;
     }

@@ -56,6 +56,47 @@ std::string loadFrameworkTextResource(const char* nameNoExt, const char* ext, co
   }
 
   CFURLRef url = CFBundleCopyResourceURL(bundle, cfName, cfExt, cfSubdir);
+  if (!url) {
+    // Helpful diagnostics when resource lookup fails.
+    CFStringRef bundleID = CFBundleGetIdentifier(bundle);
+    char bundleIDBuf[256] = {0};
+    if (bundleID) {
+      CFStringGetCString(bundleID, bundleIDBuf, (CFIndex)sizeof(bundleIDBuf), kCFStringEncodingUTF8);
+    } else {
+      std::snprintf(bundleIDBuf, sizeof(bundleIDBuf), "<no-bundle-id>");
+    }
+
+    CFURLRef resURL = CFBundleCopyResourcesDirectoryURL(bundle);
+    char resPathBuf[1024] = {0};
+    if (resURL) {
+      CFURLGetFileSystemRepresentation(resURL, true, (UInt8*)resPathBuf, (CFIndex)sizeof(resPathBuf));
+      CFRelease(resURL);
+    } else {
+      std::snprintf(resPathBuf, sizeof(resPathBuf), "<no-resources-dir>");
+    }
+
+    const char* which =
+        (bundle == CFBundleGetMainBundle()) ? "main-bundle" : "named-bundle";
+
+    std::fprintf(stderr,
+                 "[BundleResource] MISS (%s) bundleId=%s resourcesDir=%s "
+                 "name=\"%s\" ext=\"%s\" subdir=\"%s\"\n",
+                 which,
+                 bundleIDBuf,
+                 resPathBuf,
+                 nameNoExt ? nameNoExt : "<null>",
+                 ext ? ext : "<null>",
+                 (subdir && subdir[0]) ? subdir : "<none>");
+    
+    std::fprintf(stderr,
+                 "[BundleResource] expectedRelPath=%s%s%s.%s\n",
+                 (subdir && subdir[0]) ? subdir : "",
+                 (subdir && subdir[0]) ? "/" : "",
+                 nameNoExt ? nameNoExt : "<null>",
+                 ext ? ext : "<null>");
+
+    return {};
+  }
 
   if (cfSubdir) CFRelease(cfSubdir);
   CFRelease(cfName);

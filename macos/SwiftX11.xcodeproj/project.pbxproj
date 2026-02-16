@@ -10,6 +10,7 @@
 		5225BDE32F05AF2B009E510B /* X11LowLevel.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; };
 		5225BDE42F05AF2B009E510B /* X11LowLevel.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		52814A6B2F3E931C003CF94A /* TODO.md in Resources */ = {isa = PBXBuildFile; fileRef = 52814A6A2F3E931C003CF94A /* TODO.md */; };
+		52814ACB2F43662D003CF94A /* fonts in Resources */ = {isa = PBXBuildFile; fileRef = 52814ACA2F43662D003CF94A /* fonts */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -40,6 +41,7 @@
 		5225BD772F0489A9009E510B /* SwiftX11.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftX11.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = X11LowLevel.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		52814A6A2F3E931C003CF94A /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = TODO.md; path = docs/TODO.md; sourceTree = "<group>"; };
+		52814ACA2F43662D003CF94A /* fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fonts; path = X11LowLevel/Resources/fonts; sourceTree = "<group>"; };
 		528AC14E2F33B94300186633 /* TylerFit */ = {isa = PBXFileReference; lastKnownFileType = text; path = TylerFit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -49,6 +51,26 @@
 			membershipExceptions = (
 				cpp/X11Protocol/README_XPROTO.md,
 				cpp/X11Protocol/src/Utils/Damage.hpp,
+				Resources/fixed.bdf,
+				Resources/fonts/6x13.bdf,
+				Resources/fonts/6x13B.bdf,
+				Resources/fonts/6x13O.bdf,
+				Resources/fonts/7x13.bdf,
+				Resources/fonts/7x13B.bdf,
+				Resources/fonts/7x13O.bdf,
+				Resources/fonts/7x14.bdf,
+				Resources/fonts/7x14B.bdf,
+				Resources/fonts/8x13.bdf,
+				Resources/fonts/8x13B.bdf,
+				Resources/fonts/8x13O.bdf,
+				Resources/fonts/9x15.bdf,
+				Resources/fonts/9x15B.bdf,
+				Resources/fonts/9x18.bdf,
+				Resources/fonts/9x18B.bdf,
+				Resources/fonts/10x20.bdf,
+				Resources/fonts/12x13ja.bdf,
+				Resources/fonts/18x18ja.bdf,
+				Resources/fonts/18x18ko.bdf,
 				Resources/fonts/fixed.bdf,
 			);
 			privateHeaders = (
@@ -184,6 +206,7 @@
 		5225BD6E2F0489A9009E510B = {
 			isa = PBXGroup;
 			children = (
+				52814ACA2F43662D003CF94A /* fonts */,
 				52814A6D2F40D674003CF94A /* Ignore documents */,
 				52814A6A2F3E931C003CF94A /* TODO.md */,
 				528AC14E2F33B94300186633 /* TylerFit */,
@@ -315,6 +338,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				52814ACB2F43662D003CF94A /* fonts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
