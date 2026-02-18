@@ -515,5 +515,21 @@ std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
       }
     }
   }
-    
+
+  
+  
+void WindowTable::setCursor(uint32_t xid, uint32_t cursor_xid) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->cursor_xid = cursor_xid;
+  st->serial++;
+#ifndef NDEBUG
+  fprintf(stderr, "[WT] setCursor xid=0x%08X cursor=0x%08X\n",
+          (unsigned)xid, (unsigned)cursor_xid);
+#endif
+}  
+  
+  
 } // namespace x11

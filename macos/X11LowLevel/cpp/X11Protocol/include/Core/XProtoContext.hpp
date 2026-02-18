@@ -24,7 +24,8 @@ class PixmapTable;
 class UICommandQueue;
 class FontTable;
 class CursorTable;
-  
+class GrabTable;
+
 using WindowLookupFn = bool (*)(uint32_t xid, WindowView* out, void* user);
 
 class XProtoContext {
@@ -85,7 +86,11 @@ public:
   void setCursorTable(CursorTable* ct) { cursor_table_ = ct; }
   CursorTable& cursors() { assert(cursor_table_); return *cursor_table_; }
   const CursorTable& cursors() const { assert(cursor_table_); return *cursor_table_; }
-  
+
+  // Button handling  
+  void setGrabTable(GrabTable* gt) { grab_table_ = gt; }
+  GrabTable& grabs() { assert(grab_table_); return *grab_table_; }
+  const GrabTable& grabs() const { assert(grab_table_); return *grab_table_; }
 private:
   XProtoTransport* transport_ = nullptr;
   ReplyWriter* reply_ = nullptr;
@@ -112,6 +117,10 @@ private:
   
   // Cursor
   CursorTable* cursor_table_ = nullptr;
+  
+  // Button
+  GrabTable* grab_table_ = nullptr;  
+
 };
 
 } // namespace x11

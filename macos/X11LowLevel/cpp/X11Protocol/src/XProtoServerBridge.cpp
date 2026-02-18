@@ -34,6 +34,8 @@ extern "C" {
 #include "Core/XEventMask.hpp"
 #include "Core/X11Modifiers.hpp"
 #include "Core/InputRouting.hpp"
+#include "Core/timestamp.hpp"
+#include "SwiftX11Bridge.h"
 
 // ---- Host-command queue (server thread -> xproto thread) ----
 namespace {
@@ -60,10 +62,10 @@ namespace {
     int32_t h_px = 0;
 
     // pointer
-    int32_t win_x = 0;
-    int32_t win_y = 0;
-    int32_t root_x = 0;
-    int32_t root_y = 0;
+    int32_t win_x_u = 0;    // X11 units, not pixels
+    int32_t win_y_u = 0;    // X11 units, not pixels
+    int32_t root_x_u = 0;   // X11 units, not pixels
+    int32_t root_y_u = 0;   // X11 units, not pixels
     uint8_t deliver = 0; // 1 => deliver MotionNotify, 0 => only update InputState
 
     uint32_t buttonsMask = 0;
@@ -195,6 +197,42 @@ extern "C" void x11_proto_bridge_note_last_seq(uint16_t seq)
   if (srv) srv->noteLastSeq(seq);
 }
 
+
+static uint32_t pickButtonDeliveryWindow(x11::XProtoContext& ctx,
+                                         uint32_t host,
+                                         uint32_t under,
+                                         bool wantPress,
+                                         bool wantRelease)
+{
+  auto wants = [&](uint32_t xid) -> bool {
+    if (!xid) return false;
+    const x11::WindowView* vw = ctx.window(xid);
+    if (!vw || vw->owner_fd <= 0) return false;
+    const uint32_t mask = vw->event_mask;
+    const bool wp = (mask & x11::mask::ButtonPress) != 0;
+    const bool wr = (mask & x11::mask::ButtonRelease) != 0;
+    return (!wantPress || wp) && (!wantRelease || wr);
+  };
+
+  uint32_t cur = under ? under : host;
+  int safety = 0;
+
+  while (cur) {
+    if (wants(cur)) return cur;
+    if (cur == host) break;
+
+    x11::WindowView vw{};
+    if (!ctx.windows().snapshot(cur, vw)) break;
+    cur = vw.parent_xid;
+
+    if (++safety > 64) break;
+  }
+
+  // Fall back to host if it wants the events
+  if (host && wants(host)) return host;
+  return under ? under : host;
+}
+
 extern "C" void x11_proto_bridge_flush_notify_queue(void)
 {
   auto* srv = g_srv.load(std::memory_order_acquire);
@@ -221,81 +259,275 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           
         case HostCmdType::PointerMove: {
           x11::notify::postMotion(c.xid,
-                                  c.win_x, c.win_y,
-                                  c.root_x, c.root_y,
+                                  c.win_x_u, c.win_y_u,
+                                  c.root_x_u, c.root_y_u,
                                   c.deliver,
                                   c.buttonsMask, c.modsMask);
           break;
         }
           
+//        case HostCmdType::PointerEnter: {
+//          fprintf(stderr, "[HOSTCMD] PointerEnter xid=0x%08X root=(%d,%d) win=(%d,%d)\n",
+//                  (unsigned)c.xid, (int)c.root_x_u, (int)c.root_y_u, (int)c.win_x_u, (int)c.win_y_u);
+//          ctx.input().enter(c.xid);
+//
+//          // Deliver EnterNotify to the deepest mapped child under the pointer in this host.
+//          const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
+//          uint32_t under = 0;
+//          if (host) {
+//            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+//                                                            ctx.input().win_x_u,
+//                                                            ctx.input().win_y_u);
+//          }
+//          if (!under) under = c.xid;
+//
+//          // Only deliver if that window selected EnterWindowMask (optional strictness).
+//          if (const x11::WindowView* vw = ctx.window(under)) {
+//            if ((vw->event_mask & x11::mask::EnterWindow) != 0) {
+//              srv->eventOps().sendCrossingEvent(ctx, under, true,
+//                                                ctx.input().root_x_u, ctx.input().root_y_u,
+//                                                ctx.input().buttons, c.modsMask);
+//            }
+//          }
+//          break;
+//        }
+//
+//        case HostCmdType::PointerLeave: {
+//          fprintf(stderr, "[HOSTCMD] PointerLeave xid=0x%08X root=(%d,%d) win=(%d,%d)\n",
+//                  (unsigned)c.xid, (int)c.root_x_u, (int)c.root_y_u, (int)c.win_x_u, (int)c.win_y_u);
+//
+//          ctx.input().leave(c.xid);
+//
+//          const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
+//          uint32_t under = 0;
+//          if (host) {
+//            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+//                                                            ctx.input().win_x_u,
+//                                                            ctx.input().win_y_u);
+//          }
+//          if (!under) under = c.xid;
+//
+//          if (const x11::WindowView* vw = ctx.window(under)) {
+//            if ((vw->event_mask & x11::mask::LeaveWindow) != 0) {
+//              srv->eventOps().sendCrossingEvent(ctx, under, false,
+//                                                ctx.input().root_x_u, ctx.input().root_y_u,
+//                                                ctx.input().buttons, c.modsMask);
+//            }
+//          }
+//          break;
+//        }
+       
+          
+          
         case HostCmdType::PointerEnter: {
-          // Update pointer owner state in C++ InputState
           ctx.input().enter(c.xid);
 
-          // (Optional) deliver EnterNotify later; for now state-only is fine.
+          const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
+          uint32_t under = 0;
+          if (host) {
+            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+                                                            ctx.input().win_x_u,
+                                                            ctx.input().win_y_u);
+          }
+          if (!under) under = c.xid;
+
+          srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/true,
+                                            ctx.input().root_x_u, ctx.input().root_y_u,
+                                            ctx.input().buttons, c.modsMask);
           break;
         }
 
         case HostCmdType::PointerLeave: {
           ctx.input().leave(c.xid);
+
+          const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
+          uint32_t under = 0;
+          if (host) {
+            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+                                                            ctx.input().win_x_u,
+                                                            ctx.input().win_y_u);
+          }
+          if (!under) under = c.xid;
+
+          srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/false,
+                                            ctx.input().root_x_u, ctx.input().root_y_u,
+                                            ctx.input().buttons, c.modsMask);
           break;
         }
-
+          
+          
+          
         case HostCmdType::Focus: {
           if (c.focused) {
             ctx.input().focus_host = c.xid;
 
+            // Prefer the current pointer owner *if* it belongs to this host AND isn't just the host.
             uint32_t target = ctx.input().pointer_xid;
-            if (target == 0 || ctx.windows().topLevelAncestorOf(target) != c.xid) {
+
+            // If pointer_xid is unset, is the host itself, or belongs to a different host,
+            // refine focus to the deepest mapped child under the current host-local pointer.
+            if (target == 0 ||
+                target == c.xid ||
+                ctx.windows().topLevelAncestorOf(target) != c.xid) {
               target = x11::pickDeepestMappedWindowAtHostPoint(ctx, c.xid,
-                                                               ctx.input().win_x,
-                                                               ctx.input().win_y);
+                                                               ctx.input().win_x_u,
+                                                               ctx.input().win_y_u);
             }
+
+            // Last resort: focus the host.
             if (target == 0) target = c.xid;
+
             ctx.input().focus_xid = target;
 
-            // Optionally: also make pointer_xid follow focus when not dragging
+            // Also make pointer_xid follow focus when not dragging/grabbing.
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = target;
+
+        #ifndef NDEBUG
+            fprintf(stderr, "[FOCUS] host=0x%08X focus_xid=0x%08X pointer_xid=0x%08X win=(%d,%d)\n",
+                    (unsigned)c.xid,
+                    (unsigned)ctx.input().focus_xid,
+                    (unsigned)ctx.input().pointer_xid,
+                    (int)ctx.input().win_x_u,
+                    (int)ctx.input().win_y_u);
+        #endif
+
           } else {
             if (ctx.input().focus_host == c.xid) ctx.input().focus_host = 0;
             ctx.input().focus_xid = 0;
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
+
+        #ifndef NDEBUG
+            fprintf(stderr, "[FOCUS] host=0x%08X lost focus\n", (unsigned)c.xid);
+        #endif
           }
           break;
         }
+
           
         case HostCmdType::Button: {
           // Canonicalize buttons + drag grab semantics in InputState
           ctx.input().button(c.xid, c.isDown != 0, c.button, c.buttonsMask);
+          ctx.input().mods = c.modsMask;
 
-          const uint32_t target = ctx.input().routePointer(c.xid);
-          if (const x11::WindowView* vw = ctx.window(target)) {
-            if (vw->owner_fd <= 0) break;
+          const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
+          if (!host) break;
+
+          // If a drag grab is active, route to grab owner (classic behavior).
+          // Otherwise, pick the deepest mapped window under the pointer.
+          uint32_t under = 0;
+          if (ctx.input().drag_xid) {
+            under = ctx.input().drag_xid;
+          } else {
+            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+                                                            ctx.input().win_x_u,
+                                                            ctx.input().win_y_u);
+            if (!under) under = host;
+          }
+
+          // Pick a delivery window that selected the relevant mask.
+          auto wantsBtn = [&](uint32_t xid) -> bool {
+            if (!xid) return false;
+            const x11::WindowView* vw = ctx.window(xid);
+            if (!vw || vw->owner_fd <= 0) return false;
             const uint32_t mask = vw->event_mask;
             const bool wantPress   = (mask & x11::mask::ButtonPress) != 0;
             const bool wantRelease = (mask & x11::mask::ButtonRelease) != 0;
-            if ((c.isDown && wantPress) || (!c.isDown && wantRelease)) {
-              // Keep InputState mods in sync (optional, but nice)
-              ctx.input().mods = c.modsMask;
-              
-              srv->eventOps().sendButtonEvent(ctx, target,
-                                              c.isDown != 0, c.button,
-                                              ctx.input().root_x, ctx.input().root_y,
-                                              ctx.input().buttons, c.modsMask);
+            return (c.isDown ? wantPress : wantRelease);
+          };
+
+          uint32_t deliver = under;
+
+          // If under doesn't select, climb to parent until host (simple propagation).
+          if (!wantsBtn(deliver)) {
+            uint32_t cur = under;
+            int safety = 0;
+            while (cur && cur != host) {
+              x11::WindowView vw{};
+              if (!ctx.windows().snapshot(cur, vw)) break;
+              cur = vw.parent_xid;
+              if (wantsBtn(cur)) { deliver = cur; break; }
+              if (++safety > 64) break;
             }
+            // If still not found, try host last.
+            if (!wantsBtn(deliver) && wantsBtn(host)) deliver = host;
           }
+
+          // If nobody wants it, drop.
+          if (!wantsBtn(deliver)) break;
+
+          // child field: if delivering to ancestor, child is the subwindow under pointer
+          const uint32_t child = (deliver != under) ? under : 0;
+
+        #ifndef NDEBUG
+          fprintf(stderr,
+                  "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u mods=0x%X\n",
+                  (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
+                  (int)(c.isDown != 0), (unsigned)c.button, (unsigned)c.modsMask);
+        #endif
+
+          srv->eventOps().sendButtonEvent(ctx, deliver,
+                                          c.isDown != 0, c.button,
+                                          ctx.input().root_x_u, ctx.input().root_y_u,
+                                          ctx.input().buttons, c.modsMask,
+                                          child);
           break;
         }
-
+          
         case HostCmdType::ScrollTicks: {
-          // Route scroll like old shim: drag > pointer > focus
-          const uint32_t target = ctx.input().routePointer(c.xid);
-          (void)target;
+          const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
+          if (!host) break;
 
-          // (Optional) deliver scroll events later
+          const int32_t rx = ctx.input().root_x_u;
+          const int32_t ry = ctx.input().root_y_u;
+
+          ctx.input().updateMotion(host,
+                                   c.win_x_u, c.win_y_u,
+                                   rx, ry,
+                                   ctx.input().buttons,
+                                   c.modsMask);
+
+          const uint32_t under  = x11::pickDeepestMappedWindowAtHostPoint(ctx, host, c.win_x_u, c.win_y_u);
+          const uint32_t target = under ? under : host;
+
+          auto wheelButton = [&](uint8_t axis, int16_t ticks) -> uint8_t {
+            if (axis == 0) return (ticks > 0) ? 4 : 5; // vertical: up/down
+            else           return (ticks > 0) ? 6 : 7; // horizontal: right/left
+          };
+
+          const int16_t ticks = (int16_t)c.ticks;                 // <-- FIX: define ticks from command
+          const int n   = (ticks >= 0) ? (int)ticks : (int)(-ticks);
+          const int dir = (ticks >= 0) ? +1 : -1;
+
+          for (int i = 0; i < n; i++) {
+            const uint8_t btn = wheelButton(c.axis, (int16_t)dir);
+
+        #ifndef NDEBUG
+            fprintf(stderr,
+                    "[SCROLL] host=0x%08X target=0x%08X axis=%u ticks=%d win=(%d,%d) root=(%d,%d) t=%u\n",
+                    (unsigned)host, (unsigned)target,
+                    (unsigned)c.axis, (int)ticks,              // <-- print actual ticks, not dir
+                    (int)c.win_x_u, (int)c.win_y_u,
+                    (int)rx, (int)ry,
+                    (unsigned)x11_now_ms_monotonic());
+        #endif
+
+            srv->eventOps().sendButtonEvent(ctx, target,
+                                            /*is_press=*/true, btn,
+                                            rx, ry,
+                                            ctx.input().buttons, c.modsMask,
+                                            /*child_xid=*/0);
+
+            const uint32_t wheelMask = (btn >= 1 && btn <= 31) ? (1u << (btn - 1u)) : 0;
+            srv->eventOps().sendButtonEvent(ctx, target,
+                                            /*is_press=*/false, btn,
+                                            rx, ry,
+                                            (ctx.input().buttons | wheelMask), c.modsMask,
+                                            /*child_xid=*/0);
+          }
+
           break;
-        }
-
+        }          
+          
         case HostCmdType::Key: {
           const uint32_t host = (c.xid != 0) ? c.xid : ctx.input().focus_host;
 
@@ -320,8 +552,8 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           uint32_t under = 0;
           if (host != 0) {
             under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
-                                                            ctx.input().win_x,
-                                                            ctx.input().win_y);
+                                                            ctx.input().win_x_u,
+                                                            ctx.input().win_y_u);
           }
 
           // Preferred delivery:
@@ -598,8 +830,8 @@ void x11_proto_bridge_post_pointer_button_legacy(uint32_t xid,
   c.xid = xid;
   c.isDown = is_press ? 1 : 0;
   c.button = 0; // legacy / unknown button
-  c.win_x = x_px;
-  c.win_y = y_px;
+  c.win_x_u = x_px;
+  c.win_y_u = y_px;
   c.buttonsMask = buttons;
   c.modsMask = modifiers;
   hostcmd_push(c);
@@ -608,8 +840,8 @@ void x11_proto_bridge_post_pointer_button_legacy(uint32_t xid,
 } // extern "C"
 
 extern "C" void x11_proto_bridge_post_pointer_move2(uint32_t xid,
-                                                   int32_t win_x, int32_t win_y,
-                                                   int32_t root_x, int32_t root_y,
+                                                   int32_t win_x_u, int32_t win_y_u,
+                                                   int32_t root_x_u, int32_t root_y_u,
                                                    uint8_t deliver,
                                                    uint32_t buttons,
                                                    uint32_t modifiers)
@@ -617,10 +849,10 @@ extern "C" void x11_proto_bridge_post_pointer_move2(uint32_t xid,
   HostCmd c;
   c.type = HostCmdType::PointerMove;
   c.xid = xid;
-  c.win_x = win_x;
-  c.win_y = win_y;
-  c.root_x = root_x;
-  c.root_y = root_y;
+  c.win_x_u = win_x_u;
+  c.win_y_u = win_y_u;
+  c.root_x_u = root_x_u;
+  c.root_y_u = root_y_u;
   c.deliver = deliver;
   c.buttonsMask = buttons;
   c.modsMask = modifiers;
@@ -631,7 +863,7 @@ extern "C" void x11_proto_bridge_post_pointer_move2(uint32_t xid,
 extern "C" void x11_proto_bridge_post_pointer_button(uint32_t xid,
                                                      uint8_t is_press,
                                                      uint8_t button,
-                                                     int32_t win_x, int32_t win_y,
+                                                     int32_t win_x_u, int32_t win_y_u,
                                                      uint32_t buttons,
                                                      uint32_t modifiers)
 {
@@ -640,8 +872,8 @@ extern "C" void x11_proto_bridge_post_pointer_button(uint32_t xid,
   c.xid = xid;
   c.isDown = is_press ? 1 : 0;
   c.button = button;
-  c.win_x = win_x;
-  c.win_y = win_y;
+  c.win_x_u = win_x_u;
+  c.win_y_u = win_y_u;
   c.buttonsMask = buttons;
   c.modsMask = modifiers;
   hostcmd_push(c);
@@ -651,7 +883,7 @@ extern "C" void x11_proto_bridge_post_pointer_button(uint32_t xid,
 extern "C" void x11_proto_bridge_post_scroll(uint32_t xid,
                                             uint8_t axis,
                                             int16_t ticks,
-                                            int32_t win_x, int32_t win_y,
+                                            int32_t win_x_u, int32_t win_y_u,
                                             uint32_t buttons,
                                             uint32_t modifiers)
 {
@@ -662,8 +894,8 @@ extern "C" void x11_proto_bridge_post_scroll(uint32_t xid,
   c.xid = xid;
   c.axis = axis;
   c.ticks = ticks;
-  c.win_x = win_x;
-  c.win_y = win_y;
+  c.win_x_u = win_x_u;
+  c.win_y_u = win_y_u;
   c.buttonsMask = buttons;
   c.modsMask = modifiers;
   hostcmd_push(c);
@@ -684,7 +916,7 @@ extern "C" void x11_proto_bridge_post_key(uint32_t xid,
 }
 
 extern "C" void x11_proto_bridge_post_enter(uint32_t xid,
-                                           int32_t win_x, int32_t win_y,
+                                           int32_t win_x_u, int32_t win_y_u,
                                            uint32_t modifiers)
 {
   if (xid == 0) return;
@@ -692,14 +924,14 @@ extern "C" void x11_proto_bridge_post_enter(uint32_t xid,
   HostCmd c;
   c.type = HostCmdType::PointerEnter;
   c.xid = xid;
-  c.win_x = win_x;
-  c.win_y = win_y;
+  c.win_x_u = win_x_u;
+  c.win_y_u = win_y_u;
   c.modsMask = modifiers;
   hostcmd_push(c);
 }
 
 extern "C" void x11_proto_bridge_post_leave(uint32_t xid,
-                                           int32_t win_x, int32_t win_y,
+                                           int32_t win_x_u, int32_t win_y_u,
                                            uint32_t modifiers)
 {
   if (xid == 0) return;
@@ -707,8 +939,8 @@ extern "C" void x11_proto_bridge_post_leave(uint32_t xid,
   HostCmd c;
   c.type = HostCmdType::PointerLeave;
   c.xid = xid;
-  c.win_x = win_x;
-  c.win_y = win_y;
+  c.win_x_u = win_x_u;
+  c.win_y_u = win_y_u;
   c.modsMask = modifiers;
   hostcmd_push(c);
 }

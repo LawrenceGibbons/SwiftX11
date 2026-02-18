@@ -95,6 +95,11 @@ public:
   // tracking subwindows
   std::vector<uint32_t> descendantsOf(uint32_t root) const;
   
+  
+  // cursor
+  void setCursor(uint32_t xid, uint32_t cursor_xid);
+  uint32_t cursor(uint32_t xid) const; // optional
+  
   // Bring-up behavior: keep each descendant's x/y (relative to parent) unchanged,
   // but clamp w/h so the child fits within its *direct* parent’s bounds.
   // Marks dirty when a child's size changes.
@@ -110,6 +115,8 @@ private:
     uint16_t w = 1;
     uint16_t h = 1;
 
+    uint32_t cursor_xid = 0; // 0 means "inherit/default"
+    
     uint32_t event_mask = 0;
     bool mapped = false;
     bool presentable = false;

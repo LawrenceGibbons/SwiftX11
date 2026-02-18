@@ -15,7 +15,7 @@
 #include <stdatomic.h>
 #include <pthread.h>
 
-#include "x11_parameters.h"
+#include <x11_parameters.h>
 
 #ifdef __cplusplus
 extern "C" {

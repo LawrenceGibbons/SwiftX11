@@ -77,6 +77,18 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t gcXid    = br.readU32();
     
     const std::size_t nRects = br.remaining() / 8u;
+    
+#ifndef NDEBUG
+  if (drawable == 0x10000012u) {
+    fprintf(stderr,
+            "[PolyFillRect] dst=0x%08X gc=0x%08X nrect=%u\n", // first=(%d,%d %u×%u)\n",
+            (unsigned)drawable, (unsigned)gcXid,
+            (unsigned)nRects);
+//            (int)rects[0].x, (int)rects[0].y);
+//            (unsigned)rects[0].w, (unsigned)rects[0].h);
+  }
+#endif
+    
     if (nRects == 0) { br.skip(br.remaining()); return; }
     
     DrawableRW dst{};
@@ -94,6 +106,17 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const int16_t ry = br.readI16();
       const uint16_t rw = br.readU16();
       const uint16_t rh = br.readU16();
+
+#ifndef NDEBUG
+      if ( drawable == 0x10000012u && i == 0 ) {
+        fprintf(stderr,
+                "[PolyFillRect] continued, first=(%d,%d %u×%u)\n",
+                (int)rx, (int)ry,
+                (unsigned)rw, (unsigned)rh);
+        
+      }
+#endif
+
       if (rw == 0 || rh == 0) continue;
       
       const int32_t rx0 = rx;

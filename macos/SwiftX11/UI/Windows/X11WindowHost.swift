@@ -637,65 +637,106 @@ final class X11View: NSView {
   }
   
   
-  private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
-    // View coords in points (origin bottom-left)
+  // private func pointInPixels(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
+  //   // View coords in points (origin bottom-left)
+  //   let pInWindow = event.locationInWindow
+  //   let p = convert(pInWindow, from: nil)
+  //   
+  //   let scale = window?.backingScaleFactor ?? 1.0
+  //   
+  //   // Backing pixel dimensions of this view
+  //   let wPt = max(1, Int(floor(bounds.width * scale)))
+  //   let hPt = max(1, Int(floor(bounds.height * scale)))
+  //   
+  //   // Convert to pixels in Cocoa-up coordinates
+  //   var xF = p.x * scale
+  //   var yF = p.y * scale
+  //   
+  //   if clampToView {
+  //     // Clamp in points then scale (matches bounds.contains logic)
+  //     let clampedXPt = min(max(p.x, 0), bounds.width)
+  //     let clampedYPt = min(max(p.y, 0), bounds.height)
+  //     xF = clampedXPt * scale
+  //     yF = clampedYPt * scale
+  //     
+  //     // Clamp in pixels to [0 .. sizePt-1] (still Cocoa-up)
+  //     xF = min(max(xF, 0), CGFloat(wPt - 1))
+  //     yF = min(max(yF, 0), CGFloat(hPt - 1))
+  //   }
+  //   
+  //   // Flip Y to X11 top-down (0 at top)
+  //   yF = CGFloat(hPt - 1) - yF
+  //   
+  //   if clampToView {
+  //     // After flip, ensure still in range (paranoia)
+  //     yF = min(max(yF, 0), CGFloat(hPt - 1))
+  //   }
+  //   
+  //   return (Int32(floor(xF)), Int32(floor(yF)))
+  // }
+  
+  private func pointInX11(_ event: NSEvent, clampToView: Bool) -> (Int32, Int32) {
     let pInWindow = event.locationInWindow
-    let p = convert(pInWindow, from: nil)
-    
-    let scale = window?.backingScaleFactor ?? 1.0
-    
-    // Backing pixel dimensions of this view
-    let wPt = max(1, Int(floor(bounds.width * scale)))
-    let hPt = max(1, Int(floor(bounds.height * scale)))
-    
-    // Convert to pixels in Cocoa-up coordinates
-    var xF = p.x * scale
-    var yF = p.y * scale
-    
+    let p = convert(pInWindow, from: nil) // points, origin bottom-left
+
+    let wPt = bounds.width
+    let hPt = bounds.height
+
+    var xF = p.x
+    var yF = p.y
+
     if clampToView {
-      // Clamp in points then scale (matches bounds.contains logic)
-      let clampedXPt = min(max(p.x, 0), bounds.width)
-      let clampedYPt = min(max(p.y, 0), bounds.height)
-      xF = clampedXPt * scale
-      yF = clampedYPt * scale
-      
-      // Clamp in pixels to [0 .. sizePt-1] (still Cocoa-up)
-      xF = min(max(xF, 0), CGFloat(wPt - 1))
-      yF = min(max(yF, 0), CGFloat(hPt - 1))
+      let clampedX = min(max(xF, 0), wPt)
+      let clampedY = min(max(yF, 0), hPt)
+      xF = clampedX
+      yF = clampedY
+      xF = min(max(xF, 0), wPt - 1)
+      yF = min(max(yF, 0), hPt - 1)
     }
-    
-    // Flip Y to X11 top-down (0 at top)
-    yF = CGFloat(hPt - 1) - yF
-    
+
+    // Flip Y to X11 top-down (0 at top) in *points*
+    yF = (hPt - 1) - yF
     if clampToView {
-      // After flip, ensure still in range (paranoia)
-      yF = min(max(yF, 0), CGFloat(hPt - 1))
+      yF = min(max(yF, 0), hPt - 1)
     }
-    
+
     return (Int32(floor(xF)), Int32(floor(yF)))
   }
   
+  // private func rootPointInPixelsTopLeft() -> (Int32, Int32) {
+  //   // Global mouse location in screen points (origin bottom-left of global space)
+  //   let gp = NSEvent.mouseLocation
+  //   
+  //   // Virtual desktop bounds in points
+  //   let screens = NSScreen.screens
+  //   let vminX = screens.map { $0.frame.minX }.min() ?? 0
+  //   let vmaxY = screens.map { $0.frame.maxY }.max() ?? 0
+  //   
+  //   // Use scale of the screen containing the pointer if possible
+  //   let screen = screens.first(where: { $0.frame.contains(gp) }) ?? NSScreen.main
+  //   let scale = screen?.backingScaleFactor ?? 1.0
+  //   
+  //   // Root coords in pixels, top-left origin of virtual desktop
+  //   let xPt = Int32(((gp.x - vminX) * scale).rounded(.toNearestOrAwayFromZero))
+  //   let yPt = Int32(((vmaxY - gp.y) * scale).rounded(.toNearestOrAwayFromZero)) - 1
+  //   
+  //   return (max(0, xPt), max(0, yPt))
+  // }
   
-  private func rootPointInPixelsTopLeft() -> (Int32, Int32) {
-    // Global mouse location in screen points (origin bottom-left of global space)
-    let gp = NSEvent.mouseLocation
-    
-    // Virtual desktop bounds in points
+  
+  private func rootPointInX11TopLeft() -> (Int32, Int32) {
+    let gp = NSEvent.mouseLocation // points, origin bottom-left in global space
+
     let screens = NSScreen.screens
     let vminX = screens.map { $0.frame.minX }.min() ?? 0
     let vmaxY = screens.map { $0.frame.maxY }.max() ?? 0
-    
-    // Use scale of the screen containing the pointer if possible
-    let screen = screens.first(where: { $0.frame.contains(gp) }) ?? NSScreen.main
-    let scale = screen?.backingScaleFactor ?? 1.0
-    
-    // Root coords in pixels, top-left origin of virtual desktop
-    let xPt = Int32(((gp.x - vminX) * scale).rounded(.toNearestOrAwayFromZero))
-    let yPt = Int32(((vmaxY - gp.y) * scale).rounded(.toNearestOrAwayFromZero)) - 1
-    
-    return (max(0, xPt), max(0, yPt))
+
+    // Root coords in points, top-left origin of virtual desktop
+    let x = Int32((gp.x - vminX).rounded(.toNearestOrAwayFromZero))
+    let y = Int32((vmaxY - gp.y).rounded(.toNearestOrAwayFromZero)) - 1
+
+    return (max(0, x), max(0, y))
   }
-  
   
   // MARK: - Mouse
   private func sendMotion(_ event: NSEvent) {
@@ -707,11 +748,11 @@ final class X11View: NSView {
     // Enter/leave synth
     if insideNow && !isPointerInside {
       isPointerInside = true
-      let (x, y) = pointInPixels(event, clampToView: true)
+      let (x, y) = pointInX11(event, clampToView: true)
       x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
     } else if !insideNow && isPointerInside && !dragging {
       isPointerInside = false
-      let (x, y) = pointInPixels(event, clampToView: true)
+      let (x, y) = pointInX11(event, clampToView: true)
       x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
     }
     
@@ -721,10 +762,10 @@ final class X11View: NSView {
     // Window-local coords:
     // - if inside, use true coords
     // - if outside and not dragging, clamp to edge so winX/winY stay sane
-    let (winX, winY) = pointInPixels(event, clampToView: !dragging)
+    let (winX, winY) = pointInX11(event, clampToView: !dragging)
     
     // Global root coords (top-left)
-    let (rootX, rootY) = rootPointInPixelsTopLeft()
+    let (rootX, rootY) = rootPointInX11TopLeft()
     
     GlobalPointerTracker.shared.updateActiveWindow(xid: xid, lastWinXY: (winX, winY))
     
@@ -734,7 +775,7 @@ final class X11View: NSView {
   }
   
   private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
-    let (x, y) = pointInPixels(event, clampToView: false)
+    let (x, y) = pointInX11(event, clampToView: false)
     x11_post_pointer_button(xid, isPress, button, x, y, buttonMask, mods(event.modifierFlags))
   }
   
@@ -787,7 +828,7 @@ final class X11View: NSView {
   override func mouseEntered(with event: NSEvent) {
     lastInsideForSyntheticCrossing = true
     isPointerInside = true
-    let (x, y) = pointInPixels(event, clampToView: true)
+    let (x, y) = pointInX11(event, clampToView: true)
     x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
   }
   
@@ -797,7 +838,7 @@ final class X11View: NSView {
     if buttonMask == 0 {
       isPointerInside = false
     }
-    let (x, y) = pointInPixels(event, clampToView: true)
+    let (x, y) = pointInX11(event, clampToView: true)
     x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
   }
   
@@ -818,7 +859,7 @@ final class X11View: NSView {
     let dragging = (buttonMask != 0)
     if !insideNow && !dragging { return }
     
-    let (x, y) = pointInPixels(event, clampToView: true)
+    let (x, y) = pointInX11(event, clampToView: true)
     let m = mods(event.modifierFlags)
     
     func postScroll(axis: x11_scroll_axis_t, ticks: Int16) {

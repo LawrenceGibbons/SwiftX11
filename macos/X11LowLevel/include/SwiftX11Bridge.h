@@ -79,16 +79,16 @@ void x11_post_pointer_move2(uint32_t xid,
 void x11_post_pointer_button(uint32_t xid,
                              bool is_press,
                              uint8_t button,        // 1..31 (1=left, 2=middle, 3=right, 4..7 wheel if desired)
-                             int32_t x_px,
-                             int32_t y_px,
+                             int32_t x_u,
+                             int32_t y_u,
                              uint32_t buttons,      // current button mask AFTER state update
                              uint32_t modifiers);
 
 void x11_post_scroll_ticks(uint32_t xid,
                            x11_scroll_axis_t axis,  // X11_SCROLL_VERT / X11_SCROLL_HORZ
                            int16_t ticks,           // +up/right, -down/left
-                           int32_t x_px,
-                           int32_t y_px,
+                           int32_t x_u,
+                           int32_t y_u,
                            uint32_t buttons,
                            uint32_t modifiers);
 
@@ -99,13 +99,13 @@ void x11_post_key_event(uint32_t xwin_id,
                         const char* utf8_text);
 
 void x11_post_pointer_enter(uint32_t xid,
-                            int32_t x_px,
-                            int32_t y_px,
+                            int32_t x_u,
+                            int32_t y_u,
                             uint32_t modifiers);
 
 void x11_post_pointer_leave(uint32_t xid,
-                            int32_t x_px,
-                            int32_t y_px,
+                            int32_t x_u,
+                            int32_t y_u,
                             uint32_t modifiers);
   
 
@@ -137,4 +137,4 @@ void x11_post_window_destroy(uint32_t xid);
 // -------------------------------------------------------------------------------------
 // Host-driven resize (Cocoa changed size)
 // -------------------------------------------------------------------------------------
-void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px);
+void x11_post_window_resize(uint32_t xid, int32_t w_u, int32_t h_u);

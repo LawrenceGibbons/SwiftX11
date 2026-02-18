@@ -43,10 +43,11 @@ typedef struct {
   char    title[X11_TEXT_MAX];
   uint8_t title_len;
 
+  // X11 units, not pixels
   union {
-    struct { int32_t w_px, h_px; } create;
-    struct { int32_t w_px, h_px; } configure;
-    struct { int32_t w_px, h_px; } rootless_resize;
+    struct { int32_t w_u, h_u; } create;
+    struct { int32_t w_u, h_u; } configure;
+    struct { int32_t w_u, h_u; } rootless_resize;
   } u;
 } x11_client_req_t;
 
@@ -142,16 +143,16 @@ static uint32_t alloc_xid(void) {
   return xid;
 }
 
-uint32_t x11_client_create_window(const char* title_utf8, int32_t w_px, int32_t h_px)
+uint32_t x11_client_create_window(const char* title_utf8, int32_t w_u, int32_t h_u)
 {
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
   x11_client_req_t r = {0};
   r.type = X11_REQ_CREATE;
   r.xid  = alloc_xid();
-  r.u.create.w_px = w_px;
-  r.u.create.h_px = h_px;
+  r.u.create.w_u = w_u;
+  r.u.create.h_u = h_u;
 
   // Copy title into fixed buffer (truncate safely)
   if (title_utf8) {
@@ -219,17 +220,17 @@ void x11_client_unmap_window(uint32_t xid)
   x11_server_wakeup();
 }
 
-void x11_client_configure_window(uint32_t xid, int32_t w_px, int32_t h_px)
+void x11_client_configure_window(uint32_t xid, int32_t w_u, int32_t h_u)
 {
   if (xid == 0) return;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
   x11_client_req_t r = {0};
   r.type = X11_REQ_CONFIGURE;
   r.xid = xid;
-  r.u.configure.w_px = w_px;
-  r.u.configure.h_px = h_px;
+  r.u.configure.w_u = w_u;
+  r.u.configure.h_u = h_u;
 
   x11_backend_lock();
   (void)req_push_locked(&r);
@@ -265,18 +266,18 @@ void x11_client_set_window_title(uint32_t xid, const char* title_utf8)
 // These enqueue onto the same client->server request queue.
 // Return 1 on success, 0 if dropped.
 
-int x11_requests_push_create(uint32_t xid, uint32_t parent_xid, const char* title_utf8, int32_t w_px, int32_t h_px)
+int x11_requests_push_create(uint32_t xid, uint32_t parent_xid, const char* title_utf8, int32_t w_u, int32_t h_u)
 {
   if (xid == 0) return 0;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
   x11_client_req_t r = {0};
   r.type = X11_REQ_CREATE;
   r.xid  = xid;
   r.parent_xid = parent_xid;
-  r.u.create.w_px = w_px;
-  r.u.create.h_px = h_px;
+  r.u.create.w_u = w_u;
+  r.u.create.h_u = h_u;
 
 
   // Copy title into fixed buffer (truncate safely)
@@ -362,17 +363,17 @@ int x11_requests_push_unmap(uint32_t xid)
   return ok;
 }
 
-int x11_requests_push_configure(uint32_t xid, int32_t w_px, int32_t h_px)
+int x11_requests_push_configure(uint32_t xid, int32_t w_u, int32_t h_u)
 {
   if (xid == 0) return 0;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
   x11_client_req_t r = {0};
   r.type = X11_REQ_CONFIGURE;
   r.xid  = xid;
-  r.u.configure.w_px = w_px;
-  r.u.configure.h_px = h_px;
+  r.u.configure.w_u = w_u;
+  r.u.configure.h_u = h_u;
 
   x11_backend_lock();
   int ok = req_push_locked(&r);
@@ -383,28 +384,28 @@ int x11_requests_push_configure(uint32_t xid, int32_t w_px, int32_t h_px)
 }
 
 
-int x11_requests_push_rootless_resize(uint32_t xid, int32_t w_px, int32_t h_px)
+int x11_requests_push_rootless_resize(uint32_t xid, int32_t w_u, int32_t h_u)
 {
   if (xid == 0) return 0;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
   
   x11_client_req_t r = {0};
   r.type = X11_REQ_ROOTLESS_RESIZE;
   r.xid = xid;
-  r.u.rootless_resize.w_px = w_px;
-  r.u.rootless_resize.h_px = h_px;
+  r.u.rootless_resize.w_u = w_u;
+  r.u.rootless_resize.h_u = h_u;
   
   x11_backend_lock();
   int ok = req_push_locked(&r);
   x11_backend_unlock();
 
   fprintf(stderr, "[SwiftX11] push_rootless_resize: enqueue type=%d xid=0x%08X %dx%d\n",
-          (int)X11_REQ_ROOTLESS_RESIZE, (unsigned)xid, (int)w_px, (int)h_px);
+          (int)X11_REQ_ROOTLESS_RESIZE, (unsigned)xid, (int)w_u, (int)h_u);
 #ifndef NDEBUG
 fprintf(stderr, "[SwiftX11] push_rootless_resize: xid=0x%08X %dx%d ok=%d\n",
-        (unsigned)xid, (int)w_px, (int)h_px, ok);
+        (unsigned)xid, (int)w_u, (int)h_u, ok);
 #endif
   
   return ok;
@@ -478,7 +479,7 @@ void x11_requests_drain_on_server_thread(void)
         // Create the backend slot + Swift window via existing helper.
         // IMPORTANT: use r.xid (already allocated), and title from r.title.
         const char* title = (r.title_len > 0) ? r.title : "SwiftX11 Window";
-        x11_server_emit_window_create(r.xid, r.parent_xid, title, r.u.create.w_px, r.u.create.h_px);
+        x11_server_emit_window_create(r.xid, r.parent_xid, title, r.u.create.w_u, r.u.create.h_u);
 
         // X11-ish default: created != mapped. So DO NOT map here.
         // Your Swift side creates hidden/unmapped now — great.
@@ -497,7 +498,7 @@ void x11_requests_drain_on_server_thread(void)
         break;
 
       case X11_REQ_CONFIGURE:
-        x11_apply_window_configure(r.xid, r.u.configure.w_px, r.u.configure.h_px);
+        x11_apply_window_configure(r.xid, r.u.configure.w_u, r.u.configure.h_u);
         break;
 
       case X11_REQ_SET_TITLE:
@@ -518,13 +519,13 @@ void x11_requests_drain_on_server_thread(void)
       case X11_REQ_ROOTLESS_RESIZE: {
 #ifndef NDEBUG
         fprintf(stderr, "[SwiftX11] drain_on_server_thread: APPLY ROOTLESS_RESIZE xid=0x%08X %dx%d\n",
-                (unsigned)r.xid, (int)r.u.rootless_resize.w_px, (int)r.u.rootless_resize.h_px);
+                (unsigned)r.xid, (int)r.u.rootless_resize.w_u, (int)r.u.rootless_resize.h_u);
 #endif
         // Runs on server thread. Do not take backend lock here if your xproto state
         // (win_find/g_framebuffers) is not protected by it.
         x11_xproto_apply_rootless_resize_on_server_thread(r.xid,
-                                                          r.u.rootless_resize.w_px,
-                                                          r.u.rootless_resize.h_px);
+                                                          r.u.rootless_resize.w_u,
+                                                          r.u.rootless_resize.h_u);
         break;
       }
         

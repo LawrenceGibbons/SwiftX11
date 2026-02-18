@@ -12,10 +12,10 @@ namespace x11 {
 
   struct InputState {
     // global/root pointer
-    int32_t root_x = 0, root_y = 0;
+    int32_t root_x_u = 0, root_y_u = 0;
 
     // host-window local
-    int32_t win_x = 0,  win_y = 0;
+    int32_t win_x_u = 0,  win_y_u = 0;
 
     // canonical state
     uint32_t buttons = 0;
@@ -28,13 +28,13 @@ namespace x11 {
     uint32_t drag_xid = 0;    // active grab window (nonzero buttons)
 
     void updateMotion(uint32_t xid,
-                      int32_t wx, int32_t wy,
-                      int32_t rx, int32_t ry,
+                      int32_t wx_u, int32_t wy_u,
+                      int32_t rx_u, int32_t ry_u,
                       uint32_t btns, uint32_t m)
     {
       last_xid = xid;
-      win_x = wx; win_y = wy;
-      root_x = rx; root_y = ry;
+      win_x_u = wx_u; win_y_u = wy_u;
+      root_x_u = rx_u; root_y_u = ry_u;
       // For motion, trust btns if you want. Or keep canonical `buttons` only.
       // I'd keep canonical `buttons`, but accept btns for now:
       buttons = btns;

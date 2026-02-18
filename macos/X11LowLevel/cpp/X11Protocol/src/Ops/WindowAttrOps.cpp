@@ -75,11 +75,9 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t wid   = br.readU32();
     const uint32_t vmask = br.readU32();
 
-    // Snapshot current values so partial updates preserve unspecified fields,
-    // and so we can detect "ExposureMask enabled post-map" (common in xterm bring-up).
+    // Snapshot current values so partial updates preserve unspecified fields.
     uint32_t old_mask = 0;
     bool wasMapped = false;
-
     if (const WindowView* vw = ctx.window(wid)) {
       old_mask = vw->event_mask;
       wasMapped = vw->mapped;
@@ -88,40 +86,53 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     ctx.tracef("[CWA] GATE1 wid=0x%08X vmask=0x%08X remain=%zu old_mask=0x%08X mapped=%d\n",
                wid, vmask, br.remaining(), old_mask, (int)wasMapped);
 
-    // Value list is 32-bit items in increasing bit order.
-    // We only care about bit 11 (CWEventMask) for now, but we still must consume correctly.
     uint32_t cur_mask = old_mask;
+    bool sawEventMask = false;
 
+    uint32_t newCursor = 0;
+    bool sawCursor = false;
+
+    // Value list is 32-bit items in increasing bit order.
+    // We must consume every provided value in order, even if we ignore most.
     for (uint32_t bit = 0; bit < 32 && br.remaining() >= 4; bit++) {
       if ((vmask & (1u << bit)) == 0) continue;
       const uint32_t val = br.readU32();
-      if (bit == 11) {
-        cur_mask = val; // CWEventMask
-        ctx.tracef("[CWA] CWEventMask wid=0x%08X val=0x%08X\n", wid, cur_mask);
+
+      switch (bit) {
+        case 11: // CWEventMask
+          cur_mask = val;
+          sawEventMask = true;
+          ctx.tracef("[CWA] CWEventMask wid=0x%08X val=0x%08X\n", wid, cur_mask);
+          break;
+
+        case 14: // CWCursor
+          newCursor = val;  // 0 is valid (None / inherit)
+          sawCursor = true;
+          ctx.tracef("[CWA] CWCursor wid=0x%08X cursor=0x%08X\n", wid, newCursor);
+          break;
+
+        default:
+          break;
       }
     }
 
-    // Consume any trailing bytes (padding or unparsed values if malformed)
+    // Consume any trailing bytes
     br.skip(br.remaining());
 
-    // If CWEventMask wasn’t present, we do nothing.
-    if ((vmask & (1u << 11)) == 0) return;
+    // ---- Apply cursor even if event mask wasn't present ----
+    if (sawCursor) {
+      // You need WindowState::cursor_xid + WindowTable::setCursor as discussed.
+      ctx.windows().setCursor(wid, newCursor);
+    }
 
-    // Update C++ authoritative table
+    // ---- Apply event mask only if present ----
+    if (!sawEventMask) return;
+
     ctx.windows().setEventMask(wid, cur_mask);
 
-    // ------------------------------------------------------------
-    // Rootless bring-up / xterm unstick:
-    //
-    // If ExposureMask is enabled after the window is already mapped,
-    // some clients then block in XNextEvent waiting for their first Expose.
-    // We can safely queue a one-shot Expose here to kick the event loop.
-    //
-    // ExposureMask is bit 15 in the *event mask*.
-    // ------------------------------------------------------------
+    // Exposure “unstick” (optional; only meaningful when we changed event_mask)
     const bool hadExposure = ((old_mask & (1u << 15)) != 0);
     const bool wantExpose  = ((cur_mask & (1u << 15)) != 0);
-
     if (wasMapped && !hadExposure && wantExpose) {
       ctx.tracef("[CWA] ExposureMask enabled post-map; queue initial Expose wid=0x%08X\n", wid);
       ctx.transport().queueNotify(wid, /*wantCfg=*/false, /*wantExp=*/true);

@@ -696,7 +696,8 @@ final class WindowRegistry {
     let wPt = Int32(max(1, Int(sizePoints.width.rounded(.down))))
     let hPt = Int32(max(1, Int(sizePoints.height.rounded(.down))))
 
-    // Pixels — MUST be used for protocol/configure
+    // X11 units (points) — MUST be used for protocol/configure
+    // Pixels are for backing buffers / rendering only.
     let wPx = Int32(max(1, Int(sizePixels.width.rounded(.down))))
     let hPx = Int32(max(1, Int(sizePixels.height.rounded(.down))))
         

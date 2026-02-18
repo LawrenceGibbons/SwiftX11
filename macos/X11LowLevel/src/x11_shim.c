@@ -80,6 +80,19 @@ uint64_t x11_now_ns(void)
   return (uint64_t)ns;
 }
 
+// Somewhere central (x11_shim.c or similar)
+static _Atomic(int32_t) g_last_root_x_u = 0;
+static _Atomic(int32_t) g_last_root_y_u = 0;
+
+static inline void x11_set_last_root_u(int32_t x_u, int32_t y_u) {
+  atomic_store_explicit(&g_last_root_x_u, x_u, memory_order_relaxed);
+  atomic_store_explicit(&g_last_root_y_u, y_u, memory_order_relaxed);
+}
+
+static inline void x11_get_last_root_u(int32_t* x_u, int32_t* y_u) {
+  *x_u = atomic_load_explicit(&g_last_root_x_u, memory_order_relaxed);
+  *y_u = atomic_load_explicit(&g_last_root_y_u, memory_order_relaxed);
+}
 
 // ---- Helper for async destroy (safe from repaint context)
 struct x11_destroy_arg { uint32_t xid; };
@@ -112,7 +125,7 @@ static void x11_emit_window_create(uint32_t xid, uint32_t parent_xid, const char
           (unsigned)xid);
 #endif
   
-  x11_ui_push_create(xid, parent_xid, w, h);
+  x11_ui_push_create(xid, parent_xid, ww, hh);
   x11_server_wakeup();
 }
 
@@ -301,39 +314,33 @@ void x11_request_repaint(uint32_t xwin_id, int32_t width_px, int32_t height_px)
 
 
 void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
-                            int32_t x_px, int32_t y_px,
+                            int32_t  win_x_u,  int32_t  win_y_u,
+                            int32_t root_x_u, int32_t root_y_u,
                             uint32_t buttons, uint32_t modifiers)
 {
 #if !defined(NDEBUG) && SWIFTX11_TRACE
-  fprintf(stderr, "[C] x11_post_pointer_event MOVE xid=0x%X x=%d y=%d buttons=0x%X mods=0x%X\n",
-          xid, (int)x_px, (int)y_px, (unsigned)buttons, (unsigned)modifiers);
+  fprintf(stderr,
+          "[C] x11_post_pointer_event type=%d xid=0x%X win=(%d,%d) root=(%d,%d) buttons=0x%X mods=0x%X\n",
+          (int)type, xid, (int)win_x_u, (int)win_y_u, (int)root_x_u, (int)root_y_u,
+          (unsigned)buttons, (unsigned)modifiers);
 #endif
-  
   if (xid == 0) return;
 
   switch (type) {
-    case X11_PTR_MOVE: {
-      // Legacy API: coords are window-local.
-      // We cannot know true root coords here, so pass root=win.
-      // deliver=1 because this is the old "deliver motion" entrypoint.
-      x11_post_pointer_move2(xid,
-                             x_px, y_px,      // win_x/win_y
-                             x_px, y_px,      // root_x/root_y (fallback)
-                             1,               // deliver
-                             buttons,
-                             modifiers);
+    case X11_PTR_MOVE:
+      x11_set_last_root_u(root_x_u, root_y_u);
+      x11_post_pointer_move2(xid, win_x_u, win_y_u, root_x_u, root_y_u,
+                             1, buttons, modifiers);
       return;
-    }
 
     case X11_PTR_DOWN:
-      // Legacy API: no specific button number available here.
-      // If you have x11_post_pointer_button(...) elsewhere for real button events,
-      // this path is rarely used. Keep it for compatibility.
-      x11_proto_bridge_post_pointer_button_legacy(xid, 1, x_px, y_px, buttons, modifiers);
+      x11_proto_bridge_post_pointer_button_legacy(xid, 1, win_x_u, win_y_u,
+                                                  buttons, modifiers);
       return;
 
     case X11_PTR_UP:
-      x11_proto_bridge_post_pointer_button_legacy(xid, 0, x_px, y_px, buttons, modifiers);
+      x11_proto_bridge_post_pointer_button_legacy(xid, 0, win_x_u, win_y_u,
+                                                  buttons, modifiers);
       return;
 
     default:
@@ -341,11 +348,10 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
   }
 }
 
-
 // C++ bridge (enqueue-only)
 extern void x11_proto_bridge_post_pointer_move2(uint32_t xid,
-                                                int32_t win_x, int32_t win_y,
-                                                int32_t root_x, int32_t root_y,
+                                                int32_t  win_x_u,  int32_t win_y_u,
+                                                int32_t root_x_u, int32_t root_y_u,
                                                 uint8_t deliver,
                                                 uint32_t buttons,
                                                 uint32_t modifiers);
@@ -353,14 +359,14 @@ extern void x11_proto_bridge_post_pointer_move2(uint32_t xid,
 extern void x11_proto_bridge_post_pointer_button(uint32_t xid,
                                                  uint8_t is_press,
                                                  uint8_t button,
-                                                 int32_t win_x, int32_t win_y,
+                                                 int32_t win_x_u, int32_t win_y_u,
                                                  uint32_t buttons,
                                                  uint32_t modifiers);
 
 extern void x11_proto_bridge_post_scroll(uint32_t xid,
                                          uint8_t axis,
                                          int16_t ticks,
-                                         int32_t win_x, int32_t win_y,
+                                         int32_t win_x_u, int32_t win_y_u,
                                          uint32_t buttons,
                                          uint32_t modifiers);
 
@@ -370,27 +376,27 @@ extern void x11_proto_bridge_post_key(uint32_t xid,
                                       uint32_t modifiers);
 
 extern void x11_proto_bridge_post_enter(uint32_t xid,
-                                        int32_t win_x, int32_t win_y,
+                                        int32_t win_x_u, int32_t win_y_u,
                                         uint32_t modifiers);
 
 extern void x11_proto_bridge_post_leave(uint32_t xid,
-                                        int32_t win_x, int32_t win_y,
+                                        int32_t win_x_u, int32_t win_y_u,
                                         uint32_t modifiers);
 
 extern void x11_proto_bridge_post_focus(uint32_t xid,
                                         uint8_t focused);
 
 void x11_post_pointer_move2(uint32_t xid,
-                            int32_t win_x, int32_t win_y,
-                            int32_t root_x, int32_t root_y,
+                            int32_t  win_x_u, int32_t  win_y_u,
+                            int32_t root_x_u, int32_t root_y_u,
                             uint8_t deliver,
                             uint32_t buttons,
                             uint32_t modifiers)
 {
   if (xid == 0) return;
   x11_proto_bridge_post_pointer_move2(xid,
-                                      win_x, win_y,
-                                      root_x, root_y,
+                                       win_x_u,  win_y_u,
+                                      root_x_u, root_y_u,
                                       deliver,
                                       buttons,
                                       modifiers);
@@ -411,8 +417,8 @@ void x11_post_key_event(uint32_t xid, bool is_down,
 void x11_post_pointer_button(uint32_t xid,
                              bool is_press,
                              uint8_t button,
-                             int32_t x_px,
-                             int32_t y_px,
+                             int32_t x_u,
+                             int32_t y_u,
                              uint32_t buttons,
                              uint32_t modifiers)
 {
@@ -420,7 +426,7 @@ void x11_post_pointer_button(uint32_t xid,
   x11_proto_bridge_post_pointer_button(xid,
                                        is_press ? 1 : 0,
                                        button,
-                                       x_px, y_px,
+                                       x_u, y_u,
                                        buttons,
                                        modifiers);
 }
@@ -428,8 +434,8 @@ void x11_post_pointer_button(uint32_t xid,
 void x11_post_scroll_ticks(uint32_t xid,
                            x11_scroll_axis_t axis,
                            int16_t ticks,
-                           int32_t x_px,
-                           int32_t y_px,
+                           int32_t x_u,
+                           int32_t y_u,
                            uint32_t buttons,
                            uint32_t modifiers)
 {
@@ -437,7 +443,7 @@ void x11_post_scroll_ticks(uint32_t xid,
   x11_proto_bridge_post_scroll(xid,
                                (uint8_t)axis,
                                ticks,
-                               x_px, y_px,
+                               x_u, y_u,
                                buttons,
                                modifiers);
 }
@@ -451,22 +457,22 @@ void x11_post_focus_event(uint32_t xid, bool focused)
 
 
 void x11_post_pointer_enter(uint32_t xid,
-                            int32_t x_px,
-                            int32_t y_px,
+                            int32_t x_u,
+                            int32_t y_u,
                             uint32_t modifiers)
 {
   if (xid == 0) return;
-  x11_proto_bridge_post_enter(xid, x_px, y_px, modifiers);
+  x11_proto_bridge_post_enter(xid, x_u, y_u, modifiers);
 }
 
 
 void x11_post_pointer_leave(uint32_t xid,
-                            int32_t x_px,
-                            int32_t y_px,
+                            int32_t x_u,
+                            int32_t y_u,
                             uint32_t modifiers)
 {
   if (xid == 0) return;
-  x11_proto_bridge_post_leave(xid, x_px, y_px, modifiers);
+  x11_proto_bridge_post_leave(xid, x_u, y_u, modifiers);
 }
 
 
@@ -540,16 +546,16 @@ void x11_post_window_unmap(uint32_t xid)
 }
 
 
-void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
+void x11_post_window_resize(uint32_t xid, int32_t w_u, int32_t h_u)
 {
   if (xid == 0) return;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
 #ifndef NDEBUG
   fprintf(stderr,
           "[SwiftX11] post_window_resize: xid=0x%08X new=%dx%d (pre-gate)\n",
-          (unsigned)xid, (int)w_px, (int)h_px);
+          (unsigned)xid, (int)w_u, (int)h_u);
 #endif
   
   // Gate on existence (and optionally "not closing") to avoid stale events.
@@ -568,17 +574,17 @@ void x11_post_window_resize(uint32_t xid, int32_t w_px, int32_t h_px)
   }
   
   // Update backend truth first.
-  x11_backend_window_set_size(xid, w_px, h_px);
+  x11_backend_window_set_size(xid, w_u, h_u);
     
   // Tell xproto/server-thread to resize its window+fb too.
-  int ok = x11_requests_push_rootless_resize(xid, w_px, h_px);
+  int ok = x11_requests_push_rootless_resize(xid, w_u, h_u);
 #ifndef NDEBUG
   fprintf(stderr, "[SwiftX11] post_window_resize: PUSH_ROOTLESS xid=0x%08X %dx%d ok=%d\n",
-        (unsigned)xid, (int)w_px, (int)h_px, ok);
+        (unsigned)xid, (int)w_u, (int)h_u, ok);
 #endif
   
   
-  x11_ui_push_resize(xid, w_px, h_px);
+  x11_ui_push_resize(xid, w_u, h_u);
   // Wake repaint loop so the resize shows immediately.
   x11_server_wakeup();
 }
@@ -625,6 +631,49 @@ void x11_mark_damage(uint32_t xid)
   x11_server_wakeup();
 }
 
+
+// Helper: clamp >=1
+static inline int32_t clamp_i32_ge1(int32_t v) { return (v < 1) ? 1 : v; }
+
+// Helper: query window size in X11 units (u) from backend, and FB size in pixels from xproto.
+// If backend size missing, fall back to FB size as "u" (bring-up safe).
+static void x11_damage_query_sizes(uint32_t xid,
+                                  int32_t* out_w_u, int32_t* out_h_u,
+                                  int32_t* out_fb_w_px, int32_t* out_fb_h_px,
+                                  double* out_sx, double* out_sy)
+{
+  int32_t w_u = 0, h_u = 0;
+  int32_t fb_w_px = 0, fb_h_px = 0;
+
+  // Backend "truth" size (now effectively X11 units / points)
+  x11_backend_lock();
+  (void)x11_backend_get_size_locked(xid, &w_u, &h_u);
+  x11_backend_unlock();
+
+  // Framebuffer size (pixels)
+  (void)x11_xproto_get_fb_size(xid, &fb_w_px, &fb_h_px);
+
+  // If backend doesn't know yet, use FB size as a fallback so UI_DAMAGE isn't degenerate.
+  if (w_u <= 0 || h_u <= 0) {
+    w_u = fb_w_px;
+    h_u = fb_h_px;
+  }
+
+  w_u = clamp_i32_ge1(w_u);
+  h_u = clamp_i32_ge1(h_u);
+  fb_w_px = clamp_i32_ge1(fb_w_px);
+  fb_h_px = clamp_i32_ge1(fb_h_px);
+
+  if (out_w_u) *out_w_u = w_u;
+  if (out_h_u) *out_h_u = h_u;
+  if (out_fb_w_px) *out_fb_w_px = fb_w_px;
+  if (out_fb_h_px) *out_fb_h_px = fb_h_px;
+
+  // px-per-u (useful when you later union dirty rects in u but dirty sources are px)
+  if (out_sx) *out_sx = (w_u > 0) ? ((double)fb_w_px / (double)w_u) : 1.0;
+  if (out_sy) *out_sy = (h_u > 0) ? ((double)fb_h_px / (double)h_u) : 1.0;
+}
+
 // -----------------------------------------------------------------------------
 // Damage request side-effect
 //
@@ -636,41 +685,46 @@ void x11_mark_damage(uint32_t xid)
 // -----------------------------------------------------------------------------
 void x11_server_emit_window_damage(uint32_t xid)
 {
-  fprintf(stderr, "[EMIT DAMAGE] entering with xid=%d", xid);
+#ifndef NDEBUG
+  fprintf(stderr, "[EMIT DAMAGE] entering with xid=0x%08X\n", (unsigned)xid);
+#endif
   if (xid == 0) return;
 
   int ok = 0;
   int exists = 0;
   int closing = 0;
-  int32_t w_px = 0, h_px = 0;
+
+  // We will emit full-window damage in X11 units (u).
+  int32_t w_u = 0, h_u = 0;
+  int32_t fb_w_px = 0, fb_h_px = 0;
+  double sx = 1.0, sy = 1.0;
 
   x11_backend_lock();
   exists = x11_backend_window_exists_locked(xid);
   closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;
   if (exists && !closing) {
     x11_backend_mark_damage_locked(xid);
-
-    // Get current size so UI_DAMAGE is not degenerate.
-    // Use whatever your backend API is here:
-    (void)x11_xproto_get_fb_size(xid, &w_px, &h_px);
     ok = 1;
   }
   x11_backend_unlock();
 
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[SwiftX11] x11_server_emit_window_damage: xid=0x%08X exists=%d closing=%d ok=%d size=%dx%d\n",
-          (unsigned)xid, exists, closing, ok, (int)w_px, (int)h_px);
-#endif
-
   if (!ok) return;
 
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  // Query sizes outside backend lock.
+  x11_damage_query_sizes(xid, &w_u, &h_u, &fb_w_px, &fb_h_px, &sx, &sy);
 
-  x11_ui_push_damage(xid, 0, 0, w_px, h_px);
+#ifndef NDEBUG
+  // This tells you whether you're in a 1:1 model or e.g. retina backing (2px per 1u).
+  fprintf(stderr,
+          "[SwiftX11] emit_damage xid=0x%08X rect_u=%dx%d fb_px=%dx%d px_per_u=(%.3f,%.3f)\n",
+          (unsigned)xid, (int)w_u, (int)h_u, (int)fb_w_px, (int)fb_h_px, sx, sy);
+#endif
+
+  // IMPORTANT: UI_DAMAGE rect is in X11 units (u), not pixels.
+  x11_ui_push_damage(xid, 0, 0, w_u, h_u);
   x11_server_wakeup();
 }
+
 
 void x11_server_wakeup(void)
 {
@@ -874,16 +928,16 @@ void x11_server_apply_unmap_request(uint32_t xid)
 }
 
 
-void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px)
+void x11_server_apply_configure_request(uint32_t xid, int32_t w_u, int32_t h_u)
 {
   if (xid == 0) return;
-  if (w_px < 1) w_px = 1;
-  if (h_px < 1) h_px = 1;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
 #ifndef NDEBUG
   fprintf(stderr,
           "[SwiftX11] apply_configure_request: xid=0x%08X size=%dx%d\n",
-          (unsigned)xid, (int)w_px, (int)h_px);
+          (unsigned)xid, (int)w_u, (int)h_u);
 #endif
   
   int did = 0;
@@ -894,7 +948,7 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
       !x11_backend_window_is_closing_locked(xid))
   {
     // Apply geometry always (even if unmapped)
-    x11_backend_window_set_size_locked(xid, w_px, h_px);
+    x11_backend_window_set_size_locked(xid, w_u, h_u);
     mapped = x11_backend_window_is_mapped_locked(xid);
 
     // If mapped, schedule repaint
@@ -911,7 +965,7 @@ void x11_server_apply_configure_request(uint32_t xid, int32_t w_px, int32_t h_px
           (unsigned)xid, mapped);
 #endif
   
-  x11_ui_push_resize(xid, w_px, h_px);
+  x11_ui_push_resize(xid, w_u, h_u);
   if (mapped) x11_server_wakeup();
 }
 

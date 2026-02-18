@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>  // add near top (needed for fabs)
 #ifndef NDEBUG
 #include <pthread.h>
 #endif
@@ -45,6 +46,10 @@ static inline void wr32_le(uint8_t* p, uint32_t v) {
   p[3] = (uint8_t)((v >> 24) & 0xFFu);
 }
 
+static inline int x11_nearly_1px(double a, double b) {
+  return fabs(a - b) < 1.0; // 1 unit tolerance
+}
+
 #ifndef NDEBUG
 static size_t fb_count_nonwhite(const uint32_t* px, size_t npx) {
   size_t nw = 0;
@@ -67,9 +72,12 @@ static void fb_sample3(const uint32_t* px, uint32_t w, uint32_t h,
 }
 #endif
 
+// Returns logical desktop size in X11 units ("points") to match Swift-side model.
+// outW/outH are X11 units. (Signature keeps _px name for now.)
 static void x11_get_virtual_desktop_px(uint16_t* outW, uint16_t* outH,
                                        uint16_t* outWmm, uint16_t* outHmm)
 {
+  // Safe defaults
   if (outW) *outW = 800;
   if (outH) *outH = 600;
   if (outWmm) *outWmm = 270;
@@ -82,58 +90,122 @@ static void x11_get_virtual_desktop_px(uint16_t* outW, uint16_t* outH,
     return;
   }
 
-  // Union display bounds in *device pixels*
-  CGRect b0 = CGDisplayBounds(displays[0]);
-  double minX = CGRectGetMinX(b0);
-  double minY = CGRectGetMinY(b0);
-  double maxX = CGRectGetMaxX(b0);
-  double maxY = CGRectGetMaxY(b0);
+  // Union bounds in X11 units (points)
+  double minX_u = 0, minY_u = 0, maxX_u = 0, maxY_u = 0;
+  int have = 0;
 
-  for (uint32_t i = 1; i < count; i++) {
-    CGRect b = CGDisplayBounds(displays[i]);
-    if (CGRectGetMinX(b) < minX) minX = CGRectGetMinX(b);
-    if (CGRectGetMinY(b) < minY) minY = CGRectGetMinY(b);
-    if (CGRectGetMaxX(b) > maxX) maxX = CGRectGetMaxX(b);
-    if (CGRectGetMaxY(b) > maxY) maxY = CGRectGetMaxY(b);
+  for (uint32_t i = 0; i < count; i++) {
+    const CGDirectDisplayID did = displays[i];
+    CGRect b = CGDisplayBounds(did);
+
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(did);
+    double mode_w_u = 0, mode_h_u = 0, mode_w_px = 0, mode_h_px = 0;
+    double scale_x = 1.0, scale_y = 1.0;
+
+    if (mode) {
+      mode_w_u  = (double)CGDisplayModeGetWidth(mode);
+      mode_h_u  = (double)CGDisplayModeGetHeight(mode);
+      mode_w_px = (double)CGDisplayModeGetPixelWidth(mode);
+      mode_h_px = (double)CGDisplayModeGetPixelHeight(mode);
+      if (mode_w_u > 0 && mode_w_px > 0) scale_x = mode_w_px / mode_w_u;
+      if (mode_h_u > 0 && mode_h_px > 0) scale_y = mode_h_px / mode_h_u;
+      if (scale_x <= 0.0) scale_x = 1.0;
+      if (scale_y <= 0.0) scale_y = 1.0;
+    }
+
+    // Detect whether CGDisplayBounds is expressed in px or u (points).
+    // We check width/height against mode pixelWidth vs mode width.
+    const double bw = CGRectGetWidth(b);
+    const double bh = CGRectGetHeight(b);
+
+    int bounds_is_px = 0;
+    int bounds_is_u  = 0;
+
+    if (mode) {
+      if (mode_w_px > 0 && x11_nearly_1px(bw, mode_w_px)) bounds_is_px = 1;
+      if (mode_w_u  > 0 && x11_nearly_1px(bw, mode_w_u )) bounds_is_u  = 1;
+
+      // If ambiguous, try height too
+      if (!bounds_is_px && mode_h_px > 0 && x11_nearly_1px(bh, mode_h_px)) bounds_is_px = 1;
+      if (!bounds_is_u  && mode_h_u  > 0 && x11_nearly_1px(bh, mode_h_u )) bounds_is_u  = 1;    }
+
+    // Convert bounds to X11 units
+    double x_u = CGRectGetMinX(b);
+    double y_u = CGRectGetMinY(b);
+    double w_u = bw;
+    double h_u = bh;
+
+    if (bounds_is_px && !bounds_is_u) {
+      x_u /= scale_x;
+      y_u /= scale_y;
+      w_u /= scale_x;
+      h_u /= scale_y;
+    } else {
+      // Treat as already in logical units.
+      // (If neither detection hits, this is the safer choice for "points model".)
+    }
+
+    const double x1_u = x_u + w_u;
+    const double y1_u = y_u + h_u;
+
+    if (!have) {
+      minX_u = x_u; minY_u = y_u; maxX_u = x1_u; maxY_u = y1_u;
+      have = 1;
+    } else {
+      if (x_u  < minX_u) minX_u = x_u;
+      if (y_u  < minY_u) minY_u = y_u;
+      if (x1_u > maxX_u) maxX_u = x1_u;
+      if (y1_u > maxY_u) maxY_u = y1_u;
+    }
+
+    if (mode) CFRelease(mode);
   }
 
-  double w = maxX - minX;
-  double h = maxY - minY;
-  if (w < 1) w = 1;
-  if (h < 1) h = 1;
+  if (!have) return;
 
-  // Clamp to uint16_t limits
-  if (w > 65535.0) w = 65535.0;
-  if (h > 65535.0) h = 65535.0;
+  double w_u = maxX_u - minX_u;
+  double h_u = maxY_u - minY_u;
+  if (w_u < 1.0) w_u = 1.0;
+  if (h_u < 1.0) h_u = 1.0;
 
-  const uint16_t wpx = (uint16_t)w;
-  const uint16_t hpx = (uint16_t)h;
+  if (w_u > 65535.0) w_u = 65535.0;
+  if (h_u > 65535.0) h_u = 65535.0;
 
-  if (outW) *outW = wpx;
-  if (outH) *outH = hpx;
+  const uint16_t wu16 = (uint16_t)(w_u + 0.5);
+  const uint16_t hu16 = (uint16_t)(h_u + 0.5);
 
-  // Physical mm: use main display pixel->mm scale as an approximation for the union
+  if (outW) *outW = wu16;
+  if (outH) *outH = hu16;
+
+  // Physical mm approximation: use main display mm / main display logical units.
   CGDirectDisplayID main = CGMainDisplayID();
-  CGSize mm = CGDisplayScreenSize(main);                // mm for main display
-  size_t mainW = CGDisplayPixelsWide(main);
-  size_t mainH = CGDisplayPixelsHigh(main);
+  CGSize mm = CGDisplayScreenSize(main);
 
-  if (mainW > 0 && mainH > 0 && mm.width > 0 && mm.height > 0) {
-    const double mmPerPxX = mm.width  / (double)mainW;
-    const double mmPerPxY = mm.height / (double)mainH;
+  CGDisplayModeRef mainMode = CGDisplayCopyDisplayMode(main);
+  double main_w_u = 0.0, main_h_u = 0.0;
+  if (mainMode) {
+    main_w_u = (double)CGDisplayModeGetWidth(mainMode);
+    main_h_u = (double)CGDisplayModeGetHeight(mainMode);
+    CFRelease(mainMode);
+  }
 
-    double wmm = (double)wpx * mmPerPxX;
-    double hmm = (double)hpx * mmPerPxY;
+  if (mm.width > 0 && mm.height > 0 && main_w_u > 0 && main_h_u > 0) {
+    const double mmPerU_X = mm.width  / main_w_u;
+    const double mmPerU_Y = mm.height / main_h_u;
 
-    if (wmm < 1) wmm = 1;
-    if (hmm < 1) hmm = 1;
+    double wmm = (double)wu16 * mmPerU_X;
+    double hmm = (double)hu16 * mmPerU_Y;
+
+    if (wmm < 1.0) wmm = 1.0;
+    if (hmm < 1.0) hmm = 1.0;
     if (wmm > 65535.0) wmm = 65535.0;
     if (hmm > 65535.0) hmm = 65535.0;
 
-    if (outWmm) *outWmm = (uint16_t)wmm;
-    if (outHmm) *outHmm = (uint16_t)hmm;
+    if (outWmm) *outWmm = (uint16_t)(wmm + 0.5);
+    if (outHmm) *outHmm = (uint16_t)(hmm + 0.5);
   }
 }
+
 
 // -----------------------------------------------------------------------------
 // Debug tracing toggles
@@ -597,10 +669,10 @@ void x11_send_setup_success_minimal_little_endian(int fd)
   const uint32_t root_visid  = 0x00000021u;
   const uint32_t root_cmap   = 0x00000020u;
 
-  uint16_t screen_w_px = 800, screen_h_px = 600;
+  uint16_t screen_w_u  = 800, screen_h_u  = 600;
   uint16_t screen_w_mm = 270, screen_h_mm = 203;
-  x11_get_virtual_desktop_px(&screen_w_px, &screen_h_px, &screen_w_mm, &screen_h_mm);
-  fprintf( stderr, "[DISPLAY] advertised screen_w_px = %d  screen_h_px = %d\n", screen_w_px, screen_h_px);
+  x11_get_virtual_desktop_px(&screen_w_u, &screen_h_u, &screen_w_mm, &screen_h_mm);
+  fprintf( stderr, "[DISPLAY] advertised screen_w_u = %d  screen_h_u = %d\n", screen_w_u, screen_h_u);
   
   const char* vendor = "SwiftX11";
   const uint16_t vendor_len = (uint16_t)strlen(vendor);
@@ -705,8 +777,8 @@ void x11_send_setup_success_minimal_little_endian(int fd)
   wr32_le(out + off +  8, 1);            // whitePixel
   wr32_le(out + off + 12, 0);           // blackPixel
   wr32_le(out + off + 16, 0);           // currentInputMasks
-  wr16_le(out + off + 20, screen_w_px); 
-  wr16_le(out + off + 22, screen_h_px); 
+  wr16_le(out + off + 20, screen_w_u); 
+  wr16_le(out + off + 22, screen_h_u); 
   wr16_le(out + off + 24, screen_w_mm); 
   wr16_le(out + off + 26, screen_h_mm); 
   wr16_le(out + off + 28, 1);           // minInstalledMaps

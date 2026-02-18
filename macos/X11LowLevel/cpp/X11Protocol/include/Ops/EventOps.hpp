@@ -92,18 +92,25 @@ namespace x11 {
     
     // mouse buttons
     void sendButtonEvent(XProtoContext& ctx,
-                         uint32_t wid,
-                         bool is_press,
-                         uint8_t button,
-                         int32_t root_x, int32_t root_y,
-                         uint32_t buttons, uint32_t mods);
-
+                                   uint32_t wid,
+                                   bool is_press,
+                                   uint8_t button,
+                                   int32_t root_x, int32_t root_y,
+                                   uint32_t buttons, uint32_t mods,
+                                   uint32_t child_xid /* = 0 */);
     // keyboard events
     void sendKeyEvent(XProtoContext& ctx,
                       uint32_t wid,
                       bool is_press,
                       uint8_t keycode,
                       uint32_t buttons, uint32_t mods);
+    
+    
+    void sendCrossingEvent(XProtoContext& ctx,
+                           uint32_t wid,
+                           bool is_enter,
+                           int32_t root_x, int32_t root_y,
+                           uint32_t buttons, uint32_t mods);
     
   private:
     XProtoContext& ctx_;

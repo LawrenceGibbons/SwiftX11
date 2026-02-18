@@ -68,7 +68,7 @@ void x11_proto_bridge_post_pointer_move2(uint32_t xid,
   void x11_proto_bridge_post_scroll(uint32_t xid,
                                     uint8_t axis,
                                     int16_t ticks,
-                                    int32_t win_x, int32_t win_y,
+                                    int32_t win_x_u, int32_t win_y_u,
                                     uint32_t buttons,
                                     uint32_t modifiers);
 

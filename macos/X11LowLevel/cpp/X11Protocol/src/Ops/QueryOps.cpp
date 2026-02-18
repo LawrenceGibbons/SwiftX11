@@ -173,14 +173,14 @@ namespace x11 {
     const auto& in = ctx.input();
     
     // Root coords (global, top-left)
-    const int32_t rootx32 = in.root_x;
-    const int32_t rooty32 = in.root_y;
+    const int32_t rootx32 = in.root_x_u;
+    const int32_t rooty32 = in.root_y_u;
     const uint16_t mask = (uint16_t)(in.buttons | in.mods);
     
     // Host-local coords (relative to host_xid view)
     const uint32_t host = in.last_xid;
-    const int32_t hostx = in.win_x;
-    const int32_t hosty = in.win_y;
+    const int32_t hostx = in.win_x_u;
+    const int32_t hosty = in.win_y_u;
     
     auto clamp16 = [](int32_t v) -> int16_t {
       if (v < -32768) return -32768;

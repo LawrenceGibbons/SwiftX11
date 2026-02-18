@@ -18,6 +18,7 @@
 #include <Ops/FontOps.hpp>
 #include <Ops/ColorOps.hpp>
 #include <Ops/CursorOps.hpp>
+#include <Ops/GrabOps.hpp>
 
 namespace x11 {
   
@@ -34,6 +35,7 @@ namespace x11 {
     FontOps       fontOps;
     ColorOps      colorOps;
     CursorOps     cursorOps;
+    GrabOps       grabOps;
     // etc
     
     explicit XProtoModules(XProtoRegistrar& reg)
@@ -49,6 +51,7 @@ namespace x11 {
     , fontOps(reg)
     , colorOps(reg)
     , cursorOps(reg)
+    , grabOps(reg)
     {}
   };
 }

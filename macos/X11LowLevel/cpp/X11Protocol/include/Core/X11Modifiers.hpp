@@ -28,9 +28,14 @@ inline uint16_t toX11State(uint32_t buttons, uint32_t mods) {
   if (mods & Alt)   st |= (1u << 3); // Mod1Mask
   if (mods & Cmd)   st |= (1u << 6); // Mod4Mask (Super/Command)
 
-  // (Optional, later) button state bits:
-  // Button1Mask = 1<<8, Button2Mask = 1<<9, ...
-  // You can map `buttons` here when you’re ready.
+  // Buttons: Button1Mask starts at bit 8
+  // Your `buttons` bit layout is 1<<(button-1), so map 1..5 => bits 8..12
+  for (int i = 0; i < 5; i++) {
+    if (buttons & (1u << (uint32_t)i)) {
+      st |= (uint16_t)(1u << (8 + i));
+    }
+  }
+
 
   return st;
 }

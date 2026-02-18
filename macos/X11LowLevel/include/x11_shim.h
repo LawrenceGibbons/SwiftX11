@@ -54,13 +54,11 @@ typedef enum {
 } x11_ptr_event_type;
 
 
-void x11_post_pointer_event(uint32_t xwin_id,
-                            x11_ptr_event_type type,
-                            int32_t x_px,
-                            int32_t y_px,
-                            uint32_t buttons,
-                            uint32_t modifiers);
-
+void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
+                            int32_t  win_x_u, int32_t  win_y_u,
+                            int32_t root_x_u, int32_t root_y_u,
+                            uint32_t buttons, uint32_t modifiers);
+  
 // ---- New “typed” input APIs (Option A)
 void x11_post_focus_event(uint32_t xid, bool focused);
   
@@ -102,7 +100,7 @@ uint32_t x11_window_create(const char* title, int32_t w, int32_t h);
 void     x11_window_set_title(uint32_t xid, const char* title); // optional
   
 // X11 hooks
-void x11_apply_window_configure(uint32_t xid, int32_t w_px, int32_t h_px);
+void x11_apply_window_configure(uint32_t xid, int32_t w_u, int32_t h_u);
   
  // ---- Server-only emit helpers (used by request queue drain)
 // These must be called from the server thread (or otherwise safe context).

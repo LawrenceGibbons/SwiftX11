@@ -92,36 +92,61 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     }
   }
   
-  private func currentMouseLocationInContentPixels() -> (x: Int32, y: Int32) {
-    guard let win = window else { return (0, 0) }
-    guard let content = win.contentView else { return (0, 0) }
+  
+private func currentMouseLocationInContentUnits() -> (x: Int32, y: Int32) {
+  guard let win = window else { return (0, 0) }
+  guard let content = win.contentView else { return (0, 0) }
 
-    // Mouse location is in screen coordinates with origin at bottom-left.
-    let mouseInScreen = NSEvent.mouseLocation
+  let mouseInScreen = NSEvent.mouseLocation
+  let mouseInWindow = win.convertPoint(fromScreen: mouseInScreen)
+  let p = content.convert(mouseInWindow, from: nil)
 
-    // Convert screen -> window -> contentView coords (points)
-    let mouseInWindow = win.convertPoint(fromScreen: mouseInScreen)
-    let p = content.convert(mouseInWindow, from: nil)
+  let x = Int32(max(0, Int(p.x.rounded(.down))))
+  let y = Int32(max(0, Int(p.y.rounded(.down))))
+  return (x, y)
+}
 
-    let scale = win.backingScaleFactor
-    let x = Int32(max(0, Int((p.x * scale).rounded(.down))))
-    let y = Int32(max(0, Int((p.y * scale).rounded(.down))))
-    return (x, y)
-  }
+private func postSyntheticEnterForCurrentMouseLocation() {
+  let (x, y) = currentMouseLocationInContentUnits()
+  x11_post_pointer_enter(xid, x, y, 0)
+}
 
-  private func postSyntheticEnterForCurrentMouseLocation() {
-    let (x, y) = currentMouseLocationInContentPixels()
+private func postSyntheticLeaveForCurrentMouseLocation() {
+  let (x, y) = currentMouseLocationInContentUnits()
+  x11_post_pointer_leave(xid, x, y, 0)
+}
 
-    // Force backend pointer ownership to follow the newly-key window.
-    // This is important on macOS because changing key window does not
-    // reliably generate enter/leave transitions.
-    x11_post_pointer_enter(xid, x, y, 0)
-  }
-
-  private func postSyntheticLeaveForCurrentMouseLocation() {
-    let (x, y) = currentMouseLocationInContentPixels()
-    x11_post_pointer_leave(xid, x, y, 0)
-  }
+  
+//  private func currentMouseLocationInContentPixels() -> (x: Int32, y: Int32) {
+//    guard let win = window else { return (0, 0) }
+//    guard let content = win.contentView else { return (0, 0) }
+//
+//    // Mouse location is in screen coordinates with origin at bottom-left.
+//    let mouseInScreen = NSEvent.mouseLocation
+//
+//    // Convert screen -> window -> contentView coords (points)
+//    let mouseInWindow = win.convertPoint(fromScreen: mouseInScreen)
+//    let p = content.convert(mouseInWindow, from: nil)
+//
+//    let scale = win.backingScaleFactor
+//    let x = Int32(max(0, Int((p.x * scale).rounded(.down))))
+//    let y = Int32(max(0, Int((p.y * scale).rounded(.down))))
+//    return (x, y)
+//  }
+//
+//  private func postSyntheticEnterForCurrentMouseLocation() {
+//    let (x, y) = currentMouseLocationInContentPixels()
+//
+//    // Force backend pointer ownership to follow the newly-key window.
+//    // This is important on macOS because changing key window does not
+//    // reliably generate enter/leave transitions.
+//    x11_post_pointer_enter(xid, x, y, 0)
+//  }
+//
+//  private func postSyntheticLeaveForCurrentMouseLocation() {
+//    let (x, y) = currentMouseLocationInContentPixels()
+//    x11_post_pointer_leave(xid, x, y, 0)
+//  }
 
   func windowDidBecomeKey(_ notification: Notification) {
       assert(Thread.isMainThread)
