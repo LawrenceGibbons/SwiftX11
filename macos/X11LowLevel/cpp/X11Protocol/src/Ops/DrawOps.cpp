@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>   // memmove
 
 #include "Utils/ByteReader.hpp"
 #include "Ops/DrawOps.hpp"
@@ -23,6 +24,7 @@
 #include "Fonts/BDF.hpp"
 #include "Core/FontTable.hpp"
 #include "Utils/WireEvents.hpp"
+#include "Utils/RasterOp.hpp"
 
 // bridging
 #include "x11_backend_fb.h"
@@ -304,7 +306,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     // Body after 4-byte header (24 bytes):
     //   CARD32 src
     //   CARD32 dst
-    //   CARD32 gc      (ignored for now; CopyArea is raw pixel copy)
+    //   CARD32 gc
     //   INT16  srcX
     //   INT16  srcY
     //   INT16  dstX
@@ -316,28 +318,33 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const uint32_t src   = br.readU32();
     const uint32_t dst   = br.readU32();
     const uint32_t gcXid = br.readU32();
-    
+
     const int16_t srcX = br.readI16();
     const int16_t srcY = br.readI16();
     const int16_t dstX = br.readI16();
     const int16_t dstY = br.readI16();
-    
+
     const uint16_t wpx = br.readU16();
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
 
-#ifndef NDEBUG
-  if (src == 0x10000012u || dst == 0x10000012u) {
-    fprintf(stderr,
-            "[CopyArea] src=0x%08X dst=0x%08X gc=0x%08X "
-            "s=(%d,%d) d=(%d,%d) wh=%ux%u\n",
-            (unsigned)src, (unsigned)dst, (unsigned)gcXid, // if you kept gc in a variable
-            (int)srcX, (int)srcY, (int)dstX, (int)dstY,
-            (unsigned)wpx, (unsigned)hpx);
-  }
-#endif
-    
     if (wpx == 0 || hpx == 0) return;
+
+    // ------------------------------------------------------------
+    // Resolve GC (function + plane mask)
+    // ------------------------------------------------------------
+    x11::GCState gc{};
+    if (!x11::GCTable::instance().find(gcXid, gc)) {
+      gc = x11::GCTable::instance().getOrCreate(gcXid);
+    }
+
+    const uint8_t  fn = gc.function;
+    const uint32_t pm24 = (gc.plane_mask & 0x00FFFFFFu);
+
+    // Fast path when CopyArea is truly a raw copy (most common).
+    const bool isGXcopy = ((fn & 0x0Fu) == 3); // GXcopy == 3
+    const bool fullPlane = (pm24 == 0x00FFFFFFu);
+    const bool canMemmoveFast = (isGXcopy && fullPlane);
 
     // ------------------------------------------------------------
     // Resolve source drawable -> read-only pixel pointer + dimensions
@@ -348,7 +355,6 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const bool srcIsWin = ctx.windows().exists(src);
     const bool srcIsPix = ctx.pixmaps().exists(src);
 
-    // 1) Window source => C framebuffer
     if (srcIsWin) {
       uint32_t* wPixels = nullptr;
       uint32_t wW = 0, wH = 0;
@@ -356,7 +362,6 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       srcPixels = wPixels;
       srcW = (int)wW;
       srcH = (int)wH;
-      // 2) Pixmap source => C++ PixmapTable
     } else if (srcIsPix) {
       PixmapView pv{};
       if (!ctx.pixmaps().snapshot(src, pv)) return;
@@ -368,12 +373,13 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     } else {
       return; // unknown drawable
     }
-    
+
     // ------------------------------------------------------------
     // Resolve destination drawable -> writable pixel pointer + dimensions
     // ------------------------------------------------------------
     uint32_t* dstPixels = nullptr;
     int dstW = 0, dstH = 0;
+
     const bool dstIsWin = ctx.windows().exists(dst);
     const bool dstIsPix = ctx.pixmaps().exists(dst);
 
@@ -393,22 +399,24 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     } else {
       return; // unknown drawable
     }
-    
-#ifndef NDEBUG
-  const bool sameBuf = (srcPixels == dstPixels) && (srcW == dstW);
-  if (sameBuf || (wpx * hpx) > 4096) {
-    fprintf(stderr,
-            "[CopyArea] src=0x%08X dst=0x%08X sameBuf=%d "
-            "srcXY=(%d,%d) dstXY=(%d,%d) wh=%ux%u srcWH=%dx%d dstWH=%dx%d\n",
-            (unsigned)src, (unsigned)dst, sameBuf ? 1 : 0,
-            (int)srcX, (int)srcY, (int)dstX, (int)dstY,
-            (unsigned)wpx, (unsigned)hpx,
-            srcW, srcH, dstW, dstH);
-  }
-#endif
-    
+
+    const bool sameBuf = (srcPixels == dstPixels) && (srcW == dstW) && (srcH == dstH);
+
+  #ifndef NDEBUG
+    if (sameBuf || (wpx * hpx) > 4096) {
+      fprintf(stderr,
+              "[CopyArea] src=0x%08X dst=0x%08X sameBuf=%d "
+              "srcXY=(%d,%d) dstXY=(%d,%d) wh=%ux%u srcWH=%dx%d dstWH=%dx%d fn=%u pm=0x%08X\n",
+              (unsigned)src, (unsigned)dst, sameBuf ? 1 : 0,
+              (int)srcX, (int)srcY, (int)dstX, (int)dstY,
+              (unsigned)wpx, (unsigned)hpx,
+              srcW, srcH, dstW, dstH,
+              (unsigned)fn, (unsigned)gc.plane_mask);
+    }
+  #endif
+
     // ------------------------------------------------------------
-    // Blit with clamp + overlap-safe handling
+    // Clip / clamp the copy rectangle
     // ------------------------------------------------------------
     int sx0 = (int)srcX;
     int sy0 = (int)srcY;
@@ -417,7 +425,6 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     int cw  = (int)wpx;
     int ch  = (int)hpx;
 
-    // Clip against bounds by shifting both src/dst as needed
     if (sx0 < 0) { int d = -sx0; sx0 = 0; dx0 += d; cw -= d; }
     if (sy0 < 0) { int d = -sy0; sy0 = 0; dy0 += d; ch -= d; }
     if (dx0 < 0) { int d = -dx0; dx0 = 0; sx0 += d; cw -= d; }
@@ -430,58 +437,73 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
     if (cw <= 0 || ch <= 0) return;
 
-    //const bool sameBuf = (srcPixels == dstPixels) && (srcW == dstW);
-
-    // Row copy with memmove (handles overlap on same buffer)
-    auto copyRow = [&](int sy, int dy) {
+    // ------------------------------------------------------------
+    // Copy / ROP with overlap-safe ordering
+    // ------------------------------------------------------------
+    auto rowCopyFast = [&](int sy, int dy) {
       const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcW + (size_t)sx0;
       uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstW + (size_t)dx0;
       std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
     };
 
-    if (!sameBuf) {
-      // No overlap concerns between different buffers
-      for (int row = 0; row < ch; row++) {
-        copyRow(sy0 + row, dy0 + row);
-      }
-    } else {
-      // Overlap-safe ordering for src==dst
-      if (dy0 < sy0) {
-        // moving up: top-to-bottom
-        for (int row = 0; row < ch; row++) {
-          copyRow(sy0 + row, dy0 + row);
-        }
-      } else if (dy0 > sy0) {
-        // moving down: bottom-to-top
-        for (int row = ch - 1; row >= 0; row--) {
-          copyRow(sy0 + row, dy0 + row);
+    auto rowRop = [&](int sy, int dy, bool rightToLeft) {
+      const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcW + (size_t)sx0;
+      uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstW + (size_t)dx0;
+
+      if (!rightToLeft) {
+        for (int i = 0; i < cw; i++) {
+          dp[i] = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
         }
       } else {
-        // same y: horizontal overlap handled by memmove
-        for (int row = 0; row < ch; row++) {
-          copyRow(sy0 + row, dy0 + row);
+        for (int i = cw - 1; i >= 0; i--) {
+          dp[i] = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
         }
       }
+    };
+
+    // Determine row iteration order (memmove-like) when same buffer overlaps.
+    int rowStart = 0, rowEnd = ch, rowStep = 1;
+    if (sameBuf && dy0 > sy0) {
+      rowStart = ch - 1;
+      rowEnd   = -1;
+      rowStep  = -1;
     }
+
+    for (int r = rowStart; r != rowEnd; r += rowStep) {
+      const int sy = sy0 + r;
+      const int dy = dy0 + r;
+
+      if (canMemmoveFast) {
+        // Pure copy case: memmove is correct and fast.
+        rowCopyFast(sy, dy);
+      } else {
+        // ROP case: per-pixel, with horizontal overlap safety when same row.
+        bool rtl = false;
+        if (sameBuf && sy == dy) {
+          // If dest region starts to the right of src region, copy right-to-left.
+          // (Equivalent to memmove behavior, but per pixel so we don’t corrupt reads.)
+          rtl = (dx0 > sx0);
+        }
+        rowRop(sy, dy, rtl);
+      }
+    }
+
     // ------------------------------------------------------------
-    // Damage only if destination is a window (pixmaps present when copied into a window)
+    // Damage only if destination is a window
     // ------------------------------------------------------------
     if (dstIsWin) {
-      damageOrDirty(ctx, dst );
+      damageOrDirty(ctx, dst);
     }
-    
+
     // ------------------------------------------------------------
-    // After successful copy:
-    // (Even if we clipped, sending NoExpose is fine for bring-up and unblocks xterm.)
+    // After successful copy: send NoExpose to unblock clients (bring-up)
     // ------------------------------------------------------------
     if (dstIsWin) {
-      // Bring-up: always send NoExpose to unblock clients that expect completion.
       auto ev = x11::wireev::buildNoExpose(seq, dst,
                                           x11::opcode::CopyArea, 0);
       (void)ctx.transport().sendEvent32(dst, ev.data());
     }
-  }
-  
+  } 
   
   
 // -----------------------------

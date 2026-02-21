@@ -17,6 +17,7 @@
 #include "Core/WindowTable.hpp"
 #include "Core/DrawableRW.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Utils/RasterOp.hpp"
 
 // bridge to C and Swift
 #include "x11_requests.h"
@@ -95,53 +96,81 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
     
-    uint32_t fg = 0xFF000000u;
-    {
-      GCState gst{};
-      if (GCTable::instance().find(gcXid, gst)) fg = gst.fg;
-    }
-    
+    //uint32_t fg = 0xFF000000u;
+    // Resolve GC once.
+    x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
+    const uint32_t fg = gst.fg;
+
+    // Fast path: GXcopy + full 24-bit plane mask = plain fill.
+    const uint8_t  fn   = (uint8_t)(gst.function & 0x0Fu);
+    const uint32_t pm24 = (gst.plane_mask & 0x00FFFFFFu);
+    const bool fastFill = (fn == 3 /*GXcopy*/) && (pm24 == 0x00FFFFFFu);
+
+    // Track whether we actually wrote anything (for damage).
+    bool wroteAnything = false;
+
     for (std::size_t i = 0; i < nRects; i++) {
-      const int16_t rx = br.readI16();
-      const int16_t ry = br.readI16();
+      if (br.remaining() < 8) break;   // defensive
+
+      const  int16_t rx = br.readI16();
+      const  int16_t ry = br.readI16();
       const uint16_t rw = br.readU16();
       const uint16_t rh = br.readU16();
 
-#ifndef NDEBUG
-      if ( drawable == 0x10000012u && i == 0 ) {
-        fprintf(stderr,
-                "[PolyFillRect] continued, first=(%d,%d %u×%u)\n",
-                (int)rx, (int)ry,
-                (unsigned)rw, (unsigned)rh);
-        
-      }
-#endif
-
       if (rw == 0 || rh == 0) continue;
-      
+
       const int32_t rx0 = rx;
       const int32_t ry0 = ry;
       const int32_t rx1 = rx0 + (int32_t)rw;
       const int32_t ry1 = ry0 + (int32_t)rh;
-      
+
       int32_t x0 = std::max<int32_t>(0, rx0);
       int32_t y0 = std::max<int32_t>(0, ry0);
       int32_t x1 = std::min<int32_t>((int32_t)dst.w, rx1);
       int32_t y1 = std::min<int32_t>((int32_t)dst.h, ry1);
       if (x0 >= x1 || y0 >= y1) continue;
-      
+
+    #ifndef NDEBUG
+      // Very useful for caret debugging: small rects with non-copy functions.
+      if ((x1 - x0) * (y1 - y0) <= 256 || fn != 3) {
+        fprintf(stderr,
+                "[PolyFillRect] drawable=0x%08X rect=(%d,%d %dx%d) fn=%u pm=0x%08X fg=0x%08X\n",
+                (unsigned)drawable,
+                (int)x0, (int)y0, (int)(x1 - x0), (int)(y1 - y0),
+                (unsigned)fn, (unsigned)gst.plane_mask, (unsigned)fg);
+      }
+    #endif
+
+      wroteAnything = true;
+
       for (int32_t y = y0; y < y1; y++) {
         uint32_t* row = dst.pixels32 + (std::size_t)y * (std::size_t)dst.w;
-        for (int32_t x = x0; x < x1; x++) row[(size_t)x] = fg;
+
+        if (fastFill) {
+          for (int32_t x = x0; x < x1; x++) {
+            row[(size_t)x] = fg;
+          }
+        } else {
+          for (int32_t x = x0; x < x1; x++) {
+            row[(size_t)x] = x11_apply_rop_argb(row[(size_t)x], fg, gst.function, gst.plane_mask);
+          }
+        }
+      }
+    }
+
+    // IMPORTANT: make the caret toggles present.
+    if (wroteAnything) {
+      if (dst.isWindow) {
+        damageOrDirty(ctx, drawable);
       }
     }
     
     br.skip(br.remaining());
     
-    // Only present if destination is a window.
-    if (dst.isWindow) {
-      damageOrDirty(ctx, drawable);
-    }
+//    // Only present if destination is a window.
+//    if (dst.isWindow) {
+//      damageOrDirty(ctx, drawable);
+//    }
   }
   
 // -----------------------------------------------------------------------------
