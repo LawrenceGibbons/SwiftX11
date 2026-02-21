@@ -26,6 +26,9 @@ namespace x11 {
     uint32_t focus_xid = 0;   // current X input focus window
     uint32_t focus_host = 0;  // top-level host that currently has Cocoa focus (optional)
     uint32_t drag_xid = 0;    // active grab window (nonzero buttons)
+    uint32_t last_cursor_host = 0;
+    uint32_t last_cursor_cid  = 0;
+
 
     void updateMotion(uint32_t xid,
                       int32_t wx_u, int32_t wy_u,
@@ -63,7 +66,7 @@ namespace x11 {
       if (drag_xid == 0 && pointer_xid == xid) pointer_xid = 0;
     }
 
-    // This matches your old canonicalization behavior.
+    // MARK: -- buttons, ponters and cursors
     void button(uint32_t xid, bool is_press, uint8_t button_num, uint32_t after_mask) {
       const uint32_t before = buttons;
 
@@ -90,6 +93,7 @@ namespace x11 {
       if (focus_xid) return focus_xid;
       return from_xid;
     }
+    
   };
   
 } // namespace x11

@@ -438,6 +438,7 @@ int x11_requests_push_set_title(uint32_t xid, const char* title_utf8)
   return ok;
 }
 
+
 int x11_requests_push_damage(uint32_t xid)
 {
   if (xid == 0) return 0;
@@ -537,4 +538,6 @@ void x11_requests_drain_on_server_thread(void)
         break;
     }
   }
+  
+  
 }

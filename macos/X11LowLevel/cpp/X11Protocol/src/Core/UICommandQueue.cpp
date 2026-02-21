@@ -46,6 +46,11 @@ static inline bool coalesce_tail(x11_ui_cmd_t& tail, const x11_ui_cmd_t& in) {
         std::memcpy(tail.title_utf8, in.title_utf8, sizeof(tail.title_utf8));
         return true;
 
+      case X11_UI_SET_CURSOR:
+        // last one wins
+        tail.cursor = in.cursor;
+        return true;
+        
       case X11_UI_RESIZE:
         tail.w_u = in.w_u;
         tail.h_u = in.h_u;
@@ -146,6 +151,29 @@ extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8) {
   c.type = X11_UI_TITLE;
   c.xid = xid;
   fill_title(c, title_utf8);
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape) {
+  if (host_xid == 0) return;
+
+#ifndef NDEBUG
+  fprintf(stderr, "[UI_PUSH] SET_CURSOR host=0x%08X cursor=0x%08X shape=%d\n",
+          (unsigned)host_xid, (unsigned)cursor_xid, (int)shape);
+#endif
+
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_SET_CURSOR;
+
+  // Keep legacy “xid” meaningful for routing/debug
+  c.xid = host_xid;
+
+  // Fill explicit cursor payload
+  c.cursor.host_xid   = host_xid;
+  c.cursor.cursor_xid = cursor_xid;
+  c.cursor.shape      = shape;
+  c.cursor.reserved   = 0;
+
   push_cmd(c);
 }
 

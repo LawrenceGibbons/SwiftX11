@@ -225,6 +225,16 @@ final class WindowRegistry {
     schedulePresent(xid: host)
   }
 
+  @MainActor
+  func viewForHostXid(_ hostXid: UInt32) -> X11View? {
+    windows[hostXid]?.x11View
+  }
+  
+
+  @MainActor
+  func viewForAnyXid(_ anyXid: UInt32) -> X11View? {
+    return windows[anyXid]?.x11View
+  }
   
   func unmapWindow(xid: UInt32) {
     let host = topLevelAncestor(of: xid)
@@ -253,18 +263,92 @@ final class WindowRegistry {
     controller.window?.orderOut(nil)
   }
   
+  private struct DirtyRectU {
+    var x0: Int32
+    var y0: Int32
+    var x1: Int32   // exclusive
+    var y1: Int32   // exclusive
+
+    mutating func union(x: Int32, y: Int32, w: Int32, h: Int32) {
+      guard w > 0, h > 0 else { return }
+      let nx0 = x
+      let ny0 = y
+      let nx1 = x &+ w
+      let ny1 = y &+ h
+
+      x0 = min(x0, nx0)
+      y0 = min(y0, ny0)
+      x1 = max(x1, nx1)
+      y1 = max(y1, ny1)
+    }
+
+    mutating func clamp(maxW: Int32, maxH: Int32) {
+      guard maxW > 0, maxH > 0 else { return }
+      x0 = max(0, min(x0, maxW))
+      y0 = max(0, min(y0, maxH))
+      x1 = max(0, min(x1, maxW))
+      y1 = max(0, min(y1, maxH))
+      if x1 < x0 { x1 = x0 }
+      if y1 < y0 { y1 = y0 }
+    }
+
+    var isEmpty: Bool { x1 <= x0 || y1 <= y0 }
+  }
+
+  private var dirtyByHostU: [UInt32: DirtyRectU] = [:]
+
+  private func hostSizeU(_ host: UInt32) -> (w: Int32, h: Int32)? {
+    if let s = latestHostSizePtByXid[host] { return s }
+    if let s = lastSentHostSizePtByXid[host] { return s }
+    return nil
+  }
   
   @MainActor
   func noteDamageRect(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
-    print("[DAMAGE RECT PRINT] entering noteDamageRect xid=0x\(String(xid, radix:16))")
+    guard xid != 0 else { return }
 
     let host = topLevelAncestor(of: xid)
-    let lastid =  latestSourceByHost[host] ?? host
-    logAppend?("[DAMAGE RECT] xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) mappedHost=\(mappedXids.contains(host)) hasWindowHost=\(windows[host] != nil) latestSourceByHost[host]=0x\(String(lastid, radix:16))")
 
-    noteDamage(xid: xid, x: x, y: y, w: w, h: h)
-  }
-  
+    if debugSnapshotRouting {
+      let lastid = latestSourceByHost[host] ?? host
+      logAppend?(
+        "[DAMAGE RECT] xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) " +
+        "mappedHost=\(mappedXids.contains(host)) hasWindowHost=\(windows[host] != nil) " +
+        "latestSourceByHost[host]=0x\(String(lastid, radix:16)) rect=\(x),\(y) \(w)x\(h)"
+      )
+    }
+
+    // For now: treat damage rect as host-space only when xid==host.
+    // If xid!=host, you can later translate child->host using geometry.
+    var rx = x, ry = y, rw = w, rh = h
+
+    if xid != host {
+      // Safe fallback: mark whole host (correct, just less efficient)
+      rx = 0; ry = 0
+      if let sz = hostSizeU(host) {
+        rw = sz.w; rh = sz.h
+      } else {
+        // last resort: ensure non-degenerate
+        rw = max(1, rw); rh = max(1, rh)
+      }
+    }
+
+    guard rw > 0, rh > 0 else { return }
+
+    var d = dirtyByHostU[host] ?? DirtyRectU(x0: rx, y0: ry, x1: rx, y1: ry)
+    d.union(x: rx, y: ry, w: rw, h: rh)
+
+    if let sz = hostSizeU(host) {
+      d.clamp(maxW: sz.w, maxH: sz.h)
+    }
+
+    if !d.isEmpty {
+      dirtyByHostU[host] = d
+    }
+
+    // Schedule present for the HOST (your compositor snapshots host anyway)
+    schedulePresent(xid: host)
+  }  
   
   @MainActor
   func noteX11WindowDestroyed(xid: UInt32) {
@@ -1072,6 +1156,14 @@ final class WindowRegistry {
       suppressExpectedSize.removeValue(forKey: xid)
       suppressBudget.removeValue(forKey: xid)
       return false
+  }
+  
+  // WindowRegistry.swift
+  @MainActor
+  func applyCursor(hostXid: UInt32, shapeRaw: Int32) {
+    let host = topLevelAncestor(of: hostXid)
+    guard let view = windows[host]?.x11View else { return }
+    view.applyCursorShapeRaw(shapeRaw)
   }
   
 }

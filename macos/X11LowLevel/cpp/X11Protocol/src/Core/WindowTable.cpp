@@ -531,5 +531,31 @@ void WindowTable::setCursor(uint32_t xid, uint32_t cursor_xid) {
 #endif
 }  
   
+uint32_t WindowTable::cursor(uint32_t xid) const {
+  if (xid == 0) return 0;
+
+  // Root is XID 0x00000001 in your server.
+  static constexpr uint32_t kRootXid = 0x00000001u;
+
+  std::lock_guard<std::mutex> lock(mu_);
+
+  uint32_t cur = xid;
+  int safety = 0;
+
+  while (cur != 0 && cur != kRootXid) {
+    const WindowState* st = findLocked(cur);
+    if (!st) return 0;                 // unknown chain => default
+
+    if (st->cursor_xid != 0) {
+      return st->cursor_xid;           // explicit cursor set here
+    }
+
+    cur = st->parent;                  // inherit from parent
+    if (++safety > 64) return 0;       // defensive against cycles
+  }
+
+  // Root or none: no explicit cursor
+  return 0;
+}
   
 } // namespace x11

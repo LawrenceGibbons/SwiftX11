@@ -90,6 +90,25 @@ public:
     map_.erase(key(wid, atom));
   }
 
+  bool listAtoms(uint32_t wid, std::vector<uint32_t>& outAtoms) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    outAtoms.clear();
+    outAtoms.reserve(16);
+
+    for (const auto& kv : map_) {
+      const uint64_t k = kv.first;
+      const uint32_t w = (uint32_t)(k >> 32);
+      if (w == wid) {
+        const uint32_t atom = (uint32_t)(k & 0xFFFFFFFFu);
+        outAtoms.push_back(atom);
+      }
+    }
+
+    std::sort(outAtoms.begin(), outAtoms.end());
+    outAtoms.erase(std::unique(outAtoms.begin(), outAtoms.end()), outAtoms.end());
+    return true;
+  }
+  
 private:
   static uint64_t key(uint32_t wid, uint32_t atom) {
     return (uint64_t(wid) << 32) | uint64_t(atom);
@@ -111,6 +130,7 @@ private:
 PropOps::PropOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::ChangeProperty, &PropOps::onMajor, this); // ChangeProperty
   reg.registerMajor(x11::opcode::GetProperty,    &PropOps::onMajor, this); // GetProperty
+  reg.registerMajor(x11::opcode::ListProperties,  &PropOps::onMajor, this); // ListProperties
 }
 
 void PropOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -122,6 +142,7 @@ void PropOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
     case x11::opcode::ChangeProperty: handleChangeProperty(ctx, dc.seq, dc.minor /*mode*/, dc.br); return;
     case x11::opcode::GetProperty   : handleGetProperty(ctx, dc.seq, dc.minor /*deleteFlag*/, dc.br); return;
+    case x11::opcode::ListProperties: handleListProperties(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[PropOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -299,5 +320,42 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
     PropertyTable::instance().erase(wid, atom);
   }
 }
+  
+  
+void PropOps::handleListProperties(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  // Request body: WINDOW
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t wid = br.readU32();
+  if (br.remaining()) br.skip(br.remaining());
+
+  std::vector<uint32_t> atoms;
+  PropertyTable::instance().listAtoms(wid, atoms);
+
+  const uint16_t n = (uint16_t)std::min<size_t>(atoms.size(), 0xFFFFu);
+  const uint32_t payloadBytes = uint32_t(n) * 4u;     // CARD32 atoms
+  const uint32_t lengthWords  = payloadBytes / 4u;    // == n
+
+  std::array<uint8_t, 32> rep{};
+  rep.fill(0);
+  rep[0] = 1; // Reply
+  // rep[1] unused/pad
+  wire::wr16_le(rep.data() + 2, seq);
+  wire::wr32_le(rep.data() + 4, lengthWords);
+  wire::wr16_le(rep.data() + 8, n);  // nProperties
+
+  // Build payload as packed LE CARD32s
+  std::vector<uint8_t> payload(payloadBytes);
+  for (uint16_t i = 0; i < n; i++) {
+    wire::wr32_le(payload.data() + 4u * i, atoms[i]);
+  }
+
+  // Use ReplyWriter so your debug tracker stays coherent.
+  // payloadBytes is already multiple-of-4 so padding is a no-op.
+  (void)ctx.reply().sendReplyWithPaddedPayload(rep.data(),
+                                              payload.empty() ? nullptr : payload.data(),
+                                              payload.size());
+}
+  
+  
 
 } // namespace x11

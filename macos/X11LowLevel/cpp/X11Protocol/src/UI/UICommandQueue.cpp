@@ -8,7 +8,8 @@
 #include "UI/UICommandQueue.hpp"
 
 extern "C" {
-  #include "x11_requests.h"
+#include "x11_requests.h"
+#include "SwiftX11Bridge.h"
 }
 
 namespace x11 {
@@ -27,7 +28,12 @@ bool UICommandQueue::pushPresentable(uint32_t xid) { return x11_requests_push_wi
 bool UICommandQueue::pushRootlessResize(uint32_t xid, int32_t w_px, int32_t h_px) {
   return x11_requests_push_rootless_resize(xid, w_px, h_px) != 0;
 }
-
+  
+bool x11::UICommandQueue::pushSetCursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape) {
+  x11_ui_push_set_cursor(host_xid, cursor_xid, shape);
+  return true;
+}
+  
 void UICommandQueue::drainOnServerThread() {
   x11_requests_drain_on_server_thread();
 }

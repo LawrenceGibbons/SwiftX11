@@ -10,6 +10,26 @@ final class X11MTKView: MTKView {
   weak var owner: X11View?
   var xid: UInt32 = 0
   
+  var currentCursor: NSCursor = .arrow {
+    didSet {
+      self.discardCursorRects()
+
+      window?.invalidateCursorRects(for: self)
+
+      // If mouse is already inside this view, apply immediately.
+      if let win = window {
+        let p = convert(win.mouseLocationOutsideOfEventStream, from: nil)
+        if bounds.contains(p) { currentCursor.set() }
+      }
+    }
+  }
+
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    addCursorRect(bounds, cursor: currentCursor)
+  }
+
+
   override var acceptsFirstResponder: Bool { true }
   
   override func mouseDown(with event: NSEvent) { owner?.mouseDown(with: event) }
@@ -595,6 +615,7 @@ final class X11View: NSView {
     let opts: NSTrackingArea.Options = [
       .mouseEnteredAndExited,
       .mouseMoved,
+      .cursorUpdate,
       .activeInActiveApp,
       .enabledDuringMouseDrag,
       .inVisibleRect
@@ -606,7 +627,9 @@ final class X11View: NSView {
     self.trackingHost = target
   }
   
-  // (ensureTexture removed; now handled by X11MetalRenderer)
+  override func cursorUpdate(with event: NSEvent) {
+    currentCursor.set()
+  }
   
   // MARK: X11 interface
   private func bitForButton(_ button: Int) -> UInt32 {
@@ -919,6 +942,50 @@ final class X11View: NSView {
     x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
   }
   
+  private var currentCursor: NSCursor = .arrow {
+    didSet {
+      // Keep metal overlay in sync
+      mtkView?.currentCursor = currentCursor
+
+      // Drop stale rects then rebuild
+      self.discardCursorRects()
+      if let mv = mtkView { mv.discardCursorRects() }
+
+      // Invalidate cursor rects for whichever view is “on top”
+      window?.invalidateCursorRects(for: self)
+      if let mv = mtkView { window?.invalidateCursorRects(for: mv) }
+
+      // If pointer is currently inside, apply immediately.
+      if let win = window {
+        let p = convert(win.mouseLocationOutsideOfEventStream, from: nil)
+        if bounds.contains(p) { currentCursor.set() }
+      }
+    }
+  }
+
+  func applyCursorShapeRaw(_ shapeRaw: Int32) {
+    let shape = X11CursorShape(rawValue: shapeRaw) ?? .arrow
+    currentCursor = nsCursor(for: shape)
+
+    // Force apply now (C++ already checked “pointer is in this host”)
+    currentCursor.set()
+
+    // Also force AppKit to rebuild cursor rects
+    discardCursorRects()
+    window?.invalidateCursorRects(for: self)
+
+  #if DEBUG
+    print("[CURSOR] applyCursorShapeRaw xid=0x\(String(xid, radix:16)) shapeRaw=\(shapeRaw) windowNil=\(window == nil)")
+  #endif
+  }
+  
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    // This covers the software path (and is harmless if metal is on top)
+    addCursorRect(bounds, cursor: currentCursor)
+  }
+
+  
 }
 
 struct X11WindowHost: NSViewRepresentable {
@@ -937,6 +1004,7 @@ struct X11WindowHost: NSViewRepresentable {
     nsView.wantsMetal = useMetal
     nsView.setUseMetal(useMetal)
   }
+  
 }
 
 
@@ -1032,6 +1100,7 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     pendingResizeTask = task
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task)
   }
+  
 }
 
 extension X11View {

@@ -78,6 +78,7 @@ void CursorOps::handleCreateCursor(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
 //   foreRGB (3*CARD16), backRGB (3*CARD16)
 // Total after hdr: 28
 void CursorOps::handleCreateGlyphCursor(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  
   if (br.remaining() < 28) { br.skip(br.remaining()); return; }
 
   const uint32_t cid  = br.readU32();
@@ -87,6 +88,9 @@ void CursorOps::handleCreateGlyphCursor(XProtoContext& ctx, uint16_t /*seq*/, By
   const uint16_t srcChar = br.readU16();
   const uint16_t maskChar = br.readU16();
 
+  fprintf(stderr, "[CURSOR] CreateGlyphCursor cid=0x%08X srcChar=%u maskChar=%u\n",
+          (unsigned)cid, (unsigned)srcChar, (unsigned)maskChar);
+  
   CursorTable::RGB16 fg, bg;
   fg.r = br.readU16(); fg.g = br.readU16(); fg.b = br.readU16();
   bg.r = br.readU16(); bg.g = br.readU16(); bg.b = br.readU16();

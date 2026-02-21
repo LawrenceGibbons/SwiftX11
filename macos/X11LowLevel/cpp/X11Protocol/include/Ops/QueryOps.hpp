@@ -42,7 +42,7 @@ private:
   void handleQueryExtension(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleGetKeyboardMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 101
-  void handleGetModifierMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 119
+
 private:
 };
 

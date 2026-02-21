@@ -328,6 +328,11 @@ void x11_post_pointer_event(uint32_t xid, x11_ptr_event_type type,
 
   switch (type) {
     case X11_PTR_MOVE:
+      int32_t lastRx;
+      int32_t lastRy;
+      
+      x11_get_last_root_u(&lastRx, &lastRy);
+      if (root_x_u == lastRx && root_y_u == lastRy) return; // drop duplicate motion
       x11_set_last_root_u(root_x_u, root_y_u);
       x11_post_pointer_move2(xid, win_x_u, win_y_u, root_x_u, root_y_u,
                              1, buttons, modifiers);
@@ -696,34 +701,25 @@ void x11_server_emit_window_damage(uint32_t xid)
 
   // We will emit full-window damage in X11 units (u).
   int32_t w_u = 0, h_u = 0;
-  int32_t fb_w_px = 0, fb_h_px = 0;
-  double sx = 1.0, sy = 1.0;
 
   x11_backend_lock();
   exists = x11_backend_window_exists_locked(xid);
   closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;
   if (exists && !closing) {
     x11_backend_mark_damage_locked(xid);
+
+    // IMPORTANT: backend size is the truth for *X11 units* (points), not FB pixels.
+    (void)x11_backend_get_size_locked(xid, &w_u, &h_u);
     ok = 1;
   }
   x11_backend_unlock();
 
   if (!ok) return;
+  if (w_u < 1) w_u = 1;
+  if (h_u < 1) h_u = 1;
 
-  // Query sizes outside backend lock.
-  x11_damage_query_sizes(xid, &w_u, &h_u, &fb_w_px, &fb_h_px, &sx, &sy);
-
-#ifndef NDEBUG
-  // This tells you whether you're in a 1:1 model or e.g. retina backing (2px per 1u).
-  fprintf(stderr,
-          "[SwiftX11] emit_damage xid=0x%08X rect_u=%dx%d fb_px=%dx%d px_per_u=(%.3f,%.3f)\n",
-          (unsigned)xid, (int)w_u, (int)h_u, (int)fb_w_px, (int)fb_h_px, sx, sy);
-#endif
-
-  // IMPORTANT: UI_DAMAGE rect is in X11 units (u), not pixels.
   x11_ui_push_damage(xid, 0, 0, w_u, h_u);
-  x11_server_wakeup();
-}
+  x11_server_wakeup();}
 
 
 void x11_server_wakeup(void)

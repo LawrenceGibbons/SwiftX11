@@ -51,12 +51,12 @@ namespace x11 {
     
     // ---- Core event builders (32-byte X11 wire events) ----
     // These *only build the bytes*, they do NOT send on a socket.
-    static std::array<uint8_t, 32> buildExpose(uint16_t seq,
-                                               uint32_t window,
-                                               uint16_t x, uint16_t y,
-                                               uint16_t w, uint16_t h,
-                                               uint16_t count);
-    
+//    static std::array<uint8_t, 32> buildExpose(uint16_t seq,
+//                                               uint32_t window,
+//                                               uint16_t x, uint16_t y,
+//                                               uint16_t w, uint16_t h,
+//                                               uint16_t count);
+//    
     static std::array<uint8_t, 32> buildConfigureNotify(const ConfigureNotifyParams& p);
     
     // ---- Enqueue helpers (hook into your transport thread’s event queue) ----

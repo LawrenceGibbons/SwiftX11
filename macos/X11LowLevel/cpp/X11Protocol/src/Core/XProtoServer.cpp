@@ -152,7 +152,7 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
 
   DispatchContext dc{
     .major = major,
-    .minor = minor,
+    .minor = minor,      // really “data/detail” for core
     .seq   = seq,
     .br    = br
   };

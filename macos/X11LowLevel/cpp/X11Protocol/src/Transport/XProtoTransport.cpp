@@ -135,35 +135,99 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   return true;
 }
   
-bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
-{
-  const uint8_t* b = static_cast<const uint8_t*>(buf);
+  bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
+  {
+    if (!buf || n == 0) return true;
 
-#ifndef NDEBUG
-  auto dumpHex = [&](const char* tag, const uint8_t* p, std::size_t nn) {
-    fprintf(stderr, "%s ", tag);
-    for (std::size_t i = 0; i < nn; i++) fprintf(stderr, "%02X", p[i]);
-    fprintf(stderr, "\n");
+  #ifndef NDEBUG
+    const uint8_t* b = static_cast<const uint8_t*>(buf);
+
+    auto dumpHex = [&](const char* tag, const uint8_t* p, std::size_t nn) {
+      fprintf(stderr, "%s ", tag);
+      for (std::size_t i = 0; i < nn; i++) fprintf(stderr, "%02X", p[i]);
+      fprintf(stderr, "\n");
+    };
+
+  auto rd16le = [&](const uint8_t* p) -> uint16_t {
+    return (uint16_t)(p[0] | (uint16_t(p[1]) << 8));
+  };
+  auto rd32le = [&](const uint8_t* p) -> uint32_t {
+    return (uint32_t)(p[0] |
+                      (uint32_t(p[1]) << 8) |
+                      (uint32_t(p[2]) << 16) |
+                      (uint32_t(p[3]) << 24));
+  };
+
+  // Helpers to decide if this buffer is "definitely a reply for the last request"
+  auto looksLikeReplyForLastSeq = [&](const uint8_t* p, std::size_t nn) -> bool {
+    if (nn < 8) return false;
+    if (p[0] != 1) return false;                 // Reply
+    if (last_request_seq_ == 0) return false;    // handshake phase or unknown
+    const uint16_t seq = rd16le(p + 2);
+    return (seq == last_request_seq_);
   };
 
   // -----------------------------
-  // Reply header (must be exactly 32 bytes)
+  // Combined reply: header + payload in one sendReplyBytes() call.
+  // Only accept if:
+  //  - it is a reply for last_request_seq_
+  //  - total size == 32 + lengthWords*4 exactly
   // -----------------------------
-  if (n == 32) {
-    const uint8_t r0   = b[0];
-    const uint8_t rep1 = b[1];
-    const uint16_t seq = (uint16_t)(b[2] | (uint16_t(b[3]) << 8));
-    const uint32_t lenw =
-      uint32_t(b[4]) |
-      (uint32_t(b[5]) << 8) |
-      (uint32_t(b[6]) << 16) |
-      (uint32_t(b[7]) << 24);
+  if (n > 32 && looksLikeReplyForLastSeq(b, n)) {
+    const uint16_t seq  = rd16le(b + 2);
+    const uint32_t lenw = rd32le(b + 4);
+
+    const uint32_t expectPayload = lenw * 4u;
+    const uint32_t havePayload   = (uint32_t)(n - 32);
+
+    if (havePayload != expectPayload) {
+      fprintf(stderr,
+              "[PROTO BUG] Combined reply size mismatch seq=%u lenw=%u: n=%zu implies payload=%u but expect=%u\n",
+              (unsigned)seq, (unsigned)lenw, n,
+              (unsigned)havePayload, (unsigned)expectPayload);
+      dumpHex("[PROTO BUG] combined16=", b, (n < 16 ? n : 16));
+      return false;
+    }
+
+    if (dbg_haveOpenReply_) {
+      fprintf(stderr,
+              "[PROTO BUG] Combined reply begins before finishing prior payload: "
+              "prev seq=%u sent=%u/%u bytes\n",
+              (unsigned)dbg_openSeq_,
+              (unsigned)dbg_openSentBytes_,
+              (unsigned)dbg_openExpectBytes_);
+      dbg_haveOpenReply_ = false; // recover
+    }
+
+    fprintf(stderr,
+            "[REPLYHDR] (combined) seq=%u lenw=%u (%u bytes)\n",
+            (unsigned)seq, (unsigned)lenw, (unsigned)expectPayload);
+    fprintf(stderr, "[REPLYDONE] seq=%u payload=%u\n",
+            (unsigned)seq, (unsigned)expectPayload);
+
+    // combined send completes immediately
+    dbg_haveOpenReply_   = false;
+    dbg_openSeq_         = 0;
+    dbg_openExpectBytes_ = 0;
+    dbg_openSentBytes_   = 0;
+
+    return sendAll(buf, n);
+  }
+
+  // -----------------------------
+  // 32-byte reply header
+  // Only treat it as a reply if it matches last_request_seq_ (avoids handshake confusion).
+  // -----------------------------
+  if (n == 32 && looksLikeReplyForLastSeq(b, n)) {
+    const uint8_t  r0   = b[0];
+    const uint8_t  rep1 = b[1];
+    const uint16_t seq  = rd16le(b + 2);
+    const uint32_t lenw = rd32le(b + 4);
 
     if (r0 != 1) {
       fprintf(stderr, "[PROTO BUG] sendReplyBytes header but r0=%u seq=%u\n",
               (unsigned)r0, (unsigned)seq);
       dumpHex("[PROTO BUG] hdr=", b, 32);
-      // Don’t abort yet; return false so we fail fast without nuking everything.
       return false;
     }
 
@@ -175,8 +239,7 @@ bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
               (unsigned)dbg_openSeq_,
               (unsigned)dbg_openSentBytes_,
               (unsigned)dbg_openExpectBytes_);
-      // Reset to recover so xeyes/xterm can proceed and you can see *next* bug.
-      dbg_haveOpenReply_ = false;
+      dbg_haveOpenReply_ = false; // recover
     }
 
     dbg_openSeq_         = seq;
@@ -188,9 +251,6 @@ bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
             "[REPLYHDR] seq=%u lenw=%u (%u bytes) rep1=%u\n",
             (unsigned)seq, (unsigned)lenw, (unsigned)dbg_openExpectBytes_, (unsigned)rep1);
 
-    if (seq == 3)  dumpHex("[REPLYHDRHEX seq=3]",  b, 32);
-    if (seq == 10) dumpHex("[REPLYHDRHEX seq=10]", b, 32);
-
     if (dbg_openExpectBytes_ == 0) {
       fprintf(stderr, "[REPLYDONE] seq=%u payload=0\n", (unsigned)dbg_openSeq_);
       dbg_haveOpenReply_ = false;
@@ -200,38 +260,46 @@ bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
   }
 
   // -----------------------------
-  // Payload chunk (must follow a reply header)
+  // Payload chunk (must follow a tracked reply header)
   // -----------------------------
-  if (!dbg_haveOpenReply_) {
-    fprintf(stderr, "[PROTO BUG] Payload chunk n=%zu with no open reply\n", n);
-    dumpHex("[PROTO BUG] payload8=", b, (n < 8 ? n : 8));
-    // Don’t abort; just drop payload so we can keep going and collect more evidence.
-    return true;
-  }
+  if (dbg_haveOpenReply_) {
+    if (dbg_openSentBytes_ + (uint32_t)n > dbg_openExpectBytes_) {
+      fprintf(stderr,
+              "[PROTO BUG] Payload overflow for seq=%u: chunk=%zu makes %u/%u bytes\n",
+              (unsigned)dbg_openSeq_, n,
+              (unsigned)(dbg_openSentBytes_ + (uint32_t)n),
+              (unsigned)dbg_openExpectBytes_);
+      dumpHex("[PROTO BUG] overflow16=", b, (n < 16 ? n : 16));
+      dbg_haveOpenReply_ = false; // recover
+      return false;
+    }
 
-  if (dbg_openSentBytes_ + (uint32_t)n > dbg_openExpectBytes_) {
+    dbg_openSentBytes_ += (uint32_t)n;
+
     fprintf(stderr,
-            "[PROTO BUG] Payload overflow for seq=%u: chunk=%zu makes %u/%u bytes\n",
+            "[REPLYPAY] seq=%u chunk=%zu total=%u/%u\n",
             (unsigned)dbg_openSeq_, n,
-            (unsigned)(dbg_openSentBytes_ + (uint32_t)n),
-            (unsigned)dbg_openExpectBytes_);
-    dumpHex("[PROTO BUG] overflow16=", b, (n < 16 ? n : 16));
-    // Reset tracker to recover.
-    dbg_haveOpenReply_ = false;
-    return false;
+            (unsigned)dbg_openSentBytes_, (unsigned)dbg_openExpectBytes_);
+
+    if (dbg_openSentBytes_ == dbg_openExpectBytes_) {
+      fprintf(stderr, "[REPLYDONE] seq=%u payload=%u\n",
+              (unsigned)dbg_openSeq_, (unsigned)dbg_openExpectBytes_);
+      dbg_haveOpenReply_ = false;
+    }
+
+    return sendAll(buf, n);
   }
 
-  dbg_openSentBytes_ += (uint32_t)n;
-
-  fprintf(stderr,
-          "[REPLYPAY] seq=%u chunk=%zu total=%u/%u\n",
-          (unsigned)dbg_openSeq_, n,
-          (unsigned)dbg_openSentBytes_, (unsigned)dbg_openExpectBytes_);
-
-  if (dbg_openSentBytes_ == dbg_openExpectBytes_) {
-    fprintf(stderr, "[REPLYDONE] seq=%u payload=%u\n",
-            (unsigned)dbg_openSeq_, (unsigned)dbg_openExpectBytes_);
-    dbg_haveOpenReply_ = false;
+  // -----------------------------
+  // Raw/untracked send (handshake, setup, etc.)
+  // If we're mid-session (last_request_seq_ != 0) and you hit this a lot,
+  // that's usually a bug — but don't brick bring-up.
+  // -----------------------------
+  if (last_request_seq_ != 0 && n != 32) {
+    fprintf(stderr,
+            "[WARN] Untracked sendReplyBytes n=%zu (last_seq=%u). Treating as raw.\n",
+            n, (unsigned)last_request_seq_);
+    dumpHex("[WARN] raw16=", b, (n < 16 ? n : 16));
   }
 
   return sendAll(buf, n);
@@ -240,8 +308,7 @@ bool XProtoTransport::sendReplyBytes(const void* buf, std::size_t n)
   return sendAll(buf, n);
 #endif
 }
-
-
+  
   
 bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
     

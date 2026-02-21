@@ -250,6 +250,23 @@ final class XServerController: ObservableObject {
 
       WindowRegistry.shared.setTitle(xid: xid, title: title)
 
+    case X11_UI_SET_CURSOR:
+      print ("[UI_CMD] SET_CURSOR cmd.host_xid=0x\(String(cmd.cursor.host_xid, radix:16))")
+      // Prefer the explicit payload.
+      //let host: UInt32 = (cmd.cursor.host_xid != 0) ? cmd.cursor.host_xid : cmd.xid
+      //let shapeRaw: Int32 = cmd.cursor.shape
+      let host = cmd.cursor.host_xid
+      let shapeRaw = cmd.cursor.shape
+
+
+      print("[UI_CMD] SET_CURSOR host=0x\(String(host, radix:16)) shapeRaw=\(shapeRaw) cursorXid=0x\(String(cmd.cursor.cursor_xid, radix:16))")
+
+      if let v = WindowRegistry.shared.viewForHostXid(host) {
+        v.applyCursorShapeRaw(shapeRaw)
+      } else {
+        print("[UI_CMD] SET_CURSOR: no viewForHost(0x\(String(host, radix:16)))")
+      }
+      
     case X11_UI_RAISE:
       WindowRegistry.shared.raiseWindow(xid: cmd.xid)
 

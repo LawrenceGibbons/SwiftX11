@@ -13,16 +13,21 @@ namespace x11 {
 
   static inline bool requestHasReply(uint8_t major, uint8_t minor) {
     switch (major) {
+      case 3:  return true;  // GetWindowAttributes
+      case 14: return true;  // GetGeometry
       case 16: return true;  // InternAtom
       case 17: return true;  // GetAtomName
       case 20: return true;  // GetProperty
+      case 21: return true;  // ListProperties
+      case 43: return true;  // GetInputFocus
       case 47: return true;  // QueryFont
       case 98: return true;  // QueryExtension
-      case 3:  return true;  // GetWindowAttributes
-      case 14: return true;  // GetGeometry
-      case 43: return true;  // GetInputFocus
       case 101: return true; // GetKeyboardMapping
       case 102: return true; // GetModifierMapping
+      case 116: return true; // SetPointerMapping
+      case 117: return true; // GetPointerMapping
+      case 118: return true; // SetModifierMapping
+      case 119: return true; // GetModifierMapping
       default:
         return false;        // everything else is void
     }

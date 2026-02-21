@@ -15,6 +15,8 @@
 #include "Core/XConstants.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/CursorRouting.hpp"
+#include "Core/InputRouting.hpp"
 
 // Bridge -- Update C-side 
 #include "XProtoServerBridge.h"
@@ -121,10 +123,23 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // ---- Apply cursor even if event mask wasn't present ----
     if (sawCursor) {
-      // You need WindowState::cursor_xid + WindowTable::setCursor as discussed.
       ctx.windows().setCursor(wid, newCursor);
-    }
 
+      const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+
+      // Only touch the Cocoa cursor for this host if the pointer is actually in it.
+      const bool pointerInThisHost = (host != 0) && (ctx.input().last_xid == host || ctx.input().focus_host == host);
+      if (pointerInThisHost) {
+        uint32_t underNow = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+                                                                    ctx.input().win_x_u,
+                                                                    ctx.input().win_y_u);
+        if (!underNow) underNow = host;
+
+        const uint32_t cursorTarget = ctx.input().routePointer(underNow);
+        maybeApplyCursor(ctx, host, cursorTarget);
+      }
+    }
+    
     // ---- Apply event mask only if present ----
     if (!sawEventMask) return;
 

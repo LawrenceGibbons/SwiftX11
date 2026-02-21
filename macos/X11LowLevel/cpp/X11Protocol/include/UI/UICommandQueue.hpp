@@ -22,6 +22,11 @@ public:
   bool pushDamage(uint32_t xid);
   bool pushPresentable(uint32_t xid);
 
+  // Server->UI cursor update for a *host* NSWindow (rootless).
+  // host_xid: top-level host window (the Cocoa window backing store)
+  // cursor_xid: X cursor resource ID (0 => default/inherit)
+  bool pushSetCursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape);
+  
   // Host->server “rootless resize” (Swift/UI)
   bool pushRootlessResize(uint32_t xid, int32_t w_px, int32_t h_px);
 

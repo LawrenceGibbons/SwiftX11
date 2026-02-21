@@ -28,7 +28,6 @@ namespace x11 {
     reg.registerMajor(x11::opcode::QueryExtension,     &QueryOps::onMajor, this); // QueryExtension
     reg.registerMajor(x11::opcode::ListExtensions,     &QueryOps::onMajor, this); // ListExtensions
     reg.registerMajor(x11::opcode::GetKeyboardMapping, &QueryOps::onMajor, this); // GetKeyboardMapping
-    reg.registerMajor(x11::opcode::GetModifierMapping, &QueryOps::onMajor, this); // GetModifierMapping
   }
   
   void QueryOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -45,7 +44,6 @@ namespace x11 {
       case x11::opcode::QueryExtension    : handleQueryExtension(ctx, dc.seq, dc.br); return;
       case x11::opcode::ListExtensions    : handleListExtensions(ctx, dc.seq, dc.br); return;
       case x11::opcode::GetKeyboardMapping: handleGetKeyboardMapping(ctx, dc.seq, dc.br); return;
-      case x11::opcode::GetModifierMapping: handleGetModifierMapping(ctx, dc.seq, dc.br); return;
       default: 
         dc.br.skip(dc.br.remaining());
         ctx.tracef("[QueryOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -533,38 +531,5 @@ namespace x11 {
       (void)ctx.reply().sendBytes(payload.data(), payload.size());
     }
   }  
-  
-  // ---- 119: GetModifierMapping ----
-  void QueryOps::handleGetModifierMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br)
-  {
-    br.skip(br.remaining());
-    
-    // 8 modifiers: Shift, Lock, Control, Mod1, Mod2, Mod3, Mod4, Mod5
-    // We'll provide 1 keycode per modifier.
-    const uint8_t n = 1;
-    uint8_t payload[8] = {0};
-    
-    // X11 keycodes are mac_vk + 8
-    payload[0] = macToX11Keycode(56); // Shift_L
-    payload[1] = macToX11Keycode(57); // CapsLock
-    payload[2] = macToX11Keycode(59); // Control_L
-    payload[3] = macToX11Keycode(58); // Option_L as Mod1
-    payload[4] = 0;                   // Mod2
-    payload[5] = 0;                   // Mod3
-    payload[6] = macToX11Keycode(55); // Command_L as Mod4 (Super)
-    payload[7] = 0;                   // Mod5
-    
-    const uint32_t payloadBytes = 8u * (uint32_t)n; // 8 bytes
-    const uint32_t payloadWords = (payloadBytes + 3u) / 4u; // 2
-    
-    const bool ok = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      rep[1] = n; // numKeyPerModifier
-      wire::wr32_le(rep.data() + 4, payloadWords);
-    });
-    if (!ok) return;
-    
-    (void)ctx.reply().sendBytes(payload, payloadBytes);
-    
-  }
-  
+
 } // namespace x11

@@ -29,7 +29,17 @@ typedef enum {
   X11_UI_CREATE,
   X11_UI_DESTROY,
   X11_UI_DAMAGE,
+  X11_UI_SET_CURSOR,
 } x11_ui_cmd_type_t;
+
+// SwiftX11Bridge.h
+
+typedef struct {
+  uint32_t host_xid;      // which rootless host window (NSWindow) to apply cursor to
+  uint32_t cursor_xid;    // X11 cursor resource id (0 => default/inherit)
+  int32_t  shape;         // your CursorShape enum value (stable int32)
+  int32_t  reserved;      // future (theme, flags, etc.)
+} x11_ui_cursor_t;
 
 typedef struct {
   x11_ui_cmd_type_t type;
@@ -38,6 +48,10 @@ typedef struct {
   int32_t           x_u, y_u, w_u, h_u;  // used by DAMAGE/RESIZE/CREATE
   uint8_t           title_len;
   char              title_utf8[32];
+  
+  // explicit cursor payload (only meaningful for X11_UI_SET_CURSOR)
+  x11_ui_cursor_t   cursor;
+
 } x11_ui_cmd_t;
 
 // -------------------------------------------------------------------------------------
@@ -64,7 +78,7 @@ void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
 void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t h_px);
 void x11_ui_push_destroy(uint32_t xid);
 void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px);
-
+void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape);
 
 // -------------------------------------------------------------------------------------
 // Input injection

@@ -10,6 +10,7 @@
 #include "Core/XProtoContext.hpp"   // whatever you currently have
 #include "Core/WindowTable.hpp"
 #include "XProtoMotionRoute.hpp"
+#include "Core/CursorRouting.hpp"
 
 #include <atomic>
 
@@ -89,6 +90,14 @@ void postMotion(uint32_t host_xid,
 
   if (!target) return;
 
+  // The cursor is applied to the *host* (Cocoa window), but chosen from the *effective target*.
+  uint32_t host = host_xid;
+  if (!host) host = ctx->input().focus_host;
+  if (!host) host = ctx->windows().topLevelAncestorOf(target); // last-resort
+
+  const uint32_t cursorTarget = ctx->input().routePointer(target); // respects drag_xid/pointer_xid/focus_xid
+  maybeApplyCursor(*ctx, host, cursorTarget);
+  
   // Send MotionNotify with ROOT coords (root_x/root_y)
   ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
 }  

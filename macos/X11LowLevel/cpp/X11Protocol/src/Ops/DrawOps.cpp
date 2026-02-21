@@ -22,13 +22,14 @@
 #include "UI/UICommandQueue.hpp"
 #include "Fonts/BDF.hpp"
 #include "Core/FontTable.hpp"
+#include "Utils/WireEvents.hpp"
 
 // bridging
 #include "x11_backend_fb.h"
 #include "x11_requests.h"
 #include "XProtoServerBridge.h"
 #include "Core/Font8x8.hpp"
-
+#include "Utils/WireLE.hpp"
 
 // util
 #include "Damage.hpp"
@@ -38,6 +39,28 @@ namespace x11 {
 static constexpr uint32_t kBitmapScanlinePadBits = 32;   // matches SetupSuccess
 static constexpr bool     kBitmapBitOrderLSBFirst = true;
 
+// Core event: NoExpose (type 14)
+// Sent after CopyArea/CopyPlane when GC.graphics_exposures is true
+static inline void sendNoExpose(x11::XProtoContext& ctx,
+                                uint32_t dstWid,
+                                uint16_t seq,
+                                uint8_t majorEvent,
+                                uint16_t minorEvent)
+{
+  uint8_t ev[32];
+  std::memset(ev, 0, sizeof(ev));
+  ev[0] = 14; // NoExpose
+  // ev[1] unused
+  x11::wire::wr16_le(ev + 2, seq);
+  x11::wire::wr32_le(ev + 4, dstWid);      // drawable
+  x11::wire::wr16_le(ev + 8, minorEvent);  // minorEvent
+  ev[10] = majorEvent;                     // majorEvent (e.g. 62 CopyArea)
+
+  // Route as an event to the destination window (same client)
+  (void)ctx.transport().sendEvent32(dstWid, ev);
+}
+
+  
 DrawOps::DrawOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::ClearArea, &DrawOps::onMajor, this);  // 61
   reg.registerMajor(x11::opcode::CopyArea,  &DrawOps::onMajor, this);  // 62
@@ -277,7 +300,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 // -----------------------------
 // CopyArea (major 62)
 // -----------------------------
-  void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     // Body after 4-byte header (24 bytes):
     //   CARD32 src
     //   CARD32 dst
@@ -445,6 +468,17 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     // ------------------------------------------------------------
     if (dstIsWin) {
       damageOrDirty(ctx, dst );
+    }
+    
+    // ------------------------------------------------------------
+    // After successful copy:
+    // (Even if we clipped, sending NoExpose is fine for bring-up and unblocks xterm.)
+    // ------------------------------------------------------------
+    if (dstIsWin) {
+      // Bring-up: always send NoExpose to unblock clients that expect completion.
+      auto ev = x11::wireev::buildNoExpose(seq, dst,
+                                          x11::opcode::CopyArea, 0);
+      (void)ctx.transport().sendEvent32(dst, ev.data());
     }
   }
   
@@ -643,7 +677,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   }
   
   
-  void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t /*seq*/, uint8_t exposures, ByteReader& br)
+  void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t seq, uint8_t exposures, ByteReader& br)
   {
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
@@ -696,22 +730,22 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       for (int xx = x0; xx < x1; xx++) row[xx] = bg;
     }
 
-    // Damage -> present (rootless routing + presentable gating)
+    // Damage -> present
     damageOrDirty(ctx, wid);
 
+    // Exposures requested? Queue expose rect (Transport flush will filter by mask/mapped).
     if (exposures) {
       if (const WindowView* vw = ctx.window(wid)) {
-        const bool wantsExpose = vw->mapped && ((vw->event_mask & (1u << 15)) != 0);
-        if (wantsExpose) {
-          ctx.transport().queueExposeRect(
-            wid,
-            (uint16_t)x0, (uint16_t)y0,
-            (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
-            0
-          );
-        }
+        // Queue the cleared rect; flush will decide whether to actually send Expose.
+        ctx.transport().queueExposeRect(
+          wid,
+          (uint16_t)x0, (uint16_t)y0,
+          (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
+          0
+        );
       }
     }
+    
   }
   
   
