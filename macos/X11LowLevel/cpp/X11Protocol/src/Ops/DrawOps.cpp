@@ -25,6 +25,8 @@
 #include "Core/FontTable.hpp"
 #include "Utils/WireEvents.hpp"
 #include "Utils/RasterOp.hpp"
+#include "Core/SurfaceDesc.hpp"
+#include "Core/DrawableSurfaceRegistry.hpp"
 
 // bridging
 #include "x11_backend_fb.h"
@@ -207,13 +209,13 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   if (br.remaining() < 20) { br.skip(br.remaining()); return; }
 
   const uint32_t drawable = br.readU32();
-  (void)br.readU32(); // gc (unused in depth1->pixmap path)
+  (void)br.readU32(); // gc (unused for now)
 
   const uint16_t width  = br.readU16();
   const uint16_t height = br.readU16();
   const int16_t dstX = br.readI16();
   const int16_t dstY = br.readI16();
-  
+
   const uint8_t leftPad = br.readU8();
   if (leftPad > 7) { br.skip(br.remaining()); return; }
 
@@ -222,17 +224,112 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
   if (width == 0 || height == 0) { br.skip(br.remaining()); return; }
 
-  // Only implement XYPixmap depth=1 right now.
-  if (format != 1 || depth != 1) {
-    br.skip(br.remaining());
-    return;
-  }
-
   // Is destination a window?
   const bool dstIsWindow = ctx.windows().exists(drawable);
 
-  // PutImage-to-window not implemented yet (we only support depth-1 pixmaps)
+  // ============================================================================================
+  // WINDOW path: ZPixmap depth {24,32} -> SurfaceRegistry (keyed by host/top-level window)
+  // ============================================================================================
   if (dstIsWindow) {
+    // Only accept ZPixmap for window surfaces right now.
+    // X11 core: format 2 == ZPixmap
+    if (format != 2 || (depth != 24 && depth != 32)) {
+      br.skip(br.remaining());
+      return;
+    }
+
+    // Route window drawing to top-level host (current rootless model).
+    const uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+    const uint32_t key  = host ? host : drawable;
+
+    // Surface must exist (Swift-owned backing store).
+    x11::SurfaceDesc surf{};
+    if (!ctx.surfaces().get(key, surf) ||
+        !surf.ptr || surf.bytesPerRow == 0 || surf.w == 0 || surf.h == 0) {
+      // Transitional behavior: if surface isn't installed yet, drop quietly.
+      br.skip(br.remaining());
+      return;
+    }
+
+    // Compute drawable's absolute offset within host by walking up the tree.
+    int32_t offX = 0;
+    int32_t offY = 0;
+    if (drawable != key) {
+      uint32_t cur = drawable;
+      for (int hop = 0; hop < 256 && cur && cur != key; hop++) {
+        x11::WindowView vw{};
+        if (!ctx.windows().snapshot(cur, vw)) break;
+        offX += (int32_t)vw.x;
+        offY += (int32_t)vw.y;
+        cur = vw.parent_xid;
+      }
+    }
+
+    const int32_t baseX = (int32_t)dstX + offX;
+    const int32_t baseY = (int32_t)dstY + offY;
+
+    // For our advertised pixmap formats, depth=24 is still bpp=32 on the wire.
+    // Treat both depth=24 and depth=32 as 4 bytes per pixel.
+    const uint32_t srcBppBytes = 4u;
+    const uint32_t srcStride   = (uint32_t)(((uint32_t)width * srcBppBytes + 3u) & ~3u);
+
+    const uint64_t need64 = (uint64_t)srcStride * (uint64_t)height;
+    if (need64 > br.remaining()) {
+      br.skip(br.remaining());
+      return;
+    }
+
+    const uint8_t* src = br.ptr();
+    br.skip(br.remaining()); // consume rest (including request padding)
+
+    uint8_t* dstBase = static_cast<uint8_t*>(surf.ptr);
+
+#ifndef NDEBUG
+    ctx.tracef("[PutImage/WIN] drawable=0x%08X host=0x%08X off=%d,%d dst=%d,%d wh=%u,%u depth=%u fmt=%u surf=%ux%u bpr=%u\n",
+               (unsigned)drawable, (unsigned)key,
+               (int)offX, (int)offY,
+               (int)dstX, (int)dstY,
+               (unsigned)width, (unsigned)height,
+               (unsigned)depth, (unsigned)format,
+               (unsigned)surf.w, (unsigned)surf.h, (unsigned)surf.bytesPerRow);
+#endif
+
+    // Copy rows, clipped to surface bounds.
+    for (uint16_t yy = 0; yy < height; yy++) {
+      const int32_t dy = baseY + (int32_t)yy;
+      if (dy < 0 || dy >= (int32_t)surf.h) continue;
+
+      const uint8_t* srow = src + (size_t)yy * (size_t)srcStride;
+      uint8_t* drow = dstBase + (size_t)dy * (size_t)surf.bytesPerRow;
+
+      int32_t x0 = baseX;
+      int32_t x1 = baseX + (int32_t)width;
+      if (x0 < 0) x0 = 0;
+      if (x1 > (int32_t)surf.w) x1 = (int32_t)surf.w;
+      if (x1 <= x0) continue;
+
+      const int32_t copyPx = x1 - x0;
+      const int32_t srcX0  = x0 - baseX;
+
+      std::memcpy(drow + (size_t)x0 * 4u,
+                  srow + (size_t)srcX0 * 4u,
+                  (size_t)copyPx * 4u);
+    }
+
+    // Mark host dirty and trigger damage if ready.
+    ctx.windows().markDirty(key);
+    if (ctx.windows().consumeDirtyIfReady(key)) {
+      ctx.ui().push(x11::UICommand{ x11::UICommand::Type::Damage, key });
+    }
+    return;
+  }
+
+  // ============================================================================================
+  // PIXMAP path: XYPixmap depth=1 (existing behavior)
+  // ============================================================================================
+
+  // Only implement XYPixmap depth=1 right now for pixmaps.
+  if (format != 1 || depth != 1) {
     br.skip(br.remaining());
     return;
   }
@@ -245,31 +342,29 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     br.skip(br.remaining());
     return;
   }
-  
+
   const uint32_t srcStride = computeStrideBytesXY1(width, leftPad);
   const uint64_t need64 = (uint64_t)srcStride * (uint64_t)height;
   if (need64 > br.remaining()) {
-    // truncated request body
     br.skip(br.remaining());
     return;
   }
-  const std::size_t need = (std::size_t)need64;
 
   const uint8_t* src = br.ptr();   // raw packed bitmap data
   br.skip(br.remaining());         // consume rest (including request padding)
 
 #ifndef NDEBUG
-  ctx.tracef("[PutImage] drawable=0x%08X dstIsWindow=%d pw=%u ph=%u depth=%u fmt=%u\n",
-             drawable, dstIsWindow ? 1 : 0, pw, ph, depth, format);
+  ctx.tracef("[PutImage/PM] drawable=0x%08X pw=%u ph=%u depth=%u fmt=%u\n",
+             (unsigned)drawable, (unsigned)pw, (unsigned)ph, (unsigned)depth, (unsigned)format);
 #endif
-  
+
   // Copy bits from src into dstBits (both LSBFirst as per SetupSuccess).
   // NOTE: PutImage uses leftPad in *source bit indexing*.
   for (uint16_t yy = 0; yy < height; yy++) {
     const int32_t dy = (int32_t)dstY + (int32_t)yy;
     if (dy < 0 || dy >= (int32_t)ph) continue;
 
-    const uint8_t* srow = src + (std::size_t)yy * (std::size_t)srcStride;
+    const uint8_t* srow = src + (size_t)yy * (size_t)srcStride;
 
     for (uint16_t xx = 0; xx < width; xx++) {
       const int32_t dx = (int32_t)dstX + (int32_t)xx;
@@ -290,7 +385,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       const uint32_t dBit  = ux & 7u;
       const uint8_t  dmask = kBitmapBitOrderLSBFirst ? (uint8_t)(1u << dBit) : (uint8_t)(1u << (7u - dBit));
 
-      uint8_t* drow = dstBits + (std::size_t)dy * (std::size_t)dstStride;
+      uint8_t* drow = dstBits + (size_t)dy * (size_t)dstStride;
       if (on) drow[dByte] |= dmask;
       else    drow[dByte] &= (uint8_t)~dmask;
     }

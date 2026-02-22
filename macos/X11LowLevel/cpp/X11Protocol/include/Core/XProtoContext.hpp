@@ -25,6 +25,7 @@ class UICommandQueue;
 class FontTable;
 class CursorTable;
 class GrabTable;
+class DrawableSurfaceRegistry;
 
 using WindowLookupFn = bool (*)(uint32_t xid, WindowView* out, void* user);
 
@@ -91,6 +92,12 @@ public:
   void setGrabTable(GrabTable* gt) { grab_table_ = gt; }
   GrabTable& grabs() { assert(grab_table_); return *grab_table_; }
   const GrabTable& grabs() const { assert(grab_table_); return *grab_table_; }
+  
+  // handle surfaces for drawing
+  void setSurfaceRegistry(DrawableSurfaceRegistry* sr) { surface_registry_ = sr; }
+  DrawableSurfaceRegistry& surfaces() { assert(surface_registry_); return *surface_registry_; }
+  const DrawableSurfaceRegistry& surfaces() const { assert(surface_registry_); return *surface_registry_; }
+
 private:
   XProtoTransport* transport_ = nullptr;
   ReplyWriter* reply_ = nullptr;
@@ -102,6 +109,9 @@ private:
 
   // scratch storage to avoid allocations
   WindowView scratch_{};
+  
+  // Drawable Surface
+  DrawableSurfaceRegistry* surface_registry_ = nullptr;
   
   // pixel maps
   PixmapTable* pixmap_table_ = nullptr;

@@ -199,6 +199,13 @@ extern "C" void x11_proto_bridge_end_session(int client_fd)
   delete srv;
 }
 
+
+extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void)
+{
+  return g_srv.load(std::memory_order_acquire);
+}
+
+
 extern "C" void x11_proto_bridge_note_last_seq(uint16_t seq)
 {
   auto* srv = g_srv.load(std::memory_order_acquire);

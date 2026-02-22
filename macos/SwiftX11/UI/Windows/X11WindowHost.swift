@@ -103,6 +103,57 @@ final class X11View: NSView {
   // until the drawable reaches the expected pixel size (or a small budget expires).
   private var suppressBudget: Int = 0
   
+  // MARK: -- handling drawable surfaces
+  private var hostSurface: Data?
+  private var hostSurfaceW: Int32 = 0
+  private var hostSurfaceH: Int32 = 0
+  private var hostSurfaceBPR: Int32 = 0
+  private var hostSurfaceGen: UInt32 = 0
+
+  fileprivate func ensureHostSurface(wPx: Int32, hPx: Int32) {
+    guard xid != 0, wPx >= 1, hPx >= 1 else { return }
+
+    // 4 bytes/pixel, align bytesPerRow (64 is fine)
+    let rawBpr = Int32(wPx * 4)
+    let bpr = (rawBpr + 63) & ~63
+    let needBytes = Int(bpr * hPx)
+
+    let needsAlloc =
+      hostSurface == nil ||
+      hostSurfaceW != wPx || hostSurfaceH != hPx || hostSurfaceBPR != bpr ||
+      hostSurface!.count != needBytes
+
+    if needsAlloc {
+      hostSurface = Data(count: needBytes)
+      hostSurfaceW = wPx
+      hostSurfaceH = hPx
+      hostSurfaceBPR = bpr
+      hostSurfaceGen &+= 1
+      
+      hostSurface!.withUnsafeMutableBytes { raw in
+        guard let p = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+        var i = 3
+        while i < needBytes {
+          p[i] = 0xFF   // BGRA: A byte
+          i &+= 4
+        }
+      }
+
+    }
+
+    hostSurface!.withUnsafeMutableBytes { raw in
+      guard let p = raw.baseAddress else { return }
+      // Call into C++ to install/update the surface for this host xid.
+      x11_surface_update(xid, p, UInt32(bpr), UInt16(clamping: Int(wPx)), UInt16(clamping: Int(hPx)), hostSurfaceGen)
+    }
+  }
+
+  private func clearHostSurface() {
+    guard xid != 0 else { return }
+    x11_surface_clear(xid)
+    hostSurface = nil
+  }
+  
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
     wantsLayer = true
@@ -247,14 +298,22 @@ final class X11View: NSView {
   
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    
+
+    // Detach: always clear and stop here (don’t schedule attach work).
+    if self.window == nil {
+      clearHostSurface()
+      lastKnownWindow = nil
+      attachSettleScheduled = false
+      return
+    }
+
     // Prevent re-running attach logic for the same window repeatedly.
     let w = self.window
     if lastKnownWindow === w, attachSettleScheduled {
       return
     }
     lastKnownWindow = w
-    
+
     scheduleAttachSettle()
   }
   
@@ -301,6 +360,10 @@ final class X11View: NSView {
       // Don’t refresh tracking areas synchronously on attach; coalesce.
       self.requestTrackingRefreshCoalesced()
       
+      let scale = window?.backingScaleFactor ?? 1.0
+      let wPx = Int32(max(1, Int((bounds.width * scale).rounded(.down))))
+      let hPx = Int32(max(1, Int((bounds.height * scale).rounded(.down))))
+      ensureHostSurface(wPx: wPx, hPx: hPx)
       
       // make host presentable in software or metal mode
       self.notifyPresentableOnce()
@@ -1086,6 +1149,7 @@ final class X11Renderer: NSObject, MTKViewDelegate {
       didNotifyPresentable = true
       x11_post_window_presentable(xid)
     }
+    owner?.ensureHostSurface(wPx: wPx, hPx: hPx)
     
     if wPx == lastDrawablePt.w && hPx == lastDrawablePt.h { return }
     lastDrawablePt = (wPx, hPx)

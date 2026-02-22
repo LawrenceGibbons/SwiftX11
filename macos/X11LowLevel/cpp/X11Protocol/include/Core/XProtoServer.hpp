@@ -21,7 +21,7 @@
 #include <Core/PixmapTable.hpp>
 #include <Core/FontTable.hpp>
 #include <Core/CursorTable.hpp>
-
+#include <Core/DrawableSurfaceRegistry.hpp>
 
 namespace x11 {
 
@@ -58,6 +58,10 @@ public:
   void setXprotoThreadSelf();
   void noteLastSeq(uint16_t seq);
 
+  // ---- Drawable surfaces ----
+  void updateSurface(uint32_t xid, const SurfaceDesc& s);
+  void clearSurface(uint32_t xid);
+  
   // ---- Notify queue API (what you previously had as C globals) ----
   void queueNotify(uint32_t wid, bool wantConfigure, bool wantExpose);
   void flushNotifyQueue();
@@ -95,6 +99,8 @@ private:
   
   XProtoTransport transport_;
   ReplyWriter     reply_;
+  
+  DrawableSurfaceRegistry surfaces_;
   
   struct Entry {
     HandlerFn fn = nullptr;

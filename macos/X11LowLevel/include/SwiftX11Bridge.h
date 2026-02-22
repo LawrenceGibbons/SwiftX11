@@ -152,3 +152,13 @@ void x11_post_window_destroy(uint32_t xid);
 // Host-driven resize (Cocoa changed size)
 // -------------------------------------------------------------------------------------
 void x11_post_window_resize(uint32_t xid, int32_t w_u, int32_t h_u);
+
+void x11_surface_update(uint32_t host_xid,
+                        void* ptr,
+                        uint32_t bytes_per_row,
+                        uint16_t w,
+                        uint16_t h,
+                        uint32_t generation);
+
+void x11_surface_clear(uint32_t host_xid);
+

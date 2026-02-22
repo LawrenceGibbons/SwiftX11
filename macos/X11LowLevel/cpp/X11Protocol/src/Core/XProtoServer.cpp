@@ -11,11 +11,14 @@
 
 #include "Ops/ReplyWriter.hpp"
 #include "Core/XProtoServer.hpp"
+#include "Core/SurfaceDesc.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "x11_server_internal.h"
 #include "x11_backend_fb.h"
+
+
 
 static void fb_event_observer(uint32_t xid, uint16_t w, uint16_t h,
                               const char* op, const char* why,
@@ -67,6 +70,7 @@ XProtoServer::XProtoServer()
   ctx_.setUI(&g_ui);
   ctx_.setFontTable(&fonts_);
   ctx_.setCursorTable(&cursors_);
+  ctx_.setSurfaceRegistry(&surfaces_);
   
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
@@ -276,6 +280,32 @@ bool XProtoServer::lookupWindow(uint32_t xid, WindowView* out) {
   return true;
 }
   
+void XProtoServer::updateSurface(uint32_t xid, const SurfaceDesc& s) {
+  if (xid == 0) return;
+
+  // Key choice for first cut: registry is keyed by HOST (top-level window).
+  const uint32_t host = ctx_.windows().topLevelAncestorOf(xid); // you already have this method
+  const uint32_t key  = host ? host : xid;
+
+  ctx_.surfaces().set(key, s);
+  ctx_.windows().setPresentable(key, true);
+
+  // If anything was waiting to present, release it now.
+  if (ctx_.windows().consumeDirtyIfReady(key)) {
+    ctx_.ui().push(x11::UICommand{ x11::UICommand::Type::Damage, key });
+  }
+}
+
+void XProtoServer::clearSurface(uint32_t xid) {
+  if (xid == 0) return;
+  const uint32_t host = ctx_.windows().topLevelAncestorOf(xid);
+  const uint32_t key  = host ? host : xid;
+
+  ctx_.surfaces().clear(key);
+  ctx_.windows().setPresentable(key, false);
+}
+
+
   
 } // namespace x11
 

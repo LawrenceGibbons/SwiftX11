@@ -101,6 +101,8 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Resolve GC once.
     x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
     const uint32_t fg = gst.fg;
+    const uint32_t fgOpaque = fg | 0xFF000000u;
+
 
     // Fast path: GXcopy + full 24-bit plane mask = plain fill.
     const uint8_t  fn   = (uint8_t)(gst.function & 0x0Fu);
@@ -185,11 +187,12 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
         if (fastFill) {
           for (int32_t x = x0; x < x1; x++) {
-            row[(size_t)x] = fg;
+            row[(size_t)x] = fgOpaque;
           }
         } else {
           for (int32_t x = x0; x < x1; x++) {
-            row[(size_t)x] = x11_apply_rop_argb(row[(size_t)x], fg, gst.function, gst.plane_mask);
+            uint32_t out = x11_apply_rop_argb(row[(size_t)x], fgOpaque, gst.function, gst.plane_mask);
+            row[(size_t)x] = (out & 0x00FFFFFFu) | 0xFF000000u;
           }
         }
       }
