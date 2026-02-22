@@ -1,10 +1,19 @@
 SwiftX11 TODO
 
-Last updated: 2026-02-21
+Last updated: 2026-02-22
 
 ⸻
 
 0️⃣ Architecture Pivot (NOW)
+
+Current status (bring-up progress)
+  •  ✅ Multi-client ID space plumbed: per-connection rid_base/rid_mask advertised in SetupSuccess and stored in transport.
+  •  ✅ UICommandQueue migrated to generic `UICommand` + `push(const UICommand&)` (still backed by x11_requests.* for now).
+  •  ✅ Swift host surfaces: Swift allocates persistent 32bpp CPU buffers per host window and publishes them via `x11_surface_update/clear`.
+  •  ✅ SurfaceRegistry: C++ prefers Swift surfaces for WINDOW drawables and carries stride (`stridePixels`) through `DrawableRW`.
+  •  ✅ Alpha/opacity: surfaces initialized opaque in Swift; raster fills force opaque alpha.
+  •  ✅ Drawing migrated to SurfaceRegistry where needed: PutImage(ZPixmap→WINDOW), ClearArea, ImageText8, PolyText8.
+  •  ✅ Metal + software parity sanity-checked during bring-up.
 
 Goal
   •  Eliminate the C layer entirely: only C++ (core protocol + raster) and Swift (UI + networking).
@@ -12,14 +21,16 @@ Goal
   •  Make Swift the owner of all WINDOW backing stores (host + child) now.
 
 Swift-owned WINDOW surfaces
-  •  Swift allocates/resizes per-window backing stores (shared CPU buffer and/or MTLBuffer/MTLTexture).
-  •  C++ draws into Swift-provided surfaces via a `SurfaceDesc { ptr, bytesPerRow, w, h, format, generation }` (C++ never owns/presents window framebuffer memory).
-  •  Mapping/unmapping/resizing a window becomes: Swift updates surface → C++ updates geometry/state → Swift presents.
+  •  Swift allocates/resizes per-host WINDOW backing stores (persistent CPU buffer today; can later be backed by MTLBuffer/MTLTexture).
+  •  C++ draws into Swift-provided surfaces via `SurfaceDesc { ptr, bytesPerRow, w, h, format, generation }` (C++ never owns/presents window framebuffer memory).
+  •  Swift publishes surfaces via temporary shims `x11_surface_update(hostXid, ...)` / `x11_surface_clear(hostXid)`; later replace with Swift C++ interop calls.
+  •  Important: bytesPerRow may be padded; draw code must respect stride (no `row = y*w` assumptions).
 
 Surface registry (C++ API consumed by Swift)
-  •  Add a `DrawableSurfaceRegistry` keyed by XID for WINDOW drawables (and optionally Pixmaps later).
-  •  Swift calls `server.updateSurface(xid, SurfaceDesc)` on map/resize and `server.clearSurface(xid)` on unmap/destroy.
-  •  Drawing ops resolve destination surfaces through the registry; missing surface ⇒ correct X11 error (BadDrawable/BadMatch).
+  •  Implemented: `DrawableSurfaceRegistry` keyed by XID (currently used for host WINDOW drawables).
+  •  Implemented: `updateSurface/clearSurface` entrypoints (currently reached via `x11_surface_update/clear` shims).
+  •  Implemented: `DrawableRW` now includes `stridePixels`; `resolveDrawableRW` prefers Swift surfaces for windows, with temporary fallback to C framebuffer access.
+  •  Next: route child window drawables to host surfaces with origin offsets; remove all remaining C framebuffer entrypoints.
 
 Damage / present (Swift-driven)
   •  C++ reports damage as rects per host/top-level window (no “always damage” hacks).
@@ -69,13 +80,15 @@ CopyPlane
 
 PutImage
   •  Remove temporary routing hacks once full rootless model is stable.
-  •  Support window destinations via Swift SurfaceRegistry (no bring-up-only routing).
+  •  ✅ Window destinations via Swift SurfaceRegistry: ZPixmap depth 24/32 (32bpp on wire) supported; keep pixmap XY1 path.
   •  Support depth conversions where required.
 
 General drawing
   •  Implement proper error generation (BadDrawable, BadGC, BadMatch, BadValue).
   •  Validate depth compatibility rules between src/dst.
-  
+  •  ✅ ClearArea migrated to SurfaceRegistry (`resolveDrawableRW` + stridePixels).
+  •  ✅ Text drawing migrated: ImageText8 + PolyText8 draw via BDF glyph bitmaps (MSBFirst within bytes) and SurfaceRegistry.
+
 PolyFillRectangle
   •  Apply GC function / planemask / fill-style (right now this is “solid fg overwrite” only).
   •  Support clip mask / clip rectangles from GC.
@@ -103,6 +116,7 @@ ConfigureWindow
 ⸻
 
 3️⃣ Fonts (xterm bring-up → real implementation)
+  •  ✅ Bring-up text ops: ImageText8 + PolyText8 implemented enough for xterm; still needs full spec coverage (PolyText16/ImageText16, full item semantics, GC clip/rop correctness).
   •  Complete FontOps so xterm runs without fallback hacks.
   •  Ensure QueryFont / QueryTextExtents / ListFonts / ListFontsWithInfo match Xproto.h exactly.
   •  Return correct font properties (SPACING, AVERAGE_WIDTH, etc.).
@@ -159,7 +173,7 @@ Damage precision
 7️⃣ Swift UI / AppKit Stability
   •  Eliminate remaining layout recursion triggers.
   •  Ensure setContentSize never runs inside layout.
-  •  Validate Metal + software parity.
+  •  ✅ Metal + software parity sanity-checked (surfaces + stride + opacity).
   •  Ensure toggling Metal works:
   •  before client launch
   •  mid-session
@@ -180,6 +194,8 @@ Damage precision
 ⸻
 
 9️⃣ Cleanup / Refactor
+  •  Remove temporary SurfaceRegistry shims (`x11_surface_update/clear`) once Swift C++ interop is in place.
+  •  Remove remaining C framebuffer fallback (`x11_xproto_window_fb_rw`) after child→host routing is implemented.
   •  Delete remaining C backend entrypoints (`x11_backend_*`) after migrating callers to C++/Swift surface registry.
   •  Remove obsolete handler registrations (QueryColors duplicates, etc.).
   •  Consolidate opcode constants (use x11::opcode::* everywhere).

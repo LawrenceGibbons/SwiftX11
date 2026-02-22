@@ -891,76 +891,110 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     //   CARD32 gc
     //   INT16 x
     //   INT16 y
-    //   LISTof TEXTITEM8
+    //   LISTofTEXTITEM8 items...
+    //
+    // TEXTITEM8:
+    //   BYTE len;          // 0..254 => string item, 255 => font change
+    //   INT8 delta;        // signed
+    //   if len == 255: CARD32 font
+    //   else: CHAR string[len]
+
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
     const uint32_t drawable = br.readU32();
     const uint32_t gcXid    = br.readU32();
-    const int16_t x0        = (int16_t)br.readU16();
-    const int16_t y         = (int16_t)br.readU16();
+    int32_t penX            = (int16_t)br.readU16();
+    const int32_t baseY     = (int16_t)br.readU16();
 
-    uint32_t* pix = nullptr;
-    uint32_t fbW = 0, fbH = 0;
-    if (!x11_xproto_window_fb_rw(drawable, &pix, &fbW, &fbH) || !pix) {
-      br.skip(br.remaining());
-      return;
-    }
+    x11::DrawableRW dst{};
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) { br.skip(br.remaining()); return; }
 
+    // Get GC
     x11::GCState gc{};
     (void)getGC(gcXid, gc);
 
-    // Current font starts from GC font
+    // Resolve font from GC
     const x11::font::BdfFont* f = resolveFont(ctx, gc);
     if (!f) { br.skip(br.remaining()); return; }
 
-    int penX = (int)x0;
+    auto drawGlyph1bpp32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w;
+      const int gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
 
+      const uint32_t fgO = (fg & 0x00FFFFFFu) | 0xFF000000u;
+
+      const int srcStride = g.rowStrideBytes();
+      if (srcStride <= 0) return;
+      const size_t need = (size_t)srcStride * (size_t)gh;
+      if (g.bitmap.size() < need) return;
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* srow = g.bitmap.data() + (size_t)yy * (size_t)srcStride;
+
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+
+          const uint32_t bit = (uint32_t)xx;
+          const uint32_t sByte = bit >> 3;
+          const uint32_t sBit  = bit & 7u;
+
+          // MSBFirst (fixes mirrored glyphs)
+          const uint8_t mask = (uint8_t)(1u << (7u - sBit));
+          const bool on = (srow[sByte] & mask) != 0;
+
+          if (on) drow[(size_t)dx] = fgO;
+        }
+      }
+    };
+
+    // Parse items until end of request body.
     while (br.remaining() >= 2) {
+      const uint8_t len = br.readU8();
       const int8_t  delta = (int8_t)br.readU8();
-      const uint8_t len   = br.readU8();
-      penX += (int)delta;
 
-      if (len == 0) {
-        // Font change item: next CARD32 is font fid
-        if (br.remaining() < 4) break;
-        const uint32_t newFid = br.readU32();
-        x11::GCState tmp = gc;
-        tmp.font = newFid;
-        const x11::font::BdfFont* nf = resolveFont(ctx, tmp);
+      penX += (int32_t)delta;
+
+      if (len == 0) continue;
+
+      if (len == 255) {
+        // Font change item: CARD32 font
+        if (br.remaining() < 4) { br.skip(br.remaining()); break; }
+        const uint32_t newFont = br.readU32();
+        gc.font = newFont;
+        const x11::font::BdfFont* nf = resolveFont(ctx, gc);
         if (nf) f = nf;
         continue;
       }
-#ifndef NDEBUG
-fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
-        (unsigned)drawable, (unsigned)gcXid, (unsigned)gc.font,
-        f ? f->name.c_str() : "<null>",
-        f ? f->bbx_w : -1, f ? f->bbx_h : -1,
-        f ? f->ascent : -1, f ? f->descent : -1);
-#endif
 
-      if (br.remaining() < len) break;
+      if (br.remaining() < len) { br.skip(br.remaining()); break; }
 
       for (uint8_t i = 0; i < len; i++) {
         const uint8_t ch = br.readU8();
+
         const x11::font::Glyph* g = resolveGlyph(f, ch);
         if (!g) { penX += f->advanceFor((int)ch); continue; }
 
-        const int leftX = penX + g->bbx_xoff;
-        const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
+        const int leftX = (int)penX + g->bbx_xoff;
+        const int topY  = (int)baseY - g->bbx_yoff - (g->bbx_h - 1);
 
-        drawGlyph1bppBGRA(pix, fbW, fbH, leftX, topY, *g, gc.fg);
+        drawGlyph1bpp32(leftX, topY, *g, gc.fg);
 
         penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor((int)ch);
-      }
-
-      // TEXTITEM8 strings are padded to even length (per X11 protocol struct packing)
-      if (len & 1u) {
-        if (br.remaining() > 0) br.readU8();
       }
     }
 
     br.skip(br.remaining());
-    damageOrDirty(ctx, drawable);
+
+    if (dst.isWindow) {
+      damageOrDirty(ctx, drawable);
+    }
   }
   
   
@@ -969,12 +1003,6 @@ fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\
   // -----------------------------
   void DrawOps::handleImageText8(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br)
   {
-    // Body:
-    //   CARD32 drawable
-    //   CARD32 gc
-    //   INT16 x
-    //   INT16 y
-    //   CHAR  string[n]
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
     const uint32_t drawable = br.readU32();
@@ -987,25 +1015,25 @@ fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\
     for (uint8_t i = 0; i < n; i++) text[i] = br.readU8();
     br.skip(br.remaining());
 
-    // Get FB
-    uint32_t* pix = nullptr;
-    uint32_t fbW = 0, fbH = 0;
-    if (!x11_xproto_window_fb_rw(drawable, &pix, &fbW, &fbH) || !pix) return;
+    x11::DrawableRW dst{};
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) return;
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
     // Get GC
     x11::GCState gc{};
-    (void)getGC(gcXid, gc); // if not found, defaults in GCState ctor
+    (void)getGC(gcXid, gc);
 
     // Resolve font
     const x11::font::BdfFont* f = resolveFont(ctx, gc);
     if (!f) return;
-#ifndef NDEBUG
-fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
-        (unsigned)drawable, (unsigned)gcXid, (unsigned)gc.font,
-        f ? f->name.c_str() : "<null>",
-        f ? f->bbx_w : -1, f ? f->bbx_h : -1,
-        f ? f->ascent : -1, f ? f->descent : -1);
-#endif
+
+  #ifndef NDEBUG
+    fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
+            (unsigned)drawable, (unsigned)gcXid, (unsigned)gc.font,
+            f ? f->name.c_str() : "<null>",
+            f ? f->bbx_w : -1, f ? f->bbx_h : -1,
+            f ? f->ascent : -1, f ? f->descent : -1);
+  #endif
 
     const int fontAscent  = (f->ascent  > 0) ? f->ascent  : 12;
     const int fontDescent = (f->descent > 0) ? f->descent : 4;
@@ -1014,13 +1042,75 @@ fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\
     int overallW = 0;
     for (uint8_t ch : text) overallW += f->advanceFor((int)ch);
 
-    // ImageText fills background rectangle: [x .. x+overallW) × [y-ascent .. y+descent)
-    fillRectBGRA(pix, fbW, fbH,
-                 (int)x,
-                 (int)y - fontAscent,
-                 overallW,
-                 fontAscent + fontDescent,
-                 gc.bg);
+    auto fillRect32 = [&](int rx, int ry, int rw, int rh, uint32_t color) {
+      if (rw <= 0 || rh <= 0) return;
+
+      int x0 = rx;
+      int y0 = ry;
+      int x1 = rx + rw;
+      int y1 = ry + rh;
+
+      if (x0 < 0) x0 = 0;
+      if (y0 < 0) y0 = 0;
+      if (x1 > (int)dst.w) x1 = (int)dst.w;
+      if (y1 > (int)dst.h) y1 = (int)dst.h;
+      if (x0 >= x1 || y0 >= y1) return;
+
+      const uint32_t c = (color & 0x00FFFFFFu) | 0xFF000000u;
+
+      for (int yy = y0; yy < y1; yy++) {
+        uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+        for (int xx = x0; xx < x1; xx++) row[(size_t)xx] = c;
+      }
+    };
+
+    auto drawGlyph1bpp32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w;
+      const int gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
+
+      const uint32_t fgO = (fg & 0x00FFFFFFu) | 0xFF000000u;
+
+      const int srcStride = g.rowStrideBytes();
+      if (srcStride <= 0) return;
+
+      // Defensive: bitmap must contain at least srcStride * gh bytes.
+      const size_t need = (size_t)srcStride * (size_t)gh;
+      if (g.bitmap.size() < need) return;
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* srow = g.bitmap.data() + (size_t)yy * (size_t)srcStride;
+
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+
+          const uint32_t bit = (uint32_t)xx;
+          //const uint32_t sByte = bit >> 3;
+          //const uint32_t sBit  = bit & 7u;
+
+          const uint32_t sByte = bit >> 3;
+          const uint32_t sBit  = bit & 7u;
+          const uint8_t  mask  = (uint8_t)(1u << (7u - sBit));   // MSBFirst
+          const bool on = (srow[sByte] & mask) != 0;
+          
+          // LSBFirst bit order, consistent with your other paths.
+          //const bool on = (srow[sByte] & (uint8_t)(1u << sBit)) != 0;
+          if (on) drow[(size_t)dx] = fgO;
+        }
+      }
+    };
+
+    // Background fill: [x .. x+overallW) × [y-ascent .. y+descent)
+    fillRect32((int)x,
+               (int)y - fontAscent,
+               overallW,
+               fontAscent + fontDescent,
+               gc.bg);
 
     // Draw glyphs
     int penX = (int)x;
@@ -1028,17 +1118,17 @@ fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\
       const x11::font::Glyph* g = resolveGlyph(f, ch);
       if (!g) { penX += f->advanceFor((int)ch); continue; }
 
-      // Place bitmap using BBX offsets relative to baseline origin (penX,y)
-      const int leftX  = penX + g->bbx_xoff;
-      const int topY   = (int)y - g->bbx_yoff - (g->bbx_h - 1);
+      const int leftX = penX + g->bbx_xoff;
+      const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
 
-      drawGlyph1bppBGRA(pix, fbW, fbH, leftX, topY, *g, gc.fg);
+      drawGlyph1bpp32(leftX, topY, *g, gc.fg);
 
-      // Advance
       penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor((int)ch);
     }
 
-    damageOrDirty(ctx, drawable);
+    if (dst.isWindow) {
+      damageOrDirty(ctx, drawable);
+    }
   }
   
 } // namespace x11
