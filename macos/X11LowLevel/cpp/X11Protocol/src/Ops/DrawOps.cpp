@@ -397,222 +397,214 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 // -----------------------------
 // CopyArea (major 62)
 // -----------------------------
-  void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
-    // Body after 4-byte header (24 bytes):
-    //   CARD32 src
-    //   CARD32 dst
-    //   CARD32 gc
-    //   INT16  srcX
-    //   INT16  srcY
-    //   INT16  dstX
-    //   INT16  dstY
-    //   CARD16 w
-    //   CARD16 h
-    if (br.remaining() < 24) { br.skip(br.remaining()); return; }
+#include <cstring> // std::memmove
+#include <algorithm>
 
-    const uint32_t src   = br.readU32();
-    const uint32_t dst   = br.readU32();
-    const uint32_t gcXid = br.readU32();
+void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  // Body after 4-byte header (24 bytes):
+  //   CARD32 src
+  //   CARD32 dst
+  //   CARD32 gc
+  //   INT16  srcX
+  //   INT16  srcY
+  //   INT16  dstX
+  //   INT16  dstY
+  //   CARD16 w
+  //   CARD16 h
+  if (br.remaining() < 24) { br.skip(br.remaining()); return; }
 
-    const int16_t srcX = br.readI16();
-    const int16_t srcY = br.readI16();
-    const int16_t dstX = br.readI16();
-    const int16_t dstY = br.readI16();
+  const uint32_t src   = br.readU32();
+  const uint32_t dst   = br.readU32();
+  const uint32_t gcXid = br.readU32();
 
-    const uint16_t wpx = br.readU16();
-    const uint16_t hpx = br.readU16();
-    br.skip(br.remaining());
+  int32_t srcX = br.readI16();
+  int32_t srcY = br.readI16();
+  int32_t dstX = br.readI16();
+  int32_t dstY = br.readI16();
 
-    if (wpx == 0 || hpx == 0) return;
+  int32_t wpx = (int32_t)br.readU16();
+  int32_t hpx = (int32_t)br.readU16();
+  br.skip(br.remaining());
 
-    // ------------------------------------------------------------
-    // Resolve GC (function + plane mask)
-    // ------------------------------------------------------------
-    x11::GCState gc{};
-    if (!x11::GCTable::instance().find(gcXid, gc)) {
-      gc = x11::GCTable::instance().getOrCreate(gcXid);
-    }
+  if (wpx <= 0 || hpx <= 0) return;
 
-    const uint8_t  fn = gc.function;
-    const uint32_t pm24 = (gc.plane_mask & 0x00FFFFFFu);
+  // ------------------------------------------------------------
+  // Resolve GC (function + plane mask)
+  // ------------------------------------------------------------
+  x11::GCState gc{};
+  if (!x11::GCTable::instance().find(gcXid, gc)) {
+    gc = x11::GCTable::instance().getOrCreate(gcXid);
+  }
 
-    // Fast path when CopyArea is truly a raw copy (most common).
-    const bool isGXcopy = ((fn & 0x0Fu) == 3); // GXcopy == 3
-    const bool fullPlane = (pm24 == 0x00FFFFFFu);
-    const bool canMemmoveFast = (isGXcopy && fullPlane);
+  const uint8_t  fn   = gc.function;
+  const uint32_t pm24 = (gc.plane_mask & 0x00FFFFFFu);
 
-    // ------------------------------------------------------------
-    // Resolve source drawable -> read-only pixel pointer + dimensions
-    // ------------------------------------------------------------
-    const uint32_t* srcPixels = nullptr;
-    int srcW = 0, srcH = 0;
+  const bool isGXcopy = ((fn & 0x0Fu) == 3); // GXcopy == 3
+  const bool fullPlane = (pm24 == 0x00FFFFFFu);
+  const bool canMemmoveFast = (isGXcopy && fullPlane);
 
-    const bool srcIsWin = ctx.windows().exists(src);
-    const bool srcIsPix = ctx.pixmaps().exists(src);
+  // ------------------------------------------------------------
+  // Resolve source drawable -> read-only pixel pointer + dims + stride
+  // ------------------------------------------------------------
+  const uint32_t* srcPixels = nullptr;
+  int srcW = 0, srcH = 0;
+  uint32_t srcStride = 0;
 
-    if (srcIsWin) {
-      uint32_t* wPixels = nullptr;
-      uint32_t wW = 0, wH = 0;
-      if (!x11_xproto_window_fb_rw(src, &wPixels, &wW, &wH) || !wPixels) return;
-      srcPixels = wPixels;
-      srcW = (int)wW;
-      srcH = (int)wH;
-    } else if (srcIsPix) {
-      PixmapView pv{};
-      if (!ctx.pixmaps().snapshot(src, pv)) return;
-      if (pv.depth == 1) return;              // CopyArea not for depth-1 masks
-      if (!pv.pixels) return;
-      srcPixels = pv.pixels;
-      srcW = (int)pv.w;
-      srcH = (int)pv.h;
-    } else {
-      return; // unknown drawable
-    }
+  const bool srcIsWin = ctx.windows().exists(src);
+  const bool srcIsPix = ctx.pixmaps().exists(src);
 
-    // ------------------------------------------------------------
-    // Resolve destination drawable -> writable pixel pointer + dimensions
-    // ------------------------------------------------------------
-    uint32_t* dstPixels = nullptr;
-    int dstW = 0, dstH = 0;
+  if (srcIsWin) {
+    x11::DrawableRW s{};
+    if (!x11::resolveDrawableRW(ctx, src, s) || !s.pixels32) return;
+    srcPixels = s.pixels32;
+    srcW = (int)s.w;
+    srcH = (int)s.h;
+    srcStride = s.stridePixels;
+    if (srcW <= 0 || srcH <= 0 || srcStride == 0) return;
+  } else if (srcIsPix) {
+    PixmapView pv{};
+    if (!ctx.pixmaps().snapshot(src, pv)) return;
+    if (pv.depth == 1) return;              // CopyArea not for depth-1 masks
+    if (!pv.pixels || pv.w == 0 || pv.h == 0) return;
+    srcPixels = pv.pixels;
+    srcW = (int)pv.w;
+    srcH = (int)pv.h;
+    srcStride = (uint32_t)pv.w;             // pixmaps are tightly packed today
+  } else {
+    return;
+  }
 
-    const bool dstIsWin = ctx.windows().exists(dst);
-    const bool dstIsPix = ctx.pixmaps().exists(dst);
+  // ------------------------------------------------------------
+  // Resolve destination drawable -> writable pixel pointer + dims + stride
+  // ------------------------------------------------------------
+  uint32_t* dstPixels = nullptr;
+  int dstW = 0, dstH = 0;
+  uint32_t dstStride = 0;
 
-    if (dstIsWin) {
-      uint32_t* wPixels = nullptr;
-      uint32_t wW = 0, wH = 0;
-      if (!x11_xproto_window_fb_rw(dst, &wPixels, &wW, &wH) || !wPixels) return;
-      dstPixels = wPixels;
-      dstW = (int)wW;
-      dstH = (int)wH;
-    } else if (dstIsPix) {
-      uint16_t pw = 0, ph = 0;
-      dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
-      if (!dstPixels) return;
-      dstW = (int)pw;
-      dstH = (int)ph;
-    } else {
-      return; // unknown drawable
-    }
+  const bool dstIsWin = ctx.windows().exists(dst);
+  const bool dstIsPix = ctx.pixmaps().exists(dst);
 
-    const bool sameBuf = (srcPixels == dstPixels) && (srcW == dstW) && (srcH == dstH);
+  if (dstIsWin) {
+    x11::DrawableRW d{};
+    if (!x11::resolveDrawableRW(ctx, dst, d) || !d.pixels32) return;
+    dstPixels = d.pixels32;
+    dstW = (int)d.w;
+    dstH = (int)d.h;
+    dstStride = d.stridePixels;
+    if (dstW <= 0 || dstH <= 0 || dstStride == 0) return;
+  } else if (dstIsPix) {
+    uint16_t pw = 0, ph = 0;
+    dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
+    if (!dstPixels || pw == 0 || ph == 0) return;
+    dstW = (int)pw;
+    dstH = (int)ph;
+    dstStride = (uint32_t)pw;
+  } else {
+    return;
+  }
 
-  #ifndef NDEBUG
-    if (sameBuf || (wpx * hpx) > 4096) {
-      fprintf(stderr,
-              "[CopyArea] src=0x%08X dst=0x%08X sameBuf=%d "
-              "srcXY=(%d,%d) dstXY=(%d,%d) wh=%ux%u srcWH=%dx%d dstWH=%dx%d fn=%u pm=0x%08X\n",
-              (unsigned)src, (unsigned)dst, sameBuf ? 1 : 0,
-              (int)srcX, (int)srcY, (int)dstX, (int)dstY,
-              (unsigned)wpx, (unsigned)hpx,
-              srcW, srcH, dstW, dstH,
-              (unsigned)fn, (unsigned)gc.plane_mask);
-    }
-  #endif
-
-    // ------------------------------------------------------------
-    // Clip / clamp the copy rectangle
-    // ------------------------------------------------------------
-    int sx0 = (int)srcX;
-    int sy0 = (int)srcY;
-    int dx0 = (int)dstX;
-    int dy0 = (int)dstY;
-    int cw  = (int)wpx;
-    int ch  = (int)hpx;
-
-    if (sx0 < 0) { int d = -sx0; sx0 = 0; dx0 += d; cw -= d; }
-    if (sy0 < 0) { int d = -sy0; sy0 = 0; dy0 += d; ch -= d; }
-    if (dx0 < 0) { int d = -dx0; dx0 = 0; sx0 += d; cw -= d; }
-    if (dy0 < 0) { int d = -dy0; dy0 = 0; sy0 += d; ch -= d; }
-
-    if (sx0 + cw > srcW) cw = srcW - sx0;
-    if (dx0 + cw > dstW) cw = dstW - dx0;
-    if (sy0 + ch > srcH) ch = srcH - sy0;
-    if (dy0 + ch > dstH) ch = dstH - dy0;
-
-    if (cw <= 0 || ch <= 0) return;
+  const bool sameBuf = (srcPixels == dstPixels) && (srcStride == dstStride);
 
 #ifndef NDEBUG
-  if (cw > 0 && ch > 0 && cw <= 48 && ch <= 96 && (cw * ch) <= 2048) {
-    x11::GCState gst{};
-    (void)x11::GCTable::instance().find(gcXid, gst);
+  if (sameBuf || (wpx * hpx) > 4096) {
     fprintf(stderr,
-            "[SMALL_COPYAREA] src=0x%08X dst=0x%08X gc=0x%08X fn=%u pm=0x%08X "
-            "src=(%d,%d) dst=(%d,%d) wh=%dx%d\n",
-            (unsigned)src, (unsigned)dst, (unsigned)gcXid,
-            (unsigned)gst.function, (unsigned)gst.plane_mask,
-            sx0, sy0, dx0, dy0, cw, ch);
+            "[CopyArea] src=0x%08X dst=0x%08X sameBuf=%d "
+            "srcXY=(%d,%d) dstXY=(%d,%d) wh=%dx%d srcWH=%dx%d dstWH=%dx%d fn=%u pm=0x%08X\n",
+            (unsigned)src, (unsigned)dst, sameBuf ? 1 : 0,
+            (int)srcX, (int)srcY, (int)dstX, (int)dstY,
+            (int)wpx, (int)hpx,
+            srcW, srcH, dstW, dstH,
+            (unsigned)fn, (unsigned)gc.plane_mask);
   }
 #endif
-    
-    // ------------------------------------------------------------
-    // Copy / ROP with overlap-safe ordering
-    // ------------------------------------------------------------
-    auto rowCopyFast = [&](int sy, int dy) {
-      const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcW + (size_t)sx0;
-      uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstW + (size_t)dx0;
-      std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
-    };
 
-    auto rowRop = [&](int sy, int dy, bool rightToLeft) {
-      const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcW + (size_t)sx0;
-      uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstW + (size_t)dx0;
+  // ------------------------------------------------------------
+  // Clip / clamp copy rectangle (adjusting both sides)
+  // ------------------------------------------------------------
+  int sx0 = (int)srcX;
+  int sy0 = (int)srcY;
+  int dx0 = (int)dstX;
+  int dy0 = (int)dstY;
+  int cw  = (int)wpx;
+  int ch  = (int)hpx;
 
-      if (!rightToLeft) {
-        for (int i = 0; i < cw; i++) {
-          dp[i] = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
-        }
-      } else {
-        for (int i = cw - 1; i >= 0; i--) {
-          dp[i] = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
-        }
+  if (sx0 < 0) { int d = -sx0; sx0 = 0; dx0 += d; cw -= d; }
+  if (sy0 < 0) { int d = -sy0; sy0 = 0; dy0 += d; ch -= d; }
+  if (dx0 < 0) { int d = -dx0; dx0 = 0; sx0 += d; cw -= d; }
+  if (dy0 < 0) { int d = -dy0; dy0 = 0; sy0 += d; ch -= d; }
+
+  if (sx0 + cw > srcW) cw = srcW - sx0;
+  if (dx0 + cw > dstW) cw = dstW - dx0;
+  if (sy0 + ch > srcH) ch = srcH - sy0;
+  if (dy0 + ch > dstH) ch = dstH - dy0;
+
+  if (cw <= 0 || ch <= 0) return;
+
+  // ------------------------------------------------------------
+  // Copy / ROP with overlap-safe ordering
+  // ------------------------------------------------------------
+  auto rowCopyFast = [&](int sy, int dy) {
+    const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcStride + (size_t)sx0;
+    uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstStride + (size_t)dx0;
+    std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
+
+    // Keep alpha opaque for Swift software path (X channel is not meaningful in X11 core).
+    for (int i = 0; i < cw; i++) dp[i] = (dp[i] & 0x00FFFFFFu) | 0xFF000000u;
+  };
+
+  auto rowRop = [&](int sy, int dy, bool rightToLeft) {
+    const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcStride + (size_t)sx0;
+    uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstStride + (size_t)dx0;
+
+    if (!rightToLeft) {
+      for (int i = 0; i < cw; i++) {
+        uint32_t out = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
+        dp[i] = (out & 0x00FFFFFFu) | 0xFF000000u;
       }
-    };
-
-    // Determine row iteration order (memmove-like) when same buffer overlaps.
-    int rowStart = 0, rowEnd = ch, rowStep = 1;
-    if (sameBuf && dy0 > sy0) {
-      rowStart = ch - 1;
-      rowEnd   = -1;
-      rowStep  = -1;
-    }
-
-    for (int r = rowStart; r != rowEnd; r += rowStep) {
-      const int sy = sy0 + r;
-      const int dy = dy0 + r;
-
-      if (canMemmoveFast) {
-        // Pure copy case: memmove is correct and fast.
-        rowCopyFast(sy, dy);
-      } else {
-        // ROP case: per-pixel, with horizontal overlap safety when same row.
-        bool rtl = false;
-        if (sameBuf && sy == dy) {
-          // If dest region starts to the right of src region, copy right-to-left.
-          // (Equivalent to memmove behavior, but per pixel so we don’t corrupt reads.)
-          rtl = (dx0 > sx0);
-        }
-        rowRop(sy, dy, rtl);
+    } else {
+      for (int i = cw - 1; i >= 0; i--) {
+        uint32_t out = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
+        dp[i] = (out & 0x00FFFFFFu) | 0xFF000000u;
       }
     }
+  };
 
-    // ------------------------------------------------------------
-    // Damage only if destination is a window
-    // ------------------------------------------------------------
-    if (dstIsWin) {
-      damageOrDirty(ctx, dst);
-    }
+  int rowStart = 0, rowEnd = ch, rowStep = 1;
+  if (sameBuf && dy0 > sy0) {
+    rowStart = ch - 1;
+    rowEnd   = -1;
+    rowStep  = -1;
+  }
 
-    // ------------------------------------------------------------
-    // After successful copy: send NoExpose to unblock clients (bring-up)
-    // ------------------------------------------------------------
-    if (dstIsWin) {
-      auto ev = x11::wireev::buildNoExpose(seq, dst,
-                                          x11::opcode::CopyArea, 0);
-      (void)ctx.transport().sendEvent32(dst, ev.data());
+  for (int r = rowStart; r != rowEnd; r += rowStep) {
+    const int sy = sy0 + r;
+    const int dy = dy0 + r;
+
+    if (canMemmoveFast) {
+      rowCopyFast(sy, dy);
+    } else {
+      bool rtl = false;
+      if (sameBuf && sy == dy) rtl = (dx0 > sx0);
+      rowRop(sy, dy, rtl);
     }
-  } 
-  
+  }
+
+  // ------------------------------------------------------------
+  // Damage only if destination is a window
+  // ------------------------------------------------------------
+  if (dstIsWin) {
+    damageOrDirty(ctx, dst);
+  }
+
+  // ------------------------------------------------------------
+  // After successful copy: send NoExpose to unblock clients (bring-up)
+  // ------------------------------------------------------------
+  if (dstIsWin) {
+    auto ev = x11::wireev::buildNoExpose(seq, dst,
+                                        x11::opcode::CopyArea, 0);
+    (void)ctx.transport().sendEvent32(dst, ev.data());
+  }
+} 
   
 // -----------------------------
 // CopyPlane (major 63)
