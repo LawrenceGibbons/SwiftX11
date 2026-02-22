@@ -29,6 +29,16 @@ namespace x11 {
     uint32_t last_cursor_host = 0;
     uint32_t last_cursor_cid  = 0;
 
+    inline void setFocus(uint32_t host, uint32_t xid) {
+      focus_host = host;
+      focus_xid  = xid;
+    }
+
+    inline uint32_t routeKey(uint32_t host_xid) const {
+      if (host_xid != 0 && focus_host == host_xid && focus_xid != 0) return focus_xid;
+      return host_xid;
+    }
+
 
     void updateMotion(uint32_t xid,
                       int32_t wx_u, int32_t wy_u,

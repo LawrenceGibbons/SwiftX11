@@ -342,33 +342,68 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           
         // ------------------- Focus
         case HostCmdType::Focus: {
+          const uint32_t host = c.xid;
+          if (!host) break;
+
+          const uint32_t oldFocus = ctx.input().focus_xid;
+
+          auto isMappedWin = [&](uint32_t xid) -> bool {
+            if (!xid) return false;
+            x11::WindowView vw{};
+            if (!ctx.windows().snapshot(xid, vw)) return false;
+            return vw.mapped;
+          };
+
+          auto belongsToHost = [&](uint32_t xid) -> bool {
+            return xid && (ctx.windows().topLevelAncestorOf(xid) == host);
+          };
+
           if (c.focused) {
-            ctx.input().focus_host = c.xid;
+            ctx.input().focus_host = host;
 
-            // Prefer the current pointer owner *if* it belongs to this host AND isn't just the host.
-            uint32_t target = ctx.input().pointer_xid;
-
-            // If pointer_xid is unset, is the host itself, or belongs to a different host,
-            // refine focus to the deepest mapped child under the current host-local pointer.
-            if (target == 0 ||
-                target == c.xid ||
-                ctx.windows().topLevelAncestorOf(target) != c.xid) {
-              target = x11::pickDeepestMappedWindowAtHostPoint(ctx, c.xid,
-                                                               ctx.input().win_x_u,
-                                                               ctx.input().win_y_u);
+            // 0) Prefer keeping the existing focus if it still belongs to this host and is mapped.
+            uint32_t target = 0;
+            if (belongsToHost(oldFocus) && isMappedWin(oldFocus)) {
+              target = oldFocus;
             }
 
-            // Last resort: focus the host.
-            if (target == 0) target = c.xid;
+            // 1) Otherwise, prefer pointer owner if it belongs to this host, is mapped, and isn't just host.
+            if (!target) {
+              uint32_t p = ctx.input().pointer_xid;
+              if (p != 0 && p != host && belongsToHost(p) && isMappedWin(p)) {
+                target = p;
+              }
+            }
 
+            // 2) Otherwise choose deepest mapped under current host-local pointer.
+            if (!target) {
+              target = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+                                                               ctx.input().win_x_u,
+                                                               ctx.input().win_y_u);
+              if (target && !isMappedWin(target)) target = 0;
+            }
+
+            // 3) Last resort: focus the host itself.
+            if (!target) target = host;
+
+            // Update focus bookkeeping.
             ctx.input().focus_xid = target;
 
-            // Also make pointer_xid follow focus when not dragging/grabbing.
+            // Pointer_xid follow-focus only when not dragging/grabbing (keep your behavior).
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = target;
 
+            // ---- CRITICAL: emit FocusOut/FocusIn to clients ----
+            // Only send FocusOut if oldFocus was real and on this host.
+            if (oldFocus && oldFocus != target && belongsToHost(oldFocus)) {
+              srv->eventOps().sendFocusEvent(ctx, oldFocus, /*is_in=*/false);
+            }
+            // FocusIn for new target (host or child).
+            srv->eventOps().sendFocusEvent(ctx, target, /*is_in=*/true);
+
         #ifndef NDEBUG
-            fprintf(stderr, "[FOCUS] host=0x%08X focus_xid=0x%08X pointer_xid=0x%08X win=(%d,%d)\n",
-                    (unsigned)c.xid,
+            fprintf(stderr, "[FOCUS] host=0x%08X old=0x%08X new=0x%08X pointer_xid=0x%08X win=(%d,%d)\n",
+                    (unsigned)host,
+                    (unsigned)oldFocus,
                     (unsigned)ctx.input().focus_xid,
                     (unsigned)ctx.input().pointer_xid,
                     (int)ctx.input().win_x_u,
@@ -376,14 +411,22 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
         #endif
 
           } else {
-            if (ctx.input().focus_host == c.xid) ctx.input().focus_host = 0;
+            // Losing focus on this host: emit FocusOut for current focus if it belongs to this host.
+            if (ctx.input().focus_host == host) ctx.input().focus_host = 0;
+
+            if (oldFocus && belongsToHost(oldFocus)) {
+              srv->eventOps().sendFocusEvent(ctx, oldFocus, /*is_in=*/false);
+            }
+
             ctx.input().focus_xid = 0;
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
 
         #ifndef NDEBUG
-            fprintf(stderr, "[FOCUS] host=0x%08X lost focus\n", (unsigned)c.xid);
+            fprintf(stderr, "[FOCUS] host=0x%08X lost focus (old=0x%08X)\n",
+                    (unsigned)host, (unsigned)oldFocus);
         #endif
           }
+
           break;
         }
 
@@ -408,6 +451,27 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             if (!under) under = host;
           }
 
+          // ---- CLICK-TO-FOCUS (this is the key for xterm caret) ----
+          if (c.isDown != 0 && c.button == 1) { // left press
+            const uint32_t prev = ctx.input().focus_xid;
+
+            // Focus should follow the deepest real window under pointer (NOT "deliver").
+            ctx.input().setFocus(host, under);
+
+          #ifndef NDEBUG
+            fprintf(stderr,
+                    "[FOCUS_SET] host=0x%08X prev=0x%08X new=0x%08X\n",
+                    (unsigned)host, (unsigned)prev, (unsigned)under);
+          #endif
+
+            if (prev && prev != under) {
+              srv->eventOps().sendFocusEvent(ctx, prev, /*is_in=*/false);
+            }
+            srv->eventOps().sendFocusEvent(ctx, under, /*is_in=*/true);
+          }
+          
+          
+          
           // Pick a delivery window that selected the relevant mask.
           auto wantsBtn = [&](uint32_t xid) -> bool {
             if (!xid) return false;
@@ -528,12 +592,16 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
         // ------------------- Key
         case HostCmdType::Key: {
           const uint32_t host = (c.xid != 0) ? c.xid : ctx.input().focus_host;
+          if (!host) break;
 
           // Clamp X11 keycode: mac_vk + 8, range [8..255]
           uint32_t kc32 = (uint32_t)c.keyCode + 8u;
           if (kc32 < 8u)   kc32 = 8u;
           if (kc32 > 255u) kc32 = 255u;
           const uint8_t x11_kc = (uint8_t)kc32;
+
+          // Keep canonical mods in sync
+          ctx.input().mods = c.modsMask;
 
           auto wantsKey = [&](uint32_t xid) -> bool {
             if (!xid) return false;
@@ -545,46 +613,35 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             return c.isDown ? wantPress : wantRelease;
           };
 
-          const uint32_t focus = ctx.input().focus_xid;
-
-          uint32_t under = 0;
-          if (host != 0) {
-            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
-                                                            ctx.input().win_x_u,
-                                                            ctx.input().win_y_u);
-          }
-
-          // Preferred delivery:
-          //  - If focus is a real child and wants the event, use it.
-          //  - If focus is host (common in rootless bring-up) and 'under' is a child that wants it, use under.
-          //  - Otherwise fall back focus -> under -> host.
+          // Primary: keyboard focus (only if it belongs to this host)
           uint32_t target = 0;
-
-          const bool focusIsHost = (focus != 0 && focus == host);
-
-          if (!focusIsHost && wantsKey(focus)) {
-            target = focus;
-          } else if (focusIsHost && under != 0 && under != host && wantsKey(under)) {
-            target = under;
-          } else if (wantsKey(focus)) {
-            target = focus;
-          } else if (wantsKey(under)) {
-            target = under;
-          } else if (wantsKey(host)) {
-            target = host;
-          } else {
-            break; // nobody is selecting this key event
+          const uint32_t focus = ctx.input().focus_xid;
+          if (focus != 0) {
+            const uint32_t focusHost = ctx.windows().topLevelAncestorOf(focus);
+            if (focusHost == host) target = focus;
           }
+          if (!target) target = host; // fallback: host
 
-          // Keep canonical mods in sync
-          ctx.input().mods = c.modsMask;
+          // If target doesn't select, climb parent chain until host (simple propagation).
+          if (!wantsKey(target)) {
+            uint32_t cur = target;
+            int safety = 0;
+            while (cur && cur != host) {
+              x11::WindowView vw{};
+              if (!ctx.windows().snapshot(cur, vw)) break;
+              cur = vw.parent_xid;
+              if (wantsKey(cur)) { target = cur; break; }
+              if (++safety > 64) break;
+            }
+            if (!wantsKey(target) && wantsKey(host)) target = host;
+            if (!wantsKey(target)) break; // nobody wants it
+          }
 
         #ifndef NDEBUG
           fprintf(stderr,
-                  "[KEY] host=0x%08X focus=0x%08X under=0x%08X deliver=0x%08X down=%d kc=%u mods=0x%X\n",
+                  "[KEY] host=0x%08X focus=0x%08X deliver=0x%08X down=%d kc=%u mods=0x%X\n",
                   (unsigned)host,
                   (unsigned)focus,
-                  (unsigned)under,
                   (unsigned)target,
                   (int)(c.isDown != 0),
                   (unsigned)x11_kc,

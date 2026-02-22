@@ -420,6 +420,12 @@ final class X11View: NSView {
       guard let mv = self.mtkView else { return }
       guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else { return }
       
+      if usingMetal, let mv = self.mtkView {
+        let ds = mv.drawableSize
+        let scale = self.window?.backingScaleFactor ?? -1
+        print("[PRESENT][Metal] xid=\(xid) src=\(width)x\(height) drawable=\(Int(ds.width))x\(Int(ds.height)) scale=\(scale)")
+      }
+      
       self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow)
       
       // Ask MTKView to draw exactly once (draw(in:) will use currentDrawable and present).
@@ -552,7 +558,8 @@ final class X11View: NSView {
     view.colorPixelFormat = .bgra8Unorm
     view.preferredFramesPerSecond = 0
     
-    self.renderer = X11MetalRenderer(device: device)
+    //self.renderer = X11MetalRenderer(device: device)
+    self.renderer = X11MetalRenderer(view: view)
     
     addSubview(view, positioned: .above, relativeTo: nil)
     self.mtkView = view

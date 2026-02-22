@@ -437,6 +437,19 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
     if (cw <= 0 || ch <= 0) return;
 
+#ifndef NDEBUG
+  if (cw > 0 && ch > 0 && cw <= 48 && ch <= 96 && (cw * ch) <= 2048) {
+    x11::GCState gst{};
+    (void)x11::GCTable::instance().find(gcXid, gst);
+    fprintf(stderr,
+            "[SMALL_COPYAREA] src=0x%08X dst=0x%08X gc=0x%08X fn=%u pm=0x%08X "
+            "src=(%d,%d) dst=(%d,%d) wh=%dx%d\n",
+            (unsigned)src, (unsigned)dst, (unsigned)gcXid,
+            (unsigned)gst.function, (unsigned)gst.plane_mask,
+            sx0, sy0, dx0, dy0, cw, ch);
+  }
+#endif
+    
     // ------------------------------------------------------------
     // Copy / ROP with overlap-safe ordering
     // ------------------------------------------------------------

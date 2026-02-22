@@ -85,10 +85,29 @@ XProtoServer::XProtoServer()
 x11::XProtoServer::~XProtoServer() = default;
   
 
+// ----------------------------------------------
 int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                            const uint8_t* payload, std::size_t remain)
 {
   ByteReader br(payload, remain);
+  
+#ifndef NDEBUG
+  // Put this right after you decode major/minor/seq:
+  if (major == 70 || // PolyFillRectangle
+      major == 62 || // CopyArea
+      major == 63 || // CopyPlane
+      major == 72 || // PutImage
+      major == 74 || // PolyText8
+      major == 75 || // PolyText16
+      major == 76 || // ImageText8
+      major == 77 || // ImageText16
+      major == 65 || // PolyLine (underline cursor sometimes)
+      major == 66)   // PolySegment
+  {
+    fprintf(stderr, "[WATCH] major=%u minor=%u seq=%u remain=%zu\n",
+            (unsigned)major, (unsigned)minor, (unsigned)seq, br.remaining());
+  }
+#endif
   
 #ifndef NDEBUG
   fprintf(stderr, "[DISPATCH] major=%u minor=%u seq=%u remain=%zu\n",

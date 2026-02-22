@@ -203,6 +203,26 @@ static void buildMotionEvent32(uint8_t ev[32],
   ev[30] = 1; // same_screen
 }  
   
+ 
+static void buildFocusEvent32(uint8_t ev[32],
+                              uint8_t type,       // 9 FocusIn, 10 FocusOut
+                              uint8_t detail,     // NotifyDetail (use 3 = NotifyNonlinear for bring-up)
+                              uint16_t seqField,
+                              uint32_t eventWid,
+                              uint8_t mode,       // NotifyMode (0 = NotifyNormal)
+                              uint8_t same_screen // 1
+)
+{
+  std::memset(ev, 0, 32);
+  ev[0] = type;
+  ev[1] = detail;
+  wire::wr16_le(ev + 2, seqField);
+  wire::wr32_le(ev + 4, eventWid);
+  ev[8] = mode;
+  ev[9] = same_screen ? 1 : 0;
+  // ev[10..31] remain 0
+}  
+  
   
 void EventOps::handle(uint8_t majorOpcode, uint8_t minorOpcode, ByteReader& br) {
   // For now, no core “event opcodes” exist in core X11.
@@ -524,5 +544,34 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   ctx.transport().sendEvent32(wid, ev);
 }  
   
+  
+  
+void EventOps::sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in)
+{
+  if (!wid) return;
+
+  const x11::WindowView* vw = ctx.window(wid);
+  if (!vw || vw->owner_fd <= 0) return;
+
+  // Only deliver if client selected FocusChangeMask
+  const bool wantFocus = (vw->event_mask & x11::mask::FocusChange) != 0;
+  if (!wantFocus) return;
+
+  uint8_t ev[32];
+  const uint8_t type   = is_in ? 9 : 10;   // FocusIn / FocusOut
+  const uint8_t detail = 3;                // NotifyNonlinear (good bring-up default)
+  const uint8_t mode   = 0;                // NotifyNormal
+  const uint8_t same   = 1;
+
+  buildFocusEvent32(ev,
+                    type,
+                    detail,
+                    ctx.transport().lastSeq(),
+                    wid,
+                    mode,
+                    same);
+
+  ctx.transport().sendEvent32(wid, ev);
+} 
   
 } // namespace x11

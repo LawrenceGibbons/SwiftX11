@@ -42,7 +42,6 @@
 		5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = X11LowLevel.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		52814A6A2F3E931C003CF94A /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = TODO.md; path = docs/TODO.md; sourceTree = "<group>"; };
 		52814ACA2F43662D003CF94A /* fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fonts; path = X11LowLevel/Resources/fonts; sourceTree = "<group>"; };
-		528AC14E2F33B94300186633 /* TylerFit */ = {isa = PBXFileReference; lastKnownFileType = text; path = TylerFit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -209,7 +208,6 @@
 				52814ACA2F43662D003CF94A /* fonts */,
 				52814A6D2F40D674003CF94A /* Ignore documents */,
 				52814A6A2F3E931C003CF94A /* TODO.md */,
-				528AC14E2F33B94300186633 /* TylerFit */,
 				5225BD792F0489A9009E510B /* SwiftX11 */,
 				5225BDDC2F05AF2B009E510B /* X11LowLevel */,
 				5225BD782F0489A9009E510B /* Products */,

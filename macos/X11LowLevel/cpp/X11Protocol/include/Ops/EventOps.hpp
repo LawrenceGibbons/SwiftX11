@@ -112,6 +112,9 @@ namespace x11 {
                            int32_t root_x, int32_t root_y,
                            uint32_t buttons, uint32_t mods);
     
+    
+    void sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
+    
   private:
     XProtoContext& ctx_;
   };

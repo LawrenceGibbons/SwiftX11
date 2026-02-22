@@ -18,6 +18,7 @@
 #include "Core/DrawableRW.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Utils/RasterOp.hpp"
+#include "timestamp.hpp"
 
 // bridge to C and Swift
 #include "x11_requests.h"
@@ -111,6 +112,22 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     for (std::size_t i = 0; i < nRects; i++) {
       if (br.remaining() < 8) break;   // defensive
+      
+      // Ops/ShapeOps.cpp  (inside handlePolyFillRectangle)
+
+      #ifndef NDEBUG
+        auto isSmall = [](int32_t w, int32_t h) -> bool {
+          // “caret-ish”: small box, not a full repaint.
+          return (w > 0 && h > 0 && w <= 48 && h <= 96 && (w * h) <= 2048);
+        };
+
+        // Optional: rate-limit so logs don’t explode.
+        static uint64_t s_lastPrintMs = 0;
+        auto nowMs = []() -> uint64_t {
+          // Use whatever you already have. If you have x11_now_ms_monotonic(), use it.
+          return (uint64_t)(x11_now_ms_monotonic());
+        };
+      #endif
 
       const  int16_t rx = br.readI16();
       const  int16_t ry = br.readI16();
@@ -129,6 +146,26 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       int32_t x1 = std::min<int32_t>((int32_t)dst.w, rx1);
       int32_t y1 = std::min<int32_t>((int32_t)dst.h, ry1);
       if (x0 >= x1 || y0 >= y1) continue;
+      
+#ifndef NDEBUG
+  const int32_t cw = (x1 - x0);
+  const int32_t ch = (y1 - y0);
+
+  if (isSmall(cw, ch)) {
+    const uint64_t t = nowMs();
+    if (t - s_lastPrintMs >= 25) { // print at most ~40Hz
+      s_lastPrintMs = t;
+      fprintf(stderr,
+              "[SMALL_RECT] t=%llu drawable=0x%08X gc=0x%08X fn=%u pm=0x%08X fg=0x%08X rect=(%d,%d %dx%d)\n",
+              (unsigned long long)t,
+              (unsigned)drawable, (unsigned)gcXid,
+              (unsigned)(gst.function & 0xFFu),
+              (unsigned)gst.plane_mask,
+              (unsigned)fg,
+              (int)x0, (int)y0, (int)cw, (int)ch);
+    }
+  }
+#endif
 
     #ifndef NDEBUG
       // Very useful for caret debugging: small rects with non-copy functions.
