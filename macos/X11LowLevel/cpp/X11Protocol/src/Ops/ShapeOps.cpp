@@ -183,7 +183,7 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       wroteAnything = true;
 
       for (int32_t y = y0; y < y1; y++) {
-        uint32_t* row = dst.pixels32 + (std::size_t)y * (std::size_t)dst.w;
+        uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
 
         if (fastFill) {
           for (int32_t x = x0; x < x1; x++) {

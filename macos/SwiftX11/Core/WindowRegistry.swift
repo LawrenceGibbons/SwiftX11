@@ -113,7 +113,7 @@ final class WindowRegistry {
   private var closingXids = Set<UInt32>()
   private var mappedXids = Set<UInt32>()
   
-//  var useMetalForNewWindows: Bool = false  // set from UI on launch / changes
+  //var useMetalForNewWindows: Bool = false  // set from UI on launch / changes
   var useMetalForNewWindows: Bool = true  // set from UI on launch / changes
   
   private func installWindowObservers(xid: UInt32, window: NSWindow) {

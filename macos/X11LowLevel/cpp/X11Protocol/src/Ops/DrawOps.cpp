@@ -807,7 +807,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   }
   
   
-  void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t seq, uint8_t exposures, ByteReader& br)
+  void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t /*seq*/, uint8_t exposures, ByteReader& br)
   {
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
@@ -818,22 +818,23 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
 
-#ifndef NDEBUG
-  if (wid == 0x10000012u) {
-    fprintf(stderr,
-            "[ClearArea] wid=0x%08X x=%d y=%d w=%u h=%u exposures=%u\n",
-            (unsigned)wid,
-            (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
-            (unsigned)exposures);
-  }
-#endif
-    
+  #ifndef NDEBUG
+    if (wid == 0x10000012u) {
+      fprintf(stderr,
+              "[ClearArea] wid=0x%08X x=%d y=%d w=%u h=%u exposures=%u\n",
+              (unsigned)wid,
+              (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
+              (unsigned)exposures);
+    }
+  #endif
+
     if (wid == 0) return;
     if (!ctx.windows().exists(wid)) return;
 
-    uint32_t* pixels = nullptr;
-    uint32_t fbW = 0, fbH = 0;
-    if (!x11_xproto_window_fb_rw(wid, &pixels, &fbW, &fbH) || !pixels || fbW == 0 || fbH == 0) return;
+    // Resolve writable pixels (SurfaceRegistry preferred; C FB fallback).
+    x11::DrawableRW dst{};
+    if (!x11::resolveDrawableRW(ctx, wid, dst)) return;
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
     int x0 = (int)x;
     int y0 = (int)y;
@@ -841,41 +842,42 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     // clamp start
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x0 > (int)fbW) x0 = (int)fbW;
-    if (y0 > (int)fbH) y0 = (int)fbH;
+    if (x0 > (int)dst.w) x0 = (int)dst.w;
+    if (y0 > (int)dst.h) y0 = (int)dst.h;
 
     // width/height == 0 => to edge from clamped origin
-    int x1 = (wpx == 0) ? (int)fbW : (x0 + (int)wpx);
-    int y1 = (hpx == 0) ? (int)fbH : (y0 + (int)hpx);
+    int x1 = (wpx == 0) ? (int)dst.w : (x0 + (int)wpx);
+    int y1 = (hpx == 0) ? (int)dst.h : (y0 + (int)hpx);
 
     // clamp end
-    if (x1 > (int)fbW) x1 = (int)fbW;
-    if (y1 > (int)fbH) y1 = (int)fbH;
+    if (x1 > (int)dst.w) x1 = (int)dst.w;
+    if (y1 > (int)dst.h) y1 = (int)dst.h;
 
     if (x0 >= x1 || y0 >= y1) return;
 
+    // Bring-up behavior: clear to white (opaque).
+    // (Later: use window background / GC background depending on spec decisions.)
     const uint32_t bg = 0xFFFFFFFFu;
+
     for (int yy = y0; yy < y1; yy++) {
-      uint32_t* row = pixels + (size_t)yy * (size_t)fbW;
-      for (int xx = x0; xx < x1; xx++) row[xx] = bg;
+      uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+      for (int xx = x0; xx < x1; xx++) row[(size_t)xx] = bg;
     }
 
-    // Damage -> present
-    damageOrDirty(ctx, wid);
+    // Damage -> present (only meaningful for windows)
+    if (dst.isWindow) {
+      damageOrDirty(ctx, wid);
+    }
 
     // Exposures requested? Queue expose rect (Transport flush will filter by mask/mapped).
-    if (exposures) {
-      if (const WindowView* vw = ctx.window(wid)) {
-        // Queue the cleared rect; flush will decide whether to actually send Expose.
-        ctx.transport().queueExposeRect(
-          wid,
-          (uint16_t)x0, (uint16_t)y0,
-          (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
-          0
-        );
-      }
+    if (exposures && dst.isWindow) {
+      ctx.transport().queueExposeRect(
+        wid,
+        (uint16_t)x0, (uint16_t)y0,
+        (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
+        0
+      );
     }
-    
   }
   
   

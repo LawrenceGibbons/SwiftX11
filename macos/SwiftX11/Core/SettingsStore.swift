@@ -11,8 +11,9 @@ final class SettingsStore: ObservableObject {
   }
 
   init() {
-      self.displayNumber = UserDefaults.standard.object(forKey: "displayNumber") as? Int ?? 0
-      self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? true
+    self.displayNumber = UserDefaults.standard.object(forKey: "displayNumber") as? Int ?? 0
+    //self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? false
+    self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? true
   }
 
   @Published var enableClipboard: Bool = true

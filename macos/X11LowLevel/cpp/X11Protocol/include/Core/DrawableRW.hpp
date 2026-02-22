@@ -11,41 +11,37 @@
 
 namespace x11 {
 
-// Unified writable drawable view used by DrawOps / ShapeOps / future ops.
-//
-// Exactly one of (pixels32, bits1) is non-null.
-// - pixels32 : 32bpp ARGB framebuffer
-// - bits1    : packed 1bpp bitmap (LSBFirst)
-//
-// If is_window == true, caller must enqueue damage after modification.
-  
-  
-class XProtoContext;
+  // Unified writable drawable view used by DrawOps / ShapeOps / future ops.
+  //
+  // Exactly one of (pixels32, bits1) is non-null.
+  // - pixels32 : 32bpp little-endian pixels (BGRA/XRGB depending on your pipeline; alpha is treated as opaque).
+  // - bits1    : packed 1bpp bitmap (LSBFirst).
+  //
+  // NOTE: pixels32 may be *strided* (bytesPerRow alignment). Always use stridePixels (or bytesPerRow)
+  // when stepping rows; do NOT assume row stride == w.
+  //
+  // If is_window == true, caller must mark dirty / enqueue damage after modification (typically on the host).
   
 struct DrawableRW {
-  bool isWindow = false;
-  bool isPixmap = false;          // optional but useful
-  uint8_t depth = 0;              // optional, but good future-proofing
+  uint32_t* pixels32 = nullptr;
 
   uint16_t w = 0;
   uint16_t h = 0;
 
-  // 32bpp
-  uint32_t* pixels32 = nullptr;
+  // NEW: stride in pixels (row-to-row step), not necessarily == w.
+  uint32_t stridePixels = 0;
 
-  // 1bpp
-  uint8_t*  bits1 = nullptr;
-  uint32_t  stride_bytes = 0;
+  bool isWindow = false;
+  bool isPixmap = false;
+
+  uint8_t depth = 32;
 };
 
-  
-  
-  bool resolveDrawableRW(XProtoContext& ctx,
-                         uint32_t drawable,
-                         DrawableRW& out);
+class XProtoContext;
 
-  
-  
+// Returns true if drawable is a WINDOW or PIXMAP with writable 32bpp pixels.
+bool resolveDrawableRW(XProtoContext& ctx, uint32_t drawable, DrawableRW& out);
+
 } // namespace x11
 
 extern "C" int x11_xproto_window_fb_rw(uint32_t xid,
