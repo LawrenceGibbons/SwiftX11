@@ -13,6 +13,7 @@
 #include "x11_requests.h"
 #include "Core/HostResize.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "UI/UICommandQueue.hpp"
 
 // bridge
 extern "C" {
@@ -63,71 +64,159 @@ void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
 }
 
-// ---- STUBS ----
-// For now, just consume the request body so clients keep going.
-// We’ll port each handler one-by-one from x11_xproto.c, keeping C authoritative
-// until we’re ready to move window state into C++.
-
-void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br)
+// -------------------- CreateWindow
+void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t depth, ByteReader& br)
 {
-  // Matches C: remain < 28 guard (but here br is already the "remain" region)
   if (br.remaining() < 28) { br.skip(br.remaining()); return; }
 
   const uint32_t wid    = br.readU32();
   const uint32_t parent = br.readU32();
   const int16_t  x      = (int16_t)br.readU16();
   const int16_t  y      = (int16_t)br.readU16();
-  uint16_t wpx          = br.readU16();
-  uint16_t hpx          = br.readU16();
+  const uint16_t wpx    = br.readU16();
+  const uint16_t hpx    = br.readU16();
 
   (void)br.readU16(); // borderWidth
   (void)br.readU16(); // class
   (void)br.readU32(); // visual
   const uint32_t vmask = br.readU32();
 
-  // Parse value-list for CWEventMask (bit 11), same as your C code.
   uint32_t event_mask = 0;
-  if (vmask & (1u << 11)) {
-    for (uint32_t bit = 0; bit < 32; bit++) {
-      if (!(vmask & (1u << bit))) continue;
-      if (br.remaining() < 4) break;
-      const uint32_t val = br.readU32();
-      if (bit == 11) event_mask = val;
-    }
-  } else {
-    // Still must consume any remaining value list/padding
-    // (Some clients include extra padding; safest is to just skip remaining.)
+  // Consume values for *all* bits set; only record bit 11.
+  for (uint32_t bit = 0; bit < 32; bit++) {
+    if (!(vmask & (1u << bit))) continue;
+    if (br.remaining() < 4) break;
+    const uint32_t val = br.readU32();
+    if (bit == 11) event_mask = val;
   }
-
-  // Consume any extra trailing bytes/padding
   br.skip(br.remaining());
 
-  // Update authoritative WindowTable (C++ side)
+  // ---- VALIDATION (multi-client correctness) ----
+  // 0) width/height must be nonzero
+  if (wpx == 0 || hpx == 0) {
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, wid, x11::opcode::CreateWindow);
+    return;
+  }
+
+  // 1) wid must be in this client's id space
+  if (!ctx.transport().clientOwnsXid(wid)) {
+    ctx.transport().sendErrorCore(x11::error::BadIDChoice, seq, wid, x11::opcode::CreateWindow);
+    return;
+  }
+
+  // 2) wid must be unused
+  x11::WindowView tmp{};
+  if (ctx.windows().snapshot(wid, tmp)) {
+    ctx.transport().sendErrorCore(x11::error::BadIDChoice, seq, wid, x11::opcode::CreateWindow);
+    return;
+  }
+
+  // 3) parent must exist (root=1 is always valid in your model)
+  if (parent != 1) {
+    if (!ctx.windows().snapshot(parent, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CreateWindow);
+      return;
+    }
+    // optional: enforce same-owner parent (good idea once multi-client)
+    if (tmp.owner_fd != ctx.transport().clientFd()) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CreateWindow);
+      return;
+    }
+  }
+
+  // ---- CREATE (server state only) ----
   const int owner_fd = ctx.transport().clientFd();
-  ctx.windows().upsert(wid, parent, x, y, (wpx ? wpx : 1), (hpx ? hpx : 1), event_mask, owner_fd);
+  ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
   ctx.windows().setMapped(wid, false);
   ctx.windows().setPresentable(wid, false);
 
-  // Allocate/refresh C-side slot+FB
+  // ---- FRAMEBUFFER OWNERSHIP PIVOT ----
+  // Delete ALL of this in the Swift-owned surface world:
+  //   x11_backend_fb_create_slot(...)
+  //   noteFbResizeDbg(...)
+  // ---- CURRENT (still C FB backed): allocate/refresh backing store ----
   int dirty = 0;
   if (!x11_backend_fb_create_slot(wid, wpx, hpx, owner_fd, &dirty)) {
     ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
+    // Spec-wise this is typically BadAlloc; use your constants if you like:
+    ctx.transport().sendErrorCore(x11::error::BadAlloc, seq, wid, x11::opcode::CreateWindow);
     return;
   }
-  // FB exists now; record the callsite that *actually* established it.
+  // FB exists now; record callsite
   ctx.windows().noteFbResizeDbg(wid, "CreateWindow", __FILE__, __LINE__);
-  
   if (dirty) ctx.windows().markDirty(wid);
-
-  // Enqueue Swift window creation (same behavior as enqueue_create_window)
-  // NOTE: If enqueue_create_window is C-static, call the request queue directly.
-  // This matches your existing enqueue_create_window() implementation.
+  //
+  // Instead: queue a UI command so Swift allocates the surface/backing store.
+  // (Top-level vs child policy stays in Swift/UI layer.)
   char title[64];
   snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
-  x11_requests_push_create(wid, parent, title, (int32_t)(wpx ? wpx : 1), (int32_t)(hpx ? hpx : 1));
-}
+
+  ctx.ui().pushCreate(wid, parent, title, (int32_t)wpx, (int32_t)hpx);
+
+  // Optional: mark dirty so first present/expose happens when mapped/presentable.
+  ctx.windows().markDirty(wid);
+}  
+//void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br)
+//{
+//  // Matches C: remain < 28 guard (but here br is already the "remain" region)
+//  if (br.remaining() < 28) { br.skip(br.remaining()); return; }
+//
+//  const uint32_t wid    = br.readU32();
+//  const uint32_t parent = br.readU32();
+//  const int16_t  x      = (int16_t)br.readU16();
+//  const int16_t  y      = (int16_t)br.readU16();
+//  uint16_t wpx          = br.readU16();
+//  uint16_t hpx          = br.readU16();
+//
+//  (void)br.readU16(); // borderWidth
+//  (void)br.readU16(); // class
+//  (void)br.readU32(); // visual
+//  const uint32_t vmask = br.readU32();
+//
+//  // Parse value-list for CWEventMask (bit 11), same as your C code.
+//  uint32_t event_mask = 0;
+//  if (vmask & (1u << 11)) {
+//    for (uint32_t bit = 0; bit < 32; bit++) {
+//      if (!(vmask & (1u << bit))) continue;
+//      if (br.remaining() < 4) break;
+//      const uint32_t val = br.readU32();
+//      if (bit == 11) event_mask = val;
+//    }
+//  } else {
+//    // Still must consume any remaining value list/padding
+//    // (Some clients include extra padding; safest is to just skip remaining.)
+//  }
+//
+//  // Consume any extra trailing bytes/padding
+//  br.skip(br.remaining());
+//
+//  // Update authoritative WindowTable (C++ side)
+//  const int owner_fd = ctx.transport().clientFd();
+//  ctx.windows().upsert(wid, parent, x, y, (wpx ? wpx : 1), (hpx ? hpx : 1), event_mask, owner_fd);
+//  ctx.windows().setMapped(wid, false);
+//  ctx.windows().setPresentable(wid, false);
+//
+//  // Allocate/refresh C-side slot+FB
+//  int dirty = 0;
+//  if (!x11_backend_fb_create_slot(wid, wpx, hpx, owner_fd, &dirty)) {
+//    ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
+//    return;
+//  }
+//  // FB exists now; record the callsite that *actually* established it.
+//  ctx.windows().noteFbResizeDbg(wid, "CreateWindow", __FILE__, __LINE__);
+//  
+//  if (dirty) ctx.windows().markDirty(wid);
+//
+//  // Enqueue Swift window creation (same behavior as enqueue_create_window)
+//  // NOTE: If enqueue_create_window is C-static, call the request queue directly.
+//  // This matches your existing enqueue_create_window() implementation.
+//  char title[64];
+//  snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
+//  x11_requests_push_create(wid, parent, title, (int32_t)(wpx ? wpx : 1), (int32_t)(hpx ? hpx : 1));
+//}
   
   
+  // -------------------- DestroyWindow
 void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   // Request body: CARD32 window
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }

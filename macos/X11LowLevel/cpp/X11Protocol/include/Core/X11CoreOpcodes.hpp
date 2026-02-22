@@ -189,4 +189,25 @@ static constexpr uint32_t OwnerGrabButton      = (1u << 24);
 
 } // namespace mask
 
+  
+namespace error {
+static constexpr uint8_t BadRequest   = 1;
+static constexpr uint8_t BadValue     = 2;
+static constexpr uint8_t BadWindow    = 3;
+static constexpr uint8_t BadPixmap    = 4;
+static constexpr uint8_t BadAtom      = 5;
+static constexpr uint8_t BadCursor    = 6;
+static constexpr uint8_t BadFont      = 7;
+static constexpr uint8_t BadMatch     = 8;
+static constexpr uint8_t BadDrawable  = 9;
+static constexpr uint8_t BadAccess    = 10;
+static constexpr uint8_t BadAlloc     = 11;
+static constexpr uint8_t BadColor     = 12;
+static constexpr uint8_t BadGC        = 13;
+static constexpr uint8_t BadIDChoice  = 14;
+static constexpr uint8_t BadName      = 15;
+static constexpr uint8_t BadLength    = 16;
+static constexpr uint8_t BadImplementation = 17;
+}
+  
 } // namespace x11

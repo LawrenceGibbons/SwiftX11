@@ -17,6 +17,7 @@
 #include "Ops/EventOps.hpp"
 #include "Core/XProtoContext.hpp"
 #include "Utils/WireLE.hpp" // your wire::wr16_le / wr32_le etc
+#include "Utils/WireErrors.hpp"
 
 // Your existing dbg_require_xproto_thread is currently in C.
 // Expose it as an extern so C++ can call it.
@@ -459,5 +460,18 @@ inline void sendUnmapNotify(XProtoContext& ctx,
 
   (void)ctx.transport().sendEvent32(window, ev.data());
 }
+  
+  
+bool XProtoTransport::sendError32(const uint8_t e[32]) {
+  return sendAll(e, 32);
+}
+
+bool XProtoTransport::sendErrorCore(uint8_t errorCode, uint16_t seq,
+                                    uint32_t resourceId, uint8_t majorCode)
+{
+  const auto e = x11::wireerr::buildCoreError32(errorCode, seq, resourceId, majorCode);
+  return sendAll(e.data(), e.size());
+}
+  
   
 } // namespace x11

@@ -14,8 +14,10 @@ extern "C" {
 #endif
 
 // Called once per accepted client session.
-void x11_proto_bridge_begin_session(int client_fd);
-
+void x11_proto_bridge_begin_session(int client_fd,
+                                    uint32_t rid_base,
+                                    uint32_t rid_mask);
+  
 // Called at end of session (disconnect).
 void x11_proto_bridge_end_session(int client_fd);
 

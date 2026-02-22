@@ -658,16 +658,21 @@ void x11_send_setup_failed_le(int fd, const char* reason)
 
 // Minimal SetupSuccess reply sufficient to get real clients to start sending requests.
 // Little-endian only for now; uses unaligned stores.
-void x11_send_setup_success_minimal_little_endian(int fd)
+void x11_send_setup_success_minimal_little_endian(int fd,
+                                                  uint32_t rid_base,
+                                                  uint32_t rid_mask)
 {
   // ---- Tunables / IDs
   const uint16_t proto_major = 11;
   const uint16_t proto_minor = 0;
-  const uint32_t rid_base    = 0x10000000u;
-  const uint32_t rid_mask    = 0x0FFFFFFFu;
+
+  // rid_base / rid_mask are per-client; passed in.
+  // (Do NOT redeclare them here.)
+
   const uint32_t root_xid    = 0x00000001u;
   const uint32_t root_visid  = 0x00000021u;
   const uint32_t root_cmap   = 0x00000020u;
+
 
   uint16_t screen_w_u  = 800, screen_h_u  = 600;
   uint16_t screen_w_mm = 270, screen_h_mm = 203;

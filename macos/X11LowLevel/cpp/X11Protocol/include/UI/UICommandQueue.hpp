@@ -7,31 +7,20 @@
 
 #pragma once
 #include <cstdint>
+#include "UI/UICommand.hpp"
 
 namespace x11 {
 
 class UICommandQueue {
 public:
-  // Server->UI commands (these currently map 1:1 to x11_requests_push_*)
-  bool pushCreate(uint32_t xid, uint32_t parent, const char* title_utf8, int32_t w_px, int32_t h_px);
-  bool pushDestroy(uint32_t xid);
-  bool pushMap(uint32_t xid);
-  bool pushUnmap(uint32_t xid);
-  bool pushConfigure(uint32_t xid, int32_t w_px, int32_t h_px);
-  bool pushSetTitle(uint32_t xid, const char* title_utf8);
-  bool pushDamage(uint32_t xid);
-  bool pushPresentable(uint32_t xid);
+  bool push(const UICommand& c);
 
-  // Server->UI cursor update for a *host* NSWindow (rootless).
-  // host_xid: top-level host window (the Cocoa window backing store)
-  // cursor_xid: X cursor resource ID (0 => default/inherit)
-  bool pushSetCursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape);
-  
-  // Host->server “rootless resize” (Swift/UI)
-  bool pushRootlessResize(uint32_t xid, int32_t w_px, int32_t h_px);
-
-  // Drain on server thread (Swift side calls today)
-  void drainOnServerThread();
+  // Optional wrappers for readability (NOT “per handler”; per command type)
+  bool pushCreate(uint32_t xid, uint32_t parent, const char* title, int32_t w, int32_t h) {
+    return push(UICommand{UICommand::Type::Create, xid, parent, w, h, 0, 0, title});
+  }
+  // ...others similarly...
+  void drainOnServerThread(); // or better: drain(std::vector<UICommand>& out)
 };
-
+  
 } // namespace x11

@@ -14,6 +14,7 @@
 
 namespace x11 {
 
+
 class ReplyWriter {
 public:
   explicit ReplyWriter(XProtoTransport& t) : t_(t) {}

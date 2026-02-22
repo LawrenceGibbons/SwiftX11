@@ -18,6 +18,15 @@ namespace x11 {
 class EventOps;
 class XProtoContext;
 
+struct ClientIdSpace {
+  uint32_t base = 0;
+  uint32_t mask = 0;
+
+  bool valid() const { return mask != 0; }
+  bool contains(uint32_t xid) const { return (xid & ~mask) == base; }
+};
+
+
 class XProtoTransport {
 public:
   XProtoTransport(XProtoContext& ctx, EventOps& evOps);
@@ -41,6 +50,12 @@ public:
   // Socket send primitive (enforces xproto thread)
   // Low-level primitive, do not use for events.
   bool sendAll(const void* buf, std::size_t n);
+  
+  // manage cliend ID's for multi-client work
+  void setClientIdSpace(uint32_t base, uint32_t mask) { idspace_.base = base; idspace_.mask = mask; }
+  const ClientIdSpace& clientIdSpace() const { return idspace_; }
+  bool clientOwnsXid(uint32_t xid) const { return idspace_.valid() && idspace_.contains(xid); }
+
 
   // ---- API split (enforced policy) ----
   // Replies/handshake data: raw bytes to the current client connection.
@@ -73,13 +88,19 @@ public:
   uint8_t last_request_minor_ = 0;
   uint16_t last_request_seq_  = 0;
   
+  // handle error replies
+  bool sendError32(const uint8_t e[32]); // raw
+  bool sendErrorCore(uint8_t errorCode, uint16_t seq, uint32_t resourceId, uint8_t majorCode);
+  
   void debugResetReplyTracker(); // call on begin/end session
 
 private:
+  
+  int client_fd_ = -1;
+  ClientIdSpace idspace_{};
+
   XProtoContext& ctx_;
   EventOps& evOps_;
-
-  int client_fd_ = -1;
 
   // Thread identity
   pthread_t xproto_thread_{};

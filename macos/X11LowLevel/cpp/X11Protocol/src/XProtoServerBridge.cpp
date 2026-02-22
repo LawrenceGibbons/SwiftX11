@@ -125,7 +125,9 @@ static std::atomic<x11::XProtoServer*> g_srv{nullptr};
 extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
 extern "C" void x11_cpp_notify_shutdown(void); 
 
-extern "C" void x11_proto_bridge_begin_session(int client_fd)
+extern "C" void x11_proto_bridge_begin_session(int client_fd,
+                                               uint32_t rid_base,
+                                               uint32_t rid_mask)
 {
   std::lock_guard<std::mutex> lock(g_mu);
   if (client_fd < 0) return;
@@ -138,6 +140,10 @@ extern "C" void x11_proto_bridge_begin_session(int client_fd)
   }
   
   // 2) Configure server plumbing for THIS session.
+  srv->attachClientFd(client_fd);
+  srv->setXprotoThreadSelf();
+  srv->transport().setClientIdSpace(rid_base, rid_mask);
+  
   srv->attachClientFd(client_fd);
   srv->setXprotoThreadSelf();
   

@@ -44,7 +44,15 @@
             (unsigned)host, (unsigned)target, (unsigned)cursorXid, (int)shape);
 #endif
     
-    ctx.ui().pushSetCursor(host, cursorXid, (int32_t)shape);
+    ctx.ui().push(x11::UICommand{
+      x11::UICommand::Type::SetCursor,
+      /*xid=*/host,
+      /*parent=*/0,
+      /*w_px=*/0, /*h_px=*/0,
+      /*cursor_xid=*/cursorXid,
+      /*shape=*/(int32_t)shape,
+      /*title_utf8=*/nullptr
+    });
   }
   
 

@@ -1,0 +1,1078 @@
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/include/Core/X11CoreOpcodes.hpp b/macos/X11LowLevel/cpp/X11Protocol/include/Core/X11CoreOpcodes.hpp
+index e26d349..1b8f638 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/include/Core/X11CoreOpcodes.hpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/include/Core/X11CoreOpcodes.hpp
+@@ -189,4 +189,25 @@ static constexpr uint32_t OwnerGrabButton      = (1u << 24);
+ 
+ } // namespace mask
+ 
++  
++namespace error {
++static constexpr uint8_t BadRequest   = 1;
++static constexpr uint8_t BadValue     = 2;
++static constexpr uint8_t BadWindow    = 3;
++static constexpr uint8_t BadPixmap    = 4;
++static constexpr uint8_t BadAtom      = 5;
++static constexpr uint8_t BadCursor    = 6;
++static constexpr uint8_t BadFont      = 7;
++static constexpr uint8_t BadMatch     = 8;
++static constexpr uint8_t BadDrawable  = 9;
++static constexpr uint8_t BadAccess    = 10;
++static constexpr uint8_t BadAlloc     = 11;
++static constexpr uint8_t BadColor     = 12;
++static constexpr uint8_t BadGC        = 13;
++static constexpr uint8_t BadIDChoice  = 14;
++static constexpr uint8_t BadName      = 15;
++static constexpr uint8_t BadLength    = 16;
++static constexpr uint8_t BadImplementation = 17;
++}
++  
+ } // namespace x11
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/include/Ops/ReplyWriter.hpp b/macos/X11LowLevel/cpp/X11Protocol/include/Ops/ReplyWriter.hpp
+index 635dc9d..f066742 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/include/Ops/ReplyWriter.hpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/include/Ops/ReplyWriter.hpp
+@@ -14,6 +14,7 @@
+ 
+ namespace x11 {
+ 
++
+ class ReplyWriter {
+ public:
+   explicit ReplyWriter(XProtoTransport& t) : t_(t) {}
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/include/Transport/XProtoTransport.hpp b/macos/X11LowLevel/cpp/X11Protocol/include/Transport/XProtoTransport.hpp
+index af4ebe2..751e581 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/include/Transport/XProtoTransport.hpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/include/Transport/XProtoTransport.hpp
+@@ -18,6 +18,15 @@ namespace x11 {
+ class EventOps;
+ class XProtoContext;
+ 
++struct ClientIdSpace {
++  uint32_t base = 0;
++  uint32_t mask = 0;
++
++  bool valid() const { return mask != 0; }
++  bool contains(uint32_t xid) const { return (xid & ~mask) == base; }
++};
++
++
+ class XProtoTransport {
+ public:
+   XProtoTransport(XProtoContext& ctx, EventOps& evOps);
+@@ -41,6 +50,12 @@ public:
+   // Socket send primitive (enforces xproto thread)
+   // Low-level primitive, do not use for events.
+   bool sendAll(const void* buf, std::size_t n);
++  
++  // manage cliend ID's for multi-client work
++  void setClientIdSpace(uint32_t base, uint32_t mask) { idspace_.base = base; idspace_.mask = mask; }
++  const ClientIdSpace& clientIdSpace() const { return idspace_; }
++  bool clientOwnsXid(uint32_t xid) const { return idspace_.valid() && idspace_.contains(xid); }
++
+ 
+   // ---- API split (enforced policy) ----
+   // Replies/handshake data: raw bytes to the current client connection.
+@@ -73,14 +88,20 @@ public:
+   uint8_t last_request_minor_ = 0;
+   uint16_t last_request_seq_  = 0;
+   
++  // handle error replies
++  bool sendError32(const uint8_t e[32]); // raw
++  bool sendErrorCore(uint8_t errorCode, uint16_t seq, uint32_t resourceId, uint8_t majorCode);
++  
+   void debugResetReplyTracker(); // call on begin/end session
+ 
+ private:
++  
++  int client_fd_ = -1;
++  ClientIdSpace idspace_{};
++
+   XProtoContext& ctx_;
+   EventOps& evOps_;
+ 
+-  int client_fd_ = -1;
+-
+   // Thread identity
+   pthread_t xproto_thread_{};
+   bool xproto_thread_valid_ = false;
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommand.hpp b/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommand.hpp
+index 9ebcc34..f8a707f 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommand.hpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommand.hpp
+@@ -5,8 +5,32 @@
+ //  Created by Lawrence Gibbons on 2/22/26.
+ //
+ 
+-#ifndef UICommand_h
+-#define UICommand_h
++// UI/UICommand.hpp
++#pragma once
++#include <cstdint>
+ 
++namespace x11 {
+ 
+-#endif /* UICommand_h */
++struct UICommand {
++  enum class Type : uint8_t {
++    Create, Destroy, Map, Unmap, Configure, SetTitle, Damage, Presentable, SetCursor,
++    // later: DamageRects, etc.
++  };
++
++  Type type{};
++  uint32_t xid = 0;
++  uint32_t parent = 0;
++
++  // geometry
++  int32_t w_px = 0;
++  int32_t h_px = 0;
++
++  // cursor
++  uint32_t cursor_xid = 0;
++  int32_t shape = 0;
++
++  // title: pointer must remain valid until drained (or store fixed-size inline buffer)
++  const char* title_utf8 = nullptr;
++};
++
++} // namespace x11
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommandQueue.hpp b/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommandQueue.hpp
+index bd2f845..6c66471 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommandQueue.hpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/include/UI/UICommandQueue.hpp
+@@ -7,31 +7,20 @@
+ 
+ #pragma once
+ #include <cstdint>
++#include "UI/UICommand.hpp"
+ 
+ namespace x11 {
+ 
+ class UICommandQueue {
+ public:
+-  // Server->UI commands (these currently map 1:1 to x11_requests_push_*)
+-  bool pushCreate(uint32_t xid, uint32_t parent, const char* title_utf8, int32_t w_px, int32_t h_px);
+-  bool pushDestroy(uint32_t xid);
+-  bool pushMap(uint32_t xid);
+-  bool pushUnmap(uint32_t xid);
+-  bool pushConfigure(uint32_t xid, int32_t w_px, int32_t h_px);
+-  bool pushSetTitle(uint32_t xid, const char* title_utf8);
+-  bool pushDamage(uint32_t xid);
+-  bool pushPresentable(uint32_t xid);
++  bool push(const UICommand& c);
+ 
+-  // Server->UI cursor update for a *host* NSWindow (rootless).
+-  // host_xid: top-level host window (the Cocoa window backing store)
+-  // cursor_xid: X cursor resource ID (0 => default/inherit)
+-  bool pushSetCursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape);
+-  
+-  // Host->server “rootless resize” (Swift/UI)
+-  bool pushRootlessResize(uint32_t xid, int32_t w_px, int32_t h_px);
+-
+-  // Drain on server thread (Swift side calls today)
+-  void drainOnServerThread();
++  // Optional wrappers for readability (NOT “per handler”; per command type)
++  bool pushCreate(uint32_t xid, uint32_t parent, const char* title, int32_t w, int32_t h) {
++    return push(UICommand{UICommand::Type::Create, xid, parent, w, h, 0, 0, title});
++  }
++  // ...others similarly...
++  void drainOnServerThread(); // or better: drain(std::vector<UICommand>& out)
+ };
+-
++  
+ } // namespace x11
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/include/Utils/WireErrors.hpp b/macos/X11LowLevel/cpp/X11Protocol/include/Utils/WireErrors.hpp
+index 058fb70..ef28249 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/include/Utils/WireErrors.hpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/include/Utils/WireErrors.hpp
+@@ -5,8 +5,42 @@
+ //  Created by Lawrence Gibbons on 2/22/26.
+ //
+ 
+-#ifndef WireErrors_h
+-#define WireErrors_h
++// Utils/WireErrors.hpp
++#pragma once
++#include <array>
++#include <cstdint>
++#include "Utils/WireLE.hpp"   // wire::wr16_le / wr32_le
+ 
++namespace x11::wireerr {
+ 
+-#endif /* WireErrors_h */
++// X11 xError (32 bytes):
++// [0]=0, [1]=errorCode, [2..3]=seq, [4..7]=resourceId, [8..9]=minorCode,
++// [10]=majorCode, [11]=pad, rest zeros.
++inline std::array<uint8_t, 32> buildError32(uint8_t errorCode,
++                                            uint16_t seq,
++                                            uint32_t resourceId,
++                                            uint16_t minorCode,
++                                            uint8_t majorCode)
++{
++  std::array<uint8_t, 32> e{};
++  e.fill(0);
++  e[0] = 0;
++  e[1] = errorCode;
++  wire::wr16_le(e.data() + 2, seq);
++  wire::wr32_le(e.data() + 4, resourceId);
++  wire::wr16_le(e.data() + 8, minorCode);
++  e[10] = majorCode;
++  e[11] = 0;
++  return e;
++}
++
++// Convenience for core requests where minorCode is usually 0.
++inline std::array<uint8_t, 32> buildCoreError32(uint8_t errorCode,
++                                                uint16_t seq,
++                                                uint32_t resourceId,
++                                                uint8_t majorCode)
++{
++  return buildError32(errorCode, seq, resourceId, /*minorCode=*/0, majorCode);
++}
++
++} // namespace x11::wireerr
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/include/XProtoServerBridge.h b/macos/X11LowLevel/cpp/X11Protocol/include/XProtoServerBridge.h
+index e6b4e18..33d305b 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/include/XProtoServerBridge.h
++++ b/macos/X11LowLevel/cpp/X11Protocol/include/XProtoServerBridge.h
+@@ -14,8 +14,10 @@ extern "C" {
+ #endif
+ 
+ // Called once per accepted client session.
+-void x11_proto_bridge_begin_session(int client_fd);
+-
++void x11_proto_bridge_begin_session(int client_fd,
++                                    uint32_t rid_base,
++                                    uint32_t rid_mask);
++  
+ // Called at end of session (disconnect).
+ void x11_proto_bridge_end_session(int client_fd);
+ 
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/src/Core/CursorRouting.cpp b/macos/X11LowLevel/cpp/X11Protocol/src/Core/CursorRouting.cpp
+index 3d0c809..2939ee1 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/src/Core/CursorRouting.cpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/src/Core/CursorRouting.cpp
+@@ -44,7 +44,15 @@
+             (unsigned)host, (unsigned)target, (unsigned)cursorXid, (int)shape);
+ #endif
+     
+-    ctx.ui().pushSetCursor(host, cursorXid, (int32_t)shape);
++    ctx.ui().push(x11::UICommand{
++      x11::UICommand::Type::SetCursor,
++      /*xid=*/host,
++      /*parent=*/0,
++      /*w_px=*/0, /*h_px=*/0,
++      /*cursor_xid=*/cursorXid,
++      /*shape=*/(int32_t)shape,
++      /*title_utf8=*/nullptr
++    });
+   }
+   
+ 
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp b/macos/X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp
+index fd418fd..563da9c 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp
+@@ -13,6 +13,7 @@
+ #include "x11_requests.h"
+ #include "Core/HostResize.hpp"
+ #include "Core/X11CoreOpcodes.hpp"
++#include "UI/UICommandQueue.hpp"
+ 
+ // bridge
+ extern "C" {
+@@ -63,71 +64,148 @@ void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
+   }
+ }
+ 
+-// ---- STUBS ----
+-// For now, just consume the request body so clients keep going.
+-// We’ll port each handler one-by-one from x11_xproto.c, keeping C authoritative
+-// until we’re ready to move window state into C++.
+-
+-void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br)
++// -------------------- CreateWindow
++void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t depth, ByteReader& br)
+ {
+-  // Matches C: remain < 28 guard (but here br is already the "remain" region)
+   if (br.remaining() < 28) { br.skip(br.remaining()); return; }
+ 
+   const uint32_t wid    = br.readU32();
+   const uint32_t parent = br.readU32();
+   const int16_t  x      = (int16_t)br.readU16();
+   const int16_t  y      = (int16_t)br.readU16();
+-  uint16_t wpx          = br.readU16();
+-  uint16_t hpx          = br.readU16();
++  const uint16_t wpx    = br.readU16();
++  const uint16_t hpx    = br.readU16();
+ 
+   (void)br.readU16(); // borderWidth
+   (void)br.readU16(); // class
+   (void)br.readU32(); // visual
+   const uint32_t vmask = br.readU32();
+ 
+-  // Parse value-list for CWEventMask (bit 11), same as your C code.
+   uint32_t event_mask = 0;
+-  if (vmask & (1u << 11)) {
+-    for (uint32_t bit = 0; bit < 32; bit++) {
+-      if (!(vmask & (1u << bit))) continue;
+-      if (br.remaining() < 4) break;
+-      const uint32_t val = br.readU32();
+-      if (bit == 11) event_mask = val;
+-    }
+-  } else {
+-    // Still must consume any remaining value list/padding
+-    // (Some clients include extra padding; safest is to just skip remaining.)
++  // Consume values for *all* bits set; only record bit 11.
++  for (uint32_t bit = 0; bit < 32; bit++) {
++    if (!(vmask & (1u << bit))) continue;
++    if (br.remaining() < 4) break;
++    const uint32_t val = br.readU32();
++    if (bit == 11) event_mask = val;
+   }
+-
+-  // Consume any extra trailing bytes/padding
+   br.skip(br.remaining());
+ 
+-  // Update authoritative WindowTable (C++ side)
+-  const int owner_fd = ctx.transport().clientFd();
+-  ctx.windows().upsert(wid, parent, x, y, (wpx ? wpx : 1), (hpx ? hpx : 1), event_mask, owner_fd);
+-  ctx.windows().setMapped(wid, false);
+-  ctx.windows().setPresentable(wid, false);
++  // ---- VALIDATION (multi-client correctness) ----
++  // 0) width/height must be nonzero
++  if (wpx == 0 || hpx == 0) {
++    ctx.transport().sendErrorCore(x11::error::BadValue, seq, wid, x11::opcode::CreateWindow);
++    return;
++  }
+ 
+-  // Allocate/refresh C-side slot+FB
+-  int dirty = 0;
+-  if (!x11_backend_fb_create_slot(wid, wpx, hpx, owner_fd, &dirty)) {
+-    ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
++  // 1) wid must be in this client's id space
++  if (!ctx.transport().clientOwnsXid(wid)) {
++    ctx.transport().sendErrorCore(x11::error::BadIDChoice, seq, wid, x11::opcode::CreateWindow);
++    return;
++  }
++
++  // 2) wid must be unused
++  x11::WindowView tmp{};
++  if (ctx.windows().snapshot(wid, tmp)) {
++    ctx.transport().sendErrorCore(x11::error::BadIDChoice, seq, wid, x11::opcode::CreateWindow);
+     return;
+   }
+-  // FB exists now; record the callsite that *actually* established it.
+-  ctx.windows().noteFbResizeDbg(wid, "CreateWindow", __FILE__, __LINE__);
+-  
+-  if (dirty) ctx.windows().markDirty(wid);
+ 
+-  // Enqueue Swift window creation (same behavior as enqueue_create_window)
+-  // NOTE: If enqueue_create_window is C-static, call the request queue directly.
+-  // This matches your existing enqueue_create_window() implementation.
++  // 3) parent must exist (root=1 is always valid in your model)
++  if (parent != 1) {
++    if (!ctx.windows().snapshot(parent, tmp)) {
++      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CreateWindow);
++      return;
++    }
++    // optional: enforce same-owner parent (good idea once multi-client)
++    if (tmp.owner_fd != ctx.transport().clientFd()) {
++      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CreateWindow);
++      return;
++    }
++  }
++
++  // ---- CREATE (server state only) ----
++  const int owner_fd = ctx.transport().clientFd();
++  ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
++  ctx.windows().setMapped(wid, false);
++  ctx.windows().setPresentable(wid, false);
++
++  // ---- FRAMEBUFFER OWNERSHIP PIVOT ----
++  // Delete ALL of this in the Swift-owned surface world:
++  //   x11_backend_fb_create_slot(...)
++  //   noteFbResizeDbg(...)
++  //
++  // Instead: queue a UI command so Swift allocates the surface/backing store.
++  // (Top-level vs child policy stays in Swift/UI layer.)
+   char title[64];
+   snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
+-  x11_requests_push_create(wid, parent, title, (int32_t)(wpx ? wpx : 1), (int32_t)(hpx ? hpx : 1));
+-}
++
++  ctx.ui().pushCreate(wid, parent, title, (int32_t)wpx, (int32_t)hpx);
++
++  // Optional: mark dirty so first present/expose happens when mapped/presentable.
++  ctx.windows().markDirty(wid);
++}  
++//void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br)
++//{
++//  // Matches C: remain < 28 guard (but here br is already the "remain" region)
++//  if (br.remaining() < 28) { br.skip(br.remaining()); return; }
++//
++//  const uint32_t wid    = br.readU32();
++//  const uint32_t parent = br.readU32();
++//  const int16_t  x      = (int16_t)br.readU16();
++//  const int16_t  y      = (int16_t)br.readU16();
++//  uint16_t wpx          = br.readU16();
++//  uint16_t hpx          = br.readU16();
++//
++//  (void)br.readU16(); // borderWidth
++//  (void)br.readU16(); // class
++//  (void)br.readU32(); // visual
++//  const uint32_t vmask = br.readU32();
++//
++//  // Parse value-list for CWEventMask (bit 11), same as your C code.
++//  uint32_t event_mask = 0;
++//  if (vmask & (1u << 11)) {
++//    for (uint32_t bit = 0; bit < 32; bit++) {
++//      if (!(vmask & (1u << bit))) continue;
++//      if (br.remaining() < 4) break;
++//      const uint32_t val = br.readU32();
++//      if (bit == 11) event_mask = val;
++//    }
++//  } else {
++//    // Still must consume any remaining value list/padding
++//    // (Some clients include extra padding; safest is to just skip remaining.)
++//  }
++//
++//  // Consume any extra trailing bytes/padding
++//  br.skip(br.remaining());
++//
++//  // Update authoritative WindowTable (C++ side)
++//  const int owner_fd = ctx.transport().clientFd();
++//  ctx.windows().upsert(wid, parent, x, y, (wpx ? wpx : 1), (hpx ? hpx : 1), event_mask, owner_fd);
++//  ctx.windows().setMapped(wid, false);
++//  ctx.windows().setPresentable(wid, false);
++//
++//  // Allocate/refresh C-side slot+FB
++//  int dirty = 0;
++//  if (!x11_backend_fb_create_slot(wid, wpx, hpx, owner_fd, &dirty)) {
++//    ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
++//    return;
++//  }
++//  // FB exists now; record the callsite that *actually* established it.
++//  ctx.windows().noteFbResizeDbg(wid, "CreateWindow", __FILE__, __LINE__);
++//  
++//  if (dirty) ctx.windows().markDirty(wid);
++//
++//  // Enqueue Swift window creation (same behavior as enqueue_create_window)
++//  // NOTE: If enqueue_create_window is C-static, call the request queue directly.
++//  // This matches your existing enqueue_create_window() implementation.
++//  char title[64];
++//  snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
++//  x11_requests_push_create(wid, parent, title, (int32_t)(wpx ? wpx : 1), (int32_t)(hpx ? hpx : 1));
++//}
+   
+   
++  // -------------------- DestroyWindow
+ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+   // Request body: CARD32 window
+   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoDaemon.cpp b/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoDaemon.cpp
+index 3bcb13c..9d6347f 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoDaemon.cpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoDaemon.cpp
+@@ -13,12 +13,17 @@
+ #include <unistd.h>
+ #include <cerrno>
+ #include <cstring>
++#include <atomic>
+ 
+ #include "XProtoServerBridge.h"   // reuse begin/end if you want initially
+ // If you don’t want to use begin/end bridge functions anymore, we’ll inline that logic next.
+ #include "Core/XProtoServer.hpp"
+ #include "x11_setup.h"
+ 
++
++static std::atomic<uint32_t> g_nextClientSlot{1}; // 0 reserved
++
++
+ namespace x11 {
+   
+   static int make_listen_socket(int display, const char* bindAddr) {
+@@ -159,109 +164,235 @@ namespace x11 {
+ //  }
+   
+   // ---------- the meat: setup + drain ----------
++// xxx  void XProtoDaemon::runSession(int cfd) {
++// xxx    // xxx // small recv timeout so we can notice stop.
++// xxx    // xxx timeval tv{};
++// xxx    // xxx tv.tv_sec = 0;
++// xxx    // xxx tv.tv_usec = 100 * 1000;
++// xxx    // xxx ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
++// xxx    // xxx 
++// xxx    // xxx uint32_t clientSlot = g_nextClientSlot.fetch_add(1, std::memory_order_relaxed);
++// xxx    // xxx if (clientSlot == 0) clientSlot = g_nextClientSlot.fetch_add(1, std::memory_order_relaxed); // skip 0
++// xxx// xxx 
++// xxx    // xxx uint32_t rid_mask = 0x00FFFFFFu;
++// xxx    // xxx uint32_t rid_base = (clientSlot & 0xFFu) << 24; // 0x01000000, 0x02000000, ...
++// xxx    // xxx x11_send_setup_success_minimal_little_endian(cfd, rid_base, rid_mask);
++// xxx    // xxx     
++// xxx    // xxx // ----- Setup request: read 12-byte client prefix -----
++// xxx    // xxx uint8_t req[12];
++// xxx    // xxx if (!recv_waitall(cfd, req, sizeof(req))) return;
++// xxx    // xxx 
++// xxx    // xxx const char byte_order = (char)req[0];
++// xxx    // xxx if (byte_order != 'l') {
++// xxx    // xxx   x11_send_setup_failed_le(cfd, "SwiftX11: only little-endian supported");
++// xxx    // xxx   return;
++// xxx    // xxx }
++// xxx    // xxx 
++// xxx    // xxx // auth lengths in bytes [6..9]
++// xxx    // xxx const uint16_t auth_proto_len = (uint16_t)(req[6] | ((uint16_t)req[7] << 8));
++// xxx    // xxx const uint16_t auth_data_len  = (uint16_t)(req[8] | ((uint16_t)req[9] << 8));
++// xxx    // xxx 
++// xxx    // xxx size_t skip = 0;
++// xxx    // xxx skip += ((size_t)auth_proto_len + 3u) & ~3u;
++// xxx    // xxx skip += ((size_t)auth_data_len  + 3u) & ~3u;
++// xxx    // xxx 
++// xxx    // xxx if (skip && !skip_bytes(cfd, skip)) return;
++// xxx    // xxx 
++// xxx    // xxx // Reply minimal SetupSuccess
++// xxx    // xxx x11_send_setup_success_minimal_little_endian(cfd, rid_base, rid_mask);
++// xxx    // xxx 
++// xxx    // xxx // ----- Begin C++ session for this client -----
++// xxx    // xxx x11_proto_bridge_begin_session(cfd, rid_base, rid_mask);
++// xxx    
++// xxx    // DO NOT set SO_RCVTIMEO yet. Let setup/auth be blocking.
++// xxx    // We'll set the short timeout after setup.
++// xxx
++// xxx    // ----- Setup request: read 12-byte client prefix -----
++// xxx    uint8_t req[12];
++// xxx    if (!recv_waitall(cfd, req, sizeof(req))) return;
++// xxx
++// xxx    const char byte_order = (char)req[0];
++// xxx    if (byte_order != 'l') {
++// xxx      x11_send_setup_failed_le(cfd, "SwiftX11: only little-endian supported");
++// xxx      return;
++// xxx    }
++// xxx
++// xxx    const uint16_t auth_proto_len = (uint16_t)(req[6] | ((uint16_t)req[7] << 8));
++// xxx    const uint16_t auth_data_len  = (uint16_t)(req[8] | ((uint16_t)req[9] << 8));
++// xxx
++// xxx    size_t skip = 0;
++// xxx    skip += ((size_t)auth_proto_len + 3u) & ~3u;
++// xxx    skip += ((size_t)auth_data_len  + 3u) & ~3u;
++// xxx
++// xxx    if (skip && !skip_bytes(cfd, skip)) return;
++// xxx
++// xxx    // Reply minimal SetupSuccess (make sure you're passing rid_base/rid_mask here)
++// xxx    x11_send_setup_success_minimal_little_endian(cfd, rid_base, rid_mask);
++// xxx
++// xxx    // NOW set the short timeout for the request loop
++// xxx    timeval tv{};
++// xxx    tv.tv_sec = 0;
++// xxx    tv.tv_usec = 100 * 1000;
++// xxx    ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
++// xxx
++// xxx    // ----- Begin C++ session for this client -----
++// xxx    x11_proto_bridge_begin_session(cfd, rid_base, rid_mask);
++// xxx
++// xxx    // ----- Drain requests -----
++// xxx    uint16_t seq = 0;
++// xxx    
++// xxx    for (;;) {
++// xxx      x11_proto_bridge_flush_notify_queue();
++// xxx      if (stop_.load(std::memory_order_acquire)) break;
++// xxx      
++// xxx      uint8_t hdr[4];
++// xxx      int hr = recv_hdr_timeout(cfd, hdr);
++// xxx      if (hr == -2) continue; // timeout -> loop again (flush runs at top)
++// xxx      if (hr <= 0) break;     // disconnect or error
++// xxx      
++// xxx      const uint8_t major         = hdr[0];
++// xxx      const uint8_t data_or_minor = hdr[1];
++// xxx      const uint16_t len_words = (uint16_t)(hdr[2] | ((uint16_t)hdr[3] << 8));
++// xxx      if (len_words == 0) break;
++// xxx      
++// xxx      const size_t total = (size_t)len_words * 4u;
++// xxx      if (total < 4u) break;
++// xxx      const size_t remain = total - 4u;
++// xxx      
++// xxx      seq = (uint16_t)(seq + 1);
++// xxx      x11_proto_bridge_note_last_seq(seq);
++// xxx      
++// xxx      if (seq == 53) {
++// xxx        fprintf(stderr, "[REQHDR seq=53] %02X %02X %02X %02X  (major=%u data/minor=%u lenw=%u remain=%zu)\n",
++// xxx                hdr[0], hdr[1], hdr[2], hdr[3],
++// xxx                (unsigned)hdr[0], (unsigned)hdr[1], (unsigned)len_words, remain);
++// xxx      }
++// xxx      
++// xxx      if (seq == 10) {
++// xxx        if (major < 128) {
++// xxx          fprintf(stderr, "[REQHDR seq=10] %02X %02X %02X %02X (major=%u data=%u lenw=%u remain=%zu)\n",
++// xxx                  hdr[0], hdr[1], hdr[2], hdr[3],
++// xxx                  (unsigned)major, (unsigned)data_or_minor, (unsigned)len_words, remain);
++// xxx        } else {
++// xxx          fprintf(stderr, "[REQHDR seq=10] %02X %02X %02X %02X (extMajor=%u minor=%u lenw=%u remain=%zu)\n",
++// xxx                  hdr[0], hdr[1], hdr[2], hdr[3],
++// xxx                  (unsigned)major, (unsigned)data_or_minor, (unsigned)len_words, remain);
++// xxx        }
++// xxx      }
++// xxx
++// xxx      uint8_t stack_buf[4096];
++// xxx      uint8_t* payload = stack_buf;
++// xxx      std::unique_ptr<uint8_t[]> heap;
++// xxx      
++// xxx      if (remain > sizeof(stack_buf)) {
++// xxx        heap.reset(new (std::nothrow) uint8_t[remain]);
++// xxx        if (!heap) break;
++// xxx        payload = heap.get();
++// xxx      }
++// xxx      
++// xxx      if (remain && !recv_waitall(cfd, payload, remain)) break;
++// xxx      if (seq == 53) {
++// xxx        fprintf(stderr, "[REQBODY12 seq=53] ");
++// xxx        for (size_t i = 0; i < remain; i++) fprintf(stderr, "%02X", payload[i]);
++// xxx        fprintf(stderr, "\n");
++// xxx      }
++// xxx      if (seq == 10) {
++// xxx        fprintf(stderr, "[REQBODY8 seq=10] ");
++// xxx        for (int i=0;i<8 && i<(int)remain;i++) fprintf(stderr, "%02X", payload[i]);
++// xxx        fprintf(stderr, "\n");
++// xxx      }
++// xxx      
++// xxx      (void)x11_proto_bridge_dispatch(major, data_or_minor, seq, payload, remain);
++// xxx      
++// xxx      x11_proto_bridge_flush_notify_queue();
++// xxx    }
++// xxx    
++// xxx    x11_proto_bridge_end_session(cfd);
++// xxx  }
++  
++  
+   void XProtoDaemon::runSession(int cfd) {
+-    // Match your C behavior: small recv timeout so we can notice stop.
+-    timeval tv{};
+-    tv.tv_sec = 0;
+-    tv.tv_usec = 100 * 1000;
+-    ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
+-    
++    // ---- Allocate client ID space ----
++    uint32_t clientSlot = g_nextClientSlot.fetch_add(1, std::memory_order_relaxed);
++    if (clientSlot == 0) clientSlot = g_nextClientSlot.fetch_add(1, std::memory_order_relaxed);
++
++    const uint32_t rid_mask = 0x00FFFFFFu;                 // 16M IDs per client
++    const uint32_t rid_base = (clientSlot & 0xFFu) << 24;  // 0x01000000, 0x02000000, ...
++
++    // (Optional) log once
++  #ifndef NDEBUG
++    fprintf(stderr, "[X11] session fd=%d slot=%u rid_base=0x%08X rid_mask=0x%08X\n",
++            cfd, (unsigned)clientSlot, (unsigned)rid_base, (unsigned)rid_mask);
++  #endif
++
+     // ----- Setup request: read 12-byte client prefix -----
+     uint8_t req[12];
+     if (!recv_waitall(cfd, req, sizeof(req))) return;
+-    
++
+     const char byte_order = (char)req[0];
+     if (byte_order != 'l') {
+       x11_send_setup_failed_le(cfd, "SwiftX11: only little-endian supported");
+       return;
+     }
+-    
++
+     // auth lengths in bytes [6..9]
+     const uint16_t auth_proto_len = (uint16_t)(req[6] | ((uint16_t)req[7] << 8));
+     const uint16_t auth_data_len  = (uint16_t)(req[8] | ((uint16_t)req[9] << 8));
+-    
++
+     size_t skip = 0;
+     skip += ((size_t)auth_proto_len + 3u) & ~3u;
+     skip += ((size_t)auth_data_len  + 3u) & ~3u;
+-    
+     if (skip && !skip_bytes(cfd, skip)) return;
+-    
+-    // Reply minimal SetupSuccess
+-    x11_send_setup_success_minimal_little_endian(cfd);
+-    
+-    // ----- Begin C++ session for this client -----
+-    x11_proto_bridge_begin_session(cfd);
+-    
++
++    // Reply minimal SetupSuccess (THIS is the critical change)
++    x11_send_setup_success_minimal_little_endian(cfd, rid_base, rid_mask);
++
++    // Now set the short recv timeout for the main loop (if you're using it)
++    timeval tv{};
++    tv.tv_sec = 0;
++    tv.tv_usec = 100 * 1000;
++    ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
++
++    // ----- Begin C++ session for this client (pass id space through) -----
++    x11_proto_bridge_begin_session(cfd, rid_base, rid_mask);
++
+     // ----- Drain requests -----
+     uint16_t seq = 0;
+-    
+     for (;;) {
+       x11_proto_bridge_flush_notify_queue();
+       if (stop_.load(std::memory_order_acquire)) break;
+-      
++
+       uint8_t hdr[4];
+       int hr = recv_hdr_timeout(cfd, hdr);
+-      if (hr == -2) continue; // timeout -> loop again (flush runs at top)
+-      if (hr <= 0) break;     // disconnect or error
+-      
++      if (hr == -2) continue;
++      if (hr <= 0) break;
++
+       const uint8_t major         = hdr[0];
+       const uint8_t data_or_minor = hdr[1];
+       const uint16_t len_words = (uint16_t)(hdr[2] | ((uint16_t)hdr[3] << 8));
+       if (len_words == 0) break;
+-      
+-      const size_t total = (size_t)len_words * 4u;
++
++      const size_t total  = (size_t)len_words * 4u;
+       if (total < 4u) break;
+       const size_t remain = total - 4u;
+-      
++
+       seq = (uint16_t)(seq + 1);
+       x11_proto_bridge_note_last_seq(seq);
+-      
+-      if (seq == 53) {
+-        fprintf(stderr, "[REQHDR seq=53] %02X %02X %02X %02X  (major=%u data/minor=%u lenw=%u remain=%zu)\n",
+-                hdr[0], hdr[1], hdr[2], hdr[3],
+-                (unsigned)hdr[0], (unsigned)hdr[1], (unsigned)len_words, remain);
+-      }
+-      
+-      if (seq == 10) {
+-        if (major < 128) {
+-          fprintf(stderr, "[REQHDR seq=10] %02X %02X %02X %02X (major=%u data=%u lenw=%u remain=%zu)\n",
+-                  hdr[0], hdr[1], hdr[2], hdr[3],
+-                  (unsigned)major, (unsigned)data_or_minor, (unsigned)len_words, remain);
+-        } else {
+-          fprintf(stderr, "[REQHDR seq=10] %02X %02X %02X %02X (extMajor=%u minor=%u lenw=%u remain=%zu)\n",
+-                  hdr[0], hdr[1], hdr[2], hdr[3],
+-                  (unsigned)major, (unsigned)data_or_minor, (unsigned)len_words, remain);
+-        }
+-      }
+ 
+       uint8_t stack_buf[4096];
+       uint8_t* payload = stack_buf;
+       std::unique_ptr<uint8_t[]> heap;
+-      
+       if (remain > sizeof(stack_buf)) {
+         heap.reset(new (std::nothrow) uint8_t[remain]);
+         if (!heap) break;
+         payload = heap.get();
+       }
+-      
+       if (remain && !recv_waitall(cfd, payload, remain)) break;
+-      if (seq == 53) {
+-        fprintf(stderr, "[REQBODY12 seq=53] ");
+-        for (size_t i = 0; i < remain; i++) fprintf(stderr, "%02X", payload[i]);
+-        fprintf(stderr, "\n");
+-      }
+-      if (seq == 10) {
+-        fprintf(stderr, "[REQBODY8 seq=10] ");
+-        for (int i=0;i<8 && i<(int)remain;i++) fprintf(stderr, "%02X", payload[i]);
+-        fprintf(stderr, "\n");
+-      }
+-      
++
+       (void)x11_proto_bridge_dispatch(major, data_or_minor, seq, payload, remain);
+-      
+       x11_proto_bridge_flush_notify_queue();
+     }
+-    
++
+     x11_proto_bridge_end_session(cfd);
+   }
+-  
+ } // namespace x11
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoTransport.cpp b/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoTransport.cpp
+index 7a40ff6..c5cdd4f 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoTransport.cpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoTransport.cpp
+@@ -17,6 +17,7 @@
+ #include "Ops/EventOps.hpp"
+ #include "Core/XProtoContext.hpp"
+ #include "Utils/WireLE.hpp" // your wire::wr16_le / wr32_le etc
++#include "Utils/WireErrors.hpp"
+ 
+ // Your existing dbg_require_xproto_thread is currently in C.
+ // Expose it as an extern so C++ can call it.
+@@ -460,4 +461,17 @@ inline void sendUnmapNotify(XProtoContext& ctx,
+   (void)ctx.transport().sendEvent32(window, ev.data());
+ }
+   
++  
++bool XProtoTransport::sendError32(const uint8_t e[32]) {
++  return sendAll(e, 32);
++}
++
++bool XProtoTransport::sendErrorCore(uint8_t errorCode, uint16_t seq,
++                                    uint32_t resourceId, uint8_t majorCode)
++{
++  const auto e = x11::wireerr::buildCoreError32(errorCode, seq, resourceId, majorCode);
++  return sendAll(e.data(), e.size());
++}
++  
++  
+ } // namespace x11
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp b/macos/X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp
+index fc4caf0..6ae2587 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp
+@@ -5,8 +5,17 @@
+ //  Created by Lawrence Gibbons on 2/6/26.
+ //
+ 
++//
++//  UICommandQueue.cpp
++//  X11LowLevel
++//
++//  Created by Lawrence Gibbons on 2/6/26.
++//
++
+ #include "UI/UICommandQueue.hpp"
+ 
++#include <cstdint>
++
+ extern "C" {
+ #include "x11_requests.h"
+ #include "SwiftX11Bridge.h"
+@@ -14,27 +23,54 @@ extern "C" {
+ 
+ namespace x11 {
+ 
+-bool UICommandQueue::pushCreate(uint32_t xid, uint32_t parent, const char* title_utf8, int32_t w_px, int32_t h_px) {
+-  return x11_requests_push_create(xid, parent, title_utf8, w_px, h_px) != 0;
+-}
+-bool UICommandQueue::pushDestroy(uint32_t xid) { return x11_requests_push_destroy(xid) != 0; }
+-bool UICommandQueue::pushMap(uint32_t xid) { return x11_requests_push_map(xid) != 0; }
+-bool UICommandQueue::pushUnmap(uint32_t xid) { return x11_requests_push_unmap(xid) != 0; }
+-bool UICommandQueue::pushConfigure(uint32_t xid, int32_t w_px, int32_t h_px) { return x11_requests_push_configure(xid, w_px, h_px) != 0; }
+-bool UICommandQueue::pushSetTitle(uint32_t xid, const char* title_utf8) { return x11_requests_push_set_title(xid, title_utf8) != 0; }
+-bool UICommandQueue::pushDamage(uint32_t xid) { return x11_requests_push_damage(xid) != 0; }
+-bool UICommandQueue::pushPresentable(uint32_t xid) { return x11_requests_push_window_presentable(xid) != 0; }
+-
+-bool UICommandQueue::pushRootlessResize(uint32_t xid, int32_t w_px, int32_t h_px) {
+-  return x11_requests_push_rootless_resize(xid, w_px, h_px) != 0;
+-}
+-  
+-bool x11::UICommandQueue::pushSetCursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape) {
+-  x11_ui_push_set_cursor(host_xid, cursor_xid, shape);
+-  return true;
++static inline int32_t clamp_dim(int32_t v) { return (v < 1) ? 1 : v; }
++static inline const char* safe_cstr(const char* s) { return s ? s : ""; }
++
++bool UICommandQueue::push(const UICommand& c)
++{
++  switch (c.type) {
++    case UICommand::Type::Create: {
++      const int32_t w = clamp_dim(c.w_px);
++      const int32_t h = clamp_dim(c.h_px);
++      return x11_requests_push_create(c.xid, c.parent, safe_cstr(c.title_utf8), w, h) != 0;
++    }
++
++    case UICommand::Type::Destroy:
++      return x11_requests_push_destroy(c.xid) != 0;
++
++    case UICommand::Type::Map:
++      return x11_requests_push_map(c.xid) != 0;
++
++    case UICommand::Type::Unmap:
++      return x11_requests_push_unmap(c.xid) != 0;
++
++    case UICommand::Type::Configure: {
++      const int32_t w = clamp_dim(c.w_px);
++      const int32_t h = clamp_dim(c.h_px);
++      return x11_requests_push_configure(c.xid, w, h) != 0;
++    }
++
++    case UICommand::Type::SetTitle:
++      return x11_requests_push_set_title(c.xid, safe_cstr(c.title_utf8)) != 0;
++
++    case UICommand::Type::Damage:
++      return x11_requests_push_damage(c.xid) != 0;
++
++    case UICommand::Type::Presentable:
++      return x11_requests_push_window_presentable(c.xid) != 0;
++
++    case UICommand::Type::SetCursor:
++      // Interpret c.xid as host_xid for rootless cursor updates.
++      x11_ui_push_set_cursor(c.xid, c.cursor_xid, c.shape);
++      return true;
++
++    default:
++      return false;
++  }
+ }
+-  
+-void UICommandQueue::drainOnServerThread() {
++
++void UICommandQueue::drainOnServerThread()
++{
+   x11_requests_drain_on_server_thread();
+ }
+ 
+diff --git a/macos/X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp b/macos/X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp
+index 1f5f582..16d7e88 100644
+--- a/macos/X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp
++++ b/macos/X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp
+@@ -125,7 +125,9 @@ static std::atomic<x11::XProtoServer*> g_srv{nullptr};
+ extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
+ extern "C" void x11_cpp_notify_shutdown(void); 
+ 
+-extern "C" void x11_proto_bridge_begin_session(int client_fd)
++extern "C" void x11_proto_bridge_begin_session(int client_fd,
++                                               uint32_t rid_base,
++                                               uint32_t rid_mask)
+ {
+   std::lock_guard<std::mutex> lock(g_mu);
+   if (client_fd < 0) return;
+@@ -138,6 +140,10 @@ extern "C" void x11_proto_bridge_begin_session(int client_fd)
+   }
+   
+   // 2) Configure server plumbing for THIS session.
++  srv->attachClientFd(client_fd);
++  srv->setXprotoThreadSelf();
++  srv->transport().setClientIdSpace(rid_base, rid_mask);
++  
+   srv->attachClientFd(client_fd);
+   srv->setXprotoThreadSelf();
+   
+diff --git a/macos/X11LowLevel/include/x11_setup.h b/macos/X11LowLevel/include/x11_setup.h
+index 1b86241..53f36a6 100644
+--- a/macos/X11LowLevel/include/x11_setup.h
++++ b/macos/X11LowLevel/include/x11_setup.h
+@@ -13,7 +13,9 @@ extern "C" {
+ #endif
+ 
+ void x11_send_setup_failed_le(int fd, const char* msg);
+-void x11_send_setup_success_minimal_little_endian(int fd);
++void x11_send_setup_success_minimal_little_endian(int fd,
++                                                  uint32_t rid_base,
++                                                  uint32_t rid_mask);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/macos/X11LowLevel/src/x11_xproto.c b/macos/X11LowLevel/src/x11_xproto.c
+index 26cd1cd..bf8a2b0 100644
+--- a/macos/X11LowLevel/src/x11_xproto.c
++++ b/macos/X11LowLevel/src/x11_xproto.c
+@@ -658,17 +658,22 @@ void x11_send_setup_failed_le(int fd, const char* reason)
+ 
+ // Minimal SetupSuccess reply sufficient to get real clients to start sending requests.
+ // Little-endian only for now; uses unaligned stores.
+-void x11_send_setup_success_minimal_little_endian(int fd)
++void x11_send_setup_success_minimal_little_endian(int fd,
++                                                  uint32_t rid_base,
++                                                  uint32_t rid_mask)
+ {
+   // ---- Tunables / IDs
+   const uint16_t proto_major = 11;
+   const uint16_t proto_minor = 0;
+-  const uint32_t rid_base    = 0x10000000u;
+-  const uint32_t rid_mask    = 0x0FFFFFFFu;
++
++  // rid_base / rid_mask are per-client; passed in.
++  // (Do NOT redeclare them here.)
++
+   const uint32_t root_xid    = 0x00000001u;
+   const uint32_t root_visid  = 0x00000021u;
+   const uint32_t root_cmap   = 0x00000020u;
+ 
++
+   uint16_t screen_w_u  = 800, screen_h_u  = 600;
+   uint16_t screen_w_mm = 270, screen_h_mm = 203;
+   x11_get_virtual_desktop_px(&screen_w_u, &screen_h_u, &screen_w_mm, &screen_h_mm);
+diff --git a/macos/docs/TODO.md b/macos/docs/TODO.md
+index 7ec6a95..51e55d6 100644
+--- a/macos/docs/TODO.md
++++ b/macos/docs/TODO.md
+@@ -1,6 +1,39 @@
+ SwiftX11 TODO
+ 
+-Last updated: 2026-02-12
++Last updated: 2026-02-21
++
++⸻
++
++0️⃣ Architecture Pivot (NOW)
++
++Goal
++  •  Eliminate the C layer entirely: only C++ (core protocol + raster) and Swift (UI + networking).
++  •  Remove single-client globals: support multiple concurrent clients cleanly.
++  •  Make Swift the owner of all WINDOW backing stores (host + child) now.
++
++Swift-owned WINDOW surfaces
++  •  Swift allocates/resizes per-window backing stores (shared CPU buffer and/or MTLBuffer/MTLTexture).
++  •  C++ draws into Swift-provided surfaces via a `SurfaceDesc { ptr, bytesPerRow, w, h, format, generation }` (C++ never owns/presents window framebuffer memory).
++  •  Mapping/unmapping/resizing a window becomes: Swift updates surface → C++ updates geometry/state → Swift presents.
++
++Surface registry (C++ API consumed by Swift)
++  •  Add a `DrawableSurfaceRegistry` keyed by XID for WINDOW drawables (and optionally Pixmaps later).
++  •  Swift calls `server.updateSurface(xid, SurfaceDesc)` on map/resize and `server.clearSurface(xid)` on unmap/destroy.
++  •  Drawing ops resolve destination surfaces through the registry; missing surface ⇒ correct X11 error (BadDrawable/BadMatch).
++
++Damage / present (Swift-driven)
++  •  C++ reports damage as rects per host/top-level window (no “always damage” hacks).
++  •  Swift unions rects and schedules exactly one present per host per runloop tick.
++
++Multi-client (no globals)
++  •  Introduce `XServer` as an instance with owned registries (resources, atoms, colormaps, fonts, drawables).
++  •  Each connection is a `Client` object: byteOrder, seq, idBase/idMask, transport, pending replies/events.
++  •  No global “current client” pointers; dispatcher always routes via `(XServer&, Client&)`.
++
++C removal plan
++  •  Rename/migrate remaining `.c` backend files to C++ (`.cpp`) and delete `x11_backend_*` C APIs.
++  •  Swift calls into C++ via Swift C++ Interop (module map / clang module) rather than `@_cdecl` shims.
++  •  Keep the language boundary one-way: Swift drives the loop and invokes C++ (avoid callbacks from C++ into Swift).
+ 
+ ⸻
+ 
+@@ -36,7 +69,7 @@ CopyPlane
+ 
+ PutImage
+   •  Remove temporary routing hacks once full rootless model is stable.
+-  •  Support window destinations cleanly (currently bring-up behavior).
++  •  Support window destinations via Swift SurfaceRegistry (no bring-up-only routing).
+   •  Support depth conversions where required.
+ 
+ General drawing
+@@ -63,9 +96,9 @@ PolyArc
+ ConfigureWindow
+   •  Support stack-mode / sibling / border-width fields (bits 4..7) or at least validate/ignore safely.
+   •  Emit correct X11 errors (BadWindow / BadValue) when wid doesn’t exist or values are malformed.
+-  •  Decide policy for child FBs vs compositing:
+-  •  If only host is presented, child FB may be optional; then x11_backend_fb_resize(child) should become a no-op or be moved behind a “has backing store” check.
+-  •  Consider sending ConfigureNotify to child even if host resizes (rootless clamp cascade).
++  •  Swift owns WINDOW backing stores (host + child). C++ updates geometry/state only.
++  •  On map/resize, Swift (re)allocates surfaces and calls `server.updateSurface(xid, SurfaceDesc)`.
++  •  Continue sending ConfigureNotify to child even when clamped to host (rootless cascade per ICCCM).
+ 
+ ⸻
+ 
+@@ -102,7 +135,7 @@ Final routing model
+   •  pixmap ops → never enqueue present
+   •  child window ops → route to top-level host
+   •  top-level ops → damage self
+-  •  Ensure x11_requests_push_damage(host) always results in exactly one X11_UI_DAMAGE
++  •  Ensure `server.queueDamage(host, rects)` always results in exactly one UI_DAMAGE per host per runloop tick`
+ 
+ Dirty/presentable gating
+   •  Validate consumeDirtyIfReady semantics.
+@@ -147,6 +180,7 @@ Damage precision
+ ⸻
+ 
+ 9️⃣ Cleanup / Refactor
++  •  Delete remaining C backend entrypoints (`x11_backend_*`) after migrating callers to C++/Swift surface registry.
+   •  Remove obsolete handler registrations (QueryColors duplicates, etc.).
+   •  Consolidate opcode constants (use x11::opcode::* everywhere).
+   •  Remove remaining hardcoded numerics.
+@@ -158,5 +192,5 @@ Damage precision
+ 🔟 Future Architecture (Long-Term)
+   •  Separate compositing from protocol (allow offscreen composition layer).
+   •  Add extension framework (XInput, RANDR, etc.).
+-  •  Consider migrating framebuffer ownership fully to Swift (minimize C state).
++  •  Keep Swift as compositor/UI + networking; keep C++ as protocol+raster core; continue shrinking the boundary (no C).
+   •  Add basic ICCCM compliance (WM_HINTS, size hints, etc.).
