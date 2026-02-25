@@ -341,9 +341,23 @@ static void blit_child_over_host(uint32_t* hostPx, int hostW, int hostH,
   }
 }
 
+
 // -----------------------------
 // x11_xproto_copy_window_bgra: subtree composite (rootless)
 // -----------------------------
+#ifdef __cplusplus
+extern "C" {
+#endif
+int x11_cpp_copy_host_surface_bgra(uint32_t xid,
+                                  uint8_t* out_bytes,
+                                  int32_t out_cap,
+                                  int32_t* out_w,
+                                  int32_t* out_h,
+                                  int32_t* out_bpr);
+#ifdef __cplusplus
+}
+#endif
+
 int x11_xproto_copy_window_bgra(uint32_t xid,
                                 uint8_t* out_bytes,
                                 int32_t out_cap,
@@ -351,111 +365,120 @@ int x11_xproto_copy_window_bgra(uint32_t xid,
                                 int32_t* out_h,
                                 int32_t* out_bpr)
 {
-#ifndef NDEBUG
-  fprintf(stderr, "[SwiftX11] xproto: copy_window_bgra ENTER xid=0x%08X out_bytes=%p cap=%d\n",
-          (unsigned)xid, (void*)out_bytes, (int)out_cap);
-#endif
-
-  const ssize_t host_idx = fb_index(xid);
-  x11_fb_slot_t* host = (host_idx >= 0) ? &g_fb[(size_t)host_idx] : NULL;
-
-  if (!host || !host->pixels || host->width == 0 || host->height == 0) {
-    if (out_w) *out_w = 0;
-    if (out_h) *out_h = 0;
-    if (out_bpr) *out_bpr = 0;
-    return 0;
-  }
-
-  const int32_t w   = (int32_t)host->width;
-  const int32_t h   = (int32_t)host->height;
-  const int32_t bpr = w * 4;
-
-  // validate needed size
-  const int64_t needed64 = (int64_t)bpr * (int64_t)h;
-  if (needed64 <= 0 || needed64 > INT32_MAX) {
-    if (out_w) *out_w = 0;
-    if (out_h) *out_h = 0;
-    if (out_bpr) *out_bpr = 0;
-    return 0;
-  }
-  const int32_t needed = (int32_t)needed64;
-
-  if (out_w) *out_w = w;
-  if (out_h) *out_h = h;
-  if (out_bpr) *out_bpr = bpr;
-
-  // size-only query
-  if (!out_bytes || out_cap == 0) return 1;
-  if (out_cap < needed) return 0;
-
-  // Scratch composited buffer
-  const size_t npx = (size_t)host->width * (size_t)host->height;
-  const size_t bytes = npx * sizeof(uint32_t);
-
-  uint32_t* scratch = (uint32_t*)malloc(bytes);
-  if (!scratch) return 0;
-
-  memcpy(scratch, host->pixels, bytes);
-
-  // Composite mapped descendants onto scratch.
-  // (Cap is a bring-up choice; increase if needed.)
-  uint32_t kids[2048];
-  const uint32_t nk = x11_cpp_list_descendants(xid, kids, (uint32_t)(sizeof(kids)/sizeof(kids[0])));
-
-  
-  for (uint32_t i = 0; i < nk; i++) {
-    const uint32_t kid = kids[i];
-
-    uint32_t parent = 0;
-    int16_t relx = 0, rely = 0;
-    uint16_t kw = 0, kh = 0;
-    int mapped = 0;
-
-    if (!x11_cpp_get_window_geom(kid, &parent, &relx, &rely, &kw, &kh, &mapped))
-      continue;
-    if (!mapped) continue;
-
-    const ssize_t kidx = fb_index(kid);
-    if (kidx < 0) continue;
-
-    x11_fb_slot_t* kfb = &g_fb[(size_t)kidx];
-    if (!kfb->pixels || kfb->width == 0 || kfb->height == 0) continue;
-
-    int32_t absx = 0, absy = 0;
-    if (!x11_cpp_get_abs_pos_in_host(xid, kid, &absx, &absy))
-      continue;
-
-#ifndef NDEBUG
-    fprintf(stderr,
-            "[COMPDBG] host=0x%08X kid=0x%08X mapped=%d geom=%ux%u fb=%ux%u abs=(%d,%d)\n",
-            (unsigned)xid,
-            (unsigned)kid,
-            mapped,
-            (unsigned)kw, (unsigned)kh,
-            (unsigned)kfb->width, (unsigned)kfb->height,
-            (int)absx, (int)absy);
-#endif
-    
-    
-    blit_child_over_host(
-      scratch, (int)host->width, (int)host->height,
-      (const uint32_t*)kfb->pixels, (int)kfb->width, (int)kfb->height,
-      absx, absy
-    );
-  }
-
-#ifndef NDEBUG
-  // Optional: verify nonwhite in composited result (cheap sanity)
-  size_t nonwhite = 0;
-  for (size_t i = 0; i < npx; i++) if (scratch[i] != 0xFFFFFFFFu) nonwhite++;
-  fprintf(stderr, "[SwiftX11] xproto_copy_window_bgra: COMPOSITE xid=0x%08X %dx%d nonwhite=%zu\n",
-          (unsigned)xid, (int)w, (int)h, nonwhite);
-#endif
-
-  memcpy(out_bytes, (const void*)scratch, (size_t)needed);
-  free(scratch);
-  return 1;
+  return x11_cpp_copy_host_surface_bgra(xid, out_bytes, out_cap, out_w, out_h, out_bpr);
 }
+//int x11_xproto_copy_window_bgra(uint32_t xid,
+//                                uint8_t* out_bytes,
+//                                int32_t out_cap,
+//                                int32_t* out_w,
+//                                int32_t* out_h,
+//                                int32_t* out_bpr)
+//{
+//#ifndef NDEBUG
+//  fprintf(stderr, "[SwiftX11] xproto: copy_window_bgra ENTER xid=0x%08X out_bytes=%p cap=%d\n",
+//          (unsigned)xid, (void*)out_bytes, (int)out_cap);
+//#endif
+//
+//  const ssize_t host_idx = fb_index(xid);
+//  x11_fb_slot_t* host = (host_idx >= 0) ? &g_fb[(size_t)host_idx] : NULL;
+//
+//  if (!host || !host->pixels || host->width == 0 || host->height == 0) {
+//    if (out_w) *out_w = 0;
+//    if (out_h) *out_h = 0;
+//    if (out_bpr) *out_bpr = 0;
+//    return 0;
+//  }
+//
+//  const int32_t w   = (int32_t)host->width;
+//  const int32_t h   = (int32_t)host->height;
+//  const int32_t bpr = w * 4;
+//
+//  // validate needed size
+//  const int64_t needed64 = (int64_t)bpr * (int64_t)h;
+//  if (needed64 <= 0 || needed64 > INT32_MAX) {
+//    if (out_w) *out_w = 0;
+//    if (out_h) *out_h = 0;
+//    if (out_bpr) *out_bpr = 0;
+//    return 0;
+//  }
+//  const int32_t needed = (int32_t)needed64;
+//
+//  if (out_w) *out_w = w;
+//  if (out_h) *out_h = h;
+//  if (out_bpr) *out_bpr = bpr;
+//
+//  // size-only query
+//  if (!out_bytes || out_cap == 0) return 1;
+//  if (out_cap < needed) return 0;
+//
+//  // Scratch composited buffer
+//  const size_t npx = (size_t)host->width * (size_t)host->height;
+//  const size_t bytes = npx * sizeof(uint32_t);
+//
+//  uint32_t* scratch = (uint32_t*)malloc(bytes);
+//  if (!scratch) return 0;
+//
+//  memcpy(scratch, host->pixels, bytes);
+//
+//  // Composite mapped descendants onto scratch.
+//  // (Cap is a bring-up choice; increase if needed.)
+//  uint32_t kids[2048];
+//  const uint32_t nk = x11_cpp_list_descendants(xid, kids, (uint32_t)(sizeof(kids)/sizeof(kids[0])));
+//
+//  
+//  for (uint32_t i = 0; i < nk; i++) {
+//    const uint32_t kid = kids[i];
+//
+//    uint32_t parent = 0;
+//    int16_t relx = 0, rely = 0;
+//    uint16_t kw = 0, kh = 0;
+//    int mapped = 0;
+//
+//    if (!x11_cpp_get_window_geom(kid, &parent, &relx, &rely, &kw, &kh, &mapped))
+//      continue;
+//    if (!mapped) continue;
+//
+//    const ssize_t kidx = fb_index(kid);
+//    if (kidx < 0) continue;
+//
+//    x11_fb_slot_t* kfb = &g_fb[(size_t)kidx];
+//    if (!kfb->pixels || kfb->width == 0 || kfb->height == 0) continue;
+//
+//    int32_t absx = 0, absy = 0;
+//    if (!x11_cpp_get_abs_pos_in_host(xid, kid, &absx, &absy))
+//      continue;
+//
+//#ifndef NDEBUG
+//    fprintf(stderr,
+//            "[COMPDBG] host=0x%08X kid=0x%08X mapped=%d geom=%ux%u fb=%ux%u abs=(%d,%d)\n",
+//            (unsigned)xid,
+//            (unsigned)kid,
+//            mapped,
+//            (unsigned)kw, (unsigned)kh,
+//            (unsigned)kfb->width, (unsigned)kfb->height,
+//            (int)absx, (int)absy);
+//#endif
+//    
+//    
+//    blit_child_over_host(
+//      scratch, (int)host->width, (int)host->height,
+//      (const uint32_t*)kfb->pixels, (int)kfb->width, (int)kfb->height,
+//      absx, absy
+//    );
+//  }
+//
+//#ifndef NDEBUG
+//  // Optional: verify nonwhite in composited result (cheap sanity)
+//  size_t nonwhite = 0;
+//  for (size_t i = 0; i < npx; i++) if (scratch[i] != 0xFFFFFFFFu) nonwhite++;
+//  fprintf(stderr, "[SwiftX11] xproto_copy_window_bgra: COMPOSITE xid=0x%08X %dx%d nonwhite=%zu\n",
+//          (unsigned)xid, (int)w, (int)h, nonwhite);
+//#endif
+//
+//  memcpy(out_bytes, (const void*)scratch, (size_t)needed);
+//  free(scratch);
+//  return 1;
+//}
 
 
 

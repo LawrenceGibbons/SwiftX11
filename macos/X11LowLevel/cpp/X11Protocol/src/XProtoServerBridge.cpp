@@ -248,13 +248,20 @@ static uint32_t pickButtonDeliveryWindow(x11::XProtoContext& ctx,
   return under ? under : host;
 }
 
-// xxx temp ---
+// Send a full-window Expose to a single window.
 static inline void sendExposeNow(x11::XProtoContext& ctx,
-                                 x11::EventOps& evOps,
+                                 x11::EventOps& /*evOps*/,
                                  uint32_t wid)
 {
   const x11::WindowView* wv = ctx.window(wid);
-  if (!wv) return;
+  if (!wv) {
+    fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X SKIP (no WindowView)\n", (unsigned)wid);
+    return;
+  }
+
+  fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X wh=%ux%u mapped=%d evmask=0x%08X\n",
+          (unsigned)wid, (unsigned)wv->w, (unsigned)wv->h,
+          (int)wv->mapped, (unsigned)wv->event_mask);
 
   auto ev = x11::wireev::buildExpose(ctx.transport().lastSeq(),
                                    wid,
@@ -263,7 +270,33 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
                                    0);
   ctx.transport().sendEvent32(wid, ev.data());
 }
-// xxx --- temp
+
+// Re-expose a host window AND all its mapped descendants.
+// Needed because xeyes (and many X11 clients) draw to a child window,
+// not the host.  If we only re-expose the host, the child never redraws.
+static inline void sendExposeSubtree(x11::XProtoContext& ctx,
+                                     x11::EventOps& evOps,
+                                     uint32_t hostXid)
+{
+  fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
+
+  // Expose the host itself.
+  sendExposeNow(ctx, evOps, hostXid);
+
+  // Expose every mapped descendant.
+  auto kids = ctx.windows().descendantsOf(hostXid);
+  fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
+          (unsigned)hostXid, kids.size());
+  for (uint32_t kid : kids) {
+    x11::WindowView kv{};
+    if (!ctx.windows().snapshot(kid, kv)) continue;
+    if (!kv.mapped) {
+      fprintf(stderr, "[EXPOSE_SUBTREE] skip kid=0x%08X (unmapped)\n", (unsigned)kid);
+      continue;
+    }
+    sendExposeNow(ctx, evOps, kid);
+  }
+}
 
 
 extern "C" void x11_proto_bridge_flush_notify_queue(void)
@@ -285,12 +318,33 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           break;
           
         // ------------------- SetPresentable
-        case HostCmdType::SetPresentable:
+        case HostCmdType::SetPresentable: {
+          fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X\n", (unsigned)c.xid);
           ctx.windows().setPresentable(c.xid, true);
+
+          // Check surface state right now.
+          {
+            x11::SurfaceDesc dbgS{};
+            bool hasSurf = ctx.surfaces().get(c.xid, dbgS);
+            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X hasSurface=%d surfWH=%ux%u bpr=%u ptr=%p\n",
+                    (unsigned)c.xid, (int)hasSurf,
+                    (unsigned)dbgS.w, (unsigned)dbgS.h,
+                    (unsigned)dbgS.bytesPerRow, dbgS.ptr);
+          }
+
           if (ctx.windows().consumeDirtyIfReady(c.xid)) {
+            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> FLUSH dirty\n", (unsigned)c.xid);
             x11_requests_push_damage(c.xid);
+          } else if (ctx.windows().isReadyToPresent(c.xid)) {
+            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> EXPOSE subtree (no dirty, but ready)\n",
+                    (unsigned)c.xid);
+            sendExposeSubtree(ctx, srv->eventOps(), c.xid);
+          } else {
+            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> NEITHER dirty nor ready\n",
+                    (unsigned)c.xid);
           }
           break;
+        }
           
         // ------------------- PointerMove
         case HostCmdType::PointerMove: {
@@ -1115,4 +1169,86 @@ extern "C" int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
   }
 
   return 0;
+}
+
+
+extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
+                                             uint8_t* out_bytes,
+                                             int32_t out_cap,
+                                             int32_t* out_w,
+                                             int32_t* out_h,
+                                             int32_t* out_bpr)
+{
+  if (out_w)   *out_w = 0;
+  if (out_h)   *out_h = 0;
+  if (out_bpr) *out_bpr = 0;
+
+  auto* srv = g_srv.load(std::memory_order_acquire);
+  if (!srv || xid == 0) return 0;
+
+  auto& ctx = srv->ctx();
+
+  // Present is host-owned.
+  uint32_t host = xid;
+  if (ctx.windows().exists(xid)) {
+    const uint32_t h = ctx.windows().topLevelAncestorOf(xid);
+    if (h) host = h;
+  }
+
+  x11::SurfaceDesc s{};
+  if (!ctx.surfaces().get(host, s) || !s.ptr || s.bytesPerRow == 0 || s.w == 0 || s.h == 0) {
+    fprintf(stderr, "[COPY_SURFACE] xid=0x%08X host=0x%08X FAIL no surface (ptr=%p wh=%ux%u bpr=%u)\n",
+            (unsigned)xid, (unsigned)host, s.ptr, (unsigned)s.w, (unsigned)s.h, (unsigned)s.bytesPerRow);
+    return 0;
+  }
+
+  const int32_t w   = (int32_t)s.w;
+  const int32_t hgt = (int32_t)s.h;
+
+  // ABI: we return tightly packed BGRA rows (matches old x11_xproto_copy_window_bgra behavior)
+  const int32_t tightBpr = w * 4;
+
+  // sanity: source stride must be at least tight row bytes
+  if ((int32_t)s.bytesPerRow < tightBpr) return 0;
+
+  const int64_t needed64 = (int64_t)tightBpr * (int64_t)hgt;
+  if (needed64 <= 0 || needed64 > INT32_MAX) return 0;
+  const int32_t needed = (int32_t)needed64;
+
+  if (out_w)   *out_w   = w;
+  if (out_h)   *out_h   = hgt;
+  if (out_bpr) *out_bpr = tightBpr;
+
+  // size-only query
+  if (!out_bytes || out_cap == 0) return 1;
+  if (out_cap < needed) return 0;
+
+  const uint8_t* src = (const uint8_t*)s.ptr;
+  const uint32_t srcBpr = s.bytesPerRow;
+
+  // Pack row-by-row from padded surface into tight output
+  for (int32_t y = 0; y < hgt; y++) {
+    const uint8_t* srow = src + (size_t)y * (size_t)srcBpr;
+    uint8_t*       drow = out_bytes + (size_t)y * (size_t)tightBpr;
+    std::memcpy(drow, srow, (size_t)tightBpr);
+  }
+
+  // Sample a few pixels from the source surface for debugging.
+  {
+    const uint32_t* px = (const uint32_t*)s.ptr;
+    const uint32_t mid = (uint32_t)((size_t)(hgt/2) * (size_t)(srcBpr/4) + (size_t)(w/2));
+    const uint32_t p0 = px[0];
+    const uint32_t pm = (mid < (uint32_t)((size_t)hgt * (size_t)(srcBpr/4))) ? px[mid] : 0;
+    // Count non-white pixels in first row.
+    uint32_t nonwhite = 0;
+    for (int32_t x = 0; x < w; x++) {
+      if ((px[x] & 0x00FFFFFFu) != 0x00FFFFFFu) nonwhite++;
+    }
+    fprintf(stderr, "[COPY_SURFACE] xid=0x%08X host=0x%08X wh=%dx%d bpr=%d "
+            "p0=0x%08X pmid=0x%08X row0_nonwhite=%u\n",
+            (unsigned)xid, (unsigned)host, (int)w, (int)hgt, (int)tightBpr,
+            (unsigned)p0, (unsigned)pm, (unsigned)nonwhite);
+  }
+
+  return 1;
 }

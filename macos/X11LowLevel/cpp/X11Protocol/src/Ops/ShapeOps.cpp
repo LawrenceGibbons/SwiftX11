@@ -225,19 +225,26 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const std::size_t narcs = br.remaining() / 12u;
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
+    fprintf(stderr, "[PolyFillArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
+            (unsigned)drawable, (unsigned)gc_id, narcs);
+
     DrawableRW dst{};
-    if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!resolveDrawableRW(ctx, drawable, dst)) {
+      fprintf(stderr, "[PolyFillArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+      br.skip(br.remaining()); return;
+    }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
-    // GC fg
+    // GC fg — force opaque alpha for XRGB8888 surfaces.
     uint32_t fg = 0xFF000000u;
     {
       GCState st{};
-      if (GCTable::instance().find(gc_id, st)) fg = st.fg;
+      if (GCTable::instance().find(gc_id, st)) fg = st.fg | 0xFF000000u;
     }
 
     const int dstW = (int)dst.w;
     const int dstH = (int)dst.h;
+    const int dstStride = (int)dst.stridePixels;
     uint32_t* dstPixels = dst.pixels32;
 
     for (std::size_t i = 0; i < narcs; i++) {
@@ -280,7 +287,7 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             if (!angle_in_arc(theta, start, extent)) continue;
           }
 
-          dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg;
+          dstPixels[(size_t)py * (size_t)dstStride + (size_t)px] = fg;
         }
       }
     }
@@ -305,19 +312,26 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const std::size_t narcs = br.remaining() / 12u;
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
+    fprintf(stderr, "[PolyArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
+            (unsigned)drawable, (unsigned)gc_id, narcs);
+
     DrawableRW dst{};
-    if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!resolveDrawableRW(ctx, drawable, dst)) {
+      fprintf(stderr, "[PolyArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+      br.skip(br.remaining()); return;
+    }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
-    // GC fg
+    // GC fg — force opaque alpha for XRGB8888 surfaces.
     uint32_t fg = 0xFF000000u;
     {
       GCState st{};
-      if (GCTable::instance().find(gc_id, st)) fg = st.fg;
+      if (GCTable::instance().find(gc_id, st)) fg = st.fg | 0xFF000000u;
     }
 
     const int dstW = (int)dst.w;
     const int dstH = (int)dst.h;
+    const int dstStride = (int)dst.stridePixels;
     uint32_t* dstPixels = dst.pixels32;
 
     for (std::size_t i = 0; i < narcs; i++) {
@@ -346,8 +360,11 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       int y1 = std::min(dstH, (int)ay + (int)ah);
       if (x0 >= x1 || y0 >= y1) continue;
 
-      const float eps = std::max(1.0f / std::max(rx, 1.0f),
-                                 1.0f / std::max(ry, 1.0f));
+      // eps controls the thickness of the outline ring.
+      // In normalised coordinates, a pixel 0.5 screen-pixels from the boundary has
+      // |nx²+ny² - 1| ≈ 1/r.  Factor of 2 ensures a solid 1-pixel-wide ring.
+      const float eps = 2.0f * std::max(1.0f / std::max(rx, 1.0f),
+                                        1.0f / std::max(ry, 1.0f));
 
       for (int py = y0; py < y1; py++) {
         const float ny = (((float)py + 0.5f) - cy) / ry;
@@ -364,7 +381,7 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             if (!angle_in_arc(theta, start, extent)) continue;
           }
 
-          dstPixels[(size_t)py * (size_t)dstW + (size_t)px] = fg;
+          dstPixels[(size_t)py * (size_t)dstStride + (size_t)px] = fg;
         }
       }
     }

@@ -98,6 +98,8 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
 #ifndef NDEBUG
   // Put this right after you decode major/minor/seq:
   if (major == 70 || // PolyFillRectangle
+      major == 68 || // PolyArc (outline)
+      major == 71 || // PolyFillArc (filled)
       major == 62 || // CopyArea
       major == 63 || // CopyPlane
       major == 72 || // PutImage
@@ -280,22 +282,52 @@ bool XProtoServer::lookupWindow(uint32_t xid, WindowView* out) {
   return true;
 }
   
-void XProtoServer::updateSurface(uint32_t xid, const SurfaceDesc& s) {
-  if (xid == 0) return;
+// xxx debug void XProtoServer::updateSurface(uint32_t xid, const SurfaceDesc& s) {
+// xxx debug   if (xid == 0) return;
+// xxx debug 
+// xxx debug   // Key choice for first cut: registry is keyed by HOST (top-level window).
+// xxx debug   const uint32_t host = ctx_.windows().topLevelAncestorOf(xid); // you already have this method
+// xxx debug   const uint32_t key  = host ? host : xid;
+// xxx debug 
+// xxx debug   ctx_.surfaces().set(key, s);
+// xxx debug   ctx_.windows().setPresentable(key, true);
+// xxx debug 
+// xxx debug   // If anything was waiting to present, release it now.
+// xxx debug   if (ctx_.windows().consumeDirtyIfReady(key)) {
+// xxx debug     ctx_.ui().push(x11::UICommand{ x11::UICommand::Type::Damage, key });
+// xxx debug   }
+// xxx debug }
+  
+  void XProtoServer::updateSurface(uint32_t xid, const SurfaceDesc& s) {
+    if (xid == 0) return;
 
-  // Key choice for first cut: registry is keyed by HOST (top-level window).
-  const uint32_t host = ctx_.windows().topLevelAncestorOf(xid); // you already have this method
-  const uint32_t key  = host ? host : xid;
+    const uint32_t host = ctx_.windows().topLevelAncestorOf(xid);
+    const uint32_t key  = host ? host : xid;
 
-  ctx_.surfaces().set(key, s);
-  ctx_.windows().setPresentable(key, true);
+    fprintf(stderr, "[UPDATE_SURFACE] xid=0x%08X -> host/key=0x%08X wh=%ux%u bpr=%u ptr=%p\n",
+            (unsigned)xid, (unsigned)key,
+            (unsigned)s.w, (unsigned)s.h, (unsigned)s.bytesPerRow, s.ptr);
 
-  // If anything was waiting to present, release it now.
-  if (ctx_.windows().consumeDirtyIfReady(key)) {
-    ctx_.ui().push(x11::UICommand{ x11::UICommand::Type::Damage, key });
+    ctx_.surfaces().set(key, s);
+    ctx_.windows().setPresentable(key, true);
+
+    // IMPORTANT: only flush if something already drew (dirty was set by raster ops).
+    if (ctx_.windows().consumeDirtyIfReady(key)) {
+      fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> FLUSH dirty\n", (unsigned)key);
+      ctx_.ui().push(x11::UICommand{
+        x11::UICommand::Type::Damage,
+        /*xid=*/key,
+        /*parent=*/0,
+        /*w_px=*/0, /*h_px=*/0,
+        /*cursor_xid=*/0,
+        /*shape=*/0,
+        /*title_utf8=*/nullptr
+      });
+    } else {
+      fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> no dirty to flush\n", (unsigned)key);
+    }
   }
-}
-
+  
 void XProtoServer::clearSurface(uint32_t xid) {
   if (xid == 0) return;
   const uint32_t host = ctx_.windows().topLevelAncestorOf(xid);

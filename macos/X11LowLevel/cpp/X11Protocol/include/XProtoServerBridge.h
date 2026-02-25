@@ -103,6 +103,7 @@ void x11_proto_bridge_post_pointer_move2(uint32_t xid,
   int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
                                   int32_t* out_abs_x,
                                   int32_t* out_abs_y);
+  
 #ifdef __cplusplus
 }
 #endif

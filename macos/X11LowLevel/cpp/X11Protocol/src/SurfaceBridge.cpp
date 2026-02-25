@@ -12,6 +12,7 @@
 
 #include "Core/XProtoServer.hpp"
 #include "Core/SurfaceDesc.hpp"
+#include "UI/UICommandQueue.hpp"
 
 // We need access to the current server instance managed by XProtoServerBridge.cpp.
 // This accessor is defined in XProtoServerBridge.cpp (see snippet below).
@@ -34,10 +35,17 @@ extern "C" void x11_surface_update(uint32_t host_xid,
   s.bytesPerRow = bytes_per_row;
   s.w = w;
   s.h = h;
-  s.format = x11::SurfaceFormat::XRGB8888;  // keep aligned with your SurfaceDesc definition
+  s.format = x11::SurfaceFormat::XRGB8888;
   s.generation = generation;
 
+  fprintf(stderr, "[SURFACE_UPDATE] xid=0x%08X ptr=%p bpr=%u wh=%ux%u gen=%u\n",
+          (unsigned)host_xid, ptr, (unsigned)bytes_per_row,
+          (unsigned)w, (unsigned)h, (unsigned)generation);
+
   srv->updateSurface(host_xid, s);
+
+  // Optional bookkeeping only; DO NOT present here.
+  // srv->ctx().windows().markDirty(host_xid);
 }
 
 extern "C" void x11_surface_clear(uint32_t host_xid)

@@ -30,49 +30,180 @@ extern "C" int x11_xproto_window_fb_rw(uint32_t xid,
 
 namespace x11 {
 
+static bool computeOffsetInHost(WindowTable& wt,
+                                uint32_t host,
+                                uint32_t xid,
+                                int32_t& outX,
+                                int32_t& outY)
+{
+  outX = 0;
+  outY = 0;
+  if (host == 0 || xid == 0) return false;
+  if (host == xid) return true;
+
+  uint32_t cur = xid;
+  for (int hop = 0; hop < 256; hop++) {
+    WindowView vw{};
+    if (!wt.snapshot(cur, vw)) return false;
+
+    // accumulate this node’s offset in its parent
+    outX += (int32_t)vw.x;
+    outY += (int32_t)vw.y;
+
+    if (vw.parent_xid == 0) return false;
+    if (vw.parent_xid == host) return true;
+
+    cur = vw.parent_xid;
+  }
+  return false;
+}
+
 bool resolveDrawableRW(XProtoContext& ctx,
                        uint32_t drawable,
                        DrawableRW& out)
 {
-  out = {}; // clear
+  out = {};
 
   // ---------------- WINDOW ----------------
   if (ctx.windows().exists(drawable)) {
-    // Prefer Swift-owned surface registry.
+    // Determine host (top-level) window.
+    const uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+    const uint32_t key  = host ? host : drawable;
+
+    // Get drawable geometry (for clipping).
+    WindowView dv{};
+    if (!ctx.windows().snapshot(drawable, dv)) {
+      fprintf(stderr, "[RESOLVE] drawable=0x%08X FAIL snapshot\n", (unsigned)drawable);
+      return false;
+    }
+
+    // Prefer Swift-owned surface registry (currently published per host).
     x11::SurfaceDesc s{};
-    if (ctx.surfaces().get(drawable, s) &&
+    if (ctx.surfaces().get(key, s) &&
         s.ptr != nullptr && s.bytesPerRow != 0 &&
         s.w != 0 && s.h != 0)
     {
-      // Require 32bpp alignment for now.
-      if ((s.bytesPerRow & 3u) != 0) return false;
+      if ((s.bytesPerRow & 3u) != 0) {
+        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL bpr alignment (%u)\n",
+                (unsigned)drawable, (unsigned)key, (unsigned)s.bytesPerRow);
+        return false;
+      }
       const uint32_t stridePx = s.bytesPerRow / 4u;
       if (stridePx == 0) return false;
 
-      out.pixels32 = static_cast<uint32_t*>(s.ptr);
-      out.w = s.w;
-      out.h = s.h;
+      // Compute drawable origin in host coords.
+      int32_t ox = 0, oy = 0;
+      if (!computeOffsetInHost(ctx.windows(), key, drawable, ox, oy)) {
+        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL offset computation\n",
+                (unsigned)drawable, (unsigned)key);
+        return false;
+      }
+      if (ox < 0 || oy < 0) {
+        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL negative offset (%d,%d)\n",
+                (unsigned)drawable, (unsigned)key, (int)ox, (int)oy);
+        return false;
+      }
+
+      // Clamp drawable dims to backing surface bounds (defensive).
+      uint32_t maxW = (ox < (int32_t)s.w) ? (uint32_t)((int32_t)s.w - ox) : 0u;
+      uint32_t maxH = (oy < (int32_t)s.h) ? (uint32_t)((int32_t)s.h - oy) : 0u;
+
+
+      // NEW: host uses surface size; children use WindowView size.
+      uint16_t effW = 0, effH = 0;
+      if (drawable == key) {
+        // Host drawable: match the backing surface dimensions
+        effW = (uint16_t)std::min<uint32_t>(s.w, maxW); // maxW==s.w when ox==0
+        effH = (uint16_t)std::min<uint32_t>(s.h, maxH);
+      } else {
+        // Child drawable: clip to window geometry (prevents scribbling outside child)
+        const bool isContentChild = (dv.parent_xid == key);
+
+        fprintf(stderr,
+                "[RESOLVE] child drawable=0x%08X host=0x%08X parent=0x%08X "
+                "xy=(%d,%d) wh=%ux%u isContent=%d surf=%ux%u maxWH=%ux%u\n",
+                (unsigned)drawable, (unsigned)key, (unsigned)dv.parent_xid,
+                (int)dv.x, (int)dv.y, (unsigned)dv.w, (unsigned)dv.h,
+                (int)isContentChild,
+                (unsigned)s.w, (unsigned)s.h,
+                (unsigned)maxW, (unsigned)maxH);
+
+        if (isContentChild) {
+          // Let the content child fill the host surface during live resize.
+          effW = (uint16_t)std::min<uint32_t>(maxW, s.w);
+          effH = (uint16_t)std::min<uint32_t>(maxH, s.h);
+        } else {
+          // True children: clip to their own geometry.
+          effW = (uint16_t)std::min<uint32_t>(dv.w, maxW);
+          effH = (uint16_t)std::min<uint32_t>(dv.h, maxH);
+        }
+      }
+      if (effW == 0 || effH == 0) {
+        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL effWH=%ux%u\n",
+                (unsigned)drawable, (unsigned)key, (unsigned)effW, (unsigned)effH);
+        return false;
+      }
+
+      uint32_t* base = static_cast<uint32_t*>(s.ptr);
+      uint32_t* shifted = base + (size_t)oy * (size_t)stridePx + (size_t)ox;
+
+      out.pixels32 = shifted;
+      out.w = effW;
+      out.h = effH;
       out.stridePixels = stridePx;
+
       out.isWindow = true;
       out.isPixmap = false;
       out.depth = 32;
+
+      out.backingXid = key;
+      out.backingPixels32 = base;
+      out.backingStridePixels = stridePx;
+      out.offsetX = ox;
+      out.offsetY = oy;
+
+      fprintf(stderr,
+              "[RESOLVE] OK drawable=0x%08X host=0x%08X path=SURFACE "
+              "effWH=%ux%u stride=%u off=(%d,%d) surfWH=%ux%u\n",
+              (unsigned)drawable, (unsigned)key,
+              (unsigned)out.w, (unsigned)out.h,
+              (unsigned)out.stridePixels,
+              (int)out.offsetX, (int)out.offsetY,
+              (unsigned)s.w, (unsigned)s.h);
+
       return true;
     }
 
-    // Transitional fallback: old C-backed framebuffer.
+    // Transitional fallback: old C-backed framebuffer for THIS drawable.
     uint32_t* pix = nullptr;
     uint32_t w = 0, h = 0;
     if (!x11_xproto_window_fb_rw(drawable, &pix, &w, &h) || !pix || w == 0 || h == 0) {
+      fprintf(stderr,
+              "[RESOLVE] drawable=0x%08X host=0x%08X FAIL no surface AND no C FB\n",
+              (unsigned)drawable, (unsigned)key);
       return false;
     }
 
     out.pixels32 = pix;
     out.w = (uint16_t)w;
     out.h = (uint16_t)h;
-    out.stridePixels = w; // old FB path is tightly packed
+    out.stridePixels = w;
+
     out.isWindow = true;
     out.isPixmap = false;
     out.depth = 32;
+
+    out.backingXid = drawable;
+    out.backingPixels32 = pix;
+    out.backingStridePixels = w;
+    out.offsetX = 0;
+    out.offsetY = 0;
+
+    fprintf(stderr,
+            "[RESOLVE] OK drawable=0x%08X host=0x%08X path=C_FB wh=%ux%u\n",
+            (unsigned)drawable, (unsigned)key,
+            (unsigned)out.w, (unsigned)out.h);
+
     return true;
   }
 
@@ -85,10 +216,17 @@ bool resolveDrawableRW(XProtoContext& ctx,
     out.pixels32 = pix;
     out.w = pw;
     out.h = ph;
-    out.stridePixels = pw; // pixmaps are tightly packed in your table today
+    out.stridePixels = pw;
+
     out.isWindow = false;
     out.isPixmap = true;
     out.depth = 32;
+
+    out.backingXid = drawable;
+    out.backingPixels32 = pix;
+    out.backingStridePixels = pw;
+    out.offsetX = 0;
+    out.offsetY = 0;
     return true;
   }
 

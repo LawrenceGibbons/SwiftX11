@@ -113,10 +113,11 @@ final class X11View: NSView {
   fileprivate func ensureHostSurface(wPx: Int32, hPx: Int32) {
     guard xid != 0, wPx >= 1, hPx >= 1 else { return }
 
-    // 4 bytes/pixel, align bytesPerRow (64 is fine)
-    let rawBpr = Int32(wPx * 4)
-    let bpr = (rawBpr + 63) & ~63
+    let bpr = wPx * 4                  // tight rows for bring-up stability
     let needBytes = Int(bpr * hPx)
+
+    print(String(format: "[ENSURE_SURFACE] xid=0x%08X wPx=%d hPx=%d bpr=%d usingMetal=%d",
+          self.xid, wPx, hPx, bpr, self.usingMetal ? 1 : 0))
 
     let needsAlloc =
       hostSurface == nil ||
@@ -124,27 +125,80 @@ final class X11View: NSView {
       hostSurface!.count != needBytes
 
     if needsAlloc {
-      hostSurface = Data(count: needBytes)
+      let old = hostSurface
+      let oldW = hostSurfaceW
+      let oldH = hostSurfaceH
+      let oldBPR = hostSurfaceBPR
+
+      // Allocate new (uninitialized contents are fine; we will paint deterministically)
+      var newSurface = Data(count: needBytes)
+
+      // Copy overlap from old buffer first (preserves last frame; avoids flash)
+      if let old, oldW > 0, oldH > 0, oldBPR > 0 {
+        let copyW = Int(min(oldW, wPx))
+        let copyH = Int(min(oldH, hPx))
+        if copyW > 0 && copyH > 0 {
+          let rowBytes = min(copyW * 4, Int(oldBPR), Int(bpr))
+          if rowBytes > 0 {
+            old.withUnsafeBytes { srcRaw in
+              newSurface.withUnsafeMutableBytes { dstRaw in
+                guard let sp = srcRaw.baseAddress, let dp = dstRaw.baseAddress else { return }
+                for y in 0..<copyH {
+                  memcpy(dp.advanced(by: y * Int(bpr)),
+                         sp.advanced(by: y * Int(oldBPR)),
+                         rowBytes)
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Now clear areas NOT covered by the overlap to white (BGRA = FF FF FF FF)
+      newSurface.withUnsafeMutableBytes { raw in
+        guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+
+        // If no old surface, just clear everything.
+        if old == nil || oldW <= 0 || oldH <= 0 || oldBPR <= 0 {
+          memset(base, 0xFF, needBytes)
+          return
+        }
+
+        let copyW = Int(min(oldW, wPx))
+        let copyH = Int(min(oldH, hPx))
+
+        // 1) Clear the "right" strip for rows that existed before (y < copyH, x >= copyW)
+        if copyH > 0 && copyW < Int(wPx) {
+          let rightBytes = (Int(wPx) - copyW) * 4
+          for y in 0..<copyH {
+            let row = base.advanced(by: y * Int(bpr))
+            memset(row.advanced(by: copyW * 4), 0xFF, rightBytes)
+          }
+        }
+
+        // 2) Clear the "bottom" strip: rows y >= copyH
+        if copyH < Int(hPx) {
+          let start = copyH * Int(bpr)
+          let count = (Int(hPx) - copyH) * Int(bpr)
+          memset(base.advanced(by: start), 0xFF, count)
+        }
+      }
+
+      // Commit
+      hostSurface = newSurface
       hostSurfaceW = wPx
       hostSurfaceH = hPx
       hostSurfaceBPR = bpr
       hostSurfaceGen &+= 1
-      
-      hostSurface!.withUnsafeMutableBytes { raw in
-        guard let p = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-        var i = 3
-        while i < needBytes {
-          p[i] = 0xFF   // BGRA: A byte
-          i &+= 4
-        }
-      }
-
     }
 
+    // Publish surface every time (so C++ sees latest ptr + generation)
     hostSurface!.withUnsafeMutableBytes { raw in
       guard let p = raw.baseAddress else { return }
-      // Call into C++ to install/update the surface for this host xid.
-      x11_surface_update(xid, p, UInt32(bpr), UInt16(clamping: Int(wPx)), UInt16(clamping: Int(hPx)), hostSurfaceGen)
+      x11_surface_update(xid, p, UInt32(bpr),
+                         UInt16(clamping: Int(wPx)),
+                         UInt16(clamping: Int(hPx)),
+                         hostSurfaceGen)
     }
   }
 
@@ -217,10 +271,10 @@ final class X11View: NSView {
     Self.layoutDepthTLS.value += 1
     defer { Self.layoutDepthTLS.value -= 1 }
     super.layout()
-    
+
     imageLayer?.frame = bounds
     mtkView?.frame = bounds
-    
+
     if pendingEnableMetal, wantsMetal,
        self.window != nil,
        bounds.width >= 1, bounds.height >= 1 {
@@ -228,6 +282,18 @@ final class X11View: NSView {
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }
         self.setUseMetal(true)
+      }
+    }
+
+    // Software mode: resize the host surface when bounds change.
+    // In Metal mode, the MTKViewDelegate callback (handleDrawableSize)
+    // handles this; software mode has no equivalent, so we do it here.
+    if !usingMetal, xid != 0, window != nil {
+      let wX11 = Int32(max(1, Int(bounds.width.rounded(.down))))
+      let hX11 = Int32(max(1, Int(bounds.height.rounded(.down))))
+      if wX11 >= 16, hX11 >= 16,
+         (wX11 != hostSurfaceW || hX11 != hostSurfaceH) {
+        ensureHostSurface(wPx: wX11, hPx: hX11)
       }
     }
   }
@@ -337,6 +403,8 @@ final class X11View: NSView {
     guard self.window != nil else { return }
     guard xid != 0 else { return }
     didNotifyPresentable = true
+    print(String(format: "[PRESENTABLE_ONCE] xid=0x%08X usingMetal=%d bounds=%.0fx%.0f",
+          self.xid, self.usingMetal ? 1 : 0, bounds.width, bounds.height))
     x11_post_window_presentable(xid)
   }
   
@@ -360,13 +428,31 @@ final class X11View: NSView {
       // Don’t refresh tracking areas synchronously on attach; coalesce.
       self.requestTrackingRefreshCoalesced()
       
-      let scale = window?.backingScaleFactor ?? 1.0
-      let wPx = Int32(max(1, Int((bounds.width * scale).rounded(.down))))
-      let hPx = Int32(max(1, Int((bounds.height * scale).rounded(.down))))
-      ensureHostSurface(wPx: wPx, hPx: hPx)
-      
-      // make host presentable in software or metal mode
-      self.notifyPresentableOnce()
+      // Register the host surface and notify presentable.
+      // During initial window creation, setContentSize is deferred (async), so
+      // the first scheduleAttachSettle often fires with tiny/default bounds (e.g. 1×1).
+      // Registering a 1×1 surface causes all initial client draws to be clipped.
+      // If bounds are still too small, retry after a short delay (by which time
+      // setContentSize should have taken effect).
+      let wX11 = Int32(max(1, Int(bounds.width.rounded(.down))))
+      let hX11 = Int32(max(1, Int(bounds.height.rounded(.down))))
+      if wX11 >= 16 && hX11 >= 16 {
+        print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds OK %dx%d — registering surface",
+              self.xid, wX11, hX11))
+        ensureHostSurface(wPx: wX11, hPx: hX11)
+        // make host presentable in software or metal mode
+        self.notifyPresentableOnce()
+      } else {
+        // Bounds too small — setContentSize hasn't taken effect yet.
+        // Retry shortly.  This is essential for software rendering which has
+        // no handleDrawableSize fallback.
+        print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds too small %dx%d — retrying in 50ms",
+              self.xid, wX11, hX11))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+          guard let self else { return }
+          self.scheduleAttachSettle()
+        }
+      }
       
     }
   }
@@ -1055,6 +1141,9 @@ final class X11View: NSView {
     addCursorRect(bounds, cursor: currentCursor)
   }
 
+  fileprivate var hasMetalTexture: Bool {
+    return renderer?.hasTexture ?? false
+  }
   
 }
 
@@ -1094,6 +1183,8 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     self.xid = xid
     self.didNotifyPresentable = false
     self.lastDrawablePt = (0, 0)
+    self.pendingSize = nil
+    self.resizeFlushScheduled = false
   }
   
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -1120,59 +1211,80 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   }
   
   func draw(in view: MTKView) {
-    // Hard gate: never draw with invalid drawableSize
     let ds = view.drawableSize
     guard ds.width >= 1, ds.height >= 1 else { return }
-    guard view.currentDrawable != nil else { return } // optional but helps
-                                                      // Do NOT call handleDrawableSize here
+    guard view.currentDrawable != nil else { return }
+    guard owner?.hasMetalTexture == true else { return } // <- prevents clear-color overwrite
     owner?.metalDraw(in: view)
   }
   
-  private var pendingResizeTask: DispatchWorkItem? = nil
   private var pendingSize: (w: Int32, h: Int32)? = nil
-  
+  private var resizeFlushScheduled: Bool = false  
   
   
   private func handleDrawableSize(_ size: CGSize) {
     guard xid != 0 else { return }
-    
+
     // MTKView drawableSize is in *pixels*.
     let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
     let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
-    
+
+    print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X drawableSize=%dx%d",
+          xid, wPx, hPx))
+
     // ---- HARD GATES ----
-    guard wPx >= 1, hPx >= 1 else { return }
     guard wPx >= 16, hPx >= 16 else { return }
     guard owner?.window != nil else { return }
-    
+
+    // Register the surface BEFORE posting presentable so that when the xproto
+    // thread processes SetPresentable → Expose → client draws, the surface
+    // already exists at the correct size in SurfaceRegistry.
+    let scale = owner?.window?.backingScaleFactor ?? 1.0
+    let wX11 = Int32(max(1, Int((CGFloat(wPx) / scale).rounded(.down))))
+    let hX11 = Int32(max(1, Int((CGFloat(hPx) / scale).rounded(.down))))
+    print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X scale=%.1f -> x11=%dx%d",
+          xid, scale, wX11, hX11))
+    if wX11 >= 1 && hX11 >= 1 {
+      owner?.ensureHostSurface(wPx: wX11, hPx: hX11)
+    }
+
     if !didNotifyPresentable {
       didNotifyPresentable = true
+      print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X -> posting presentable", xid))
       x11_post_window_presentable(xid)
     }
-    owner?.ensureHostSurface(wPx: wPx, hPx: hPx)
-    
+
+    // Keep pending in PIXELS for the throttle (fine)
     if wPx == lastDrawablePt.w && hPx == lastDrawablePt.h { return }
     lastDrawablePt = (wPx, hPx)
-    
-    pendingResizeTask?.cancel()
+
     pendingSize = (w: wPx, h: hPx)
-    
-    let task = DispatchWorkItem { [weak self] in
-      guard let self = self, let s = self.pendingSize else { return }
-      
-      // Convert backing pixels -> X11 units (points) under the new model.
+    scheduleResizeFlush()
+  }
+  
+  private func scheduleResizeFlush() {
+    guard !resizeFlushScheduled else { return }
+    resizeFlushScheduled = true
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak self] in
+      guard let self else { return }
+      self.resizeFlushScheduled = false
+      guard let s = self.pendingSize else { return }
+
       let scale = self.owner?.window?.backingScaleFactor ?? 1.0
       let wX11 = Int32(max(1, Int((CGFloat(s.w) / scale).rounded(.down))))
       let hX11 = Int32(max(1, Int((CGFloat(s.h) / scale).rounded(.down))))
-      
+
+      self.owner?.ensureHostSurface(wPx: wX11, hPx: hX11)
       x11_post_window_resize(self.xid, wX11, hX11)
+
+      // If another size landed while we were waiting, keep draining.
+      if let s2 = self.pendingSize, s2.w != s.w || s2.h != s.h {
+        self.scheduleResizeFlush()
+      }
     }
-    
-    pendingResizeTask = task
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task)
   }
-  
-}
+} // Class X11Renderer
 
 extension X11View {
   static func logIfInLayout(_ label: String, view: X11View?) {

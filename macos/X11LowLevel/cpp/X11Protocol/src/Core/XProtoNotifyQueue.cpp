@@ -7,6 +7,7 @@
 
 #include "Core/XProtoNotifyQueue.hpp"
 #include <cstddef>
+#include <cstdio>
 
 namespace x11 {
 
@@ -131,6 +132,11 @@ void XProtoNotifyQueue::queueNotify(uint32_t wid, bool wantConfigure, bool wantE
   if (wid == 0) return;
   if (!wantConfigure && !wantExpose) return;
 
+  // xxx for debugging
+  if ( wantExpose ) {
+    fprintf( stderr, "[QUEUE_NOTIFY] wantExpose requested");
+  }
+  
   pthread_mutex_lock(&mu_);
   coalesceLocked(wid, wantConfigure, wantExpose);
   pthread_mutex_unlock(&mu_);

@@ -8,9 +8,10 @@ namespace x11 {
   struct GCState {
     uint32_t xid = 0;
     
+    
     // Core fields xterm/text needs
-//    uint32_t fg  = 0xFF000000u; // black
-    uint32_t fg  = 0xFF00FF00u; // green
+    uint32_t fg  = 0xFF000000u; // black
+//    uint32_t fg  = 0xFF00FF00u; // green
     uint32_t bg  = 0xFFFFFFFFu; // white
     uint32_t font = 0;          // fid (CARD32), 0 means "server default"
     

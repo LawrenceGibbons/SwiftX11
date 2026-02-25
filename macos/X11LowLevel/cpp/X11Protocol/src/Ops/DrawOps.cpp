@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>   // memmove
+#include <algorithm>
+
 
 #include "Utils/ByteReader.hpp"
 #include "Ops/DrawOps.hpp"
@@ -105,26 +107,26 @@ uint32_t DrawOps::computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits) {
 // helpers
 // ---------------------------
   
-static inline void fillRectBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
-                                int x, int y, int w, int h,
-                                uint32_t color)
-{
-  if (!pix || fbW == 0 || fbH == 0) return;
-  if (w <= 0 || h <= 0) return;
-
-  int rx = x, ry = y, rw = w, rh = h;
-
-  if (rx < 0) { rw += rx; rx = 0; }
-  if (ry < 0) { rh += ry; ry = 0; }
-  if (rx + rw > (int)fbW) rw = (int)fbW - rx;
-  if (ry + rh > (int)fbH) rh = (int)fbH - ry;
-  if (rw <= 0 || rh <= 0) return;
-
-  for (int yy = 0; yy < rh; yy++) {
-    uint32_t* row = pix + (size_t)(ry + yy) * fbW + (size_t)rx;
-    for (int xx = 0; xx < rw; xx++) row[xx] = color;
-  }
-}
+//static inline void fillRectBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
+//                                int x, int y, int w, int h,
+//                                uint32_t color)
+//{
+//  if (!pix || fbW == 0 || fbH == 0) return;
+//  if (w <= 0 || h <= 0) return;
+//
+//  int rx = x, ry = y, rw = w, rh = h;
+//
+//  if (rx < 0) { rw += rx; rx = 0; }
+//  if (ry < 0) { rh += ry; ry = 0; }
+//  if (rx + rw > (int)fbW) rw = (int)fbW - rx;
+//  if (ry + rh > (int)fbH) rh = (int)fbH - ry;
+//  if (rw <= 0 || rh <= 0) return;
+//
+//  for (int yy = 0; yy < rh; yy++) {
+//    uint32_t* row = pix + (size_t)(ry + yy) * fbW + (size_t)rx;
+//    for (int xx = 0; xx < rw; xx++) row[xx] = color;
+//  }
+//}
 
 static inline void drawGlyph1bppBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
                                      int dstLeftX, int dstTopY,
@@ -397,20 +399,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 // -----------------------------
 // CopyArea (major 62)
 // -----------------------------
-#include <cstring> // std::memmove
-#include <algorithm>
-
 void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
-  // Body after 4-byte header (24 bytes):
-  //   CARD32 src
-  //   CARD32 dst
-  //   CARD32 gc
-  //   INT16  srcX
-  //   INT16  srcY
-  //   INT16  dstX
-  //   INT16  dstY
-  //   CARD16 w
-  //   CARD16 h
   if (br.remaining() < 24) { br.skip(br.remaining()); return; }
 
   const uint32_t src   = br.readU32();
@@ -444,8 +433,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const bool canMemmoveFast = (isGXcopy && fullPlane);
 
   // ------------------------------------------------------------
-  // Resolve source drawable -> read-only pixel pointer + dims + stride
+  // Resolve source drawable -> read pointer + dims + stride + backing info
   // ------------------------------------------------------------
+  x11::DrawableRW srcRW{};
   const uint32_t* srcPixels = nullptr;
   int srcW = 0, srcH = 0;
   uint32_t srcStride = 0;
@@ -454,29 +444,42 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const bool srcIsPix = ctx.pixmaps().exists(src);
 
   if (srcIsWin) {
-    x11::DrawableRW s{};
-    if (!x11::resolveDrawableRW(ctx, src, s) || !s.pixels32) return;
-    srcPixels = s.pixels32;
-    srcW = (int)s.w;
-    srcH = (int)s.h;
-    srcStride = s.stridePixels;
+    if (!x11::resolveDrawableRW(ctx, src, srcRW) || !srcRW.pixels32) return;
+    srcPixels = srcRW.pixels32;
+    srcW = (int)srcRW.w;
+    srcH = (int)srcRW.h;
+    srcStride = srcRW.stridePixels;
     if (srcW <= 0 || srcH <= 0 || srcStride == 0) return;
   } else if (srcIsPix) {
     PixmapView pv{};
     if (!ctx.pixmaps().snapshot(src, pv)) return;
-    if (pv.depth == 1) return;              // CopyArea not for depth-1 masks
+    if (pv.depth == 1) return; // CopyArea not for depth-1 masks
     if (!pv.pixels || pv.w == 0 || pv.h == 0) return;
+
     srcPixels = pv.pixels;
     srcW = (int)pv.w;
     srcH = (int)pv.h;
-    srcStride = (uint32_t)pv.w;             // pixmaps are tightly packed today
+    srcStride = (uint32_t)pv.w;
+
+    srcRW.isPixmap = true;
+    srcRW.isWindow = false;
+    srcRW.pixels32 = const_cast<uint32_t*>(pv.pixels); // backing identity only
+    srcRW.w = pv.w;
+    srcRW.h = pv.h;
+    srcRW.stridePixels = srcStride;
+    srcRW.backingPixels32 = const_cast<uint32_t*>(pv.pixels);
+    srcRW.backingStridePixels = srcStride;
+    srcRW.backingXid = src;
+    srcRW.offsetX = 0;
+    srcRW.offsetY = 0;
   } else {
     return;
   }
 
   // ------------------------------------------------------------
-  // Resolve destination drawable -> writable pixel pointer + dims + stride
+  // Resolve destination drawable -> write pointer + dims + stride + backing info
   // ------------------------------------------------------------
+  x11::DrawableRW dstRW{};
   uint32_t* dstPixels = nullptr;
   int dstW = 0, dstH = 0;
   uint32_t dstStride = 0;
@@ -485,32 +488,48 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const bool dstIsPix = ctx.pixmaps().exists(dst);
 
   if (dstIsWin) {
-    x11::DrawableRW d{};
-    if (!x11::resolveDrawableRW(ctx, dst, d) || !d.pixels32) return;
-    dstPixels = d.pixels32;
-    dstW = (int)d.w;
-    dstH = (int)d.h;
-    dstStride = d.stridePixels;
+    if (!x11::resolveDrawableRW(ctx, dst, dstRW) || !dstRW.pixels32) return;
+    dstPixels = dstRW.pixels32;
+    dstW = (int)dstRW.w;
+    dstH = (int)dstRW.h;
+    dstStride = dstRW.stridePixels;
     if (dstW <= 0 || dstH <= 0 || dstStride == 0) return;
   } else if (dstIsPix) {
     uint16_t pw = 0, ph = 0;
     dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
     if (!dstPixels || pw == 0 || ph == 0) return;
+
     dstW = (int)pw;
     dstH = (int)ph;
     dstStride = (uint32_t)pw;
+
+    dstRW.isPixmap = true;
+    dstRW.isWindow = false;
+    dstRW.pixels32 = dstPixels;
+    dstRW.w = pw;
+    dstRW.h = ph;
+    dstRW.stridePixels = dstStride;
+    dstRW.backingPixels32 = dstPixels;
+    dstRW.backingStridePixels = dstStride;
+    dstRW.backingXid = dst;
+    dstRW.offsetX = 0;
+    dstRW.offsetY = 0;
   } else {
     return;
   }
 
-  const bool sameBuf = (srcPixels == dstPixels) && (srcStride == dstStride);
+  // Same underlying buffer? (important now that child windows share host backing)
+  const bool sameBacking =
+    (srcRW.backingPixels32 != nullptr) &&
+    (srcRW.backingPixels32 == dstRW.backingPixels32) &&
+    (srcRW.backingStridePixels == dstRW.backingStridePixels);
 
 #ifndef NDEBUG
-  if (sameBuf || (wpx * hpx) > 4096) {
+  if (sameBacking || (wpx * hpx) > 4096) {
     fprintf(stderr,
-            "[CopyArea] src=0x%08X dst=0x%08X sameBuf=%d "
+            "[CopyArea] src=0x%08X dst=0x%08X sameBacking=%d "
             "srcXY=(%d,%d) dstXY=(%d,%d) wh=%dx%d srcWH=%dx%d dstWH=%dx%d fn=%u pm=0x%08X\n",
-            (unsigned)src, (unsigned)dst, sameBuf ? 1 : 0,
+            (unsigned)src, (unsigned)dst, sameBacking ? 1 : 0,
             (int)srcX, (int)srcY, (int)dstX, (int)dstY,
             (int)wpx, (int)hpx,
             srcW, srcH, dstW, dstH,
@@ -541,14 +560,25 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (cw <= 0 || ch <= 0) return;
 
   // ------------------------------------------------------------
+  // Overlap detection in backing coordinates (host coords)
+  // ------------------------------------------------------------
+  const int srcAbsX0 = srcRW.offsetX + sx0;
+  const int srcAbsY0 = srcRW.offsetY + sy0;
+  const int dstAbsX0 = dstRW.offsetX + dx0;
+  const int dstAbsY0 = dstRW.offsetY + dy0;
+
+  const bool overlaps =
+    sameBacking &&
+    (dstAbsX0 < srcAbsX0 + cw) && (dstAbsX0 + cw > srcAbsX0) &&
+    (dstAbsY0 < srcAbsY0 + ch) && (dstAbsY0 + ch > srcAbsY0);
+
+  // ------------------------------------------------------------
   // Copy / ROP with overlap-safe ordering
   // ------------------------------------------------------------
   auto rowCopyFast = [&](int sy, int dy) {
     const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcStride + (size_t)sx0;
     uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstStride + (size_t)dx0;
     std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
-
-    // Keep alpha opaque for Swift software path (X channel is not meaningful in X11 core).
     for (int i = 0; i < cw; i++) dp[i] = (dp[i] & 0x00FFFFFFu) | 0xFF000000u;
   };
 
@@ -570,7 +600,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   };
 
   int rowStart = 0, rowEnd = ch, rowStep = 1;
-  if (sameBuf && dy0 > sy0) {
+  if (overlaps && dstAbsY0 > srcAbsY0) {
     rowStart = ch - 1;
     rowEnd   = -1;
     rowStep  = -1;
@@ -584,7 +614,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       rowCopyFast(sy, dy);
     } else {
       bool rtl = false;
-      if (sameBuf && sy == dy) rtl = (dx0 > sx0);
+      if (overlaps && (dstAbsY0 + r) == (srcAbsY0 + r)) {
+        rtl = (dstAbsX0 > srcAbsX0);
+      }
       rowRop(sy, dy, rtl);
     }
   }
@@ -597,14 +629,14 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   }
 
   // ------------------------------------------------------------
-  // After successful copy: send NoExpose to unblock clients (bring-up)
+  // After successful copy: send NoExpose (bring-up)
   // ------------------------------------------------------------
   if (dstIsWin) {
     auto ev = x11::wireev::buildNoExpose(seq, dst,
                                         x11::opcode::CopyArea, 0);
     (void)ctx.transport().sendEvent32(dst, ev.data());
   }
-} 
+}
   
 // -----------------------------
 // CopyPlane (major 63)
@@ -711,43 +743,48 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     // ------------------------------------------------------------
     // Resolve dst as either:
     //  - depth-1 pixmap bits, OR
-    //  - 32bpp pixels (window FB or depth>1 pixmap)
+    //  - 32bpp pixels (window Swift surface or depth>1 pixmap)
     // ------------------------------------------------------------
     uint32_t* dstPixels = nullptr;
     uint8_t*  dstBits   = nullptr;
     int dstW = 0, dstH = 0;
     uint32_t dstStrideBytes = 0;
+    uint32_t dstStridePx = 0;  // stride in pixels for 32bpp destinations
     bool dstDepth1 = false;
     bool dstIsWindow = false;
-    
+
     if (ctx.windows().exists(dst)) {
-      uint32_t* wPix = nullptr;
-      uint32_t wW = 0, wH = 0;
-      if (!x11_xproto_window_fb_rw(dst, &wPix, &wW, &wH) || !wPix) return;
-      dstPixels = wPix;
-      dstW = (int)wW;
-      dstH = (int)wH;
-      dstDepth1 = false;
+      // Use resolveDrawableRW so CopyPlane writes to the Swift-owned surface,
+      // not the old C framebuffer.  This mirrors every other drawing op.
+      x11::DrawableRW dstRW{};
+      if (!x11::resolveDrawableRW(ctx, dst, dstRW) || !dstRW.pixels32) return;
+      dstPixels   = dstRW.pixels32;
+      dstW        = (int)dstRW.w;
+      dstH        = (int)dstRW.h;
+      dstStridePx = dstRW.stridePixels;
+      dstDepth1   = false;
       dstIsWindow = true;
     } else {
       // try depth-1 bits first
       uint16_t pw = 0, ph = 0;
       uint32_t stride = 0;
       if (uint8_t* bits = ctx.pixmaps().mutableBits(dst, &pw, &ph, &stride)) {
-        dstBits = bits;
-        dstW = (int)pw;
-        dstH = (int)ph;
+        dstBits        = bits;
+        dstW           = (int)pw;
+        dstH           = (int)ph;
         dstStrideBytes = stride;
-        dstDepth1 = true;
-        dstIsWindow = false;
+        dstStridePx    = (uint32_t)pw;   // packed bits; stride in px == width
+        dstDepth1      = true;
+        dstIsWindow    = false;
       } else {
         uint16_t pw2 = 0, ph2 = 0;
         uint32_t* pix = ctx.pixmaps().mutablePixels(dst, &pw2, &ph2);
         if (!pix) return;
-        dstPixels = pix;
-        dstW = (int)pw2;
-        dstH = (int)ph2;
-        dstDepth1 = false;
+        dstPixels   = pix;
+        dstW        = (int)pw2;
+        dstH        = (int)ph2;
+        dstStridePx = (uint32_t)pw2;   // pixmaps are tight
+        dstDepth1   = false;
         dstIsWindow = false;
       }
     }
@@ -787,7 +824,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
           if (on) dstBits[dByteIndex] |= mask;
           else    dstBits[dByteIndex] &= (uint8_t)~mask;
         } else {
-          dstPixels[(size_t)dy * (size_t)dstW + (size_t)dx] = on ? fg : bg;
+          dstPixels[(size_t)dy * (size_t)dstStridePx + (size_t)dx] = on ? fg : bg;
         }
       }
     }

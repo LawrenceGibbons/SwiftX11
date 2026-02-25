@@ -568,7 +568,10 @@ final class WindowRegistry {
   
   
   private func snapshotAndPresentNow(sourceXid: UInt32, presentXid: UInt32) {
-    guard windows[presentXid] != nil else { return }
+    guard windows[presentXid] != nil else {
+      print(String(format: "[SNAPSHOT] presentXid=0x%08X SKIP (no window entry)", presentXid))
+      return
+    }
     guard !closingXids.contains(presentXid) else { return }
 
     func querySize() -> (w: Int32, h: Int32, bpr: Int32)? {
@@ -578,7 +581,13 @@ final class WindowRegistry {
       return (w, h, bpr)
     }
 
-    guard var sz = querySize() else { return }
+    guard var sz = querySize() else {
+      print(String(format: "[SNAPSHOT] sourceXid=0x%08X presentXid=0x%08X SKIP (querySize returned nil)",
+            sourceXid, presentXid))
+      return
+    }
+    print(String(format: "[SNAPSHOT] sourceXid=0x%08X presentXid=0x%08X sz=%dx%d bpr=%d",
+          sourceXid, presentXid, sz.w, sz.h, sz.bpr))
 
     func copyFrame(sz: (w: Int32, h: Int32, bpr: Int32)) -> (data: Data, ok: Bool) {
       let byteCount = Int(sz.bpr) * Int(sz.h)

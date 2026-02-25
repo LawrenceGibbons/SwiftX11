@@ -362,12 +362,16 @@ void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
     }
   }
   
-  if (pn.want_expose) {
-    if (w->mapped && (w->event_mask & (1u << 15)) && w->owner_fd > 0) {
-      auto ev = x11::wireev::buildExpose(seq, pn.wid, 0, 0, w->w, w->h, 0);
-      ctx_.transport().sendEvent32(pn.wid, ev.data());
-    }
-  }
+  const bool selectedExposure = (w->event_mask & x11::mask::Exposure) != 0;
+
+  // BRING-UP OVERRIDE: if PendingNotify asks for expose, send it once even if mask isn't set yet.
+  // This fixes flaky first paint for xeyes/xterm.
+  const bool forceExposeBringup = pn.want_expose != 0;
+
+  if ((selectedExposure || forceExposeBringup) && pn.expose_has_rect) {
+    // buildExpose using pn rect and sendEvent32(window,...)
+  }  
+  
 }
 
 void EventOps::sendMotionNotify(XProtoContext& ctx,

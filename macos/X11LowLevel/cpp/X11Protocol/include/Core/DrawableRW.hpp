@@ -23,29 +23,35 @@ namespace x11 {
   // If is_window == true, caller must mark dirty / enqueue damage after modification (typically on the host).
   
 struct DrawableRW {
+  // Pointer to the drawable's (0,0) in its backing buffer.
+  // For WINDOW drawables routed to host, this is hostSurface + (offsetY*stride + offsetX).
   uint32_t* pixels32 = nullptr;
 
+  // Drawable dimensions (window or pixmap size) used for clipping.
   uint16_t w = 0;
   uint16_t h = 0;
 
-  // NEW: stride in pixels (row-to-row step), not necessarily == w.
+  // Row stride of the backing buffer in pixels (may be > w).
   uint32_t stridePixels = 0;
 
   bool isWindow = false;
   bool isPixmap = false;
-
   uint8_t depth = 32;
-};
 
+  // --- New: backing identity (used for overlap detection / damage routing) ---
+  uint32_t  backingXid = 0;             // host XID for windows; drawable for pixmaps
+  uint32_t* backingPixels32 = nullptr; // base pointer of backing buffer (host surface)
+  uint32_t  backingStridePixels = 0;
+
+  // Drawable origin within backing (host coords). For pixmaps: 0,0.
+  int32_t offsetX = 0;
+  int32_t offsetY = 0;
+};
+  
 class XProtoContext;
 
 // Returns true if drawable is a WINDOW or PIXMAP with writable 32bpp pixels.
 bool resolveDrawableRW(XProtoContext& ctx, uint32_t drawable, DrawableRW& out);
 
 } // namespace x11
-
-extern "C" int x11_xproto_window_fb_rw(uint32_t xid,
-                                      uint32_t** outPixels,
-                                      uint32_t* outW,
-                                      uint32_t* outH);
 

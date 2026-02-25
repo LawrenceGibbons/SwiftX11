@@ -14,6 +14,7 @@
 #include "Core/HostResize.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "UI/UICommandQueue.hpp"
+#include "Utils/WireEvents.hpp"
 
 // bridge
 extern "C" {
@@ -34,6 +35,23 @@ extern "C" {
 
 namespace x11 {
 
+static inline void sendInitialExposeNow(x11::XProtoContext& ctx, uint32_t wid) {
+  if (wid == 0) return;
+
+  x11::WindowView vw{};
+  if (!ctx.windows().snapshot(wid, vw)) return;
+
+  // Full-window expose. Use a nonzero seq field; nextEventSeq() is ideal.
+  const uint16_t seq = ctx.transport().nextEventSeq();
+
+  auto ev = x11::wireev::buildExpose(seq,
+                                     wid,
+                                     /*x=*/0, /*y=*/0,
+                                     vw.w, vw.h,
+                                     /*count=*/0);
+
+  (void)ctx.transport().sendEvent32(wid, ev.data());
+}
   
 WindowOps::WindowOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::CreateWindow,    &WindowOps::onMajor, this);  // CreateWindow
@@ -261,17 +279,25 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
         x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);
       }
     }
-    
-    // 3) Notify client if selected (always on wid, not host)
-    if (const WindowView* vw = ctx.window(wid)) {
-      const bool wantExp = vw->mapped && ((vw->event_mask & (1u << 15)) != 0);
-      const bool wantCfg =               ((vw->event_mask & (1u << 17)) != 0);
-      if (wantExp || wantCfg) {
-        ctx.transport().queueNotify(wid, wantCfg, wantExp);
-      }
+
+    // 3) Queue an initial full-window Expose on map (bring-up).
+    WindowView vw_snap{};
+    if (ctx.windows().snapshot(wid, vw_snap)) {
+      ctx.transport().queueExposeRect(wid, 0, 0, vw_snap.w, vw_snap.h, 0);
+    } else {
+      ctx.transport().queueExposeRect(wid, 0, 0, 1, 1, 0);
     }
 
-    // 4) If anything drew before presentable, flush once now (route to host)
+    // 4) Notify: configure if selected; ALWAYS request expose flush for bring-up.
+    // (EventOps will decide whether to honor mask, but we’ll add a bring-up override.)
+    bool wantCfg = false;
+    if (const WindowView* vw = ctx.window(wid)) {
+      wantCfg = ((vw->event_mask & x11::mask::StructureNotify) != 0);
+    }
+    ctx.transport().queueNotify(wid, /*wantConfigure=*/wantCfg, /*wantExpose=*/true);
+
+    
+    // 5) If anything drew before presentable, flush once now (route to host)
     if (host != 0) {
       if (ctx.windows().consumeDirtyIfReady(host)) {
         x11_requests_push_damage(host);
@@ -306,15 +332,22 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
     // 1) Authoritative state
     ctx.windows().setMapped(xid, true);
 
-    // 2) Notify client if selected (per-window)
-    if (const WindowView* vw = ctx.window(xid)) {
-      const bool wantExp = vw->mapped && ((vw->event_mask & (1u << 15)) != 0); // ExposureMask
-      const bool wantCfg =               ((vw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
-      if (wantExp || wantCfg) {
-        ctx.transport().queueNotify(xid, wantCfg, wantExp);
-      }
+    // Queue initial Expose rect (bring-up)
+    WindowView vw_snap{};
+    if (ctx.windows().snapshot(xid, vw_snap)) {
+      ctx.transport().queueExposeRect(xid, 0, 0, vw_snap.w, vw_snap.h, 0);
+    } else {
+      ctx.transport().queueExposeRect(xid, 0, 0, 1, 1, 0);
     }
+
+    // Queue notify: configure if selected; ALWAYS request expose flush for bring-up
+    bool wantCfg = false;
+    if (const WindowView* vw = ctx.window(xid)) {
+      wantCfg = ((vw->event_mask & x11::mask::StructureNotify) != 0);
+    }
+    ctx.transport().queueNotify(xid, /*wantConfigure=*/wantCfg, /*wantExpose=*/true);
   }
+  
 
   // 4) Cocoa visibility: only mark and map the host (once).
   bool hostWasMapped = false;
