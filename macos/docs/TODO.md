@@ -1,6 +1,6 @@
 SwiftX11 TODO
 
-Last updated: 2026-02-22
+Last updated: 2026-02-25
 
 ⸻
 
@@ -29,8 +29,16 @@ Swift-owned WINDOW surfaces
 Surface registry (C++ API consumed by Swift)
   •  Implemented: `DrawableSurfaceRegistry` keyed by XID (currently used for host WINDOW drawables).
   •  Implemented: `updateSurface/clearSurface` entrypoints (currently reached via `x11_surface_update/clear` shims).
-  •  Implemented: `DrawableRW` now includes `stridePixels`; `resolveDrawableRW` prefers Swift surfaces for windows, with temporary fallback to C framebuffer access.
-  •  Next: route child window drawables to host surfaces with origin offsets; remove all remaining C framebuffer entrypoints.
+  •  ✅ `DrawableRW` includes `stridePixels`; `resolveDrawableRW` resolves ALL windows via Swift surfaces only (no C FB fallback).
+  •  ✅ Child window drawables route to host surface with origin offsets via `computeOffsetInHost`.
+  •  ✅ C framebuffer allocation/resize/destroy removed from CreateWindow, ConfigureWindow, applyRootlessResize, DestroyWindow.
+  •  ✅ Present-time compositing simplified: `x11_xproto_copy_window_bgra` just copies the host Swift surface (no child C FB compositing).
+  •  ✅ CopyPlane source window resolution uses `resolveDrawableRW` instead of C FB.
+  •  ✅ `background_pixel` support: stored in WindowTable, applied on MapWindow, used in ClearArea.
+  •  ✅ Negative offset clamping: `resolveDrawableRW` clamps child windows at negative positions (e.g., xterm scrollbar at y=-1) instead of rejecting them.
+  •  ✅ `SurfaceResized` re-expose: `x11_surface_update` detects surface dimension changes and triggers `sendExposeSubtree` to re-expose all mapped children at correct geometry.
+  •  ✅ xterm scrollbar (`xterm -sb -rightbar -bc`) renders correctly.
+  •  Next: delete the C FB infrastructure entirely (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`).
 
 Damage / present (Swift-driven)
   •  C++ reports damage as rects per host/top-level window (no “always damage” hacks).
@@ -183,6 +191,8 @@ Damage precision
 ⸻
 
 8️⃣ Debug & Instrumentation
+  •  ✅ Two-tier trace system: `#ifndef NDEBUG` for key lifecycle/diagnostic traces; `#ifdef X11_TRACE_VERBOSE` for high-frequency per-op traces (~90+ call sites gated).
+  •  ✅ Version banner: `SwiftX11 v{version}` at startup in both Swift and C++.
   •  Standardize logging categories (PROTO, REPLY, EVENT, DAMAGE, PRESENT, RESIZE).
   •  Add global debug level switch.
   •  Add server-side counters for:
@@ -195,8 +205,8 @@ Damage precision
 
 9️⃣ Cleanup / Refactor
   •  Remove temporary SurfaceRegistry shims (`x11_surface_update/clear`) once Swift C++ interop is in place.
-  •  Remove remaining C framebuffer fallback (`x11_xproto_window_fb_rw`) after child→host routing is implemented.
-  •  Delete remaining C backend entrypoints (`x11_backend_*`) after migrating callers to C++/Swift surface registry.
+  •  ✅ C framebuffer fallback (`x11_xproto_window_fb_rw`) removed from `resolveDrawableRW` — all windows resolve via Swift surfaces.
+  •  Delete remaining C backend infrastructure (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`) — callers are now disconnected.
   •  Remove obsolete handler registrations (QueryColors duplicates, etc.).
   •  Consolidate opcode constants (use x11::opcode::* everywhere).
   •  Remove remaining hardcoded numerics.
