@@ -55,7 +55,7 @@ final class XServerController: ObservableObject {
     stop()
   }
   
-  static let buildVersion = "0.3.1-neg-offset-fix"
+  static let buildVersion = String(cString: swiftx11_version())
 
   func start() {
     guard !isRunning else { return }

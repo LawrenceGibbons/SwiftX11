@@ -995,7 +995,14 @@ extern "C" void x11_proto_bridge_surface_resized(uint32_t xid)
 
 static x11::XProtoDaemon g_daemon;
 
-static constexpr const char* kSwiftX11Version = "0.3.1-neg-offset-fix";
+// Version string: single source of truth is SwiftX11Version.h
+#include "SwiftX11Version.h"
+static constexpr const char* kSwiftX11Version = SWIFTX11_VERSION;
+
+const char* swiftx11_version(void)
+{
+  return kSwiftX11Version;
+}
 
 extern "C" int x11_proto_start_daemon(int display)
 {
