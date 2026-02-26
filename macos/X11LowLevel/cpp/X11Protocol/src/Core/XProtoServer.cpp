@@ -16,18 +16,6 @@
 #include "Ops/EventOps.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "x11_server_internal.h"
-#include "x11_backend_fb.h"
-
-
-
-static void fb_event_observer(uint32_t xid, uint16_t w, uint16_t h,
-                              const char* op, const char* why,
-                              const char* file, int line, void* user)
-{
-  auto* wt = static_cast<x11::WindowTable*>(user);
-  if (wt) wt->noteFbResizeDbg(xid, why, file, line);
-  // optional: also print op/w/h here if you want
-}
 
 
 static inline uint16_t rd16_le(const uint8_t* p) {
@@ -74,7 +62,7 @@ XProtoServer::XProtoServer()
   
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
-  x11_backend_fb_set_event_observer(&fb_event_observer, &windows_);
+  // (C FB event observer removed — Swift owns all surfaces now.)
 
   
   // load fonts

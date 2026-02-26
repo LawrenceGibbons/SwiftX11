@@ -21,17 +21,22 @@ struct WindowView {
   int16_t  y = 0;
   uint16_t w = 0;
   uint16_t h = 0;
-  
+
   uint32_t parent_xid = 0;
-  
+
   // X11 SelectInput mask bits
   uint32_t event_mask = 0;
-  
+
+  // Window background pixel (ARGB8888, alpha forced opaque).
+  // Only valid when has_background_pixel is true.
+  uint32_t background_pixel = 0;
+  bool     has_background_pixel = false;
+
   // state flags
   bool mapped = false;
   bool presentable = false;
   bool dirty = false;
-  
+
   // client socket for this window
   int  owner_fd = -1;
 };

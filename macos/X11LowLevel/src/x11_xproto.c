@@ -365,6 +365,9 @@ int x11_xproto_copy_window_bgra(uint32_t xid,
                                 int32_t* out_h,
                                 int32_t* out_bpr)
 {
+  // Swift owns all backing surfaces.  Children draw directly into the host
+  // surface at their offset, so no present-time compositing is needed.
+  // Just copy the host's Swift surface to the output buffer.
   return x11_cpp_copy_host_surface_bgra(xid, out_bytes, out_cap, out_w, out_h, out_bpr);
 }
 //int x11_xproto_copy_window_bgra(uint32_t xid,

@@ -368,9 +368,18 @@ void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
   // This fixes flaky first paint for xeyes/xterm.
   const bool forceExposeBringup = pn.want_expose != 0;
 
-  if ((selectedExposure || forceExposeBringup) && pn.expose_has_rect) {
-    // buildExpose using pn rect and sendEvent32(window,...)
-  }  
+  if (selectedExposure || forceExposeBringup) {
+    // Use the specific rect if available, otherwise full-window expose.
+    uint16_t ex = 0, ey = 0;
+    uint16_t ew = static_cast<uint16_t>(w->w);
+    uint16_t eh = static_cast<uint16_t>(w->h);
+    if (pn.expose_has_rect) {
+      ex = pn.expose_x; ey = pn.expose_y;
+      ew = pn.expose_w; eh = pn.expose_h;
+    }
+    auto ev = wireev::buildExpose(seq, pn.wid, ex, ey, ew, eh, pn.expose_count);
+    ctx_.transport().sendEvent32(pn.wid, ev.data());
+  }
   
 }
 

@@ -31,7 +31,6 @@
 #include "Core/DrawableSurfaceRegistry.hpp"
 
 // bridging
-#include "x11_backend_fb.h"
 #include "x11_requests.h"
 #include "XProtoServerBridge.h"
 #include "Core/Font8x8.hpp"
@@ -708,12 +707,11 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const bool srcIsPix = ctx.pixmaps().exists(src);
     
     if (srcIsWin) {
-      uint32_t* wPix = nullptr;
-      uint32_t wW = 0, wH = 0;
-      if (!x11_xproto_window_fb_rw(src, &wPix, &wW, &wH) || !wPix) return;
-      srcPixels = wPix;
-      srcW = (int)wW;
-      srcH = (int)wH;
+      DrawableRW srcRW{};
+      if (!resolveDrawableRW(ctx, src, srcRW) || !srcRW.pixels32) return;
+      srcPixels = srcRW.pixels32;
+      srcW = (int)srcRW.w;
+      srcH = (int)srcRW.h;
       srcDepth1 = false;
     } else if (srcIsPix) {
       PixmapView pv{};
@@ -884,9 +882,15 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     if (x0 >= x1 || y0 >= y1) return;
 
-    // Bring-up behavior: clear to white (opaque).
-    // (Later: use window background / GC background depending on spec decisions.)
-    const uint32_t bg = 0xFFFFFFFFu;
+    // X11 spec: ClearArea clears to the window's background_pixel.
+    // Fall back to opaque white if no background was set (legacy bring-up behavior).
+    uint32_t bg = 0xFFFFFFFFu;
+    {
+      x11::WindowView wv{};
+      if (ctx.windows().snapshot(wid, wv) && wv.has_background_pixel) {
+        bg = wv.background_pixel;
+      }
+    }
 
     for (int yy = y0; yy < y1; yy++) {
       uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;

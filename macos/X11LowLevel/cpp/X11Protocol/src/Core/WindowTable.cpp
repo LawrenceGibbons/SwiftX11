@@ -170,11 +170,23 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.w = st->w;
   out.h = st->h;
   out.event_mask = st->event_mask;
+  out.background_pixel = st->background_pixel;
+  out.has_background_pixel = st->has_background_pixel;
   out.mapped = st->mapped;
   out.presentable = st->presentable;
   out.dirty = st->dirty;
   out.owner_fd = st->owner_fd;
   return true;
+}
+
+void WindowTable::setBackgroundPixel(uint32_t xid, uint32_t pixel_argb) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->background_pixel = pixel_argb;
+  st->has_background_pixel = true;
+  st->serial++;
 }
 
 void WindowTable::debugState(uint32_t xid,

@@ -96,6 +96,9 @@ public:
   std::vector<uint32_t> descendantsOf(uint32_t root) const;
   
   
+  // background pixel
+  void setBackgroundPixel(uint32_t xid, uint32_t pixel_argb);
+
   // cursor
   void setCursor(uint32_t xid, uint32_t cursor_xid);
   uint32_t cursor(uint32_t xid) const; // optional
@@ -118,6 +121,11 @@ private:
     uint32_t cursor_xid = 0; // 0 means "inherit/default"
     
     uint32_t event_mask = 0;
+
+    // X11 window background pixel (ARGB8888, alpha forced opaque).
+    uint32_t background_pixel = 0;
+    bool     has_background_pixel = false;
+
     bool mapped = false;
     bool presentable = false;
     bool dirty = false;
