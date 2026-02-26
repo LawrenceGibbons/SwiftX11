@@ -23,12 +23,10 @@
 
 extern "C" {
 #include "x11_requests.h"
-#include "x11_backend_fb.h"
 }
 
 // util
 #include "Damage.hpp"
-#include "Debug/x11_backend_fb_dbg.hpp"
 
 
 
@@ -71,7 +69,9 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 // We only implement CWEventMask (bit 11) for now.
   void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
     ctx.tracef("[CWA] ENTER remain=%zu\n", br.remaining());
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[CWA] ENTER remain=%zu\n", br.remaining());
+#endif
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
     const uint32_t wid   = br.readU32();
@@ -94,6 +94,9 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     uint32_t newCursor = 0;
     bool sawCursor = false;
 
+    uint32_t newBgPixel = 0;
+    bool sawBgPixel = false;
+
     // Value list is 32-bit items in increasing bit order.
     // We must consume every provided value in order, even if we ignore most.
     for (uint32_t bit = 0; bit < 32 && br.remaining() >= 4; bit++) {
@@ -101,6 +104,16 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint32_t val = br.readU32();
 
       switch (bit) {
+        case 1: // CWBackPixel
+          // Map X11 pixel value to ARGB8888 (force alpha opaque)
+          if (val == 0)       newBgPixel = 0xFF000000u;       // black
+          else if (val == 1)  newBgPixel = 0xFFFFFFFFu;       // white
+          else                newBgPixel = 0xFF000000u | (val & 0x00FFFFFFu);
+          sawBgPixel = true;
+          ctx.tracef("[CWA] CWBackPixel wid=0x%08X val=0x%08X → argb=0x%08X\n",
+                     wid, val, newBgPixel);
+          break;
+
         case 11: // CWEventMask
           cur_mask = val;
           sawEventMask = true;
@@ -140,6 +153,15 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
     }
     
+    // ---- Apply background pixel if present ----
+    if (sawBgPixel) {
+      ctx.windows().setBackgroundPixel(wid, newBgPixel);
+#ifdef X11_TRACE_VERBOSE
+      fprintf(stderr, "[CWA] setBackgroundPixel wid=0x%08X argb=0x%08X\n",
+              (unsigned)wid, (unsigned)newBgPixel);
+#endif
+    }
+
     // ---- Apply event mask only if present ----
     if (!sawEventMask) return;
 
@@ -174,17 +196,11 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     int32_t  x32 = 0, y32 = 0;
     uint32_t w32 = 1, h32 = 1;
 
-    // Keep old size around so we can decide whether to resize the FB.
-    // (This avoids extra churn, and makes the intent explicit.)
-    uint16_t oldW = 1, oldH = 1;
-
     if (const WindowView* vw = ctx.window(wid)) {
       x32  = vw->x;
       y32  = vw->y;
       w32  = vw->w ? vw->w : 1;
       h32  = vw->h ? vw->h : 1;
-      oldW = vw->w ? vw->w : 1;
-      oldH = vw->h ? vw->h : 1;
     }
 
     auto clamp_i16 = [](int32_t v) -> int16_t {
@@ -198,11 +214,6 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return (uint16_t)v;
     };
 
-    // Track whether this request actually supplies Width/Height.
-    // (We only resize FBs when the request is truly a size change request.)
-    bool sawWidth  = false;
-    bool sawHeight = false;
-
     // Values are 32-bit units in bit order 0..15
     for (uint32_t bit = 0; bit < 16; bit++) {
       if ((vmask & (uint16_t)(1u << bit)) == 0) continue;
@@ -213,8 +224,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       switch (bit) {
         case 0: x32 = (int32_t)v; break; // X
         case 1: y32 = (int32_t)v; break; // Y
-        case 2: w32 = v; sawWidth  = true; break; // Width
-        case 3: h32 = v; sawHeight = true; break; // Height
+        case 2: w32 = v; break; // Width
+        case 3: h32 = v; break; // Height
         default:
           // Ignore others (stacking/border/etc) for now.
           break;
@@ -251,47 +262,23 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     // ------------------------------------------------------------------
-    // 2) Rootless policy:
+    // 2) Rootless policy — Swift owns all backing surfaces.
     //
     //    - Only HOST owns the Cocoa NSWindow (top-level surface).
-    //    - Child ConfigureWindow must NOT resize the host framebuffer.
-    //
-    //    HOWEVER:
-    //    - In host-only present mode, the C compositor still composites mapped
-    //      descendants by blitting each child's *own* FB over the host.
-    //    - Therefore, whenever a child window's geometry changes in W/H, we MUST
-    //      keep that child's FB slot in sync with its WindowTable geometry.
-    //
-    //    This is the invariant:
-    //      for mapped windows: geom(w,h) == fb(w,h)
+    //    - Child windows draw into the host surface at their offset.
+    //    - No C framebuffers exist; surface allocation is Swift's job.
     // ------------------------------------------------------------------
-    const bool sizeChanged = (w != oldW) || (h != oldH);
-    const bool requestTouchesSize = (sawWidth || sawHeight); // request included W/H fields
 
     if (host != 0 && host == wid) {
-      // HOST: keep C canonical FB in sync for the host only.
-      FB_RESIZE(wid, w, h, "handleConfigureWindow(host)");
-
-      // Host geometry change affects presentation.
+      // HOST: geometry change affects presentation.
       damageOrDirty(ctx, wid);
 
       // Only the top-level host drives Cocoa resize.
       x11_requests_push_configure(wid, (int32_t)w, (int32_t)h);
 
     } else if (host != 0) {
-      // CHILD:
-      // - Must NOT resize the host framebuffer.
-      // - Must resize the CHILD FB when W/H is configured, otherwise the compositor
-      //   sees geom(new) with fb(old) and you get the "top-left only / stripe" artifacts.
-      //
-      // We only do this when the request actually carries W/H (ConfigureWindow can be
-      // position-only, stacking-only, etc).
-      if (requestTouchesSize && sizeChanged) {
-        FB_RESIZE(wid, w, h, "handleConfigureWindow(child)");
-      }
-
-      // Child geometry changed: it affects what the host should present.
-      // Trigger present pipeline on the host (gated).
+      // CHILD: geometry changed — it affects what the host should present.
+      // (Child draws into the host surface at its new offset.)
       damageOrDirty(ctx, host);
     }
 

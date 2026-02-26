@@ -73,7 +73,7 @@ static inline void dbg_dump32(const char* tag, const uint8_t* b) {
 
   
 bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   const uint8_t* b = static_cast<const uint8_t*>(buf);
 
   auto dump8 = [&](const char* tag) {
@@ -140,7 +140,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   {
     if (!buf || n == 0) return true;
 
-  #ifndef NDEBUG
+  #ifdef X11_TRACE_VERBOSE
     const uint8_t* b = static_cast<const uint8_t*>(buf);
 
     auto dumpHex = [&](const char* tag, const uint8_t* p, std::size_t nn) {
@@ -312,8 +312,8 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   
   
 bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
-    
-#ifndef NDEBUG
+
+#ifdef X11_TRACE_VERBOSE
   const uint8_t type = ev[0];
   if (type == 22) { // ConfigureNotify
     auto rd16 = [&](int off) -> uint16_t {

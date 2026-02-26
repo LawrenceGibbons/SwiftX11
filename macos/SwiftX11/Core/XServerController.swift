@@ -55,11 +55,13 @@ final class XServerController: ObservableObject {
     stop()
   }
   
+  static let buildVersion = String(cString: swiftx11_version())
+
   func start() {
     guard !isRunning else { return }
 
     let display = self.display // capture on MainActor
-    append("Starting X11 server on :\(display)…")
+    append("SwiftX11 v\(Self.buildVersion) — starting on :\(display)…")
 
     // x11_start_server spins its own runloop thread; keep the call on MainActor to
     // avoid Swift 6 Sendable capture warnings from DispatchQueue.async.

@@ -170,11 +170,23 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.w = st->w;
   out.h = st->h;
   out.event_mask = st->event_mask;
+  out.background_pixel = st->background_pixel;
+  out.has_background_pixel = st->has_background_pixel;
   out.mapped = st->mapped;
   out.presentable = st->presentable;
   out.dirty = st->dirty;
   out.owner_fd = st->owner_fd;
   return true;
+}
+
+void WindowTable::setBackgroundPixel(uint32_t xid, uint32_t pixel_argb) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->background_pixel = pixel_argb;
+  st->has_background_pixel = true;
+  st->serial++;
 }
 
 void WindowTable::debugState(uint32_t xid,
@@ -205,9 +217,11 @@ void WindowTable::debugState(uint32_t xid,
 // WindowTable.cpp
 
 void WindowTable::setEventMask(uint32_t xid, uint32_t event_mask) {
+#ifdef X11_TRACE_VERBOSE
   fprintf(stderr,
           "[MASK] xid=0x%08X event_mask=0x%08X\n",
           (unsigned)xid, (unsigned)event_mask);
+#endif
   
   if (xid == 0) return;
 
@@ -233,7 +247,7 @@ void WindowTable::setGeomLocked_(WindowState& st,
   const uint16_t oldW = st.w;
   const uint16_t oldH = st.h;
 
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   fprintf(stderr,
           "[WT] setGeometry xid=0x%08X old=(%d,%d %ux%u) new=(%d,%d %ux%u) why=%s @%s:%d\n",
           (unsigned)st.xid,
@@ -252,7 +266,7 @@ void WindowTable::setGeomLocked_(WindowState& st,
     st.lastGeomWhy  = why;
     st.lastGeomFile = file;
     st.lastGeomLine = line;
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr,
             "[WT] setGeometry SIZE xid=0x%08X parent=0x%08X old=%ux%u new=%ux%u why=%s @%s:%d\n",
             (unsigned)st.xid,
@@ -339,7 +353,7 @@ void WindowTable::noteFbResizeDbg(uint32_t xid,
   st->lastFbFile = file;
   st->lastFbLine = line;
 
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   fprintf(stderr, "[WT] noteFbResize xid=0x%08X why=%s @%s:%d\n",
           (unsigned)xid, why ? why : "?", file ? file : "?", line);
 #endif
@@ -525,7 +539,7 @@ void WindowTable::setCursor(uint32_t xid, uint32_t cursor_xid) {
   if (!st) return;
   st->cursor_xid = cursor_xid;
   st->serial++;
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   fprintf(stderr, "[WT] setCursor xid=0x%08X cursor=0x%08X\n",
           (unsigned)xid, (unsigned)cursor_xid);
 #endif

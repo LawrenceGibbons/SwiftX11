@@ -10,6 +10,7 @@
 #include "Utils/ByteReader.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Core/WindowTable.hpp"
+#include "Core/DrawableRW.hpp"
 #include "x11_requests.h"
 #include "Core/HostResize.hpp"
 #include "Core/X11CoreOpcodes.hpp"
@@ -26,14 +27,46 @@ extern "C" {
 
 // bridge
 #include "XProtoServerBridge.h"
-#include "x11_backend_fb.h"
 #include <cstdio>   // snprintf
-#include "Debug/x11_backend_fb_dbg.hpp"
 extern "C" {
 #include "SwiftX11Bridge.h"
 }
 
 namespace x11 {
+
+// Fill a window's drawable area with its background_pixel (if set).
+// This implements the X11 spec requirement: the server should paint the window's
+// background before delivering Expose events.
+static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
+  WindowView vw{};
+  if (!ctx.windows().snapshot(wid, vw)) return;
+  if (!vw.has_background_pixel) return;
+
+  DrawableRW dst{};
+  if (!resolveDrawableRW(ctx, wid, dst)) {
+    fprintf(stderr, "[BG_FILL] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
+    return;
+  }
+  if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
+
+  const uint32_t bg = vw.background_pixel;
+
+  fprintf(stderr, "[BG_FILL] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u\n",
+          (unsigned)wid, (unsigned)bg,
+          (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
+
+  for (uint16_t y = 0; y < dst.h; y++) {
+    uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+    for (uint16_t x = 0; x < dst.w; x++) {
+      row[x] = bg;
+    }
+  }
+
+  // Damage the host so the fill is presented.
+  if (dst.isWindow) {
+    damageOrDirty(ctx, wid);
+  }
+}
 
 static inline void sendInitialExposeNow(x11::XProtoContext& ctx, uint32_t wid) {
   if (wid == 0) return;
@@ -100,11 +133,20 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   const uint32_t vmask = br.readU32();
 
   uint32_t event_mask = 0;
-  // Consume values for *all* bits set; only record bit 11.
+  uint32_t bg_pixel = 0;
+  bool     has_bg_pixel = false;
+  // Consume values for *all* bits set; record bit 1 (CWBackPixel) and bit 11 (CWEventMask).
   for (uint32_t bit = 0; bit < 32; bit++) {
     if (!(vmask & (1u << bit))) continue;
     if (br.remaining() < 4) break;
     const uint32_t val = br.readU32();
+    if (bit == 1) { // CWBackPixel
+      // Map X11 pixel value to ARGB8888 (force alpha opaque)
+      if (val == 0)       bg_pixel = 0xFF000000u;       // black
+      else if (val == 1)  bg_pixel = 0xFFFFFFFFu;       // white
+      else                bg_pixel = 0xFF000000u | (val & 0x00FFFFFFu);
+      has_bg_pixel = true;
+    }
     if (bit == 11) event_mask = val;
   }
   br.skip(br.remaining());
@@ -145,27 +187,21 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   // ---- CREATE (server state only) ----
   const int owner_fd = ctx.transport().clientFd();
   ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
+  if (has_bg_pixel) {
+    ctx.windows().setBackgroundPixel(wid, bg_pixel);
+    fprintf(stderr, "[CreateWindow] wid=0x%08X bg_pixel=0x%08X\n",
+            (unsigned)wid, (unsigned)bg_pixel);
+  }
   ctx.windows().setMapped(wid, false);
   ctx.windows().setPresentable(wid, false);
 
-  // ---- FRAMEBUFFER OWNERSHIP PIVOT ----
-  // Delete ALL of this in the Swift-owned surface world:
-  //   x11_backend_fb_create_slot(...)
-  //   noteFbResizeDbg(...)
-  // ---- CURRENT (still C FB backed): allocate/refresh backing store ----
-  int dirty = 0;
-  if (!x11_backend_fb_create_slot(wid, wpx, hpx, owner_fd, &dirty)) {
-    ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
-    // Spec-wise this is typically BadAlloc; use your constants if you like:
-    ctx.transport().sendErrorCore(x11::error::BadAlloc, seq, wid, x11::opcode::CreateWindow);
-    return;
-  }
-  // FB exists now; record callsite
-  ctx.windows().noteFbResizeDbg(wid, "CreateWindow", __FILE__, __LINE__);
-  if (dirty) ctx.windows().markDirty(wid);
+  // ---- SURFACE OWNERSHIP: Swift-only ----
+  // No C framebuffer allocation.  Swift owns all WINDOW backing stores.
+  // Host (top-level) windows get their own Swift surface via ensureHostSurface.
+  // Child windows draw into the host surface at their offset (via resolveDrawableRW).
   //
-  // Instead: queue a UI command so Swift allocates the surface/backing store.
-  // (Top-level vs child policy stays in Swift/UI layer.)
+  // Queue a UI command so Swift creates the Cocoa window (host) or
+  // notes the child (for event routing).  Surface allocation is Swift's job.
   char title[64];
   snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
 
@@ -173,68 +209,17 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
 
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
-}  
-//void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t /*seq*/, uint8_t /*depth*/, ByteReader& br)
-//{
-//  // Matches C: remain < 28 guard (but here br is already the "remain" region)
-//  if (br.remaining() < 28) { br.skip(br.remaining()); return; }
-//
-//  const uint32_t wid    = br.readU32();
-//  const uint32_t parent = br.readU32();
-//  const int16_t  x      = (int16_t)br.readU16();
-//  const int16_t  y      = (int16_t)br.readU16();
-//  uint16_t wpx          = br.readU16();
-//  uint16_t hpx          = br.readU16();
-//
-//  (void)br.readU16(); // borderWidth
-//  (void)br.readU16(); // class
-//  (void)br.readU32(); // visual
-//  const uint32_t vmask = br.readU32();
-//
-//  // Parse value-list for CWEventMask (bit 11), same as your C code.
-//  uint32_t event_mask = 0;
-//  if (vmask & (1u << 11)) {
-//    for (uint32_t bit = 0; bit < 32; bit++) {
-//      if (!(vmask & (1u << bit))) continue;
-//      if (br.remaining() < 4) break;
-//      const uint32_t val = br.readU32();
-//      if (bit == 11) event_mask = val;
-//    }
-//  } else {
-//    // Still must consume any remaining value list/padding
-//    // (Some clients include extra padding; safest is to just skip remaining.)
-//  }
-//
-//  // Consume any extra trailing bytes/padding
-//  br.skip(br.remaining());
-//
-//  // Update authoritative WindowTable (C++ side)
-//  const int owner_fd = ctx.transport().clientFd();
-//  ctx.windows().upsert(wid, parent, x, y, (wpx ? wpx : 1), (hpx ? hpx : 1), event_mask, owner_fd);
-//  ctx.windows().setMapped(wid, false);
-//  ctx.windows().setPresentable(wid, false);
-//
-//  // Allocate/refresh C-side slot+FB
-//  int dirty = 0;
-//  if (!x11_backend_fb_create_slot(wid, wpx, hpx, owner_fd, &dirty)) {
-//    ctx.tracef("[WindowOps] CreateWindow failed wid=0x%08X\n", (unsigned)wid);
-//    return;
-//  }
-//  // FB exists now; record the callsite that *actually* established it.
-//  ctx.windows().noteFbResizeDbg(wid, "CreateWindow", __FILE__, __LINE__);
-//  
-//  if (dirty) ctx.windows().markDirty(wid);
-//
-//  // Enqueue Swift window creation (same behavior as enqueue_create_window)
-//  // NOTE: If enqueue_create_window is C-static, call the request queue directly.
-//  // This matches your existing enqueue_create_window() implementation.
-//  char title[64];
-//  snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
-//  x11_requests_push_create(wid, parent, title, (int32_t)(wpx ? wpx : 1), (int32_t)(hpx ? hpx : 1));
-//}
-  
-  
-  // -------------------- DestroyWindow
+
+  // Always-on lifecycle trace for debugging child window issues.
+  fprintf(stderr, "[LIFECYCLE] CreateWindow wid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u evmask=0x%08X bg=%s\n",
+          (unsigned)wid, (unsigned)parent,
+          (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
+          (unsigned)event_mask,
+          has_bg_pixel ? "yes" : "no");
+}
+
+
+// -------------------- DestroyWindow
 void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   // Request body: CARD32 window
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
@@ -246,11 +231,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // 1) Authoritative C++ state
   ctx.windows().erase(wid);
 
-  // 2) C-side cleanup of legacy state (framebuffers, props, g_wins) — transitional
-  // This should free the legacy fb/pixmaps/props that are still owned by x11_xproto.c
-  x11_backend_fb_destroy(wid);
-
-  // 3) Swift/UI teardown event path (existing behavior)
+  // 2) Swift/UI teardown event path (existing behavior)
   // This queues X11_REQ_DESTROY -> shim -> Swift close
   x11_requests_push_destroy(wid);
 }
@@ -268,6 +249,16 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
     // Rootless rule: only top-level host windows drive Cocoa.
     const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
 
+    // Always-on lifecycle trace
+    {
+      WindowView mv{};
+      ctx.windows().snapshot(wid, mv);
+      fprintf(stderr, "[LIFECYCLE] MapWindow wid=0x%08X host=0x%08X isHost=%d parent=0x%08X xy=(%d,%d) wh=%ux%u\n",
+              (unsigned)wid, (unsigned)host, (int)(host == wid),
+              (unsigned)mv.parent_xid,
+              (int)mv.x, (int)mv.y, (unsigned)mv.w, (unsigned)mv.h);
+    }
+
     // 2) Swift-side map + authoritative resize only for the host (UI command queue)
     if (host == wid) {
       x11_ui_push_map(wid);
@@ -280,7 +271,10 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
       }
     }
 
-    // 3) Queue an initial full-window Expose on map (bring-up).
+    // 3) Fill window with background_pixel (X11 spec: server paints background before Expose).
+    fillWindowBackground(ctx, wid);
+
+    // 4) Queue an initial full-window Expose on map (bring-up).
     WindowView vw_snap{};
     if (ctx.windows().snapshot(wid, vw_snap)) {
       ctx.transport().queueExposeRect(wid, 0, 0, vw_snap.w, vw_snap.h, 0);
@@ -288,7 +282,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
       ctx.transport().queueExposeRect(wid, 0, 0, 1, 1, 0);
     }
 
-    // 4) Notify: configure if selected; ALWAYS request expose flush for bring-up.
+    // 5) Notify: configure if selected; ALWAYS request expose flush for bring-up.
     // (EventOps will decide whether to honor mask, but we’ll add a bring-up override.)
     bool wantCfg = false;
     if (const WindowView* vw = ctx.window(wid)) {
@@ -296,8 +290,8 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
     }
     ctx.transport().queueNotify(wid, /*wantConfigure=*/wantCfg, /*wantExpose=*/true);
 
-    
-    // 5) If anything drew before presentable, flush once now (route to host)
+
+    // 6) If anything drew before presentable, flush once now (route to host)
     if (host != 0) {
       if (ctx.windows().consumeDirtyIfReady(host)) {
         x11_requests_push_damage(host);
@@ -318,6 +312,18 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // Map all descendants (not including the parent itself)
   auto desc = ctx.windows().descendantsOf(parent);
 
+  fprintf(stderr, "[LIFECYCLE] MapSubwindows parent=0x%08X host=0x%08X numDesc=%zu\n",
+          (unsigned)parent, (unsigned)host, desc.size());
+  for (uint32_t xid : desc) {
+    WindowView dv{};
+    bool ok = ctx.windows().snapshot(xid, dv);
+    fprintf(stderr, "[LIFECYCLE]   child=0x%08X mapped=%d parent=0x%08X xy=(%d,%d) wh=%ux%u\n",
+            (unsigned)xid, ok ? (int)dv.mapped : -1,
+            ok ? (unsigned)dv.parent_xid : 0u,
+            ok ? (int)dv.x : 0, ok ? (int)dv.y : 0,
+            ok ? (unsigned)dv.w : 0u, ok ? (unsigned)dv.h : 0u);
+  }
+
   // Track whether anything changed and whether we should flush host dirty once.
   bool anyMapped = false;
 
@@ -331,6 +337,9 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 
     // 1) Authoritative state
     ctx.windows().setMapped(xid, true);
+
+    // Fill background (X11 spec: server paints background before Expose)
+    fillWindowBackground(ctx, xid);
 
     // Queue initial Expose rect (bring-up)
     WindowView vw_snap{};
@@ -438,8 +447,8 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, Byte
 }
   
   
-// Host resized native surface for wid; update server truth + backing FB + notify + redraw.
-// Called on server/protocol thread.
+// Host resized native surface for wid; update server geometry + notify clients + redraw.
+// Called on server/protocol thread.  Swift owns the backing surface.
 void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t h_px)
 {
   if (wid == 0) return;
@@ -466,11 +475,8 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
   }
 #endif
 
-  // 1) Resize backing FB (C owns pixels).
-  FB_RESIZE(wid, new_w, new_h, "applyRootlessResize on wid (step 1)");
-  //x11_backend_fb_resize(wid, new_w, new_h);
-
-  // 2a) Update authoritative geometry in C++.
+  // 1) Update authoritative geometry in C++.
+  // (Swift owns the backing surface; no C FB resize needed.)
   ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
   
   // 2b) Deliver ConfigureNotify / Expose to the *host* after a host-driven resize,
@@ -483,24 +489,31 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
     }
   }
 
-  // Optional: if your policy is to clamp child windows on host resize, do it here.
-  // ctx.windows().clampDescendantsToParent(wid);
-
-  // 3) Sync descendant FB sizes to authoritative geometry.
+  // 3) Deliver events to direct children.
+  // (No C FB resize needed — children draw into the host's Swift surface.)
   {
     auto kids = ctx.windows().descendantsOf(wid);
     for (uint32_t kid : kids) {
       WindowView kv{};
       if (!ctx.windows().snapshot(kid, kv)) continue;
 
-      const uint16_t kw = kv.w ? kv.w : 1;
-      const uint16_t kh = kv.h ? kv.h : 1;
-      FB_RESIZE(kid, kw, kh, "applyRootlessResize on descendant kid (step 3)");
-      //x11_backend_fb_resize(kid, kw, kh);
+      // Deliver ConfigureNotify + Expose to direct children of the host
+      // so clients (xeyes, xterm) know the host resized and can redraw.
+      // We do NOT resize children here — the client is responsible for
+      // resizing its own children via ConfigureWindow.
+      if (kv.parent_xid == wid) {
+        if (const WindowView* ckv = ctx.window(kid)) {
+          const bool kidCfg = ((ckv->event_mask & (1u << 17)) != 0); // StructureNotifyMask
+          const bool kidExp = (ckv->mapped && ((ckv->event_mask & (1u << 15)) != 0)); // ExposureMask
+          if (kidCfg || kidExp) {
+            ctx.transport().queueNotify(kid, kidCfg, kidExp);
+          }
+        }
+      }
     }
   }
 
-  // 4) Notify owning client if selected.
+  // 4) Notify owning client on host if selected.
   if (const WindowView* vw = ctx.window(wid)) {
     const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);
     const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0));

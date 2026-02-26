@@ -5,30 +5,23 @@
 //  Created by Lawrence Gibbons on 1/31/26.
 //
 
-//
-//  DrawableRW.cpp
-//  X11LowLevel
-//
-
 #include "Core/DrawableRW.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <unordered_set>
 
 #include "Core/XProtoContext.hpp"
 #include "Core/PixmapTable.hpp"
 #include "Core/WindowTable.hpp"
-#include "Core/SurfaceDesc.hpp" // SurfaceDesc / SurfaceFormat (or wherever you defined it)
+#include "Core/SurfaceDesc.hpp"
 #include "Core/DrawableSurfaceRegistry.hpp"
 
 
-// Legacy C bridge for window framebuffer access (temporary fallback)
-extern "C" int x11_xproto_window_fb_rw(uint32_t xid,
-                                      uint32_t** outPixels,
-                                      uint32_t* outW,
-                                      uint32_t* outH);
-
 namespace x11 {
+
+// Track which child XIDs we've already reported on to avoid log spam.
+static std::unordered_set<uint32_t> s_reportedChildResolve;
 
 static bool computeOffsetInHost(WindowTable& wt,
                                 uint32_t host,
@@ -46,7 +39,7 @@ static bool computeOffsetInHost(WindowTable& wt,
     WindowView vw{};
     if (!wt.snapshot(cur, vw)) return false;
 
-    // accumulate this node’s offset in its parent
+    // accumulate this node's offset in its parent
     outX += (int32_t)vw.x;
     outY += (int32_t)vw.y;
 
@@ -73,136 +66,141 @@ bool resolveDrawableRW(XProtoContext& ctx,
     // Get drawable geometry (for clipping).
     WindowView dv{};
     if (!ctx.windows().snapshot(drawable, dv)) {
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[RESOLVE] drawable=0x%08X FAIL snapshot\n", (unsigned)drawable);
+#endif
       return false;
     }
 
-    // Prefer Swift-owned surface registry (currently published per host).
+    // Resolve via Swift-owned surface registry (published per host).
     x11::SurfaceDesc s{};
-    if (ctx.surfaces().get(key, s) &&
-        s.ptr != nullptr && s.bytesPerRow != 0 &&
-        s.w != 0 && s.h != 0)
+    if (!ctx.surfaces().get(key, s) ||
+        s.ptr == nullptr || s.bytesPerRow == 0 ||
+        s.w == 0 || s.h == 0)
     {
-      if ((s.bytesPerRow & 3u) != 0) {
-        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL bpr alignment (%u)\n",
-                (unsigned)drawable, (unsigned)key, (unsigned)s.bytesPerRow);
-        return false;
-      }
-      const uint32_t stridePx = s.bytesPerRow / 4u;
-      if (stridePx == 0) return false;
-
-      // Compute drawable origin in host coords.
-      int32_t ox = 0, oy = 0;
-      if (!computeOffsetInHost(ctx.windows(), key, drawable, ox, oy)) {
-        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL offset computation\n",
-                (unsigned)drawable, (unsigned)key);
-        return false;
-      }
-      if (ox < 0 || oy < 0) {
-        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL negative offset (%d,%d)\n",
-                (unsigned)drawable, (unsigned)key, (int)ox, (int)oy);
-        return false;
-      }
-
-      // Clamp drawable dims to backing surface bounds (defensive).
-      uint32_t maxW = (ox < (int32_t)s.w) ? (uint32_t)((int32_t)s.w - ox) : 0u;
-      uint32_t maxH = (oy < (int32_t)s.h) ? (uint32_t)((int32_t)s.h - oy) : 0u;
-
-
-      // NEW: host uses surface size; children use WindowView size.
-      uint16_t effW = 0, effH = 0;
-      if (drawable == key) {
-        // Host drawable: match the backing surface dimensions
-        effW = (uint16_t)std::min<uint32_t>(s.w, maxW); // maxW==s.w when ox==0
-        effH = (uint16_t)std::min<uint32_t>(s.h, maxH);
-      } else {
-        // Child drawable: clip to window geometry (prevents scribbling outside child)
-        const bool isContentChild = (dv.parent_xid == key);
-
-        fprintf(stderr,
-                "[RESOLVE] child drawable=0x%08X host=0x%08X parent=0x%08X "
-                "xy=(%d,%d) wh=%ux%u isContent=%d surf=%ux%u maxWH=%ux%u\n",
-                (unsigned)drawable, (unsigned)key, (unsigned)dv.parent_xid,
-                (int)dv.x, (int)dv.y, (unsigned)dv.w, (unsigned)dv.h,
-                (int)isContentChild,
-                (unsigned)s.w, (unsigned)s.h,
-                (unsigned)maxW, (unsigned)maxH);
-
-        if (isContentChild) {
-          // Let the content child fill the host surface during live resize.
-          effW = (uint16_t)std::min<uint32_t>(maxW, s.w);
-          effH = (uint16_t)std::min<uint32_t>(maxH, s.h);
-        } else {
-          // True children: clip to their own geometry.
-          effW = (uint16_t)std::min<uint32_t>(dv.w, maxW);
-          effH = (uint16_t)std::min<uint32_t>(dv.h, maxH);
-        }
-      }
-      if (effW == 0 || effH == 0) {
-        fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL effWH=%ux%u\n",
-                (unsigned)drawable, (unsigned)key, (unsigned)effW, (unsigned)effH);
-        return false;
-      }
-
-      uint32_t* base = static_cast<uint32_t*>(s.ptr);
-      uint32_t* shifted = base + (size_t)oy * (size_t)stridePx + (size_t)ox;
-
-      out.pixels32 = shifted;
-      out.w = effW;
-      out.h = effH;
-      out.stridePixels = stridePx;
-
-      out.isWindow = true;
-      out.isPixmap = false;
-      out.depth = 32;
-
-      out.backingXid = key;
-      out.backingPixels32 = base;
-      out.backingStridePixels = stridePx;
-      out.offsetX = ox;
-      out.offsetY = oy;
-
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr,
-              "[RESOLVE] OK drawable=0x%08X host=0x%08X path=SURFACE "
-              "effWH=%ux%u stride=%u off=(%d,%d) surfWH=%ux%u\n",
-              (unsigned)drawable, (unsigned)key,
-              (unsigned)out.w, (unsigned)out.h,
-              (unsigned)out.stridePixels,
-              (int)out.offsetX, (int)out.offsetY,
-              (unsigned)s.w, (unsigned)s.h);
-
-      return true;
-    }
-
-    // Transitional fallback: old C-backed framebuffer for THIS drawable.
-    uint32_t* pix = nullptr;
-    uint32_t w = 0, h = 0;
-    if (!x11_xproto_window_fb_rw(drawable, &pix, &w, &h) || !pix || w == 0 || h == 0) {
-      fprintf(stderr,
-              "[RESOLVE] drawable=0x%08X host=0x%08X FAIL no surface AND no C FB\n",
+              "[RESOLVE] drawable=0x%08X host=0x%08X FAIL no Swift surface\n",
               (unsigned)drawable, (unsigned)key);
+#endif
       return false;
     }
 
-    out.pixels32 = pix;
-    out.w = (uint16_t)w;
-    out.h = (uint16_t)h;
-    out.stridePixels = w;
+    if ((s.bytesPerRow & 3u) != 0) {
+#ifdef X11_TRACE_VERBOSE
+      fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL bpr alignment (%u)\n",
+              (unsigned)drawable, (unsigned)key, (unsigned)s.bytesPerRow);
+#endif
+      return false;
+    }
+    const uint32_t stridePx = s.bytesPerRow / 4u;
+    if (stridePx == 0) return false;
+
+    // Compute drawable origin in host coords.
+    int32_t ox = 0, oy = 0;
+    if (!computeOffsetInHost(ctx.windows(), key, drawable, ox, oy)) {
+#ifdef X11_TRACE_VERBOSE
+      fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL offset computation\n",
+              (unsigned)drawable, (unsigned)key);
+#endif
+      return false;
+    }
+    // Clamp negative offsets — child extends beyond host surface origin.
+    // X11 allows children at negative positions (e.g., xterm scrollbar at
+    // y=-1 to hide a border pixel).  We clamp the offset to 0 and reduce
+    // the effective dimensions by the clipped amount.  This shifts the
+    // child's drawing origin by at most a few pixels — acceptable for
+    // bring-up and visually negligible.
+    int32_t skipX = 0, skipY = 0;
+    if (ox < 0) { skipX = -ox; ox = 0; }
+    if (oy < 0) { skipY = -oy; oy = 0; }
+
+    // Clamp drawable dims to backing surface bounds (defensive).
+    uint32_t maxW = (ox < (int32_t)s.w) ? (uint32_t)((int32_t)s.w - ox) : 0u;
+    uint32_t maxH = (oy < (int32_t)s.h) ? (uint32_t)((int32_t)s.h - oy) : 0u;
+
+    // Host uses surface size; ALL children clip to their own WindowView
+    // geometry.  This prevents ClearArea / PolyFillRectangle on one child
+    // from scribbling over sibling children (e.g., VT100 clearing into
+    // the scrollbar area).
+    uint16_t effW = 0, effH = 0;
+    if (drawable == key) {
+      // Host drawable: match the backing surface dimensions
+      effW = (uint16_t)std::min<uint32_t>(s.w, maxW); // maxW==s.w when ox==0
+      effH = (uint16_t)std::min<uint32_t>(s.h, maxH);
+    } else {
+      // Child drawable: clip to its own geometry, minus any clipped
+      // negative-offset region.
+      uint16_t childW = (dv.w > (uint16_t)skipX) ? (uint16_t)(dv.w - (uint16_t)skipX) : 0;
+      uint16_t childH = (dv.h > (uint16_t)skipY) ? (uint16_t)(dv.h - (uint16_t)skipY) : 0;
+
+#ifdef X11_TRACE_VERBOSE
+      fprintf(stderr,
+              "[RESOLVE] child drawable=0x%08X host=0x%08X parent=0x%08X "
+              "xy=(%d,%d) wh=%ux%u skip=(%d,%d) childWH=%ux%u surf=%ux%u maxWH=%ux%u\n",
+              (unsigned)drawable, (unsigned)key, (unsigned)dv.parent_xid,
+              (int)dv.x, (int)dv.y, (unsigned)dv.w, (unsigned)dv.h,
+              (int)skipX, (int)skipY,
+              (unsigned)childW, (unsigned)childH,
+              (unsigned)s.w, (unsigned)s.h,
+              (unsigned)maxW, (unsigned)maxH);
+#endif
+
+      effW = (uint16_t)std::min<uint32_t>(childW, maxW);
+      effH = (uint16_t)std::min<uint32_t>(childH, maxH);
+    }
+    if (effW == 0 || effH == 0) {
+      // Always log: this is a key diagnostic for clipping bugs (scrollbar etc.)
+      fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL effWH=%ux%u (dv.wh=%ux%u off=%d,%d surf=%ux%u)\n",
+              (unsigned)drawable, (unsigned)key, (unsigned)effW, (unsigned)effH,
+              (unsigned)dv.w, (unsigned)dv.h, (int)ox, (int)oy,
+              (unsigned)s.w, (unsigned)s.h);
+      return false;
+    }
+
+    uint32_t* base = static_cast<uint32_t*>(s.ptr);
+    uint32_t* shifted = base + (size_t)oy * (size_t)stridePx + (size_t)ox;
+
+    out.pixels32 = shifted;
+    out.w = effW;
+    out.h = effH;
+    out.stridePixels = stridePx;
 
     out.isWindow = true;
     out.isPixmap = false;
     out.depth = 32;
 
-    out.backingXid = drawable;
-    out.backingPixels32 = pix;
-    out.backingStridePixels = w;
-    out.offsetX = 0;
-    out.offsetY = 0;
+    out.backingXid = key;
+    out.backingPixels32 = base;
+    out.backingStridePixels = stridePx;
+    out.offsetX = ox;
+    out.offsetY = oy;
 
+    // Always-on: log the FIRST successful resolve for each child window.
+    if (drawable != key && s_reportedChildResolve.find(drawable) == s_reportedChildResolve.end()) {
+      s_reportedChildResolve.insert(drawable);
+      fprintf(stderr,
+              "[LIFECYCLE] FIRST child resolve OK drawable=0x%08X host=0x%08X "
+              "effWH=%ux%u stride=%u off=(%d,%d) surfWH=%ux%u parent=0x%08X childXY=(%d,%d)\n",
+              (unsigned)drawable, (unsigned)key,
+              (unsigned)out.w, (unsigned)out.h,
+              (unsigned)out.stridePixels,
+              (int)out.offsetX, (int)out.offsetY,
+              (unsigned)s.w, (unsigned)s.h,
+              (unsigned)dv.parent_xid,
+              (int)dv.x, (int)dv.y);
+    }
+
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr,
-            "[RESOLVE] OK drawable=0x%08X host=0x%08X path=C_FB wh=%ux%u\n",
+            "[RESOLVE] OK drawable=0x%08X host=0x%08X path=SURFACE "
+            "effWH=%ux%u stride=%u off=(%d,%d) surfWH=%ux%u\n",
             (unsigned)drawable, (unsigned)key,
-            (unsigned)out.w, (unsigned)out.h);
+            (unsigned)out.w, (unsigned)out.h,
+            (unsigned)out.stridePixels,
+            (int)out.offsetX, (int)out.offsetY,
+            (unsigned)s.w, (unsigned)s.h);
+#endif
 
     return true;
   }

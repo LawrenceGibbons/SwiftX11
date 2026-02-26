@@ -17,7 +17,6 @@
 #include "XProtoServerBridge.h"
 extern "C" {
 #include "x11_requests.h"
-#include "x11_backend_fb.h"   // adjust path to wherever you placed it
 }
 #include "Core/XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
 #include "Ops/QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
@@ -38,6 +37,8 @@ extern "C" {
 #include "SwiftX11Bridge.h"
 #include "WireEvents.hpp"
 #include "Core/CursorRouting.hpp"
+#include "Core/DrawableRW.hpp"
+#include "Damage.hpp"
 
 // ---- Host-command queue (server thread -> xproto thread) ----
 namespace {
@@ -45,6 +46,7 @@ namespace {
   enum class HostCmdType : uint8_t {
     RootlessResize,
     SetPresentable,
+    SurfaceResized,   // surface dimensions changed after initial registration
     PointerMove,
     PointerEnter,
     PointerLeave,
@@ -185,9 +187,8 @@ extern "C" void x11_proto_bridge_end_session(int client_fd)
     // Erase windows owned by this fd (child-first order).
     std::vector<uint32_t> owned = ctx.windows().eraseOwnedBy(client_fd);
 
-    // For each window: free C backing store + tell Swift to destroy the native window.
+    // Tell Swift to destroy the native window for each owned window.
     for (uint32_t wid : owned) {
-      x11_backend_fb_destroy(wid);
       x11_requests_push_destroy(wid);
     }
 
@@ -248,6 +249,43 @@ static uint32_t pickButtonDeliveryWindow(x11::XProtoContext& ctx,
   return under ? under : host;
 }
 
+// Forward declaration (defined later in this file).
+extern "C" int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
+                                           int32_t* out_abs_x,
+                                           int32_t* out_abs_y);
+
+// ---- Blit legacy C framebuffers into the Swift host surface ----
+// X11 spec: server paints the window's background before delivering Expose.
+// Called when the surface is ready (after SetPresentable).  Earlier attempts
+// at MapWindow time may have failed because the Swift surface wasn't yet
+// registered.
+static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
+  x11::WindowView vw{};
+  if (!ctx.windows().snapshot(wid, vw)) return;
+  if (!vw.has_background_pixel) return;
+
+  x11::DrawableRW dst{};
+  if (!x11::resolveDrawableRW(ctx, wid, dst)) {
+    fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
+    return;
+  }
+  if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
+
+  const uint32_t bg = vw.background_pixel;
+
+  fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u off=(%d,%d)\n",
+          (unsigned)wid, (unsigned)bg,
+          (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels,
+          (int)dst.offsetX, (int)dst.offsetY);
+
+  for (uint16_t y = 0; y < dst.h; y++) {
+    uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+    for (uint16_t x = 0; x < dst.w; x++) {
+      row[x] = bg;
+    }
+  }
+}
+
 // Send a full-window Expose to a single window.
 static inline void sendExposeNow(x11::XProtoContext& ctx,
                                  x11::EventOps& /*evOps*/,
@@ -274,16 +312,22 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
 // Re-expose a host window AND all its mapped descendants.
 // Needed because xeyes (and many X11 clients) draw to a child window,
 // not the host.  If we only re-expose the host, the child never redraws.
+//
+// X11 spec requires the server to paint backgrounds before delivering Expose.
+// The initial fillWindowBackground at MapWindow time may have failed because
+// the Swift surface wasn't registered yet.  Now (post-SetPresentable) the
+// surface is ready, so we retry the fill for each window before its Expose.
 static inline void sendExposeSubtree(x11::XProtoContext& ctx,
                                      x11::EventOps& evOps,
                                      uint32_t hostXid)
 {
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
 
-  // Expose the host itself.
+  // Fill background + Expose the host itself.
+  fillWindowBackgroundIfReady(ctx, hostXid);
   sendExposeNow(ctx, evOps, hostXid);
 
-  // Expose every mapped descendant.
+  // Fill background + Expose every mapped descendant.
   auto kids = ctx.windows().descendantsOf(hostXid);
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
           (unsigned)hostXid, kids.size());
@@ -294,6 +338,23 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
       fprintf(stderr, "[EXPOSE_SUBTREE] skip kid=0x%08X (unmapped)\n", (unsigned)kid);
       continue;
     }
+
+    // Paint background before Expose (X11 spec requirement).
+    fillWindowBackgroundIfReady(ctx, kid);
+
+    // Diagnostic: verify the child window can resolve to the host surface.
+    {
+      x11::DrawableRW dbgDst{};
+      bool resolved = x11::resolveDrawableRW(ctx, kid, dbgDst);
+      fprintf(stderr, "[EXPOSE_SUBTREE] kid=0x%08X resolved=%d wh=%ux%u off=(%d,%d) stride=%u\n",
+              (unsigned)kid, (int)resolved,
+              resolved ? (unsigned)dbgDst.w : 0u,
+              resolved ? (unsigned)dbgDst.h : 0u,
+              resolved ? (int)dbgDst.offsetX : 0,
+              resolved ? (int)dbgDst.offsetY : 0,
+              resolved ? (unsigned)dbgDst.stridePixels : 0u);
+    }
+
     sendExposeNow(ctx, evOps, kid);
   }
 }
@@ -332,20 +393,42 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
                     (unsigned)dbgS.bytesPerRow, dbgS.ptr);
           }
 
+          // Flush any stale dirty state and push damage so any content
+          // that was drawn before the surface was presentable gets shown.
+          ctx.windows().consumeDirtyIfReady(c.xid);
+          ctx.windows().markDirty(c.xid);
           if (ctx.windows().consumeDirtyIfReady(c.xid)) {
-            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> FLUSH dirty\n", (unsigned)c.xid);
+            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> DAMAGE\n", (unsigned)c.xid);
             x11_requests_push_damage(c.xid);
-          } else if (ctx.windows().isReadyToPresent(c.xid)) {
-            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> EXPOSE subtree (no dirty, but ready)\n",
-                    (unsigned)c.xid);
-            sendExposeSubtree(ctx, srv->eventOps(), c.xid);
-          } else {
-            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> NEITHER dirty nor ready\n",
-                    (unsigned)c.xid);
+          }
+
+          // Re-expose the host and all mapped descendants so clients
+          // redraw into the Swift surface now that it's presentable.
+          fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> EXPOSE subtree\n", (unsigned)c.xid);
+          sendExposeSubtree(ctx, srv->eventOps(), c.xid);
+          break;
+        }
+
+        // ------------------- SurfaceResized
+        // Surface dimensions changed AFTER initial SetPresentable.
+        // This typically means Swift's setContentSize completed after the
+        // initial surface registration.  Child windows at far offsets
+        // (e.g., scrollbar at the right edge) may have been clipped to
+        // zero during the first sendExposeSubtree; re-expose them now.
+        case HostCmdType::SurfaceResized: {
+          fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X -> re-expose subtree\n", (unsigned)c.xid);
+
+          // Fill backgrounds + re-expose the host and all mapped descendants.
+          sendExposeSubtree(ctx, srv->eventOps(), c.xid);
+
+          // Also push damage so the present path picks up the redrawn content.
+          ctx.windows().markDirty(c.xid);
+          if (ctx.windows().consumeDirtyIfReady(c.xid)) {
+            x11_requests_push_damage(c.xid);
           }
           break;
         }
-          
+
         // ------------------- PointerMove
         case HostCmdType::PointerMove: {
           x11::notify::postMotion(c.xid,
@@ -467,7 +550,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             // FocusIn for new target (host or child).
             srv->eventOps().sendFocusEvent(ctx, target, /*is_in=*/true);
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
             fprintf(stderr, "[FOCUS] host=0x%08X old=0x%08X new=0x%08X pointer_xid=0x%08X win=(%d,%d)\n",
                     (unsigned)host,
                     (unsigned)oldFocus,
@@ -488,7 +571,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             ctx.input().focus_xid = 0;
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
             fprintf(stderr, "[FOCUS] host=0x%08X lost focus (old=0x%08X)\n",
                     (unsigned)host, (unsigned)oldFocus);
         #endif
@@ -525,7 +608,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             // Focus should follow the deepest real window under pointer (NOT "deliver").
             ctx.input().setFocus(host, under);
 
-          #ifndef NDEBUG
+          #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
                     "[FOCUS_SET] host=0x%08X prev=0x%08X new=0x%08X\n",
                     (unsigned)host, (unsigned)prev, (unsigned)under);
@@ -573,7 +656,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // child field: if delivering to ancestor, child is the subwindow under pointer
           const uint32_t child = (deliver != under) ? under : 0;
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
           fprintf(stderr,
                   "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u mods=0x%X\n",
                   (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
@@ -627,7 +710,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           for (int i = 0; i < nClamped; i++) {
             const uint8_t btn = wheelButton(c.axis, (int16_t)dir);
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
                     "[SCROLL] host=0x%08X target=0x%08X axis=%u ticks=%d btn=%u win=(%d,%d) root=(%d,%d) t=%u\n",
                     (unsigned)host, (unsigned)target,
@@ -704,7 +787,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             if (!wantsKey(target)) break; // nobody wants it
           }
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
           fprintf(stderr,
                   "[KEY] host=0x%08X focus=0x%08X deliver=0x%08X down=%d kc=%u mods=0x%X\n",
                   (unsigned)host,
@@ -903,11 +986,30 @@ extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid)
   hostcmd_push(HostCmd{HostCmdType::SetPresentable, xid, 0, 0});
 }
 
+extern "C" void x11_proto_bridge_surface_resized(uint32_t xid)
+{
+  if (xid == 0) return;
+  hostcmd_push(HostCmd{HostCmdType::SurfaceResized, xid, 0, 0});
+}
+
 
 static x11::XProtoDaemon g_daemon;
 
+// Version string: single source of truth is SwiftX11Version.h
+#include "SwiftX11Version.h"
+static constexpr const char* kSwiftX11Version = SWIFTX11_VERSION;
+
+const char* swiftx11_version(void)
+{
+  return kSwiftX11Version;
+}
+
 extern "C" int x11_proto_start_daemon(int display)
 {
+  fprintf(stderr, "\n========================================\n");
+  fprintf(stderr, "  SwiftX11 v%s  (C++ protocol core)\n", kSwiftX11Version);
+  fprintf(stderr, "  display=:%d\n", display);
+  fprintf(stderr, "========================================\n\n");
   return g_daemon.start(display) ? 1 : 0;
 }
 
@@ -1233,6 +1335,7 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
     std::memcpy(drow, srow, (size_t)tightBpr);
   }
 
+#ifdef X11_TRACE_VERBOSE
   // Sample a few pixels from the source surface for debugging.
   {
     const uint32_t* px = (const uint32_t*)s.ptr;
@@ -1249,6 +1352,7 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
             (unsigned)xid, (unsigned)host, (int)w, (int)hgt, (int)tightBpr,
             (unsigned)p0, (unsigned)pm, (unsigned)nonwhite);
   }
+#endif
 
   return 1;
 }

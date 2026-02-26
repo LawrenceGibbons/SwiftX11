@@ -47,9 +47,13 @@ static inline bool angle_in_arc(float theta, float start, float extent) {
 }
 
 ShapeOps::ShapeOps(XProtoRegistrar& reg) {
-  reg.registerMajor(x11::opcode::PolyArc,           &ShapeOps::onMajor, this); // PolyArc
-  reg.registerMajor(x11::opcode::PolyFillRectangle, &ShapeOps::onMajor, this); // PolyFillRectangle
-  reg.registerMajor(x11::opcode::PolyFillArc      , &ShapeOps::onMajor, this); // PolyFillArc
+  reg.registerMajor(x11::opcode::PolyPoint        , &ShapeOps::onMajor, this); // 64
+  reg.registerMajor(x11::opcode::PolyLine         , &ShapeOps::onMajor, this); // 65
+  reg.registerMajor(x11::opcode::PolySegment      , &ShapeOps::onMajor, this); // 66
+  reg.registerMajor(x11::opcode::PolyRectangle    , &ShapeOps::onMajor, this); // 67
+  reg.registerMajor(x11::opcode::PolyArc,           &ShapeOps::onMajor, this); // 68
+  reg.registerMajor(x11::opcode::PolyFillRectangle, &ShapeOps::onMajor, this); // 70
+  reg.registerMajor(x11::opcode::PolyFillArc      , &ShapeOps::onMajor, this); // 71
 }
 
 void ShapeOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -59,6 +63,10 @@ void ShapeOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
+    case x11::opcode::PolyPoint        : handlePolyPoint(ctx, dc.seq, dc.minor, dc.br); return;
+    case x11::opcode::PolyLine         : handlePolyLine(ctx, dc.seq, dc.minor, dc.br); return;
+    case x11::opcode::PolySegment      : handlePolySegment(ctx, dc.seq, dc.br); return;
+    case x11::opcode::PolyRectangle    : handlePolyRectangle(ctx, dc.seq, dc.br); return;
     case x11::opcode::PolyArc          : handlePolyArc(ctx, dc.seq, dc.br); return;
     case x11::opcode::PolyFillRectangle: handlePolyFillRectangle(ctx, dc.seq, dc.br); return;
     case x11::opcode::PolyFillArc      : handlePolyFillArc(ctx, dc.seq, dc.br); return;
@@ -67,6 +75,240 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       ctx.tracef("[ShapeOps] unexpected major=%u\n", (unsigned)dc.major);
       return;
   }
+}
+
+// =============================================================================
+// Thin-line drawing helper (Bresenham, width=0 semantics)
+// =============================================================================
+static inline void plotPixel(uint32_t* pixels, uint32_t stride,
+                             int32_t clipW, int32_t clipH,
+                             int32_t x, int32_t y,
+                             uint32_t color, uint8_t fn, uint32_t planeMask)
+{
+  if (x < 0 || x >= clipW || y < 0 || y >= clipH) return;
+  uint32_t& dst = pixels[(size_t)y * stride + (size_t)x];
+  if (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu) {
+    dst = color;
+  } else {
+    dst = x11_apply_rop_argb(dst, color, fn, planeMask);
+  }
+}
+
+static void drawThinLine(uint32_t* pixels, uint32_t stride,
+                         int32_t clipW, int32_t clipH,
+                         int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                         uint32_t color, uint8_t fn, uint32_t planeMask)
+{
+  // Fast path: horizontal line
+  if (y0 == y1) {
+    if (x0 > x1) std::swap(x0, x1);
+    const int32_t ly = y0;
+    if (ly < 0 || ly >= clipH) return;
+    const int32_t lx = std::max<int32_t>(0, x0);
+    const int32_t rx = std::min<int32_t>(x1, clipW - 1);
+    if (lx > rx) return;
+    uint32_t* row = pixels + (size_t)ly * stride;
+    if (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu) {
+      for (int32_t x = lx; x <= rx; x++) row[x] = color;
+    } else {
+      for (int32_t x = lx; x <= rx; x++)
+        row[x] = x11_apply_rop_argb(row[x], color, fn, planeMask);
+    }
+    return;
+  }
+
+  // Fast path: vertical line
+  if (x0 == x1) {
+    if (y0 > y1) std::swap(y0, y1);
+    const int32_t lx = x0;
+    if (lx < 0 || lx >= clipW) return;
+    const int32_t ty = std::max<int32_t>(0, y0);
+    const int32_t by = std::min<int32_t>(y1, clipH - 1);
+    if (ty > by) return;
+    if (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu) {
+      for (int32_t y = ty; y <= by; y++) pixels[(size_t)y * stride + (size_t)lx] = color;
+    } else {
+      for (int32_t y = ty; y <= by; y++) {
+        uint32_t& d = pixels[(size_t)y * stride + (size_t)lx];
+        d = x11_apply_rop_argb(d, color, fn, planeMask);
+      }
+    }
+    return;
+  }
+
+  // General Bresenham
+  int32_t dx = std::abs(x1 - x0);
+  int32_t dy = std::abs(y1 - y0);
+  int32_t sx = (x0 < x1) ? 1 : -1;
+  int32_t sy = (y0 < y1) ? 1 : -1;
+  int32_t err = dx - dy;
+
+  for (;;) {
+    plotPixel(pixels, stride, clipW, clipH, x0, y0, color, fn, planeMask);
+    if (x0 == x1 && y0 == y1) break;
+    int32_t e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x0 += sx; }
+    if (e2 <  dx) { err += dx; y0 += sy; }
+  }
+}
+
+// =============================================================================
+// PolyPoint (64)
+// =============================================================================
+void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coordMode, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t drawable = br.readU32();
+  const uint32_t gcXid    = br.readU32();
+
+  const size_t nPts = br.remaining() / 4u;
+  if (nPts == 0) { br.skip(br.remaining()); return; }
+
+  DrawableRW dst{};
+  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+  x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
+  const uint32_t fgOpaque = gst.fg | 0xFF000000u;
+  const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
+  const uint32_t pm = gst.plane_mask;
+
+  int32_t cx = 0, cy = 0; // running position for Previous mode
+  for (size_t i = 0; i < nPts; i++) {
+    if (br.remaining() < 4) break;
+    int16_t px = br.readI16();
+    int16_t py = br.readI16();
+    if (coordMode == 1 && i > 0) { // Previous
+      cx += px; cy += py;
+    } else {
+      cx = px; cy = py;
+    }
+    plotPixel(dst.pixels32, dst.stridePixels, dst.w, dst.h, cx, cy, fgOpaque, fn, pm);
+  }
+  br.skip(br.remaining());
+  if (dst.isWindow) damageOrDirty(ctx, drawable);
+}
+
+// =============================================================================
+// PolyLine (65)
+// =============================================================================
+void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coordMode, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t drawable = br.readU32();
+  const uint32_t gcXid    = br.readU32();
+
+  const size_t nPts = br.remaining() / 4u;
+  if (nPts < 2) { br.skip(br.remaining()); return; }
+
+  DrawableRW dst{};
+  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+  x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
+  const uint32_t fgOpaque = gst.fg | 0xFF000000u;
+  const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
+  const uint32_t pm = gst.plane_mask;
+
+  // Read first point
+  int32_t prevX = br.readI16();
+  int32_t prevY = br.readI16();
+
+  for (size_t i = 1; i < nPts; i++) {
+    if (br.remaining() < 4) break;
+    int16_t px = br.readI16();
+    int16_t py = br.readI16();
+    int32_t curX, curY;
+    if (coordMode == 1) { // Previous
+      curX = prevX + px;
+      curY = prevY + py;
+    } else {
+      curX = px;
+      curY = py;
+    }
+    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+                 prevX, prevY, curX, curY, fgOpaque, fn, pm);
+    prevX = curX;
+    prevY = curY;
+  }
+  br.skip(br.remaining());
+  if (dst.isWindow) damageOrDirty(ctx, drawable);
+}
+
+// =============================================================================
+// PolySegment (66)
+// =============================================================================
+void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t drawable = br.readU32();
+  const uint32_t gcXid    = br.readU32();
+
+  const size_t nSegs = br.remaining() / 8u;
+  if (nSegs == 0) { br.skip(br.remaining()); return; }
+
+  DrawableRW dst{};
+  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+  x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
+  const uint32_t fgOpaque = gst.fg | 0xFF000000u;
+  const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
+  const uint32_t pm = gst.plane_mask;
+
+  for (size_t i = 0; i < nSegs; i++) {
+    if (br.remaining() < 8) break;
+    int32_t x1 = br.readI16();
+    int32_t y1 = br.readI16();
+    int32_t x2 = br.readI16();
+    int32_t y2 = br.readI16();
+    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+                 x1, y1, x2, y2, fgOpaque, fn, pm);
+  }
+  br.skip(br.remaining());
+  if (dst.isWindow) damageOrDirty(ctx, drawable);
+}
+
+// =============================================================================
+// PolyRectangle (67) — outline rectangles
+// =============================================================================
+void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t drawable = br.readU32();
+  const uint32_t gcXid    = br.readU32();
+
+  const size_t nRects = br.remaining() / 8u;
+  if (nRects == 0) { br.skip(br.remaining()); return; }
+
+  DrawableRW dst{};
+  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+  x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
+  const uint32_t fgOpaque = gst.fg | 0xFF000000u;
+  const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
+  const uint32_t pm = gst.plane_mask;
+
+  for (size_t i = 0; i < nRects; i++) {
+    if (br.remaining() < 8) break;
+    int32_t rx = br.readI16();
+    int32_t ry = br.readI16();
+    int32_t rw = (int32_t)br.readU16();
+    int32_t rh = (int32_t)br.readU16();
+
+    // X11 PolyRectangle draws 4 edges: top, bottom, left, right
+    // The rectangle outline includes the boundary pixels.
+    int32_t x0 = rx, y0 = ry;
+    int32_t x1 = rx + rw, y1 = ry + rh;
+
+    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+                 x0, y0, x1, y0, fgOpaque, fn, pm); // top
+    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+                 x0, y1, x1, y1, fgOpaque, fn, pm); // bottom
+    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+                 x0, y0, x0, y1, fgOpaque, fn, pm); // left
+    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+                 x1, y0, x1, y1, fgOpaque, fn, pm); // right
+  }
+  br.skip(br.remaining());
+  if (dst.isWindow) damageOrDirty(ctx, drawable);
 }
 
 // -----------------------------------------------------------------------------
@@ -225,12 +467,16 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const std::size_t narcs = br.remaining() / 12u;
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[PolyFillArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
             (unsigned)drawable, (unsigned)gc_id, narcs);
+#endif
 
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[PolyFillArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+#endif
       br.skip(br.remaining()); return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -312,12 +558,16 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const std::size_t narcs = br.remaining() / 12u;
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[PolyArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
             (unsigned)drawable, (unsigned)gc_id, narcs);
+#endif
 
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[PolyArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+#endif
       br.skip(br.remaining()); return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
