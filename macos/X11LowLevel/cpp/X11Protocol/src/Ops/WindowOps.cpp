@@ -64,7 +64,7 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
 
   // Damage the host so the fill is presented.
   if (dst.isWindow) {
-    damageOrDirty(ctx, wid);
+    damageOrDirty(ctx, wid, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
   }
 }
 
@@ -293,8 +293,9 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 
     // 6) If anything drew before presentable, flush once now (route to host)
     if (host != 0) {
-      if (ctx.windows().consumeDirtyIfReady(host)) {
-        x11_requests_push_damage(host);
+      int32_t rx = 0, ry = 0, rw = 0, rh = 0;
+      if (ctx.windows().consumeDirtyRectIfReady(host, rx, ry, rw, rh)) {
+        x11_ui_push_damage(host, rx, ry, rw, rh);
       }
     }
   }
@@ -376,8 +377,9 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
     }
     
     // If anything was dirty, flush once now if host is ready.
-    if (ctx.windows().consumeDirtyIfReady(host)) {
-      x11_requests_push_damage(host);
+    int32_t rx2 = 0, ry2 = 0, rw2 = 0, rh2 = 0;
+    if (ctx.windows().consumeDirtyRectIfReady(host, rx2, ry2, rw2, rh2)) {
+      x11_ui_push_damage(host, rx2, ry2, rw2, rh2);
     }
   }
 }
@@ -520,8 +522,8 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
     if (wantCfg || wantExp) ctx.transport().queueNotify(wid, wantCfg, wantExp);
   }
 
-  // 5) Redraw/present (gated).
-  damageOrDirty(ctx, wid);
+  // 5) Redraw/present (gated). Resize → full window repaint.
+  damageOrDirty(ctx, wid, 0, 0, (int32_t)new_w, (int32_t)new_h);
 }
   
 } // namespace x11

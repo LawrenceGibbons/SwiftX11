@@ -317,11 +317,8 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
                   (size_t)copyPx * 4u);
     }
 
-    // Mark host dirty and trigger damage if ready.
-    ctx.windows().markDirty(key);
-    if (ctx.windows().consumeDirtyIfReady(key)) {
-      ctx.ui().push(x11::UICommand{ x11::UICommand::Type::Damage, key });
-    }
+    // Damage the drawn region (drawable-local coords; damageOrDirty translates to host).
+    damageOrDirty(ctx, drawable, (int32_t)dstX, (int32_t)dstY, (int32_t)width, (int32_t)height);
     return;
   }
 
@@ -624,7 +621,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // Damage only if destination is a window
   // ------------------------------------------------------------
   if (dstIsWin) {
-    damageOrDirty(ctx, dst);
+    damageOrDirty(ctx, dst, (int32_t)dx0, (int32_t)dy0, (int32_t)cw, (int32_t)ch);
   }
 
   // ------------------------------------------------------------
@@ -829,7 +826,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     
     // Damage only if destination is a window.
     if ( dstIsWindow ) {
-      damageOrDirty(ctx, dst );
+      damageOrDirty(ctx, dst, (int32_t)dstX, (int32_t)dstY, (int32_t)wpx, (int32_t)hpx);
     }
   }
   
@@ -899,7 +896,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     // Damage -> present (only meaningful for windows)
     if (dst.isWindow) {
-      damageOrDirty(ctx, wid);
+      damageOrDirty(ctx, wid, (int32_t)x0, (int32_t)y0, (int32_t)(x1 - x0), (int32_t)(y1 - y0));
     }
 
     // Exposures requested? Queue expose rect (Transport flush will filter by mask/mapped).
@@ -1026,11 +1023,12 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining());
 
     if (dst.isWindow) {
-      damageOrDirty(ctx, drawable);
+      // PolyText8: computing exact glyph bounding box is complex; use full drawable.
+      damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
     }
   }
-  
-  
+
+
   // -----------------------------
   // ImageText8 (major 76)
   // -----------------------------
@@ -1160,8 +1158,11 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     }
 
     if (dst.isWindow) {
-      damageOrDirty(ctx, drawable);
+      // Background fill rect is the largest affected region.
+      damageOrDirty(ctx, drawable,
+                    (int32_t)x, (int32_t)y - fontAscent,
+                    (int32_t)overallW, (int32_t)(fontAscent + fontDescent));
     }
   }
-  
+
 } // namespace x11

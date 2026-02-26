@@ -1153,12 +1153,15 @@ final class WindowRegistry {
         self.logAppend?("[PRESENT_DBG] (host-only) firing host=0x\(String(host, radix:16))")
       }
 
-      // Consume the accumulated damage rect.
-      // NOTE: damage rect geometry from C++ is currently unreliable (the damage
-      // push carries only an XID, no rect).  Force full-frame uploads until the
-      // C++ side is updated to propagate actual geometry through damageOrDirty.
-      self.dirtyByHostU.removeValue(forKey: host)
-      let damage: DamageRect? = nil   // TODO: use dirtyByHostU once C++ sends rects
+      // Consume the accumulated damage rect from C++ (now carries actual geometry).
+      let dirtyU = self.dirtyByHostU.removeValue(forKey: host)
+      let damage: DamageRect?
+      if let d = dirtyU, !d.isEmpty {
+        damage = DamageRect(x: Int(d.x0), y: Int(d.y0),
+                            w: Int(d.x1 - d.x0), h: Int(d.y1 - d.y0))
+      } else {
+        damage = nil  // full-frame upload (no rect accumulated or empty)
+      }
 
       // Always snapshot/present the HOST. The C side composites children onto host.
       self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: damage)

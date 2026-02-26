@@ -270,15 +270,15 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // ------------------------------------------------------------------
 
     if (host != 0 && host == wid) {
-      // HOST: geometry change affects presentation.
-      damageOrDirty(ctx, wid);
+      // HOST: geometry change affects presentation. Full window repaint.
+      damageOrDirty(ctx, wid, 0, 0, (int32_t)w, (int32_t)h);
 
       // Only the top-level host drives Cocoa resize.
       x11_requests_push_configure(wid, (int32_t)w, (int32_t)h);
 
     } else if (host != 0) {
       // CHILD: geometry changed — it affects what the host should present.
-      // (Child draws into the host surface at its new offset.)
+      // Full host repaint (child moved/resized within host surface).
       damageOrDirty(ctx, host);
     }
 

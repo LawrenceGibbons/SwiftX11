@@ -7,10 +7,15 @@
 
 #pragma once
 #include <cstdint>
-#include "UI/UICommandQueue.hpp"
+#include <cstdio>
+#include "Core/XProtoContext.hpp"
+
+// For x11_ui_push_damage (bypasses old C request queue for damage)
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
 
 namespace x11 {
-  class XProtoContext;
 
   static inline uint32_t hostForPresent(x11::XProtoContext& ctx, uint32_t xid) {
     if (xid == 0) return 0;
@@ -19,7 +24,16 @@ namespace x11 {
     return host ? host : xid;
   }
 
-  static inline void damageOrDirty(x11::XProtoContext& ctx, uint32_t drawableXid) {
+  // -------------------------------------------------------------------------
+  // Rect-aware damage: translates child-local rect to host-surface coords,
+  // accumulates a bounding-box union in WindowTable, and pushes directly to
+  // x11_ui_push_damage (bypassing the old UICommand → C request queue chain).
+  // -------------------------------------------------------------------------
+  static inline void damageOrDirty(x11::XProtoContext& ctx,
+                                   uint32_t drawableXid,
+                                   int32_t x, int32_t y,
+                                   int32_t w, int32_t h)
+  {
     if (drawableXid == 0) return;
     if (!ctx.windows().exists(drawableXid)) return;
 
@@ -31,27 +45,57 @@ namespace x11 {
       return;
     }
 
-    ctx.windows().markDirty(host);
+    // Translate child-local rect to host-surface coordinates.
+    int32_t hostX = x, hostY = y;
+    if (drawableXid != host) {
+      int32_t offX = 0, offY = 0;
+      if (ctx.windows().absoluteOffsetInHost(host, drawableXid, offX, offY)) {
+        hostX += offX;
+        hostY += offY;
+      }
+      // If offset computation fails, use child-local coords as-is (conservative).
+    }
 
-    if (ctx.windows().consumeDirtyIfReady(host)) {
+    ctx.windows().markDirtyRect(host, hostX, hostY, w, h);
+
+    int32_t rx = 0, ry = 0, rw = 0, rh = 0;
+    if (ctx.windows().consumeDirtyRectIfReady(host, rx, ry, rw, rh)) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[DAMAGE] drawable=0x%08X host=0x%08X -> FLUSH (ready)\n",
-              (unsigned)drawableXid, (unsigned)host);
+      fprintf(stderr, "[DAMAGE] drawable=0x%08X host=0x%08X -> FLUSH rect=(%d,%d %dx%d)\n",
+              (unsigned)drawableXid, (unsigned)host, (int)rx, (int)ry, (int)rw, (int)rh);
 #endif
-      ctx.ui().push(x11::UICommand{
-        x11::UICommand::Type::Damage,
-        /*xid=*/host,
-        /*parent=*/0,
-        /*w_px=*/0, /*h_px=*/0,
-        /*cursor_xid=*/0,
-        /*shape=*/0,
-        /*title_utf8=*/nullptr
-      });
+      x11_ui_push_damage(host, rx, ry, rw, rh);
     } else {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[DAMAGE] drawable=0x%08X host=0x%08X -> DEFERRED (not ready)\n",
+      fprintf(stderr, "[DAMAGE] drawable=0x%08X host=0x%08X -> DEFERRED\n",
               (unsigned)drawableXid, (unsigned)host);
 #endif
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // No-rect convenience overload: reports full-window damage.
+  // Used by callers where computing a precise rect is impractical.
+  // -------------------------------------------------------------------------
+  static inline void damageOrDirty(x11::XProtoContext& ctx, uint32_t drawableXid)
+  {
+    if (drawableXid == 0) return;
+    if (!ctx.windows().exists(drawableXid)) return;
+
+    // Look up drawable geometry for full-window rect.
+    x11::WindowView vw{};
+    if (ctx.windows().snapshot(drawableXid, vw)) {
+      damageOrDirty(ctx, drawableXid, 0, 0, (int32_t)vw.w, (int32_t)vw.h);
+    } else {
+      // Fallback: just mark dirty with no rect.
+      const uint32_t host = hostForPresent(ctx, drawableXid);
+      if (host == 0) return;
+      ctx.windows().markDirty(host);
+
+      int32_t rx = 0, ry = 0, rw = 0, rh = 0;
+      if (ctx.windows().consumeDirtyRectIfReady(host, rx, ry, rw, rh)) {
+        x11_ui_push_damage(host, rx, ry, rw, rh);
+      }
     }
   }
 
