@@ -41,6 +41,10 @@ int x11_proto_bridge_dispatch(uint8_t major, uint8_t minor, uint16_t seq,
   
 
 void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid);
+
+// Called when the host surface dimensions change after initial registration.
+// Triggers re-expose of the host + all mapped descendants on the xproto thread.
+void x11_proto_bridge_surface_resized(uint32_t xid);
   
 
 // ------- mouse related event bridging  

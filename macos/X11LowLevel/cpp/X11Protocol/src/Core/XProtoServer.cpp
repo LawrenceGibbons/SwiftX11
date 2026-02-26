@@ -83,7 +83,7 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
 {
   ByteReader br(payload, remain);
   
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   // Put this right after you decode major/minor/seq:
   if (major == 70 || // PolyFillRectangle
       major == 68 || // PolyArc (outline)
@@ -103,12 +103,12 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
   }
 #endif
   
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   fprintf(stderr, "[DISPATCH] major=%u minor=%u seq=%u remain=%zu\n",
           (unsigned)major, (unsigned)minor, (unsigned)seq, remain);
 #endif
   if ( major == 91 ) {
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
     {
       const uint8_t* p = br.ptr();
       const size_t n = br.remaining();
@@ -116,7 +116,7 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
         uint32_t cmap_le = rd32_le(p+0), cmap_be = rd32_be(p+0);
         uint16_t n_le    = rd16_le(p+4), n_be    = rd16_be(p+4);
         uint32_t pix_le  = rd32_le(p+8), pix_be  = rd32_be(p+8);
-        
+
         fprintf(stderr,
                 "[QC SANITY] seq=%u raw=%02X%02X%02X%02X %02X%02X %02X%02X %02X%02X%02X%02X "
                 "cmap(le=%08X be=%08X) n(le=%u be=%u) pix(le=%08X be=%08X)\n",
@@ -292,16 +292,20 @@ bool XProtoServer::lookupWindow(uint32_t xid, WindowView* out) {
     const uint32_t host = ctx_.windows().topLevelAncestorOf(xid);
     const uint32_t key  = host ? host : xid;
 
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[UPDATE_SURFACE] xid=0x%08X -> host/key=0x%08X wh=%ux%u bpr=%u ptr=%p\n",
             (unsigned)xid, (unsigned)key,
             (unsigned)s.w, (unsigned)s.h, (unsigned)s.bytesPerRow, s.ptr);
+#endif
 
     ctx_.surfaces().set(key, s);
     ctx_.windows().setPresentable(key, true);
 
     // IMPORTANT: only flush if something already drew (dirty was set by raster ops).
     if (ctx_.windows().consumeDirtyIfReady(key)) {
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> FLUSH dirty\n", (unsigned)key);
+#endif
       ctx_.ui().push(x11::UICommand{
         x11::UICommand::Type::Damage,
         /*xid=*/key,
@@ -312,7 +316,9 @@ bool XProtoServer::lookupWindow(uint32_t xid, WindowView* out) {
         /*title_utf8=*/nullptr
       });
     } else {
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> no dirty to flush\n", (unsigned)key);
+#endif
     }
   }
   

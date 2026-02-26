@@ -209,6 +209,13 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
 
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
+
+  // Always-on lifecycle trace for debugging child window issues.
+  fprintf(stderr, "[LIFECYCLE] CreateWindow wid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u evmask=0x%08X bg=%s\n",
+          (unsigned)wid, (unsigned)parent,
+          (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
+          (unsigned)event_mask,
+          has_bg_pixel ? "yes" : "no");
 }
 
 
@@ -241,6 +248,16 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 
     // Rootless rule: only top-level host windows drive Cocoa.
     const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+
+    // Always-on lifecycle trace
+    {
+      WindowView mv{};
+      ctx.windows().snapshot(wid, mv);
+      fprintf(stderr, "[LIFECYCLE] MapWindow wid=0x%08X host=0x%08X isHost=%d parent=0x%08X xy=(%d,%d) wh=%ux%u\n",
+              (unsigned)wid, (unsigned)host, (int)(host == wid),
+              (unsigned)mv.parent_xid,
+              (int)mv.x, (int)mv.y, (unsigned)mv.w, (unsigned)mv.h);
+    }
 
     // 2) Swift-side map + authoritative resize only for the host (UI command queue)
     if (host == wid) {
@@ -294,6 +311,18 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 
   // Map all descendants (not including the parent itself)
   auto desc = ctx.windows().descendantsOf(parent);
+
+  fprintf(stderr, "[LIFECYCLE] MapSubwindows parent=0x%08X host=0x%08X numDesc=%zu\n",
+          (unsigned)parent, (unsigned)host, desc.size());
+  for (uint32_t xid : desc) {
+    WindowView dv{};
+    bool ok = ctx.windows().snapshot(xid, dv);
+    fprintf(stderr, "[LIFECYCLE]   child=0x%08X mapped=%d parent=0x%08X xy=(%d,%d) wh=%ux%u\n",
+            (unsigned)xid, ok ? (int)dv.mapped : -1,
+            ok ? (unsigned)dv.parent_xid : 0u,
+            ok ? (int)dv.x : 0, ok ? (int)dv.y : 0,
+            ok ? (unsigned)dv.w : 0u, ok ? (unsigned)dv.h : 0u);
+  }
 
   // Track whether anything changed and whether we should flush host dirty once.
   bool anyMapped = false;

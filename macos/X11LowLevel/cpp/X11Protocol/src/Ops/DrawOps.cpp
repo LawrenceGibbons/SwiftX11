@@ -523,7 +523,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     (srcRW.backingPixels32 == dstRW.backingPixels32) &&
     (srcRW.backingStridePixels == dstRW.backingStridePixels);
 
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   if (sameBacking || (wpx * hpx) > 4096) {
     fprintf(stderr,
             "[CopyArea] src=0x%08X dst=0x%08X sameBacking=%d "
@@ -845,7 +845,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
 
-  #ifndef NDEBUG
+  #ifdef X11_TRACE_VERBOSE
     if (wid == 0x10000012u) {
       fprintf(stderr,
               "[ClearArea] wid=0x%08X x=%d y=%d w=%u h=%u exposures=%u\n",
@@ -1060,7 +1060,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const x11::font::BdfFont* f = resolveFont(ctx, gc);
     if (!f) return;
 
-  #ifndef NDEBUG
+  #ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
             (unsigned)drawable, (unsigned)gcXid, (unsigned)gc.font,
             f ? f->name.c_str() : "<null>",

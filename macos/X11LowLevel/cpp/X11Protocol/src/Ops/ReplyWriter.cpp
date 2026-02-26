@@ -118,7 +118,7 @@ bool ReplyWriter::sendInternAtomReply(uint16_t seq, uint32_t atom) {
     rep[8] = (uint8_t)(nameLen & 0xFF);
     rep[9] = (uint8_t)((nameLen >> 8) & 0xFF);
 
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   const uint32_t pad = (4u - (uint32_t(nameLen) & 3u)) & 3u;
   fprintf(stderr,
           "[SEND] GetAtomNameReply seq=%u nameLen=%u words=%u pad=%u first='%c%c%c%c'\n",
@@ -174,7 +174,7 @@ bool ReplyWriter::sendReplyWithPaddedPayload(const void* rep32,
     if (!t_.sendReplyBytes(zeros, pad)) return false;
   }
 
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   fprintf(stderr,
           "[ReplyWriter] Query reply sent payload=%zu pad=%zu total=%zu\n",
           payloadBytes, pad, payloadBytes + pad);

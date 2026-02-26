@@ -69,7 +69,9 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 // We only implement CWEventMask (bit 11) for now.
   void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
     ctx.tracef("[CWA] ENTER remain=%zu\n", br.remaining());
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[CWA] ENTER remain=%zu\n", br.remaining());
+#endif
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
     const uint32_t wid   = br.readU32();
@@ -154,8 +156,10 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // ---- Apply background pixel if present ----
     if (sawBgPixel) {
       ctx.windows().setBackgroundPixel(wid, newBgPixel);
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[CWA] setBackgroundPixel wid=0x%08X argb=0x%08X\n",
               (unsigned)wid, (unsigned)newBgPixel);
+#endif
     }
 
     // ---- Apply event mask only if present ----

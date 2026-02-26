@@ -17,7 +17,7 @@
 namespace x11 {
 
 void XProtoContext::tracef(const char* fmt, ...) {
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   va_list ap;
   va_start(ap, fmt);
   std::vfprintf(stderr, fmt, ap);

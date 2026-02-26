@@ -547,7 +547,7 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   ev[31] = 1; // sameScreen (TRUE) — focus byte is folded into xCrossingEvent in some layouts,
               // but for our 32-byte wire event union this is acceptable for bring-up.
 
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
   fprintf(stderr, "[CROSS] wid=0x%08X %s time=%u root=(%d,%d) event=(%d,%d) state=0x%04X\n",
           (unsigned)wid, is_enter ? "Enter" : "Leave",
           (unsigned)wire::rd32_le(ev + 4),

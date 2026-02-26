@@ -39,7 +39,7 @@
       }
     }
     
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[CURSOR_APPLY] host=0x%08X target=0x%08X cursor=0x%08X shape=%d\n",
             (unsigned)host, (unsigned)target, (unsigned)cursorXid, (int)shape);
 #endif

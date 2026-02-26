@@ -467,12 +467,16 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     const std::size_t narcs = br.remaining() / 12u;
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[PolyFillArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
             (unsigned)drawable, (unsigned)gc_id, narcs);
+#endif
 
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[PolyFillArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+#endif
       br.skip(br.remaining()); return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -554,12 +558,16 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     const std::size_t narcs = br.remaining() / 12u;
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
+#ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[PolyArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
             (unsigned)drawable, (unsigned)gc_id, narcs);
+#endif
 
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
+#ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[PolyArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+#endif
       br.skip(br.remaining()); return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }

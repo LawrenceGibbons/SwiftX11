@@ -84,7 +84,7 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     
     GCTable::instance().upsert(st);
     
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
     if (st.font != oldFont) {
       const x11::font::BdfFont* ff = ctx.fonts().get(st.font);
       fprintf(stderr, "[GCOps] GCFont gc=0x%08X font=0x%08X resolved=\"%s\"\n",
@@ -113,7 +113,7 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     
     GCTable::instance().upsert(st);
     
-#ifndef NDEBUG
+#ifdef X11_TRACE_VERBOSE
     if (st.font != oldFont) {
       const x11::font::BdfFont* ff = ctx.fonts().get(st.font);
       fprintf(stderr, "[GCOps] GCFont gc=0x%08X font=0x%08X resolved=\"%s\"\n",

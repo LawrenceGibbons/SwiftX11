@@ -46,6 +46,7 @@ namespace {
   enum class HostCmdType : uint8_t {
     RootlessResize,
     SetPresentable,
+    SurfaceResized,   // surface dimensions changed after initial registration
     PointerMove,
     PointerEnter,
     PointerLeave,
@@ -407,7 +408,27 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           sendExposeSubtree(ctx, srv->eventOps(), c.xid);
           break;
         }
-          
+
+        // ------------------- SurfaceResized
+        // Surface dimensions changed AFTER initial SetPresentable.
+        // This typically means Swift's setContentSize completed after the
+        // initial surface registration.  Child windows at far offsets
+        // (e.g., scrollbar at the right edge) may have been clipped to
+        // zero during the first sendExposeSubtree; re-expose them now.
+        case HostCmdType::SurfaceResized: {
+          fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X -> re-expose subtree\n", (unsigned)c.xid);
+
+          // Fill backgrounds + re-expose the host and all mapped descendants.
+          sendExposeSubtree(ctx, srv->eventOps(), c.xid);
+
+          // Also push damage so the present path picks up the redrawn content.
+          ctx.windows().markDirty(c.xid);
+          if (ctx.windows().consumeDirtyIfReady(c.xid)) {
+            x11_requests_push_damage(c.xid);
+          }
+          break;
+        }
+
         // ------------------- PointerMove
         case HostCmdType::PointerMove: {
           x11::notify::postMotion(c.xid,
@@ -529,7 +550,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             // FocusIn for new target (host or child).
             srv->eventOps().sendFocusEvent(ctx, target, /*is_in=*/true);
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
             fprintf(stderr, "[FOCUS] host=0x%08X old=0x%08X new=0x%08X pointer_xid=0x%08X win=(%d,%d)\n",
                     (unsigned)host,
                     (unsigned)oldFocus,
@@ -550,7 +571,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             ctx.input().focus_xid = 0;
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
             fprintf(stderr, "[FOCUS] host=0x%08X lost focus (old=0x%08X)\n",
                     (unsigned)host, (unsigned)oldFocus);
         #endif
@@ -587,7 +608,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             // Focus should follow the deepest real window under pointer (NOT "deliver").
             ctx.input().setFocus(host, under);
 
-          #ifndef NDEBUG
+          #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
                     "[FOCUS_SET] host=0x%08X prev=0x%08X new=0x%08X\n",
                     (unsigned)host, (unsigned)prev, (unsigned)under);
@@ -635,7 +656,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // child field: if delivering to ancestor, child is the subwindow under pointer
           const uint32_t child = (deliver != under) ? under : 0;
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
           fprintf(stderr,
                   "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u mods=0x%X\n",
                   (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
@@ -689,7 +710,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           for (int i = 0; i < nClamped; i++) {
             const uint8_t btn = wheelButton(c.axis, (int16_t)dir);
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
                     "[SCROLL] host=0x%08X target=0x%08X axis=%u ticks=%d btn=%u win=(%d,%d) root=(%d,%d) t=%u\n",
                     (unsigned)host, (unsigned)target,
@@ -766,7 +787,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             if (!wantsKey(target)) break; // nobody wants it
           }
 
-        #ifndef NDEBUG
+        #ifdef X11_TRACE_VERBOSE
           fprintf(stderr,
                   "[KEY] host=0x%08X focus=0x%08X deliver=0x%08X down=%d kc=%u mods=0x%X\n",
                   (unsigned)host,
@@ -965,11 +986,23 @@ extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid)
   hostcmd_push(HostCmd{HostCmdType::SetPresentable, xid, 0, 0});
 }
 
+extern "C" void x11_proto_bridge_surface_resized(uint32_t xid)
+{
+  if (xid == 0) return;
+  hostcmd_push(HostCmd{HostCmdType::SurfaceResized, xid, 0, 0});
+}
+
 
 static x11::XProtoDaemon g_daemon;
 
+static constexpr const char* kSwiftX11Version = "0.3.1-neg-offset-fix";
+
 extern "C" int x11_proto_start_daemon(int display)
 {
+  fprintf(stderr, "\n========================================\n");
+  fprintf(stderr, "  SwiftX11 v%s  (C++ protocol core)\n", kSwiftX11Version);
+  fprintf(stderr, "  display=:%d\n", display);
+  fprintf(stderr, "========================================\n\n");
   return g_daemon.start(display) ? 1 : 0;
 }
 
@@ -1295,6 +1328,7 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
     std::memcpy(drow, srow, (size_t)tightBpr);
   }
 
+#ifdef X11_TRACE_VERBOSE
   // Sample a few pixels from the source surface for debugging.
   {
     const uint32_t* px = (const uint32_t*)s.ptr;
@@ -1311,6 +1345,7 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
             (unsigned)xid, (unsigned)host, (int)w, (int)hgt, (int)tightBpr,
             (unsigned)p0, (unsigned)pm, (unsigned)nonwhite);
   }
+#endif
 
   return 1;
 }
