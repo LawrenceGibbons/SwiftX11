@@ -552,39 +552,41 @@ final class X11View: NSView {
   ///
   /// Callers may pass a pointer that is only valid for the duration of this call.
   /// We always copy into `Data` first to decouple lifetime from the C backend.
-  func presentBGRA(framebuffer: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int) {
+  func presentBGRA(framebuffer: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int,
+                   damageRect: DamageRect? = nil) {
     guard width > 0, height > 0, bytesPerRow > 0 else { return }
-    
+
     // This is an NSView API; we expect to be called on the main thread.
     // WindowRegistry.schedulePresent runs on DispatchQueue.main, so this should hold.
     assert(Thread.isMainThread)
-    
+
     let byteCount = bytesPerRow * height
     guard byteCount > 0 else { return }
-    
+
     // Copy bytes so the backing memory remains valid after C returns/frees.
     let data = Data(bytes: framebuffer, count: byteCount)
-    
+
     // debug only
     let p0: UInt32 = data.withUnsafeBytes { raw in
       raw.load(fromByteOffset: 0, as: UInt32.self)
     }
     print(String(format: "PRESENT xid=%u p0=0x%08X", xid, p0))
-    
-    
+
+
     if usingMetal {
       // Metal path: upload texture now; actual present happens in MTKViewDelegate.draw(in:)
       guard let mv = self.mtkView else { return }
       guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else { return }
-      
+
       if usingMetal, let mv = self.mtkView {
         let ds = mv.drawableSize
         let scale = self.window?.backingScaleFactor ?? -1
         print("[PRESENT][Metal] xid=\(xid) src=\(width)x\(height) drawable=\(Int(ds.width))x\(Int(ds.height)) scale=\(scale)")
       }
-      
-      self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow)
-      
+
+      self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
+                                   damageRect: damageRect)
+
       // Ask MTKView to draw exactly once (draw(in:) will use currentDrawable and present).
       mv.setNeedsDisplay(mv.bounds)
     } else {

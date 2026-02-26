@@ -9,6 +9,15 @@ import AppKit
 import QuartzCore
 import X11LowLevel
 
+/// Bounding rect of the region that changed since the last present.
+/// Coordinates are in host-surface units (points).  `nil` means "full frame".
+struct DamageRect {
+  let x: Int
+  let y: Int
+  let w: Int
+  let h: Int
+}
+
 struct X11WindowInfo {
   var xid: UInt32
   var parentXid: UInt32
@@ -358,6 +367,7 @@ final class WindowRegistry {
     pendingPresentByHost.remove(xid)
     latestSourceByHost.removeValue(forKey: xid)
     ignoreCocoaResizeUntilMapped.remove(xid)
+    dirtyByHostU.removeValue(forKey: xid)
     
     // If this xid was a *source* for some host, clear that too.
     // (Safe O(n), n is small.)
@@ -567,7 +577,7 @@ final class WindowRegistry {
   }
   
   
-  private func snapshotAndPresentNow(sourceXid: UInt32, presentXid: UInt32) {
+  private func snapshotAndPresentNow(sourceXid: UInt32, presentXid: UInt32, damageRect: DamageRect? = nil) {
     guard windows[presentXid] != nil else {
       print(String(format: "[SNAPSHOT] presentXid=0x%08X SKIP (no window entry)", presentXid))
       return
@@ -614,7 +624,7 @@ final class WindowRegistry {
       let a2 = copyFrame(sz: sz)
       guard a2.ok else { return }
 
-      let dataToPresent = a2.data 
+      let dataToPresent = a2.data
       let scan = scanBGRA(dataToPresent, width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
       if debugSnapshotRouting {
         let samplesStr = scan.samples
@@ -629,13 +639,15 @@ final class WindowRegistry {
           "samples=\(samplesStr)"
         )
       }
-      
+
+      // Size changed mid-copy → force full upload (damage rect is stale)
       presentBGRA(xid: presentXid, data: dataToPresent,
-                  width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
+                  width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr),
+                  damageRect: nil)
       return
     }
 
-    let dataToPresent = a1.data 
+    let dataToPresent = a1.data
     let scan = scanBGRA(dataToPresent, width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
     if debugSnapshotRouting {
       let samplesStr = scan.samples
@@ -651,7 +663,8 @@ final class WindowRegistry {
       )
     }
     presentBGRA(xid: presentXid, data: dataToPresent,
-                width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
+                width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr),
+                damageRect: damageRect)
   }
   
   
@@ -1139,10 +1152,18 @@ final class WindowRegistry {
         self.logAppend?("[PRESENT_DBG] (host-only) firing host=0x\(String(host, radix:16))")
       }
 
+      // Consume the accumulated damage rect (nil → full frame).
+      let dirty = self.dirtyByHostU.removeValue(forKey: host)
+      let damage: DamageRect? = dirty.flatMap { d in
+        guard !d.isEmpty else { return nil }
+        return DamageRect(x: Int(d.x0), y: Int(d.y0),
+                          w: Int(d.x1 - d.x0), h: Int(d.y1 - d.y0))
+      }
+
       // Always snapshot/present the HOST. The C side composites children onto host.
-      self.snapshotAndPresentNow(sourceXid: host, presentXid: host)
+      self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: damage)
     }
-  }  
+  }
   
   @MainActor
   func shouldSuppressRootlessResize(xid: UInt32, w_pt: Int32, h_pt: Int32) -> Bool {
@@ -1181,7 +1202,8 @@ final class WindowRegistry {
 
 
 extension WindowRegistry {
-  func presentBGRA(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int) {
+  func presentBGRA(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int,
+                   damageRect: DamageRect? = nil) {
     guard let controller = windows[xid] else { return }
     guard let view = controller.x11View else { return }
 
@@ -1190,7 +1212,8 @@ extension WindowRegistry {
     data.withUnsafeBytes { raw in
       guard let base = raw.baseAddress else { return }
       logAppend?("snap: calling presentBGRA xid=0x\(String(xid, radix: 16)) w=\(width) h=\(height) bpr=\(bytesPerRow)")
-      view.presentBGRA(framebuffer: base, width: width, height: height, bytesPerRow: bytesPerRow)
+      view.presentBGRA(framebuffer: base, width: width, height: height, bytesPerRow: bytesPerRow,
+                       damageRect: damageRect)
     }
   }
 }

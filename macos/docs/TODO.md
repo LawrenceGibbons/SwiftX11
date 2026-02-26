@@ -21,10 +21,10 @@ Goal
   •  Make Swift the owner of all WINDOW backing stores (host + child) now.
 
 Swift-owned WINDOW surfaces
-  •  Swift allocates/resizes per-host WINDOW backing stores (persistent CPU buffer today; can later be backed by MTLBuffer/MTLTexture).
-  •  C++ draws into Swift-provided surfaces via `SurfaceDesc { ptr, bytesPerRow, w, h, format, generation }` (C++ never owns/presents window framebuffer memory).
-  •  Swift publishes surfaces via  Swift C++ interop calls.
-  •  Important: bytesPerRow may be padded; draw code must respect stride (no `row = y*w` assumptions).
+  •  ✅ Swift allocates/resizes per-host WINDOW backing stores (persistent CPU buffer; can later be backed by MTLBuffer/MTLTexture).
+  •  ✅ C++ draws into Swift-provided surfaces via `SurfaceDesc { ptr, bytesPerRow, w, h, format, generation }` (C++ never owns/presents window framebuffer memory).
+  •  ✅ Swift publishes surfaces via C interop calls (`x11_surface_update/clear`).
+  •  ✅ bytesPerRow is 64-byte aligned; all draw code uses `stridePixels` (no `row = y*w` assumptions).
 
 Surface registry (C++ API consumed by Swift)
   •  Implemented: `DrawableSurfaceRegistry` keyed by XID (currently used for host WINDOW drawables).
@@ -41,8 +41,9 @@ Surface registry (C++ API consumed by Swift)
   •  ✅ Deleted C FB infrastructure (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`, `x11_backend_fb_dbg.hpp`).
 
 Damage / present (Swift-driven)
-  •  C++ reports damage as rects per host/top-level window (no “always damage” hacks).
-  •  Swift unions rects and schedules exactly one present per host per runloop tick.
+  •  ✅ C++ reports damage as rects per host/top-level window (no “always damage” hacks).
+  •  ✅ Swift unions rects and schedules exactly one present per host per runloop tick.
+  •  ✅ Metal partial texture upload: damage rect threaded through present pipeline; `MTLTexture.replace(region:)` uploads only the dirty sub-rect (previous frame retained in texture).
 
 Multi-client (no globals)
   •  Introduce `XServer` as an instance with owned registries (resources, atoms, colormaps, fonts, drawables).
