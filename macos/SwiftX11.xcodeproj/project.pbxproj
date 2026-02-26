@@ -121,7 +121,6 @@
 				cpp/X11Protocol/include/XProtoConnectionWrapper.h,
 				cpp/X11Protocol/include/XProtoNotifyBridge.hpp,
 				cpp/X11Protocol/include/XProtoServerBridge.h,
-				include/x11_backend_fb.h,
 				include/x11_backend_internal.h,
 				include/x11_backend.h,
 				include/x11_events.h,

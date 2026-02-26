@@ -23,7 +23,7 @@ Goal
 Swift-owned WINDOW surfaces
   •  Swift allocates/resizes per-host WINDOW backing stores (persistent CPU buffer today; can later be backed by MTLBuffer/MTLTexture).
   •  C++ draws into Swift-provided surfaces via `SurfaceDesc { ptr, bytesPerRow, w, h, format, generation }` (C++ never owns/presents window framebuffer memory).
-  •  Swift publishes surfaces via temporary shims `x11_surface_update(hostXid, ...)` / `x11_surface_clear(hostXid)`; later replace with Swift C++ interop calls.
+  •  Swift publishes surfaces via  Swift C++ interop calls.
   •  Important: bytesPerRow may be padded; draw code must respect stride (no `row = y*w` assumptions).
 
 Surface registry (C++ API consumed by Swift)
@@ -38,7 +38,7 @@ Surface registry (C++ API consumed by Swift)
   •  ✅ Negative offset clamping: `resolveDrawableRW` clamps child windows at negative positions (e.g., xterm scrollbar at y=-1) instead of rejecting them.
   •  ✅ `SurfaceResized` re-expose: `x11_surface_update` detects surface dimension changes and triggers `sendExposeSubtree` to re-expose all mapped children at correct geometry.
   •  ✅ xterm scrollbar (`xterm -sb -rightbar -bc`) renders correctly.
-  •  Next: delete the C FB infrastructure entirely (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`).
+  •  ✅ Deleted C FB infrastructure (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`, `x11_backend_fb_dbg.hpp`).
 
 Damage / present (Swift-driven)
   •  C++ reports damage as rects per host/top-level window (no “always damage” hacks).
@@ -206,7 +206,7 @@ Damage precision
 9️⃣ Cleanup / Refactor
   •  Remove temporary SurfaceRegistry shims (`x11_surface_update/clear`) once Swift C++ interop is in place.
   •  ✅ C framebuffer fallback (`x11_xproto_window_fb_rw`) removed from `resolveDrawableRW` — all windows resolve via Swift surfaces.
-  •  Delete remaining C backend infrastructure (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`) — callers are now disconnected.
+  •  ✅ Deleted remaining C backend infrastructure (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`, `x11_backend_fb_dbg.hpp`).
   •  Remove obsolete handler registrations (QueryColors duplicates, etc.).
   •  Consolidate opcode constants (use x11::opcode::* everywhere).
   •  Remove remaining hardcoded numerics.

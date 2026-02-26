@@ -642,43 +642,6 @@ static inline int32_t clamp_i32_ge1(int32_t v) { return (v < 1) ? 1 : v; }
 
 // Helper: query window size in X11 units (u) from backend, and FB size in pixels from xproto.
 // If backend size missing, fall back to FB size as "u" (bring-up safe).
-static void x11_damage_query_sizes(uint32_t xid,
-                                  int32_t* out_w_u, int32_t* out_h_u,
-                                  int32_t* out_fb_w_px, int32_t* out_fb_h_px,
-                                  double* out_sx, double* out_sy)
-{
-  int32_t w_u = 0, h_u = 0;
-  int32_t fb_w_px = 0, fb_h_px = 0;
-
-  // Backend "truth" size (now effectively X11 units / points)
-  x11_backend_lock();
-  (void)x11_backend_get_size_locked(xid, &w_u, &h_u);
-  x11_backend_unlock();
-
-  // Framebuffer size (pixels)
-  (void)x11_xproto_get_fb_size(xid, &fb_w_px, &fb_h_px);
-
-  // If backend doesn't know yet, use FB size as a fallback so UI_DAMAGE isn't degenerate.
-  if (w_u <= 0 || h_u <= 0) {
-    w_u = fb_w_px;
-    h_u = fb_h_px;
-  }
-
-  w_u = clamp_i32_ge1(w_u);
-  h_u = clamp_i32_ge1(h_u);
-  fb_w_px = clamp_i32_ge1(fb_w_px);
-  fb_h_px = clamp_i32_ge1(fb_h_px);
-
-  if (out_w_u) *out_w_u = w_u;
-  if (out_h_u) *out_h_u = h_u;
-  if (out_fb_w_px) *out_fb_w_px = fb_w_px;
-  if (out_fb_h_px) *out_fb_h_px = fb_h_px;
-
-  // px-per-u (useful when you later union dirty rects in u but dirty sources are px)
-  if (out_sx) *out_sx = (w_u > 0) ? ((double)fb_w_px / (double)w_u) : 1.0;
-  if (out_sy) *out_sy = (h_u > 0) ? ((double)fb_h_px / (double)h_u) : 1.0;
-}
-
 // -----------------------------------------------------------------------------
 // Damage request side-effect
 //
