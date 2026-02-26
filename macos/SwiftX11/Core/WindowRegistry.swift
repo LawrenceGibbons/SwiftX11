@@ -307,6 +307,7 @@ final class WindowRegistry {
 
   private var dirtyByHostU: [UInt32: DirtyRectU] = [:]
 
+
   private func hostSizeU(_ host: UInt32) -> (w: Int32, h: Int32)? {
     if let s = latestHostSizePtByXid[host] { return s }
     if let s = lastSentHostSizePtByXid[host] { return s }
@@ -1152,13 +1153,12 @@ final class WindowRegistry {
         self.logAppend?("[PRESENT_DBG] (host-only) firing host=0x\(String(host, radix:16))")
       }
 
-      // Consume the accumulated damage rect (nil → full frame).
-      let dirty = self.dirtyByHostU.removeValue(forKey: host)
-      let damage: DamageRect? = dirty.flatMap { d in
-        guard !d.isEmpty else { return nil }
-        return DamageRect(x: Int(d.x0), y: Int(d.y0),
-                          w: Int(d.x1 - d.x0), h: Int(d.y1 - d.y0))
-      }
+      // Consume the accumulated damage rect.
+      // NOTE: damage rect geometry from C++ is currently unreliable (the damage
+      // push carries only an XID, no rect).  Force full-frame uploads until the
+      // C++ side is updated to propagate actual geometry through damageOrDirty.
+      self.dirtyByHostU.removeValue(forKey: host)
+      let damage: DamageRect? = nil   // TODO: use dirtyByHostU once C++ sends rects
 
       // Always snapshot/present the HOST. The C side composites children onto host.
       self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: damage)
