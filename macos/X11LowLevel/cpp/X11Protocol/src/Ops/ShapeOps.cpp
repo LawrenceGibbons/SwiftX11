@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <climits>
 
 #include "Core/XProtoContext.hpp"
 #include "Utils/ByteReader.hpp"
@@ -185,7 +186,7 @@ void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coo
     plotPixel(dst.pixels32, dst.stridePixels, dst.w, dst.h, cx, cy, fgOpaque, fn, pm);
   }
   br.skip(br.remaining());
-  if (dst.isWindow) damageOrDirty(ctx, drawable);
+  if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
 }
 
 // =============================================================================
@@ -230,7 +231,7 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coor
     prevY = curY;
   }
   br.skip(br.remaining());
-  if (dst.isWindow) damageOrDirty(ctx, drawable);
+  if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
 }
 
 // =============================================================================
@@ -263,7 +264,7 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
                  x1, y1, x2, y2, fgOpaque, fn, pm);
   }
   br.skip(br.remaining());
-  if (dst.isWindow) damageOrDirty(ctx, drawable);
+  if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
 }
 
 // =============================================================================
@@ -308,7 +309,7 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
                  x1, y0, x1, y1, fgOpaque, fn, pm); // right
   }
   br.skip(br.remaining());
-  if (dst.isWindow) damageOrDirty(ctx, drawable);
+  if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
 }
 
 // -----------------------------------------------------------------------------
@@ -351,8 +352,9 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     const uint32_t pm24 = (gst.plane_mask & 0x00FFFFFFu);
     const bool fastFill = (fn == 3 /*GXcopy*/) && (pm24 == 0x00FFFFFFu);
 
-    // Track whether we actually wrote anything (for damage).
+    // Track whether we actually wrote anything (for damage) and bounding box.
     bool wroteAnything = false;
+    int32_t bbX0 = INT32_MAX, bbY0 = INT32_MAX, bbX1 = INT32_MIN, bbY1 = INT32_MIN;
 
     for (std::size_t i = 0; i < nRects; i++) {
       if (br.remaining() < 8) break;   // defensive
@@ -423,6 +425,10 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     #endif
 
       wroteAnything = true;
+      if (x0 < bbX0) bbX0 = x0;
+      if (y0 < bbY0) bbY0 = y0;
+      if (x1 > bbX1) bbX1 = x1;
+      if (y1 > bbY1) bbY1 = y1;
 
       for (int32_t y = y0; y < y1; y++) {
         uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
@@ -441,18 +447,11 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     }
 
     // IMPORTANT: make the caret toggles present.
-    if (wroteAnything) {
-      if (dst.isWindow) {
-        damageOrDirty(ctx, drawable);
-      }
+    if (wroteAnything && dst.isWindow) {
+      damageOrDirty(ctx, drawable, bbX0, bbY0, bbX1 - bbX0, bbY1 - bbY0);
     }
-    
+
     br.skip(br.remaining());
-    
-//    // Only present if destination is a window.
-//    if (dst.isWindow) {
-//      damageOrDirty(ctx, drawable);
-//    }
   }
   
 // -----------------------------------------------------------------------------
@@ -541,8 +540,9 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     br.skip(br.remaining());
 
     // Only present if destination is a window.
+    // Use full drawable as conservative bounding box (arc bbox is complex).
     if (dst.isWindow) {
-      damageOrDirty(ctx, drawable);
+      damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
     }
   }
 
@@ -639,8 +639,8 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     br.skip(br.remaining());
 
     if (dst.isWindow) {
-      damageOrDirty(ctx, drawable);
+      damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
     }
   }
-  
+
 } // namespace x11

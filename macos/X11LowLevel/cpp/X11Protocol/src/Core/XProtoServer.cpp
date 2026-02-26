@@ -17,6 +17,10 @@
 #include "UI/UICommandQueue.hpp"
 #include "x11_server_internal.h"
 
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
+
 
 static inline uint16_t rd16_le(const uint8_t* p) {
   return (uint16_t)p[0] | (uint16_t(p[1]) << 8);
@@ -302,23 +306,19 @@ bool XProtoServer::lookupWindow(uint32_t xid, WindowView* out) {
     ctx_.windows().setPresentable(key, true);
 
     // IMPORTANT: only flush if something already drew (dirty was set by raster ops).
-    if (ctx_.windows().consumeDirtyIfReady(key)) {
+    {
+      int32_t rx = 0, ry = 0, rw = 0, rh = 0;
+      if (ctx_.windows().consumeDirtyRectIfReady(key, rx, ry, rw, rh)) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> FLUSH dirty\n", (unsigned)key);
+        fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> FLUSH dirty rect=(%d,%d %dx%d)\n",
+                (unsigned)key, (int)rx, (int)ry, (int)rw, (int)rh);
 #endif
-      ctx_.ui().push(x11::UICommand{
-        x11::UICommand::Type::Damage,
-        /*xid=*/key,
-        /*parent=*/0,
-        /*w_px=*/0, /*h_px=*/0,
-        /*cursor_xid=*/0,
-        /*shape=*/0,
-        /*title_utf8=*/nullptr
-      });
-    } else {
+        x11_ui_push_damage(key, rx, ry, rw, rh);
+      } else {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> no dirty to flush\n", (unsigned)key);
+        fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> no dirty to flush\n", (unsigned)key);
 #endif
+      }
     }
   }
   

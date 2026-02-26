@@ -395,11 +395,18 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
 
           // Flush any stale dirty state and push damage so any content
           // that was drawn before the surface was presentable gets shown.
-          ctx.windows().consumeDirtyIfReady(c.xid);
+          {
+            int32_t rx, ry, rw, rh;
+            ctx.windows().consumeDirtyRectIfReady(c.xid, rx, ry, rw, rh); // discard stale
+          }
           ctx.windows().markDirty(c.xid);
-          if (ctx.windows().consumeDirtyIfReady(c.xid)) {
-            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> DAMAGE\n", (unsigned)c.xid);
-            x11_requests_push_damage(c.xid);
+          {
+            int32_t rx = 0, ry = 0, rw = 0, rh = 0;
+            if (ctx.windows().consumeDirtyRectIfReady(c.xid, rx, ry, rw, rh)) {
+              fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> DAMAGE rect=(%d,%d %dx%d)\n",
+                      (unsigned)c.xid, (int)rx, (int)ry, (int)rw, (int)rh);
+              x11_ui_push_damage(c.xid, rx, ry, rw, rh);
+            }
           }
 
           // Re-expose the host and all mapped descendants so clients
@@ -423,8 +430,11 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
 
           // Also push damage so the present path picks up the redrawn content.
           ctx.windows().markDirty(c.xid);
-          if (ctx.windows().consumeDirtyIfReady(c.xid)) {
-            x11_requests_push_damage(c.xid);
+          {
+            int32_t rx = 0, ry = 0, rw = 0, rh = 0;
+            if (ctx.windows().consumeDirtyRectIfReady(c.xid, rx, ry, rw, rh)) {
+              x11_ui_push_damage(c.xid, rx, ry, rw, rh);
+            }
           }
           break;
         }

@@ -35,8 +35,22 @@ public:
   void setPresentable(uint32_t xid, bool presentable);
   void markDirty(uint32_t xid);
 
+  // Rect-aware dirty tracking: accumulates a bounding-box union per host window.
+  void markDirtyRect(uint32_t xid, int32_t x, int32_t y, int32_t w, int32_t h);
+
   bool isReadyToPresent(uint32_t xid) const;
   bool consumeDirtyIfReady(uint32_t xid);
+
+  // Rect-aware consume: returns accumulated dirty rect (host-space) if ready.
+  // On success, clears the accumulated rect.
+  bool consumeDirtyRectIfReady(uint32_t xid,
+                               int32_t& outX, int32_t& outY,
+                               int32_t& outW, int32_t& outH);
+
+  // Compute the absolute (host-surface-space) offset of 'xid' within 'host'.
+  // Returns false if the chain is broken.  Does NOT clamp negatives.
+  bool absoluteOffsetInHost(uint32_t host, uint32_t xid,
+                            int32_t& outX, int32_t& outY) const;
 
   bool snapshot(uint32_t xid, WindowView& out) const;
   
@@ -110,6 +124,27 @@ public:
   
 
 private:
+  // Bounding-box accumulator for dirty regions (host-surface coordinates).
+  struct DirtyRect {
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    bool valid = false;
+
+    void unionRect(int32_t x, int32_t y, int32_t w, int32_t h) {
+      if (w <= 0 || h <= 0) return;
+      if (!valid) {
+        x0 = x; y0 = y; x1 = x + w; y1 = y + h;
+        valid = true;
+      } else {
+        if (x < x0) x0 = x;
+        if (y < y0) y0 = y;
+        if (x + w > x1) x1 = x + w;
+        if (y + h > y1) y1 = y + h;
+      }
+    }
+
+    void clear() { x0 = y0 = x1 = y1 = 0; valid = false; }
+  };
+
   struct WindowState {
     uint32_t xid = 0;
     uint32_t parent = 0;
@@ -119,7 +154,7 @@ private:
     uint16_t h = 1;
 
     uint32_t cursor_xid = 0; // 0 means "inherit/default"
-    
+
     uint32_t event_mask = 0;
 
     // X11 window background pixel (ARGB8888, alpha forced opaque).
@@ -129,6 +164,9 @@ private:
     bool mapped = false;
     bool presentable = false;
     bool dirty = false;
+
+    // Accumulated dirty rect (host-surface coordinates).
+    DirtyRect dirtyRect;
 
     int owner_fd = -1;
 
