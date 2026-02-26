@@ -122,14 +122,17 @@ final class X11MetalRenderer {
 
   // MARK: - Upload
 
-  func updateTexture(with data: Data, width: Int, height: Int, bytesPerRow: Int) {
+  func updateTexture(with data: Data, width: Int, height: Int, bytesPerRow: Int,
+                     damageRect: DamageRect? = nil) {
     data.withUnsafeBytes { rawBuf in
       guard let base = rawBuf.baseAddress else { return }
-      self.updateTexture(with: base, width: width, height: height, bytesPerRow: bytesPerRow)
+      self.updateTexture(with: base, width: width, height: height, bytesPerRow: bytesPerRow,
+                         damageRect: damageRect)
     }
   }
 
-  func updateTexture(with pixels: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int) {
+  func updateTexture(with pixels: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int,
+                     damageRect: DamageRect? = nil) {
     guard width > 0, height > 0, bytesPerRow > 0 else { return }
 
     // BGRA8 sanity
@@ -140,6 +143,7 @@ final class X11MetalRenderer {
     }
 
     // Reuse the texture when possible to avoid churn.
+    var textureIsNew = false
     if texture == nil || texture?.width != width || texture?.height != height {
       let desc = MTLTextureDescriptor.texture2DDescriptor(
         pixelFormat: .bgra8Unorm,
@@ -159,10 +163,28 @@ final class X11MetalRenderer {
         print("[Metal] updateTexture: FAILED to allocate texture \(width)x\(height)")
         return
       }
+      textureIsNew = true
     }
 
     guard let tex = texture else { return }
 
+    // If we have a valid damage rect and the texture already existed (not freshly
+    // allocated), upload only the dirty sub-region.  The rest of the texture retains
+    // the previous frame's pixels.
+    if !textureIsNew, let dr = damageRect,
+       dr.w > 0, dr.h > 0,
+       dr.x >= 0, dr.y >= 0,
+       dr.x + dr.w <= width, dr.y + dr.h <= height {
+      let region = MTLRegionMake2D(dr.x, dr.y, dr.w, dr.h)
+      let offset = dr.y * bytesPerRow + dr.x * 4
+      tex.replace(region: region,
+                  mipmapLevel: 0,
+                  withBytes: pixels.advanced(by: offset),
+                  bytesPerRow: bytesPerRow)
+      return
+    }
+
+    // Full upload: first frame, texture resize, or unknown damage.
     let region = MTLRegionMake2D(0, 0, width, height)
     tex.replace(region: region,
                 mipmapLevel: 0,
