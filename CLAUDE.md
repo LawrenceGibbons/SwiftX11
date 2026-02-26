@@ -36,7 +36,7 @@ resolveDrawableRW(ctx, childXid, dst)
   → dst.stridePixels = host surface stride
 ```
 
-**Known issue (active debugging)**: xterm scrollbar child window does not render. The VT (text) child window works. The child→host routing, Expose delivery, and background fill all appear structurally correct but the scrollbar remains blank. See "Current Debugging Focus" below.
+**Negative offsets**: X11 allows child windows at negative positions (e.g., xterm scrollbar at y=-1 to hide a border pixel). `resolveDrawableRW` clamps negative offsets to 0 and reduces the effective drawable dimensions by the clipped amount, shifting the child's drawing origin by at most a few pixels.
 
 ### Damage/Present Pipeline
 ```
@@ -69,6 +69,9 @@ SetPresentable → setPresentable + fillWindowBackgroundIfReady + sendExposeSubt
   (This is when backgrounds actually get painted and children get valid Expose)
 ```
 
+### Surface Resize Re-expose
+When `x11_surface_update` detects a surface size change (e.g., initial 64×64 → real 819×484), it queues a `SurfaceResized` host command via `x11_proto_bridge_surface_resized(hostXid)`. The handler calls `sendExposeSubtree` + marks dirty + pushes damage, ensuring all mapped children get re-exposed at the correct geometry. This fixes a timing race where `setContentSize` is deferred via `DispatchQueue.main.async` but surface registration happens at the NSWindow's default (small) size.
+
 ## Key Files
 
 | File | Role |
@@ -82,9 +85,11 @@ SetPresentable → setPresentable + fillWindowBackgroundIfReady + sendExposeSubt
 | `X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp` | PutImage, CopyArea, ClearArea, text ops |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/ShapeOps.cpp` | PolyArc, PolyFillArc, PolyFillRectangle, PolyLine, PolySegment, PolyPoint |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp` | CreateWindow, MapWindow, ConfigureWindow, rootless resize |
-| `X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp` | Host command dispatch (SetPresentable, RootlessResize), sendExposeSubtree |
+| `X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp` | Host command dispatch (SetPresentable, SurfaceResized, RootlessResize), sendExposeSubtree |
+| `X11LowLevel/cpp/X11Protocol/src/SurfaceBridge.cpp` | Surface registration, size-change detection → SurfaceResized |
 | `X11LowLevel/cpp/X11Protocol/src/Utils/Damage.hpp` | damageOrDirty() helper |
 | `X11LowLevel/src/x11_requests.c` | Request queue (C), coalescing, rootless resize bridging |
+| `SwiftX11/Core/XServerController.swift` | Server startup, version banner |
 | `docs/TODO.md` | Comprehensive project roadmap |
 
 ## Build & Run
@@ -110,40 +115,33 @@ SetPresentable → setPresentable + fillWindowBackgroundIfReady + sendExposeSubt
 - On window destruction, `x11_surface_clear(xid)` removes the registry entry
 
 ### Debugging
-- Debug builds (`#ifndef NDEBUG`) have extensive trace logging
-- Key log prefixes: `[RESOLVE]`, `[BG_FILL]`, `[BG_FILL_RETRY]`, `[EXPOSE_SUBTREE]`, `[SET_PRESENTABLE]`, `[COPY_SURFACE]`, `[DAMAGE]`
-- `damageOrDirty` logs routing decisions in debug mode
+- **Two trace tiers**:
+  - `#ifndef NDEBUG` (debug builds): Key lifecycle/diagnostic traces that are always on in debug — `[LIFECYCLE]`, `[BG_FILL]`, `[BG_FILL_RETRY]`, `[EXPOSE_SUBTREE]`, `[SET_PRESENTABLE]`, `[SURFACE_UPDATE]`, `[SURFACE_RESIZED]`
+  - `#ifdef X11_TRACE_VERBOSE`: High-frequency per-op traces gated behind a separate flag — `[RESOLVE]`, `[COPY_SURFACE]`, `[DAMAGE]`, `[DISPATCH]`, `[FOCUS]`, `[BTN]`, `[SCROLL]`, `[KEY]`, `[TEXT]`, `[CopyArea]`, `[ClearArea]`, `[CROSS]`, `[SEND]`, plus all `ctx.tracef()` calls (~71 call sites silenced at once)
+- To enable verbose tracing: add `-DX11_TRACE_VERBOSE` to OTHER_CPLUSPLUSFLAGS in Xcode build settings
 - Watch for stride vs width mismatches — the most common class of rendering bug
+- **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (post C-FB elimination)
+### Current State (post scrollbar fix, v0.3.1)
 - **C framebuffers are dead code**: No callers remain in C++ protocol layer. `g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h` can be deleted.
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
 - Host windows resolve directly to their Swift surface
-- Child windows resolve to host surface + computed offset
+- Child windows resolve to host surface + computed offset (with negative offset clamping)
 - Present path copies the single host surface (no compositing)
 - `fillWindowBackgroundIfReady` in `sendExposeSubtree` retries background fills after SetPresentable
+- `SurfaceResized` mechanism re-exposes children when surface dimensions change
+- xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly
 
-## Current Debugging Focus: xterm Scrollbar
+## Recently Fixed: xterm Scrollbar (v0.3.1)
 
-### Problem
-`xterm -sb -rightbar -bc` — the scrollbar child window does not render. Text (VT child) works fine.
+Two root causes were identified and fixed:
 
-### What's been tried
-1. **background_pixel support** — Added to WindowTable/WindowView, applied in MapWindow and ClearArea. Did not fix scrollbar.
-2. **Hybrid compositing** — blitCFramebuffersToSwiftSurface approach. Rejected, removed.
-3. **C FB elimination** — Removed all C FB usage; child windows now draw into host surface at offset. Text works but scrollbar still blank.
-4. **fillWindowBackgroundIfReady in sendExposeSubtree** — Ensures backgrounds are painted when surface is ready (not just at MapWindow time). Still no scrollbar.
+### 1. Surface size timing race
+`setContentSize` is deferred via `DispatchQueue.main.async` but `scheduleAttachSettle` (which registers the surface) is queued first. FIFO ordering means the surface is registered at the NSWindow's default (small, e.g. 64×64) size. Child windows at large offsets (e.g., scrollbar at x=804) fall outside the surface and `resolveDrawableRW` produces effW=0, rejecting the resolve.
 
-### Architecture analysis (all appears correct)
-- `descendantsOf(host)` finds scrollbar as mapped child ✓
-- `sendExposeSubtree` sends Expose to scrollbar ✓
-- `resolveDrawableRW(scrollbar)` routes to host surface + offset ✓
-- `damageOrDirty(scrollbar)` routes damage to host ✓
-- Present copies entire host surface ✓
+**Fix**: `x11_surface_update` in `SurfaceBridge.cpp` detects surface dimension changes and queues a `SurfaceResized` host command, which triggers `sendExposeSubtree` to re-expose all mapped descendants at the correct geometry.
 
-### Next debugging steps to try
-- **Capture and analyze stderr logs**: Run debug build and search for `[RESOLVE]` / `[EXPOSE_SUBTREE]` / `[BG_FILL_RETRY]` lines for the scrollbar XID. Verify the scrollbar window exists, gets Expose events, and that resolveDrawableRW succeeds with valid offset/dimensions.
-- **Check if xterm actually sends draw ops for the scrollbar**: The scrollbar might use X11 ops we don't handle, or might not draw at all if it thinks the scrollbar isn't visible.
-- **Check surface size vs X11 geometry**: If the Swift surface is smaller than the X11 window geometry (e.g., during initial sizing), the scrollbar offset might be out of bounds, producing effW=0 or effH=0.
-- **Compare scrollbar XID behavior vs VT XID behavior** in logs: Since VT works but scrollbar doesn't, find the divergence point.
-- **Inspect Swift-side WindowRegistry**: Does `noteX11WindowCreated` for child windows properly track the scrollbar? Does `mapWindow` for children do anything that could block rendering?
+### 2. Negative offset rejection
+xterm places its scrollbar at y=-1 to hide a border pixel. `resolveDrawableRW` was hard-rejecting any negative offset (`if (ox < 0 || oy < 0) return false`).
+
+**Fix**: `DrawableRW.cpp` now clamps negative offsets to 0 and reduces effective dimensions by the clipped amount, allowing children at positions like y=-1 to render (shifted by at most a few pixels — visually negligible).

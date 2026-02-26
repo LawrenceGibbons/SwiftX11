@@ -35,6 +35,9 @@ Surface registry (C++ API consumed by Swift)
   •  ✅ Present-time compositing simplified: `x11_xproto_copy_window_bgra` just copies the host Swift surface (no child C FB compositing).
   •  ✅ CopyPlane source window resolution uses `resolveDrawableRW` instead of C FB.
   •  ✅ `background_pixel` support: stored in WindowTable, applied on MapWindow, used in ClearArea.
+  •  ✅ Negative offset clamping: `resolveDrawableRW` clamps child windows at negative positions (e.g., xterm scrollbar at y=-1) instead of rejecting them.
+  •  ✅ `SurfaceResized` re-expose: `x11_surface_update` detects surface dimension changes and triggers `sendExposeSubtree` to re-expose all mapped children at correct geometry.
+  •  ✅ xterm scrollbar (`xterm -sb -rightbar -bc`) renders correctly.
   •  Next: delete the C FB infrastructure entirely (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`).
 
 Damage / present (Swift-driven)
@@ -188,6 +191,8 @@ Damage precision
 ⸻
 
 8️⃣ Debug & Instrumentation
+  •  ✅ Two-tier trace system: `#ifndef NDEBUG` for key lifecycle/diagnostic traces; `#ifdef X11_TRACE_VERBOSE` for high-frequency per-op traces (~90+ call sites gated).
+  •  ✅ Version banner: `SwiftX11 v{version}` at startup in both Swift and C++.
   •  Standardize logging categories (PROTO, REPLY, EVENT, DAMAGE, PRESENT, RESIZE).
   •  Add global debug level switch.
   •  Add server-side counters for:
