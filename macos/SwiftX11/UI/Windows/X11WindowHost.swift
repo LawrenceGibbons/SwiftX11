@@ -294,6 +294,14 @@ final class X11View: NSView {
       if wX11 >= 16, hX11 >= 16,
          (wX11 != hostSurfaceW || hX11 != hostSurfaceH) {
         ensureHostSurface(wPx: wX11, hPx: hX11)
+
+        // Match Metal's handleDrawableSize: after the surface is registered
+        // at the correct size, post presentable so the C++ side runs
+        // sendExposeSubtree with the full geometry.  Without this, the
+        // initial scheduleAttachSettle may have fired when the surface was
+        // still at a small default size, causing child windows at far
+        // offsets (e.g., xterm scrollbar) to be clipped and never drawn.
+        notifyPresentableOnce()
       }
     }
   }
