@@ -77,6 +77,7 @@ final class X11View: NSView {
   
   // MARK: -- interface to X11
   private var buttonMask: UInt32 = 0
+  private var optionClickButton: UInt8 = 1  // tracks Option+click → button 2 remap
   private var scrollAccumX: CGFloat = 0
   private var scrollAccumY: CGFloat = 0
   private var lastModifierFlags: NSEvent.ModifierFlags = []
@@ -971,14 +972,19 @@ final class X11View: NSView {
   override func mouseDown(with event: NSEvent) {
     lastInsideForSyntheticCrossing = true
     requestFirstResponderCoalesced()
-    buttonMask |= bitForButton(1)
-    sendButton(true, button: 1, event)
+    // Option+click → button 2 (middle mouse) for Xaw scrollbar thumb drag etc.
+    let btn: UInt8 = event.modifierFlags.contains(.option) ? 2 : 1
+    optionClickButton = btn   // remember for mouseUp / mouseDragged
+    buttonMask |= bitForButton(Int(btn))
+    sendButton(true, button: btn, event)
   }
-  
+
   override func mouseUp(with event: NSEvent) {
+    let btn = optionClickButton
+    optionClickButton = 1     // reset
     // report release while still "down", then clear
-    sendButton(false, button: 1, event)
-    buttonMask &= ~bitForButton(1)
+    sendButton(false, button: btn, event)
+    buttonMask &= ~bitForButton(Int(btn))
   }
   
   override func rightMouseDown(with event: NSEvent) {
