@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <vector>
 #include <climits>
 
 #include "Core/XProtoContext.hpp"
@@ -53,6 +54,7 @@ ShapeOps::ShapeOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::PolySegment      , &ShapeOps::onMajor, this); // 66
   reg.registerMajor(x11::opcode::PolyRectangle    , &ShapeOps::onMajor, this); // 67
   reg.registerMajor(x11::opcode::PolyArc,           &ShapeOps::onMajor, this); // 68
+  reg.registerMajor(x11::opcode::FillPoly,           &ShapeOps::onMajor, this); // 69
   reg.registerMajor(x11::opcode::PolyFillRectangle, &ShapeOps::onMajor, this); // 70
   reg.registerMajor(x11::opcode::PolyFillArc      , &ShapeOps::onMajor, this); // 71
 }
@@ -69,6 +71,7 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::PolySegment      : handlePolySegment(ctx, dc.seq, dc.br); return;
     case x11::opcode::PolyRectangle    : handlePolyRectangle(ctx, dc.seq, dc.br); return;
     case x11::opcode::PolyArc          : handlePolyArc(ctx, dc.seq, dc.br); return;
+    case x11::opcode::FillPoly         : handleFillPoly(ctx, dc.seq, dc.br); return;
     case x11::opcode::PolyFillRectangle: handlePolyFillRectangle(ctx, dc.seq, dc.br); return;
     case x11::opcode::PolyFillArc      : handlePolyFillArc(ctx, dc.seq, dc.br); return;
     default:
@@ -310,6 +313,100 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
   }
   br.skip(br.remaining());
   if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
+}
+
+// ---------------------------
+// FillPoly (major 69)
+// ---------------------------
+void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Body: CARD32 drawable, CARD32 gc, CARD8 shape, CARD8 coordMode, CARD16 pad, points...
+  if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+
+  const uint32_t drawable  = br.readU32();
+  const uint32_t gcXid     = br.readU32();
+  const uint8_t  shape     = br.readU8();
+  const uint8_t  coordMode = br.readU8();
+  br.skip(2); // pad
+
+  (void)shape;
+
+  // Read points
+  struct Pt { int32_t x, y; };
+  std::vector<Pt> pts;
+  pts.reserve(br.remaining() / 4);
+
+  int32_t cx = 0, cy = 0;
+  while (br.remaining() >= 4) {
+    int16_t px = br.readI16();
+    int16_t py = br.readI16();
+    if (coordMode == 1 && !pts.empty()) { // Previous (relative)
+      px = (int16_t)(px + cx);
+      py = (int16_t)(py + cy);
+    }
+    cx = px; cy = py;
+    pts.push_back({px, py});
+  }
+  br.skip(br.remaining());
+
+  if (pts.size() < 3) return;
+
+  // Resolve drawable
+  x11::DrawableRW dst{};
+  if (!x11::resolveDrawableRW(ctx, drawable, dst)) return;
+  if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
+
+  // GC
+  x11::GCState gc{};
+  (void)x11::GCTable::instance().find(gcXid, gc);
+  const uint32_t fg = (gc.fg & 0x00FFFFFFu) | 0xFF000000u;
+
+  // Find bounding box
+  int32_t minY = pts[0].y, maxY = pts[0].y;
+  for (const auto& p : pts) {
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (minY < 0) minY = 0;
+  if (maxY >= (int32_t)dst.h) maxY = (int32_t)dst.h - 1;
+
+  // Scanline fill
+  const int n = (int)pts.size();
+  std::vector<int32_t> nodeX;
+  nodeX.reserve(16);
+
+  for (int32_t scanY = minY; scanY <= maxY; scanY++) {
+    nodeX.clear();
+
+    for (int i = 0; i < n; i++) {
+      int j = (i + 1) % n;
+      int32_t y0 = pts[i].y, y1 = pts[j].y;
+      int32_t x0 = pts[i].x, x1 = pts[j].x;
+
+      if ((y0 <= scanY && y1 > scanY) || (y1 <= scanY && y0 > scanY)) {
+        int32_t ix = x0 + (int32_t)((int64_t)(scanY - y0) * (int64_t)(x1 - x0) / (int64_t)(y1 - y0));
+        nodeX.push_back(ix);
+      }
+    }
+
+    std::sort(nodeX.begin(), nodeX.end());
+
+    for (size_t k = 0; k + 1 < nodeX.size(); k += 2) {
+      int32_t xL = nodeX[k];
+      int32_t xR = nodeX[k + 1];
+      if (xL < 0) xL = 0;
+      if (xR >= (int32_t)dst.w) xR = (int32_t)dst.w - 1;
+      if (xL > xR) continue;
+
+      uint32_t* row = dst.pixels32 + (size_t)scanY * (size_t)dst.stridePixels;
+      for (int32_t xx = xL; xx <= xR; xx++) {
+        row[xx] = fg;
+      }
+    }
+  }
+
+  if (dst.isWindow) {
+    damageOrDirty(ctx, drawable, 0, minY, (int32_t)dst.w, maxY - minY + 1);
+  }
 }
 
 // -----------------------------------------------------------------------------

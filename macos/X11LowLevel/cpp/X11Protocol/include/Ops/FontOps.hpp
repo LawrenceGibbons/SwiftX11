@@ -34,9 +34,15 @@ private:
   // 48 QueryTextExtents (reply)
   void handleQueryTextExtents(XProtoContext& ctx, uint16_t seq, bool oddLength, ByteReader& br);
 
+  // 49 ListFonts (reply)
+  void handleListFonts(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+
+  // 50 ListFontsWithInfo (reply)
+  void handleListFontsWithInfo(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+
   // 97 QueryBestSize
   void handleQueryBestSize(XProtoContext& ctx, uint16_t seq, uint8_t class_, ByteReader& br);
-  
+
 private:
   // Bring-up: track “opened” font IDs so QueryFont can succeed.
   // (Later replace with a proper FontTable and font metrics.)

@@ -8,6 +8,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <memory>
 
@@ -31,6 +32,9 @@ public:
 
   // Name lookup (e.g. "fixed", "cursor")
   const x11::font::BdfFont* findByName(const std::string& name) const;
+
+  // List all builtin font names (for ListFonts)
+  std::vector<std::string> listNames() const;
 
 private:
   // Built-in fonts by name

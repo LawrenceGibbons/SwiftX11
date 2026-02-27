@@ -128,9 +128,10 @@ private:
 // PropOps wiring
 // -----------------------------
 PropOps::PropOps(XProtoRegistrar& reg) {
-  reg.registerMajor(x11::opcode::ChangeProperty, &PropOps::onMajor, this); // ChangeProperty
-  reg.registerMajor(x11::opcode::GetProperty,    &PropOps::onMajor, this); // GetProperty
-  reg.registerMajor(x11::opcode::ListProperties,  &PropOps::onMajor, this); // ListProperties
+  reg.registerMajor(x11::opcode::ChangeProperty,  &PropOps::onMajor, this); // 18 ChangeProperty
+  reg.registerMajor(x11::opcode::DeleteProperty,   &PropOps::onMajor, this); // 19 DeleteProperty
+  reg.registerMajor(x11::opcode::GetProperty,      &PropOps::onMajor, this); // 20 GetProperty
+  reg.registerMajor(x11::opcode::ListProperties,   &PropOps::onMajor, this); // 21 ListProperties
 }
 
 void PropOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -141,6 +142,7 @@ void PropOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 void PropOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
     case x11::opcode::ChangeProperty: handleChangeProperty(ctx, dc.seq, dc.minor /*mode*/, dc.br); return;
+    case x11::opcode::DeleteProperty: handleDeleteProperty(ctx, dc.seq, dc.br); return;
     case x11::opcode::GetProperty   : handleGetProperty(ctx, dc.seq, dc.minor /*deleteFlag*/, dc.br); return;
     case x11::opcode::ListProperties: handleListProperties(ctx, dc.seq, dc.br); return;
     default:
@@ -200,6 +202,20 @@ void PropOps::handleChangeProperty(XProtoContext& /*ctx*/, uint16_t /*seq*/, uin
   } else {
     PropertyTable::instance().setReplace(wid, atom, type, fmt, data, dataBytes);
   }
+}
+
+// -----------------------------
+// DeleteProperty (major 19)
+// body: CARD32 window, CARD32 property
+// -----------------------------
+void PropOps::handleDeleteProperty(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t wid  = br.readU32();
+  const uint32_t atom = br.readU32();
+  br.skip(br.remaining());
+
+  PropertyTable::instance().erase(wid, atom);
+  ctx.tracef("[PropOps] DeleteProperty wid=0x%08X atom=%u\n", (unsigned)wid, (unsigned)atom);
 }
 
 // -----------------------------

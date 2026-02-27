@@ -27,6 +27,7 @@ private:
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
   void handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mode,       ByteReader& br);
+  void handleDeleteProperty(XProtoContext& ctx, uint16_t seq,                     ByteReader& br);
   void handleGetProperty(XProtoContext&    ctx, uint16_t seq, uint8_t deleteFlag, ByteReader& br);
   void handleListProperties(XProtoContext& ctx, uint16_t seq,                     ByteReader& br);
 

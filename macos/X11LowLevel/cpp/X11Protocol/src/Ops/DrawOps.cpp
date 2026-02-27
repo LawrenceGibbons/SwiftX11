@@ -35,6 +35,7 @@
 #include "XProtoServerBridge.h"
 #include "Core/Font8x8.hpp"
 #include "Utils/WireLE.hpp"
+#include "Ops/ReplyWriter.hpp"
 
 // util
 #include "Damage.hpp"
@@ -71,6 +72,7 @@ DrawOps::DrawOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::CopyArea,  &DrawOps::onMajor, this);  // 62
   reg.registerMajor(x11::opcode::CopyPlane, &DrawOps::onMajor, this);  // 63
   reg.registerMajor(x11::opcode::PutImage,  &DrawOps::onMajor, this);  // 72
+  reg.registerMajor(x11::opcode::GetImage,  &DrawOps::onMajor, this);  // 73
   reg.registerMajor(x11::opcode::PolyText8,  &DrawOps::onMajor, this); // 74
   reg.registerMajor(x11::opcode::ImageText8, &DrawOps::onMajor, this); // 76
 }
@@ -86,6 +88,7 @@ void DrawOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::CopyArea:  handleCopyArea(ctx, dc.seq, dc.br); return;
     case x11::opcode::CopyPlane: handleCopyPlane(ctx, dc.seq, dc.br); return;
     case x11::opcode::PutImage:  handlePutImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
+    case x11::opcode::GetImage:  handleGetImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
     case x11::opcode::PolyText8:  handlePolyText8(ctx, dc.seq, dc.br); return; // 74
     case x11::opcode::ImageText8: handleImageText8(ctx, dc.seq, dc.minor /*n*/, dc.br); return; // 76, dc.minor is string length
     default:
@@ -392,6 +395,78 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
 
   
+// -----------------------------
+// GetImage (major 73)
+// format: dc.minor (1=XYPixmap, 2=ZPixmap)
+// req: CARD32 drawable, INT16 x, INT16 y, CARD16 w, CARD16 h, CARD32 planeMask
+// reply: depth in rep[1], visual in rep[8..11], payload = pixel data
+// -----------------------------
+void DrawOps::handleGetImage(XProtoContext& ctx, uint16_t seq, uint8_t format, ByteReader& br) {
+  if (br.remaining() < 16) { br.skip(br.remaining()); return; }
+
+  const uint32_t drawable = br.readU32();
+  const int16_t  x = br.readI16();
+  const int16_t  y = br.readI16();
+  const uint16_t w = br.readU16();
+  const uint16_t h = br.readU16();
+  const uint32_t planeMask = br.readU32();
+  br.skip(br.remaining());
+
+  if (w == 0 || h == 0) return;
+
+  // Only support ZPixmap (format 2) for now
+  if (format != 2) {
+    // Send error or empty reply? For bring-up, just skip.
+    return;
+  }
+
+  // Resolve drawable
+  x11::DrawableRW src{};
+  if (!x11::resolveDrawableRW(ctx, drawable, src) || !src.pixels32) return;
+  if (src.w == 0 || src.h == 0 || src.stridePixels == 0) return;
+
+  // Clip request rect to drawable bounds
+  int32_t x0 = (int32_t)x;
+  int32_t y0 = (int32_t)y;
+  int32_t x1 = x0 + (int32_t)w;
+  int32_t y1 = y0 + (int32_t)h;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > (int32_t)src.w) x1 = (int32_t)src.w;
+  if (y1 > (int32_t)src.h) y1 = (int32_t)src.h;
+
+  const int32_t cw = x1 - x0;
+  const int32_t ch = y1 - y0;
+  if (cw <= 0 || ch <= 0) return;
+
+  // Build pixel payload: ZPixmap depth=24 bpp=32
+  // Each row: cw * 4 bytes, padded to 4-byte boundary (already aligned since 4*cw is always multiple of 4)
+  const uint32_t rowBytes = (uint32_t)cw * 4u;
+  const uint32_t payloadBytes = rowBytes * (uint32_t)ch;
+  const uint32_t payloadWords = (payloadBytes + 3u) / 4u;
+
+  // Build reply header
+  const uint8_t depth = 24;
+  const uint32_t visual = 0x21; // match our advertised TrueColor visual
+
+  const bool ok = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+    rep[1] = depth;
+    wire::wr32_le(rep.data() + 4, payloadWords);
+    wire::wr32_le(rep.data() + 8, visual);
+  });
+  if (!ok) return;
+
+  // Send pixel rows
+  for (int32_t row = 0; row < ch; row++) {
+    const uint32_t* srcRow = src.pixels32 + (size_t)(y0 + row) * (size_t)src.stridePixels + (size_t)x0;
+    if (!ctx.reply().sendBytes(srcRow, rowBytes)) return;
+  }
+
+  ctx.tracef("[GetImage] drawable=0x%08X x=%d y=%d w=%u h=%u -> %ux%u depth=%u\n",
+             (unsigned)drawable, (int)x, (int)y, (unsigned)w, (unsigned)h,
+             (unsigned)cw, (unsigned)ch, (unsigned)depth);
+}
+
 // -----------------------------
 // CopyArea (major 62)
 // -----------------------------

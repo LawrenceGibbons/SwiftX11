@@ -11,6 +11,7 @@ namespace x11 {
 GCOps::GCOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::CreateGC, &GCOps::onMajor, this); // CreateGC
   reg.registerMajor(x11::opcode::ChangeGC, &GCOps::onMajor, this); // ChangeGC
+  reg.registerMajor(x11::opcode::CopyGC,   &GCOps::onMajor, this); // CopyGC
   reg.registerMajor(x11::opcode::FreeGC,   &GCOps::onMajor, this); // FreeGC
 }
 
@@ -23,6 +24,7 @@ void GCOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
     case x11::opcode::CreateGC: handleCreateGC(ctx, dc.seq, dc.br); return;
     case x11::opcode::ChangeGC: handleChangeGC(ctx, dc.seq, dc.br); return;
+    case x11::opcode::CopyGC  : handleCopyGC(ctx, dc.seq, dc.br); return;
     case x11::opcode::FreeGC  : handleFreeGC(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
@@ -122,6 +124,29 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     }
 #endif
   }
+
+// major 57 CopyGC
+void GCOps::handleCopyGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Body: CARD32 srcGC, CARD32 dstGC, CARD32 valueMask
+  if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+  const uint32_t srcGcXid = br.readU32();
+  const uint32_t dstGcXid = br.readU32();
+  const uint32_t vmask    = br.readU32();
+  br.skip(br.remaining());
+
+  auto src = GCTable::instance().getOrCreate(srcGcXid);
+  auto dst = GCTable::instance().getOrCreate(dstGcXid);
+
+  if (vmask & (1u << 0))  dst.function   = src.function;
+  if (vmask & (1u << 1))  dst.plane_mask = src.plane_mask;
+  if (vmask & (1u << 2))  dst.fg         = src.fg;
+  if (vmask & (1u << 3))  dst.bg         = src.bg;
+  if (vmask & (1u << 14)) dst.font       = src.font;
+
+  GCTable::instance().upsert(dst);
+  ctx.tracef("[GCOps] CopyGC src=0x%08X dst=0x%08X vmask=0x%08X\n",
+             (unsigned)srcGcXid, (unsigned)dstGcXid, (unsigned)vmask);
+}
 
 // major 60 FreeGC
 void GCOps::handleFreeGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {

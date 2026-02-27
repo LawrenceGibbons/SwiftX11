@@ -42,6 +42,7 @@ private:
 
   void handleCreateGC(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 55
   void handleChangeGC(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 56
+  void handleCopyGC  (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 57
   void handleFreeGC  (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 60
 
   static uint32_t mapPixelToARGB(uint32_t val);

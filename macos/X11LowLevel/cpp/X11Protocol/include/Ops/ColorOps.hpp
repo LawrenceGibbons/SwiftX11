@@ -37,6 +37,7 @@ private:
   void handleFreeColors(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br);             // 88 (no reply)
   void handleStoreColors(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br);            // 89 (no reply)
   void handleStoreNamedColor(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br);        // 90 (no reply)
+  void handleLookupColor(XProtoContext& ctx, uint16_t seq, ByteReader& br);                // 92 (reply)
 };
 
 } // namespace x11

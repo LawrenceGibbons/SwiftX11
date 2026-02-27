@@ -25,7 +25,14 @@ private:
   void handleUngrabPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br);                      // 27
   void handleGrabButton (XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br);   // 28
   void handleUngrabButton(XProtoContext& ctx, uint16_t seq, uint8_t button, ByteReader& br);       // 29
-  
+
+  void handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br);  // 31
+  void handleUngrabKeyboard(XProtoContext& ctx, uint16_t seq, ByteReader& br);                     // 32
+  void handleGrabKey(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br);       // 33
+  void handleUngrabKey(XProtoContext& ctx, uint16_t seq, uint8_t keycode, ByteReader& br);         // 34
+  void handleAllowEvents(XProtoContext& ctx, uint16_t seq, uint8_t mode, ByteReader& br);          // 35
+  void handleGrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br);                         // 36
+  void handleUngrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br);                       // 37
 };
 
 } // namespace x11

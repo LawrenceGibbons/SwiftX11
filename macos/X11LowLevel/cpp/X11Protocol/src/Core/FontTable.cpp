@@ -347,7 +347,15 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
   dbgFontResolve(name, rk, f);
   return f;
 }
-  
-  
-  
+
+std::vector<std::string> FontTable::listNames() const {
+  std::vector<std::string> names;
+  names.reserve(builtins_.size());
+  for (const auto& kv : builtins_) {
+    names.push_back(kv.first);
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
 } // namespace x11

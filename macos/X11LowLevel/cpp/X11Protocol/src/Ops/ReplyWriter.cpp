@@ -15,15 +15,37 @@ namespace x11 {
     switch (major) {
       case 3:  return true;  // GetWindowAttributes
       case 14: return true;  // GetGeometry
+      case 15: return true;  // QueryTree
       case 16: return true;  // InternAtom
       case 17: return true;  // GetAtomName
       case 20: return true;  // GetProperty
       case 21: return true;  // ListProperties
+      case 23: return true;  // GetSelectionOwner
+      case 26: return true;  // GrabPointer
+      case 31: return true;  // GrabKeyboard
+      case 38: return true;  // QueryPointer
+      case 40: return true;  // TranslateCoords
       case 43: return true;  // GetInputFocus
       case 47: return true;  // QueryFont
+      case 48: return true;  // QueryTextExtents
+      case 49: return true;  // ListFonts
+      case 50: return true;  // ListFontsWithInfo
+      case 73: return true;  // GetImage
+      case 83: return true;  // ListInstalledColormaps
+      case 84: return true;  // AllocColor
+      case 85: return true;  // AllocNamedColor
+      case 86: return true;  // AllocColorCells
+      case 87: return true;  // AllocColorPlanes
+      case 91: return true;  // QueryColors
+      case 92: return true;  // LookupColor
+      case 97: return true;  // QueryBestSize
       case 98: return true;  // QueryExtension
+      case 99: return true;  // ListExtensions
       case 101: return true; // GetKeyboardMapping
-      case 102: return true; // GetModifierMapping
+      case 103: return true; // GetKeyboardControl
+      case 106: return true; // GetPointerControl
+      case 108: return true; // GetScreenSaver
+      case 110: return true; // ListHosts
       case 116: return true; // SetPointerMapping
       case 117: return true; // GetPointerMapping
       case 118: return true; // SetModifierMapping

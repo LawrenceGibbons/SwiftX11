@@ -28,6 +28,9 @@ namespace x11 {
     reg.registerMajor(x11::opcode::QueryExtension,     &QueryOps::onMajor, this); // QueryExtension
     reg.registerMajor(x11::opcode::ListExtensions,     &QueryOps::onMajor, this); // ListExtensions
     reg.registerMajor(x11::opcode::GetKeyboardMapping, &QueryOps::onMajor, this); // GetKeyboardMapping
+    reg.registerMajor(x11::opcode::TranslateCoords,   &QueryOps::onMajor, this); // 40
+    reg.registerMajor(x11::opcode::WarpPointer,        &QueryOps::onMajor, this); // 41
+    reg.registerMajor(x11::opcode::SetInputFocus,      &QueryOps::onMajor, this); // 42
   }
   
   void QueryOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -44,7 +47,10 @@ namespace x11 {
       case x11::opcode::QueryExtension    : handleQueryExtension(ctx, dc.seq, dc.br); return;
       case x11::opcode::ListExtensions    : handleListExtensions(ctx, dc.seq, dc.br); return;
       case x11::opcode::GetKeyboardMapping: handleGetKeyboardMapping(ctx, dc.seq, dc.br); return;
-      default: 
+      case x11::opcode::TranslateCoords  : handleTranslateCoords(ctx, dc.seq, dc.br); return;
+      case x11::opcode::WarpPointer      : handleWarpPointer(ctx, dc.seq, dc.br); return;
+      case x11::opcode::SetInputFocus    : handleSetInputFocus(ctx, dc.seq, dc.minor, dc.br); return;
+      default:
         dc.br.skip(dc.br.remaining());
         ctx.tracef("[QueryOps] unexpected major=%u\n", (unsigned)dc.major);
         return;
@@ -530,6 +536,105 @@ namespace x11 {
     if (!payload.empty()) {
       (void)ctx.reply().sendBytes(payload.data(), payload.size());
     }
-  }  
+  }
+
+// ---- 40: TranslateCoords ----
+// Body: srcWin(4), dstWin(4), srcX(2), srcY(2)
+// Reply: sameScreen, child, dstX, dstY
+void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+  const uint32_t srcWin = br.readU32();
+  const uint32_t dstWin = br.readU32();
+  const int16_t srcX = br.readI16();
+  const int16_t srcY = br.readI16();
+  br.skip(br.remaining());
+
+  // Compute absolute position of point in src window
+  int32_t absX = (int32_t)srcX;
+  int32_t absY = (int32_t)srcY;
+  {
+    uint32_t cur = srcWin;
+    for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
+      WindowView vw{};
+      if (!ctx.windows().snapshot(cur, vw)) break;
+      absX += (int32_t)vw.x;
+      absY += (int32_t)vw.y;
+      cur = vw.parent_xid;
+    }
+  }
+
+  // Convert to dst window local coords
+  int32_t dstX = absX;
+  int32_t dstY = absY;
+  if (dstWin != kRootXid) {
+    uint32_t cur = dstWin;
+    for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
+      WindowView vw{};
+      if (!ctx.windows().snapshot(cur, vw)) break;
+      dstX -= (int32_t)vw.x;
+      dstY -= (int32_t)vw.y;
+      cur = vw.parent_xid;
+    }
+  }
+
+  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+    rep[1] = 1; // sameScreen
+    wire::wr32_le(rep.data() + 8, 0); // child = None
+    wire::wr16_le(rep.data() + 12, (uint16_t)(int16_t)dstX);
+    wire::wr16_le(rep.data() + 14, (uint16_t)(int16_t)dstY);
+  });
+}
+
+// ---- 41: WarpPointer (stub) ----
+void QueryOps::handleWarpPointer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+  br.skip(br.remaining());
+}
+
+// ---- 42: SetInputFocus ----
+// Body: focus(4), time(4)  (revertTo is in dc.minor)
+void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t /*seq*/, uint8_t revertTo, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t focus = br.readU32();
+  (void)br.readU32(); // time
+  br.skip(br.remaining());
+
+  const uint32_t oldFocus = ctx.input().focus_xid;
+  const uint32_t newFocus = (focus == 0) ? 0 : (focus == 1) ? kRootXid : focus;
+
+  // Send FocusOut to old focus window
+  if (oldFocus != 0 && oldFocus != newFocus) {
+    uint8_t ev[32] = {};
+    ev[0] = 10; // FocusOut
+    ev[1] = 0;  // detail = Ancestor
+    wire::wr16_le(ev + 2, 0);
+    wire::wr32_le(ev + 4, oldFocus);
+    ev[8] = 0; // mode = Normal
+    (void)ctx.transport().sendEvent32(oldFocus, ev);
+  }
+
+  // Update focus state
+  ctx.input().focus_xid = newFocus;
+  if (newFocus != 0 && newFocus != kRootXid) {
+    ctx.input().focus_host = ctx.windows().topLevelAncestorOf(newFocus);
+  }
+
+  // Send FocusIn to new focus window
+  if (newFocus != 0) {
+    uint8_t ev[32] = {};
+    ev[0] = 9; // FocusIn
+    ev[1] = 0; // detail = Ancestor
+    wire::wr16_le(ev + 2, 0);
+    wire::wr32_le(ev + 4, newFocus);
+    ev[8] = 0; // mode = Normal
+    (void)ctx.transport().sendEvent32(newFocus, ev);
+  }
+
+  (void)revertTo; // stored but unused for now
+
+#ifndef NDEBUG
+  ctx.tracef("[QueryOps] SetInputFocus old=0x%08X new=0x%08X revertTo=%u\n",
+             (unsigned)oldFocus, (unsigned)newFocus, (unsigned)revertTo);
+#endif
+}
 
 } // namespace x11

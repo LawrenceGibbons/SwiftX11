@@ -20,9 +20,11 @@
 #include <Ops/CursorOps.hpp>
 #include <Ops/GrabOps.hpp>
 #include <Ops/PointerOps.hpp>
+#include <Ops/SelectionOps.hpp>
+#include <Ops/MiscOps.hpp>
 
 namespace x11 {
-  
+
   struct XProtoModules {
     QueryOps      queryOps;
     AtomOps       atomOps;
@@ -38,8 +40,9 @@ namespace x11 {
     CursorOps     cursorOps;
     GrabOps       grabOps;
     PointerOps    pointerOps;
-    // etc
-    
+    SelectionOps  selectionOps;
+    MiscOps       miscOps;
+
     explicit XProtoModules(XProtoRegistrar& reg)
     : queryOps(reg)
     , atomOps(reg)
@@ -55,6 +58,8 @@ namespace x11 {
     , cursorOps(reg)
     , grabOps(reg)
     , pointerOps(reg)
+    , selectionOps(reg)
+    , miscOps(reg)
     {}
   };
 }

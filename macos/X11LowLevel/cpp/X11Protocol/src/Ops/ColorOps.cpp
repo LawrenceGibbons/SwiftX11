@@ -8,7 +8,6 @@
 #include "ColorOps.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -21,6 +20,7 @@
 #include "WireLE.hpp"
 #include "AtomTable.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Utils/X11ColorNames.hpp"
 
 namespace x11 {
 
@@ -97,11 +97,6 @@ static inline void unpackPixel24ToRGB16(uint32_t pixel, uint16_t& r, uint16_t& g
   b = (uint16_t(bb) << 8) | bb;
 }
 
-static inline std::string lower(std::string s) {
-  for (char& c : s) c = (char)std::tolower((unsigned char)c);
-  return s;
-}
-
 // xColorItem is 12 bytes on the wire:
 // CARD32 pixel; CARD16 red; CARD16 green; CARD16 blue; CARD8 flags; CARD8 pad
 static void appendColorItem(std::vector<uint8_t>& out,
@@ -125,6 +120,7 @@ ColorOps::ColorOps(XProtoRegistrar& reg) {
   for (uint8_t m = x11::opcode::CreateColormap; m <= x11::opcode::StoreNamedColor; ++m) {
     reg.registerMajor(m, &ColorOps::onMajor, this);
   }
+  reg.registerMajor(x11::opcode::LookupColor, &ColorOps::onMajor, this);
 }
 
 void ColorOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -146,6 +142,7 @@ void ColorOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::FreeColors            : handleFreeColors(ctx, dc.seq, dc.br); return;
     case x11::opcode::StoreColors           : handleStoreColors(ctx, dc.seq, dc.br); return;
     case x11::opcode::StoreNamedColor       : handleStoreNamedColor(ctx, dc.seq, dc.br); return;
+    case x11::opcode::LookupColor           : handleLookupColor(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[ColorOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -296,25 +293,15 @@ void ColorOps::handleAllocNamedColor(XProtoContext& ctx, uint16_t seq, ByteReade
   br.skip(std::min<std::size_t>(br.remaining(), nbytes));
   br.skip(br.remaining());
 
-  const std::string key = lower(name);
-
-  // very small named-color table; enough to get going
-  uint16_t r=0, g=0, b=0;
-  auto set8 = [&](uint8_t rr, uint8_t gg, uint8_t bb) {
-    r = (uint16_t(rr) << 8) | rr;
-    g = (uint16_t(gg) << 8) | gg;
-    b = (uint16_t(bb) << 8) | bb;
-  };
-
-  if (key == "black") set8(0,0,0);
-  else if (key == "white") set8(255,255,255);
-  else if (key == "red") set8(255,0,0);
-  else if (key == "green") set8(0,255,0);
-  else if (key == "blue") set8(0,0,255);
-  else if (key == "gray" || key == "grey") set8(128,128,128);
-  else {
-    // Unknown -> white-ish (bring-up)
-    set8(255,255,255);
+  uint16_t r = 0, g = 0, b = 0;
+  uint8_t r8 = 255, g8 = 255, b8 = 255;
+  if (x11::lookupColorName(name.c_str(), name.size(), r8, g8, b8)) {
+    r = (uint16_t(r8) << 8) | r8;
+    g = (uint16_t(g8) << 8) | g8;
+    b = (uint16_t(b8) << 8) | b8;
+  } else {
+    // Unknown -> white fallback (bring-up)
+    r = g = b = 0xFFFF;
   }
 
   uint32_t pixel = 0;
@@ -461,5 +448,44 @@ void ColorOps::handleStoreNamedColor(XProtoContext& ctx, uint16_t, ByteReader& b
   ctx.tracef("[ColorOps] StoreNamedColor (noop)\n");
 }
 
+
+// 92 LookupColor (reply)
+// req: cmap(CARD32), nameLen(CARD16), pad(CARD16), name bytes + pad
+// reply: exactRGB(3*CARD16), screenRGB(3*CARD16), length=0
+void ColorOps::handleLookupColor(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t cmap = br.readU32();
+  const uint16_t nbytes = br.readU16();
+  br.skip(2);
+
+  std::string name;
+  if (const uint8_t* p = br.peekBytes(nbytes)) name.assign((const char*)p, nbytes);
+  br.skip(std::min<std::size_t>(br.remaining(), nbytes));
+  br.skip(br.remaining());
+
+  uint8_t r8 = 0, g8 = 0, b8 = 0;
+  if (!x11::lookupColorName(name.c_str(), name.size(), r8, g8, b8)) {
+    // Unknown color -> return white
+    r8 = g8 = b8 = 255;
+  }
+
+  const uint16_t r = (uint16_t(r8) << 8) | r8;
+  const uint16_t g = (uint16_t(g8) << 8) | g8;
+  const uint16_t b = (uint16_t(b8) << 8) | b8;
+
+  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+    // exact RGB
+    wire::wr16_le(rep.data() + 8,  r);
+    wire::wr16_le(rep.data() + 10, g);
+    wire::wr16_le(rep.data() + 12, b);
+    // screen RGB (same as exact for bring-up)
+    wire::wr16_le(rep.data() + 14, r);
+    wire::wr16_le(rep.data() + 16, g);
+    wire::wr16_le(rep.data() + 18, b);
+  });
+
+  ctx.tracef("[ColorOps] LookupColor cmap=0x%08X name=\"%s\" -> rgb=%u,%u,%u\n",
+             (unsigned)cmap, name.c_str(), (unsigned)r8, (unsigned)g8, (unsigned)b8);
+}
 
 } // namespace x11

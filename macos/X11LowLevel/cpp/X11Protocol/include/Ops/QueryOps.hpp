@@ -42,8 +42,9 @@ private:
   void handleQueryExtension(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br);
   void handleGetKeyboardMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 101
-
-private:
+  void handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 40
+  void handleWarpPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 41
+  void handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t revertTo, ByteReader& br); // 42
 };
 
 } // namespace x11

@@ -36,6 +36,7 @@ private:
   void handlePolySegment(XProtoContext& ctx, uint16_t seq, ByteReader& br);    // 66
   void handlePolyRectangle(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // 67
   void handlePolyArc(XProtoContext& ctx, uint16_t seq, ByteReader& br);        // 68
+  void handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br);            // 69
   void handlePolyFillRectangle(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 70
   void handlePolyFillArc(XProtoContext& ctx, uint16_t seq, ByteReader& br);    // 71
 };

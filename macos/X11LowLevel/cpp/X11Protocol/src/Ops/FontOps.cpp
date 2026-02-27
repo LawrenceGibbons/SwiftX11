@@ -65,6 +65,8 @@ FontOps::FontOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::CloseFont       , &FontOps::onMajor, this); // CloseFont
   reg.registerMajor(x11::opcode::QueryFont       , &FontOps::onMajor, this); // QueryFont
   reg.registerMajor(x11::opcode::QueryTextExtents, &FontOps::onMajor, this); // QueryTextExtents
+  reg.registerMajor(x11::opcode::ListFonts,         &FontOps::onMajor, this); // ListFonts
+  reg.registerMajor(x11::opcode::ListFontsWithInfo,  &FontOps::onMajor, this); // ListFontsWithInfo
   reg.registerMajor(x11::opcode::QueryBestSize   , &FontOps::onMajor, this); // QueryBestSize
 }
 
@@ -85,6 +87,8 @@ void FontOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       handleQueryTextExtents(ctx, dc.seq, odd, dc.br);
       return;
     }
+    case x11::opcode::ListFonts:         handleListFonts(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ListFontsWithInfo: handleListFontsWithInfo(ctx, dc.seq, dc.br); return;
     case x11::opcode::QueryBestSize   : handleQueryBestSize(ctx, dc.seq, dc.minor, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
@@ -462,6 +466,109 @@ void FontOps::handleQueryFont(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
       wire::wr16_le(rep.data() + 20, clamp16(overallRight));
     });
   }  
+
+// MARK: ---- 49: ListFonts ----
+void FontOps::handleListFonts(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+
+  const uint16_t maxNames   = br.readU16();
+  const uint16_t patternLen = br.readU16();
+
+  std::string pattern;
+  if (patternLen > 0 && br.remaining() >= patternLen) {
+    if (const uint8_t* p = br.peekBytes(patternLen)) {
+      pattern.assign(reinterpret_cast<const char*>(p), patternLen);
+    }
+  }
+  br.skip(br.remaining());
+
+  // Get all known font names
+  std::vector<std::string> allNames = ctx.fonts().listNames();
+
+  // Simple glob matching: empty or "*" matches all.
+  // Leading/trailing "*" wildcards for basic patterns.
+  auto matches = [&](const std::string& name) -> bool {
+    if (pattern.empty() || pattern == "*") return true;
+
+    // "*foo*" — contains
+    if (pattern.size() >= 2 && pattern.front() == '*' && pattern.back() == '*') {
+      std::string sub = pattern.substr(1, pattern.size() - 2);
+      return name.find(sub) != std::string::npos;
+    }
+    // "*foo" — ends with
+    if (pattern.front() == '*') {
+      std::string suffix = pattern.substr(1);
+      if (name.size() < suffix.size()) return false;
+      return name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    }
+    // "foo*" — starts with
+    if (pattern.back() == '*') {
+      std::string prefix = pattern.substr(0, pattern.size() - 1);
+      return name.compare(0, prefix.size(), prefix) == 0;
+    }
+    // Exact match
+    return name == pattern;
+  };
+
+  std::vector<std::string> matched;
+  for (const auto& n : allNames) {
+    if (matches(n)) {
+      matched.push_back(n);
+      if (matched.size() >= (size_t)maxNames) break;
+    }
+  }
+
+  // Build payload: list of STR8 (1 byte length + string bytes, no inter-item padding)
+  std::vector<uint8_t> payload;
+  for (const auto& n : matched) {
+    uint8_t len = (uint8_t)std::min(n.size(), (size_t)255);
+    payload.push_back(len);
+    payload.insert(payload.end(), n.begin(), n.begin() + len);
+  }
+
+  const uint16_t nNames = (uint16_t)matched.size();
+  const uint32_t payloadPadded = (uint32_t)((payload.size() + 3u) & ~3u);
+  const uint32_t lengthWords = payloadPadded / 4u;
+
+#ifndef NDEBUG
+  ctx.tracef("[FontOps] ListFonts seq=%u maxNames=%u pattern=\"%s\" -> %u names\n",
+             (unsigned)seq, (unsigned)maxNames, pattern.c_str(), (unsigned)nNames);
+#endif
+
+  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+    rep[1] = 0; // unused
+    wire::wr32_le(rep.data() + 4, lengthWords);
+    wire::wr16_le(rep.data() + 8, nNames);
+  });
+
+  if (!payload.empty()) {
+    (void)ctx.reply().sendPaddedBytes(payload.data(), payload.size());
+  }
+}
+
+// MARK: ---- 50: ListFontsWithInfo ----
+void FontOps::handleListFontsWithInfo(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+
+  const uint16_t maxNames   = br.readU16();
+  const uint16_t patternLen = br.readU16();
+  (void)maxNames;
+  (void)patternLen;
+  br.skip(br.remaining());
+
+#ifndef NDEBUG
+  ctx.tracef("[FontOps] ListFontsWithInfo seq=%u -> terminator only (bring-up)\n",
+             (unsigned)seq);
+#endif
+
+  // Send empty terminator reply: nameLen=0, length=7 (28 bytes / 4)
+  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+    rep[1] = 0; // nameLen = 0 (terminator)
+    wire::wr32_le(rep.data() + 4, 7); // length = 7 (28 bytes of fixed fields after header)
+    // All other fields zero (already zeroed by sendReply32)
+  });
+}
+
 
 // MARK: ---- 97: QueryBestSize ----
 void FontOps::handleQueryBestSize(XProtoContext& ctx, uint16_t seq, uint8_t class_, ByteReader& br)
