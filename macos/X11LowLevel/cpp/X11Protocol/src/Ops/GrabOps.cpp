@@ -65,7 +65,7 @@ void GrabOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 //   CARD32 cursor
 //   CARD32 time
 // -----------------------------
-void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t /*seq*/, uint8_t ownerEvents, ByteReader& br) {
+void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br) {
   if (br.remaining() < 20) { br.skip(br.remaining()); return; }
 
   const uint32_t grabWindow = br.readU32();
@@ -82,9 +82,15 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t /*seq*/, uint8_t ow
 
   GrabTable::instance().setPointerGrab(grabWindow, ownerEvents != 0, eventMask);
 
+  // GrabPointer REQUIRES a reply (status=GrabSuccess).
+  // Without this, the client blocks forever waiting for the reply.
+  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+    rep[1] = 0; // GrabSuccess
+  });
+
 #ifndef NDEBUG
-  ctx.tracef("[GrabOps] GrabPointer win=0x%08X owner=%u mask=0x%04X\n",
-             (unsigned)grabWindow, (unsigned)ownerEvents, (unsigned)eventMask);
+  fprintf(stderr, "[GrabPointer] win=0x%08X owner=%u mask=0x%04X\n",
+          (unsigned)grabWindow, (unsigned)ownerEvents, (unsigned)eventMask);
 #endif
 }
 
@@ -100,7 +106,7 @@ void GrabOps::handleUngrabPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   GrabTable::instance().clearPointerGrab();
 
 #ifndef NDEBUG
-  ctx.tracef("[GrabOps] UngrabPointer\n");
+  fprintf(stderr, "[UngrabPointer]\n");
 #endif
 }
 
