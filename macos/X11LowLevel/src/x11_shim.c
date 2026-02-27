@@ -640,50 +640,6 @@ void x11_mark_damage(uint32_t xid)
 // Helper: clamp >=1
 static inline int32_t clamp_i32_ge1(int32_t v) { return (v < 1) ? 1 : v; }
 
-// Helper: query window size in X11 units (u) from backend, and FB size in pixels from xproto.
-// If backend size missing, fall back to FB size as "u" (bring-up safe).
-// -----------------------------------------------------------------------------
-// Damage request side-effect
-//
-// This is called from the server-thread request drain (x11_requests_drain_on_server_thread)
-// when an X11_REQ_DAMAGE is dequeued.
-//
-// IMPORTANT: do NOT push another request here (that would create a request-loop).
-// Instead, mark backend damage and wake the repaint runloop.
-// -----------------------------------------------------------------------------
-void x11_server_emit_window_damage(uint32_t xid)
-{
-#ifndef NDEBUG
-  fprintf(stderr, "[EMIT DAMAGE] entering with xid=0x%08X\n", (unsigned)xid);
-#endif
-  if (xid == 0) return;
-
-  int ok = 0;
-  int exists = 0;
-  int closing = 0;
-
-  // We will emit full-window damage in X11 units (u).
-  int32_t w_u = 0, h_u = 0;
-
-  x11_backend_lock();
-  exists = x11_backend_window_exists_locked(xid);
-  closing = exists ? x11_backend_window_is_closing_locked(xid) : 0;
-  if (exists && !closing) {
-    x11_backend_mark_damage_locked(xid);
-
-    // IMPORTANT: backend size is the truth for *X11 units* (points), not FB pixels.
-    (void)x11_backend_get_size_locked(xid, &w_u, &h_u);
-    ok = 1;
-  }
-  x11_backend_unlock();
-
-  if (!ok) return;
-  if (w_u < 1) w_u = 1;
-  if (h_u < 1) h_u = 1;
-
-  x11_ui_push_damage(xid, 0, 0, w_u, h_u);
-  x11_server_wakeup();}
-
 
 void x11_server_wakeup(void)
 {

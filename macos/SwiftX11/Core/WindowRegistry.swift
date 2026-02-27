@@ -273,94 +273,6 @@ final class WindowRegistry {
     controller.window?.orderOut(nil)
   }
   
-  private struct DirtyRectU {
-    var x0: Int32
-    var y0: Int32
-    var x1: Int32   // exclusive
-    var y1: Int32   // exclusive
-
-    mutating func union(x: Int32, y: Int32, w: Int32, h: Int32) {
-      guard w > 0, h > 0 else { return }
-      let nx0 = x
-      let ny0 = y
-      let nx1 = x &+ w
-      let ny1 = y &+ h
-
-      x0 = min(x0, nx0)
-      y0 = min(y0, ny0)
-      x1 = max(x1, nx1)
-      y1 = max(y1, ny1)
-    }
-
-    mutating func clamp(maxW: Int32, maxH: Int32) {
-      guard maxW > 0, maxH > 0 else { return }
-      x0 = max(0, min(x0, maxW))
-      y0 = max(0, min(y0, maxH))
-      x1 = max(0, min(x1, maxW))
-      y1 = max(0, min(y1, maxH))
-      if x1 < x0 { x1 = x0 }
-      if y1 < y0 { y1 = y0 }
-    }
-
-    var isEmpty: Bool { x1 <= x0 || y1 <= y0 }
-  }
-
-  private var dirtyByHostU: [UInt32: DirtyRectU] = [:]
-
-
-  private func hostSizeU(_ host: UInt32) -> (w: Int32, h: Int32)? {
-    if let s = latestHostSizePtByXid[host] { return s }
-    if let s = lastSentHostSizePtByXid[host] { return s }
-    return nil
-  }
-  
-  @MainActor
-  func noteDamageRect(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
-    guard xid != 0 else { return }
-
-    let host = topLevelAncestor(of: xid)
-
-    if debugSnapshotRouting {
-      let lastid = latestSourceByHost[host] ?? host
-      logAppend?(
-        "[DAMAGE RECT] xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) " +
-        "mappedHost=\(mappedXids.contains(host)) hasWindowHost=\(windows[host] != nil) " +
-        "latestSourceByHost[host]=0x\(String(lastid, radix:16)) rect=\(x),\(y) \(w)x\(h)"
-      )
-    }
-
-    // For now: treat damage rect as host-space only when xid==host.
-    // If xid!=host, you can later translate child->host using geometry.
-    var rx = x, ry = y, rw = w, rh = h
-
-    if xid != host {
-      // Safe fallback: mark whole host (correct, just less efficient)
-      rx = 0; ry = 0
-      if let sz = hostSizeU(host) {
-        rw = sz.w; rh = sz.h
-      } else {
-        // last resort: ensure non-degenerate
-        rw = max(1, rw); rh = max(1, rh)
-      }
-    }
-
-    guard rw > 0, rh > 0 else { return }
-
-    var d = dirtyByHostU[host] ?? DirtyRectU(x0: rx, y0: ry, x1: rx, y1: ry)
-    d.union(x: rx, y: ry, w: rw, h: rh)
-
-    if let sz = hostSizeU(host) {
-      d.clamp(maxW: sz.w, maxH: sz.h)
-    }
-
-    if !d.isEmpty {
-      dirtyByHostU[host] = d
-    }
-
-    // Schedule present for the HOST (your compositor snapshots host anyway)
-    schedulePresent(xid: host)
-  }  
-  
   @MainActor
   func noteX11WindowDestroyed(xid: UInt32) {
     // 0) Cancel any scheduled present/snapshot bookkeeping for this xid as either host or source.
@@ -368,8 +280,6 @@ final class WindowRegistry {
     pendingPresentByHost.remove(xid)
     latestSourceByHost.removeValue(forKey: xid)
     ignoreCocoaResizeUntilMapped.remove(xid)
-    dirtyByHostU.removeValue(forKey: xid)
-    
     // If this xid was a *source* for some host, clear that too.
     // (Safe O(n), n is small.)
     for (host, src) in latestSourceByHost where src == xid {
@@ -536,15 +446,7 @@ final class WindowRegistry {
     view.presentBGRA(framebuffer: bgra, width: width, height: height, bytesPerRow: bytesPerRow)
   }
       
-  @MainActor
-  func handleDamageRect(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
-    let hasWindow = (windows[xid] != nil)
-    if showDamageLogs() == true {
-      logAppend?("handleDamageRect: xid=0x\(String(xid, radix: 16).uppercased()) rect=(\(x),\(y)) \(w)x\(h) hasWindow=\(hasWindow)")
-    }
-    noteDamage(xid: xid, x: x, y: y, w: w, h: h)
-  }
-  
+
   
   @MainActor
   private func scanBGRA(_ data: Data, width: Int, height: Int, bytesPerRow: Int) -> (nonwhite: Int, samples: [UInt32]) {
@@ -1153,14 +1055,19 @@ final class WindowRegistry {
         self.logAppend?("[PRESENT_DBG] (host-only) firing host=0x\(String(host, radix:16))")
       }
 
-      // Consume the accumulated damage rect from C++ (now carries actual geometry).
-      let dirtyU = self.dirtyByHostU.removeValue(forKey: host)
+      // Read the accumulated damage rect directly from the shared C++ accumulator.
+      // This bypasses the UI command queue drain latency — the accumulator is written
+      // by C++ draw ops at draw time and read here at present time, so it always
+      // reflects ALL damage up to this instant.
+      var sdX: Int32 = 0, sdY: Int32 = 0, sdW: Int32 = 0, sdH: Int32 = 0
+      let hasShared = x11_shared_damage_consume(host, &sdX, &sdY, &sdW, &sdH)
+
       let damage: DamageRect?
-      if let d = dirtyU, !d.isEmpty {
-        damage = DamageRect(x: Int(d.x0), y: Int(d.y0),
-                            w: Int(d.x1 - d.x0), h: Int(d.y1 - d.y0))
+      if hasShared && sdW > 0 && sdH > 0 {
+        damage = DamageRect(x: Int(sdX), y: Int(sdY),
+                            w: Int(sdW), h: Int(sdH))
       } else {
-        damage = nil  // full-frame upload (no rect accumulated or empty)
+        damage = nil  // full-frame upload
       }
 
       // Always snapshot/present the HOST. The C side composites children onto host.

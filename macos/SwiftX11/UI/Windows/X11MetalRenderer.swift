@@ -18,6 +18,13 @@ final class X11MetalRenderer {
   // Keep readable for logging without allowing external mutation.
   private(set) var texture: MTLTexture?
 
+  // After a new texture is created (or resized), force full-frame uploads for
+  // this many calls.  This covers the timing gap where C++ initial Expose
+  // responses haven't all completed yet, so the shared damage accumulator
+  // may not reflect the full initial window contents.
+  // Typically 3 frames (~60 ms at 20 ms present cadence) is enough.
+  private var fullUploadCountdown: Int = 0
+
   // Prevent overlapping presents / command buffers piling up.
   // If a draw is requested while one is in-flight, remember it and schedule
   // exactly one more draw on completion.
@@ -164,17 +171,23 @@ final class X11MetalRenderer {
         return
       }
       textureIsNew = true
+      // Force the next few frames to be full uploads so the client has time
+      // to finish responding to Expose events and the drain timer has time to
+      // deliver all accumulated damage rects to Swift.
+      fullUploadCountdown = 3
     }
 
     guard let tex = texture else { return }
 
-    // If we have a valid damage rect and the texture already existed (not freshly
-    // allocated), upload only the dirty sub-region.  The rest of the texture retains
-    // the previous frame's pixels.
-    if !textureIsNew, let dr = damageRect,
+    // While the countdown is active, force full uploads regardless of damageRect.
+    if fullUploadCountdown > 0 {
+      fullUploadCountdown -= 1
+      // fall through to full-region upload below
+    } else if !textureIsNew, let dr = damageRect,
        dr.w > 0, dr.h > 0,
        dr.x >= 0, dr.y >= 0,
        dr.x + dr.w <= width, dr.y + dr.h <= height {
+      // Partial upload: texture already stable, damage rect is trustworthy.
       let region = MTLRegionMake2D(dr.x, dr.y, dr.w, dr.h)
       let offset = dr.y * bytesPerRow + dr.x * 4
       tex.replace(region: region,

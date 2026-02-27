@@ -122,58 +122,6 @@ void WindowTable::markDirty(uint32_t xid) {
   st->serial++;
 }
 
-void WindowTable::markDirtyRect(uint32_t xid,
-                                int32_t x, int32_t y,
-                                int32_t w, int32_t h)
-{
-  if (xid == 0) return;
-  std::lock_guard<std::mutex> lock(mu_);
-  WindowState* st = findLocked(xid);
-  if (!st) return;
-  st->dirty = true;
-  st->dirtyRect.unionRect(x, y, w, h);
-  st->serial++;
-}
-
-bool WindowTable::consumeDirtyRectIfReady(uint32_t xid,
-                                          int32_t& outX, int32_t& outY,
-                                          int32_t& outW, int32_t& outH)
-{
-  outX = outY = outW = outH = 0;
-  if (xid == 0) return false;
-
-  std::lock_guard<std::mutex> lock(mu_);
-
-  WindowState* st = findLocked(xid);
-  if (!st) return false;
-
-  const uint32_t host = topLevelAncestorLocked(xid);
-  const WindowState* hs = findLocked(host);
-  if (!hs) return false;
-
-  if (!(hs->mapped && hs->presentable)) return false;
-  if (!st->dirty) return false;
-
-  // Extract accumulated rect (or fall back to full window if no rect accumulated).
-  if (st->dirtyRect.valid) {
-    outX = st->dirtyRect.x0;
-    outY = st->dirtyRect.y0;
-    outW = st->dirtyRect.x1 - st->dirtyRect.x0;
-    outH = st->dirtyRect.y1 - st->dirtyRect.y0;
-  } else {
-    // Dirty flag set but no rect accumulated — full window.
-    outX = 0;
-    outY = 0;
-    outW = (int32_t)st->w;
-    outH = (int32_t)st->h;
-  }
-
-  st->dirty = false;
-  st->dirtyRect.clear();
-  st->serial++;
-  return true;
-}
-
 bool WindowTable::absoluteOffsetInHost(uint32_t host, uint32_t xid,
                                        int32_t& outX, int32_t& outY) const
 {

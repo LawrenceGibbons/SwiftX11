@@ -296,10 +296,9 @@ final class XServerController: ObservableObject {
       WindowRegistry.shared.noteX11WindowDestroyed(xid: cmd.xid)
 
     case X11_UI_DAMAGE:
-      print("[UI_CMD] DAMAGE xid=0x\(String(cmd.xid, radix:16)) rect=\(cmd.x_u),\(cmd.y_u) \(cmd.w_u)x\(cmd.h_u)")
-      // Convert to your existing damage handler signature.
-      // If you want, you can change WindowRegistry.handleDamageEvent to take raw fields instead.
-      WindowRegistry.shared.noteDamageRect(xid: cmd.xid, x: cmd.x_u, y: cmd.y_u, w: cmd.w_u, h: cmd.h_u)
+      // The shared C++ damage accumulator carries the actual rect data.
+      // This UI command just signals Swift to schedule a present.
+      WindowRegistry.shared.noteDamage(xid: cmd.xid, x: cmd.x_u, y: cmd.y_u, w: cmd.w_u, h: cmd.h_u)
 
     default:
       break

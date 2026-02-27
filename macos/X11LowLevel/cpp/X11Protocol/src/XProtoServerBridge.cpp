@@ -393,21 +393,16 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
                     (unsigned)dbgS.bytesPerRow, dbgS.ptr);
           }
 
-          // Flush any stale dirty state and push damage so any content
-          // that was drawn before the surface was presentable gets shown.
+          // Write full-window damage to the shared accumulator and signal
+          // so any content drawn before the surface was presentable gets shown.
           {
-            int32_t rx, ry, rw, rh;
-            ctx.windows().consumeDirtyRectIfReady(c.xid, rx, ry, rw, rh); // discard stale
-          }
-          ctx.windows().markDirty(c.xid);
-          {
-            int32_t rx = 0, ry = 0, rw = 0, rh = 0;
-            if (ctx.windows().consumeDirtyRectIfReady(c.xid, rx, ry, rw, rh)) {
-              fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> DAMAGE rect=(%d,%d %dx%d)\n",
-                      (unsigned)c.xid, (int)rx, (int)ry, (int)rw, (int)rh);
-              x11_ui_push_damage(c.xid, rx, ry, rw, rh);
+            x11::WindowView pv{};
+            if (ctx.windows().snapshot(c.xid, pv)) {
+              x11_shared_damage_union(c.xid, 0, 0, (int32_t)pv.w, (int32_t)pv.h);
+              x11_ui_push_damage(c.xid, 0, 0, (int32_t)pv.w, (int32_t)pv.h);
             }
           }
+          ctx.windows().markDirty(c.xid);
 
           // Re-expose the host and all mapped descendants so clients
           // redraw into the Swift surface now that it's presentable.
@@ -428,14 +423,15 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // Fill backgrounds + re-expose the host and all mapped descendants.
           sendExposeSubtree(ctx, srv->eventOps(), c.xid);
 
-          // Also push damage so the present path picks up the redrawn content.
-          ctx.windows().markDirty(c.xid);
+          // Write full-window damage to the shared accumulator and signal.
           {
-            int32_t rx = 0, ry = 0, rw = 0, rh = 0;
-            if (ctx.windows().consumeDirtyRectIfReady(c.xid, rx, ry, rw, rh)) {
-              x11_ui_push_damage(c.xid, rx, ry, rw, rh);
+            x11::WindowView sv{};
+            if (ctx.windows().snapshot(c.xid, sv)) {
+              x11_shared_damage_union(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
+              x11_ui_push_damage(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
             }
           }
+          ctx.windows().markDirty(c.xid);
           break;
         }
 

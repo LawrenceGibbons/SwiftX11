@@ -293,9 +293,10 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 
     // 6) If anything drew before presentable, flush once now (route to host)
     if (host != 0) {
-      int32_t rx = 0, ry = 0, rw = 0, rh = 0;
-      if (ctx.windows().consumeDirtyRectIfReady(host, rx, ry, rw, rh)) {
-        x11_ui_push_damage(host, rx, ry, rw, rh);
+      x11::WindowView mv2{};
+      if (ctx.windows().snapshot(host, mv2)) {
+        x11_shared_damage_union(host, 0, 0, (int32_t)mv2.w, (int32_t)mv2.h);
+        x11_ui_push_damage(host, 0, 0, (int32_t)mv2.w, (int32_t)mv2.h);
       }
     }
   }
@@ -376,10 +377,13 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
       x11_ui_push_resize(host, (int32_t)hv.w, (int32_t)hv.h);
     }
     
-    // If anything was dirty, flush once now if host is ready.
-    int32_t rx2 = 0, ry2 = 0, rw2 = 0, rh2 = 0;
-    if (ctx.windows().consumeDirtyRectIfReady(host, rx2, ry2, rw2, rh2)) {
-      x11_ui_push_damage(host, rx2, ry2, rw2, rh2);
+    // Write full-window damage to shared accumulator and signal.
+    {
+      x11::WindowView mv3{};
+      if (ctx.windows().snapshot(host, mv3)) {
+        x11_shared_damage_union(host, 0, 0, (int32_t)mv3.w, (int32_t)mv3.h);
+        x11_ui_push_damage(host, 0, 0, (int32_t)mv3.w, (int32_t)mv3.h);
+      }
     }
   }
 }
