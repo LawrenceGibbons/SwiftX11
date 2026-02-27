@@ -90,11 +90,23 @@ void postMotion(uint32_t host_xid,
     target = pick_motion_target(*ctx, host_xid, win_x, win_y);
   }
 
-#if !defined(NDEBUG) && SWIFTX11_TRACE
-  fprintf(stderr,
-          "[MOTION] host=0x%08X target=0x%08X drag=0x%08X win=(%d,%d) root=(%d,%d)\n",
-          (unsigned)host_xid, (unsigned)target, (unsigned)ctx->input().drag_xid,
-          (int)win_x, (int)win_y, (int)root_x, (int)root_y);
+#ifndef NDEBUG
+  // Only trace drag-routed motion (high-frequency, but only during grab/drag)
+  if (ctx->input().drag_xid) {
+    static int dragMotionCount = 0;
+    if (++dragMotionCount <= 5) { // first 5 only, to avoid flood
+      fprintf(stderr,
+              "[DRAG_MOTION] host=0x%08X target=0x%08X drag=0x%08X win=(%d,%d)\n",
+              (unsigned)host_xid, (unsigned)target, (unsigned)ctx->input().drag_xid,
+              (int)win_x, (int)win_y);
+    }
+    if (dragMotionCount == 5) {
+      fprintf(stderr, "[DRAG_MOTION] (further traces suppressed)\n");
+    }
+    // Reset counter when drag ends
+  } else {
+    // Not dragging — no trace needed
+  }
 #endif
 
   if (!target) return;
