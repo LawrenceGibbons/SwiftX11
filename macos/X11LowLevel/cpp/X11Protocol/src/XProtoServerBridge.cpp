@@ -617,10 +617,12 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             if (c.isDown) {
               x11::PassiveGrab pg{};
               uint32_t checkWin = under;
+              bool foundGrab = false;
               int safety = 0;
               while (checkWin && safety++ < 64) {
                 if (x11::GrabTable::instance().match(checkWin, c.button,
                         (uint16_t)(c.modsMask & 0xFFu), pg)) {
+                  foundGrab = true;
                   under = pg.grabWindow;
                   break;
                 }
@@ -629,6 +631,13 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
                 if (!ctx.windows().snapshot(checkWin, vw)) break;
                 checkWin = vw.parent_xid;
               }
+            #ifndef NDEBUG
+              fprintf(stderr,
+                      "[BTN_GRAB] under=0x%08X btn=%u grab=%s grabWin=0x%08X\n",
+                      (unsigned)under, (unsigned)c.button,
+                      foundGrab ? "YES" : "no",
+                      foundGrab ? (unsigned)pg.grabWindow : 0u);
+            #endif
             }
           }
 
@@ -638,23 +647,24 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           ctx.input().button(under, c.isDown != 0, c.button, c.buttonsMask);
 
           // ---- CLICK-TO-FOCUS ----
-          // Only change focus when clicking a different host (top-level).
-          // Within the same host, the client manages internal focus via
-          // SetInputFocus. Sending spurious FocusOut/FocusIn to children
-          // on every click breaks xterm's cursor blink and confuses Xt.
-          if (c.isDown != 0 && c.button == 1
-              && ctx.input().focus_host != host) {
+          // Always send FocusIn to the HOST on left-click. xterm's shell
+          // widget relies on receiving FocusIn to propagate focus to the
+          // VT child and start the cursor blink timer.
+          // Only send FocusOut when switching between different hosts.
+          if (c.isDown != 0 && c.button == 1) {
             const uint32_t prev = ctx.input().focus_xid;
+            const bool switchingHosts = (ctx.input().focus_host != host);
 
             ctx.input().setFocus(host, host);
 
           #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
-                    "[FOCUS_SET] host=0x%08X prev=0x%08X new=0x%08X\n",
-                    (unsigned)host, (unsigned)prev, (unsigned)host);
+                    "[FOCUS_SET] host=0x%08X prev=0x%08X switching=%d\n",
+                    (unsigned)host, (unsigned)prev, (int)switchingHosts);
           #endif
 
-            if (prev && prev != host) {
+            // FocusOut only when leaving a different host
+            if (switchingHosts && prev && prev != host) {
               srv->eventOps().sendFocusEvent(ctx, prev, /*is_in=*/false);
             }
             srv->eventOps().sendFocusEvent(ctx, host, /*is_in=*/true);
@@ -694,11 +704,11 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // child field: if delivering to ancestor, child is the subwindow under pointer
           const uint32_t child = (deliver != under) ? under : 0;
 
-        #ifdef X11_TRACE_VERBOSE
+        #ifndef NDEBUG
           fprintf(stderr,
-                  "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u mods=0x%X\n",
+                  "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u drag=0x%08X\n",
                   (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
-                  (int)(c.isDown != 0), (unsigned)c.button, (unsigned)c.modsMask);
+                  (int)(c.isDown != 0), (unsigned)c.button, (unsigned)ctx.input().drag_xid);
         #endif
 
           srv->eventOps().sendButtonEvent(ctx, deliver,
