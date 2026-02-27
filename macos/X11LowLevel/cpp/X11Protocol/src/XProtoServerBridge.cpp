@@ -637,23 +637,27 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // not the host. Subsequent button/motion events will route here.
           ctx.input().button(under, c.isDown != 0, c.button, c.buttonsMask);
 
-          // ---- CLICK-TO-FOCUS (this is the key for xterm caret) ----
-          if (c.isDown != 0 && c.button == 1) { // left press
+          // ---- CLICK-TO-FOCUS ----
+          // Only change focus when clicking a different host (top-level).
+          // Within the same host, the client manages internal focus via
+          // SetInputFocus. Sending spurious FocusOut/FocusIn to children
+          // on every click breaks xterm's cursor blink and confuses Xt.
+          if (c.isDown != 0 && c.button == 1
+              && ctx.input().focus_host != host) {
             const uint32_t prev = ctx.input().focus_xid;
 
-            // Focus should follow the deepest real window under pointer (NOT "deliver").
-            ctx.input().setFocus(host, under);
+            ctx.input().setFocus(host, host);
 
           #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
                     "[FOCUS_SET] host=0x%08X prev=0x%08X new=0x%08X\n",
-                    (unsigned)host, (unsigned)prev, (unsigned)under);
+                    (unsigned)host, (unsigned)prev, (unsigned)host);
           #endif
 
-            if (prev && prev != under) {
+            if (prev && prev != host) {
               srv->eventOps().sendFocusEvent(ctx, prev, /*is_in=*/false);
             }
-            srv->eventOps().sendFocusEvent(ctx, under, /*is_in=*/true);
+            srv->eventOps().sendFocusEvent(ctx, host, /*is_in=*/true);
           }
 
           // Pick a delivery window that selected the relevant mask.
@@ -768,9 +772,13 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
                                             /*child_xid=*/0);
           }
 
-          sendExposeNow(ctx, srv->eventOps(), target);
+          // NOTE: Do NOT send Expose after scroll events. xterm handles
+          // its own drawing (CopyArea + FillRectangle) in response to
+          // button 4/5. A spurious full-window Expose triggers redundant
+          // clear+redraw that races with the scrollbar thumb update,
+          // causing the scrollbar to vanish.
           break;
-        }   
+        }
           
           
         // ------------------- Key
