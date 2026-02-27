@@ -79,11 +79,33 @@ SetPresentable → setPresentable + fillWindowBackgroundIfReady + sendExposeSubt
 ### Surface Resize Re-expose
 When `x11_surface_update` detects a surface size change (e.g., initial 64×64 → real 819×484), it queues a `SurfaceResized` host command via `x11_proto_bridge_surface_resized(hostXid)`. The handler calls `sendExposeSubtree` + marks dirty + pushes damage, ensuring all mapped children get re-exposed at the correct geometry. This fixes a timing race where `setContentSize` is deferred via `DispatchQueue.main.async` but surface registration happens at the NSWindow's default (small) size.
 
+### Input Event Routing
+
+**Button events** (XProtoServerBridge.cpp `HostCmdType::Button`):
+1. Pick deepest mapped window under pointer BEFORE updating drag state
+2. Check passive grabs (GrabButton) by walking from child up to host
+3. Call `InputState::button(under, ...)` — sets `drag_xid` on 0→nonzero transition
+4. Walk up from `under` to find window with ButtonPress/ButtonRelease mask
+5. Deliver ButtonPress/ButtonRelease to that window
+
+**Motion events** (XProtoNotifyBridge.cpp `postMotion`):
+- During drag (`drag_xid != 0`): route directly to `drag_xid`
+- Otherwise: `pick_motion_target` walks descendants, finds deepest mapped window containing pointer, then walks up to find PointerMotionMask
+
+**Focus events** (XProtoServerBridge.cpp `HostCmdType::Focus`):
+- Emulates WM SetInputFocus: sends FocusIn to HOST via `sendFocusEventDirect()` (bypasses FocusChangeMask check)
+- Toolkit (Xt) receives FocusIn on shell → calls SetInputFocus (opcode 42) to propagate to child widget
+- SetInputFocus handler sends FocusIn/FocusOut directly via `sendEvent32` (also bypasses mask check)
+
+**Option+click → button 2**: Swift remaps Option+left-click to button 2 (middle mouse) for Xaw scrollbar thumb drag. Stored in `optionClickButton` for consistent mouseUp/drag handling.
+
+**X11 state field**: `toX11State(buttons, mods)` maps internal button bits (0-4) to X11 wire positions (bits 8-12) and modifier bits to standard X11 positions. Used by all event builders (button, motion, crossing, key).
+
 ## Key Files
 
 | File | Role |
 |------|------|
-| `SwiftX11/UI/Windows/X11WindowHost.swift` | Host window, surface allocation, Metal/software rendering |
+| `SwiftX11/UI/Windows/X11WindowHost.swift` | Host window, surface allocation, Metal/software rendering, input events |
 | `SwiftX11/Core/WindowRegistry.swift` | Cocoa window management, noteX11WindowCreated, mapWindow |
 | `X11LowLevel/cpp/X11Protocol/include/Core/SurfaceDesc.hpp` | Surface descriptor struct |
 | `X11LowLevel/cpp/X11Protocol/include/Core/DrawableSurfaceRegistry.hpp` | Thread-safe XID→surface registry |
@@ -92,13 +114,22 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp` | PutImage, CopyArea, ClearArea, text ops |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/ShapeOps.cpp` | PolyArc, PolyFillArc, PolyFillRectangle, PolyLine, PolySegment, PolyPoint |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp` | CreateWindow, MapWindow, ConfigureWindow, rootless resize |
-| `X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp` | Host command dispatch (SetPresentable, SurfaceResized, RootlessResize), sendExposeSubtree |
+| `X11LowLevel/cpp/X11Protocol/src/Ops/EventOps.cpp` | MotionNotify, ButtonPress/Release, FocusIn/Out, crossing events |
+| `X11LowLevel/cpp/X11Protocol/src/Ops/GrabOps.cpp` | GrabPointer, GrabButton, GrabKeyboard, passive/active grabs |
+| `X11LowLevel/cpp/X11Protocol/src/Ops/QueryOps.cpp` | SetInputFocus, GetInputFocus, QueryPointer, TranslateCoordinates |
+| `X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp` | Host command dispatch (Focus, Button, ScrollTicks, SetPresentable, SurfaceResized) |
+| `X11LowLevel/cpp/X11Protocol/src/XProtoNotifyBridge.cpp` | Motion event routing, pick_motion_target, cursor application |
 | `X11LowLevel/cpp/X11Protocol/src/SurfaceBridge.cpp` | Surface registration, size-change detection → SurfaceResized |
 | `X11LowLevel/cpp/X11Protocol/src/Utils/Damage.hpp` | damageOrDirty() helper — translates child→host, writes shared accumulator + signals |
 | `X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp` | UI command queue + shared damage accumulator (x11_shared_damage_union/consume/clear) |
+| `X11LowLevel/cpp/X11Protocol/include/Core/InputState.hpp` | Pointer/button/focus state, drag_xid management |
+| `X11LowLevel/cpp/X11Protocol/include/Core/GrabTable.hpp` | Passive grab table (GrabButton) + active pointer grab (GrabPointer) |
+| `X11LowLevel/cpp/X11Protocol/include/Core/X11Modifiers.hpp` | toX11State(): maps internal button/mod bits to X11 wire positions |
+| `X11LowLevel/cpp/X11Protocol/include/Core/XEventMask.hpp` | X11 event mask constants (FocusChange, ButtonPress, PointerMotion, etc.) |
 | `X11LowLevel/src/x11_requests.c` | Request queue (C), coalescing, rootless resize bridging |
 | `SwiftX11/Core/XServerController.swift` | Server startup, version banner |
 | `SwiftX11/UI/Windows/X11MetalRenderer.swift` | Metal texture management, partial sub-rect uploads |
+| `X11LowLevel/include/SwiftX11Version.h` | Single source of truth for version string |
 | `docs/TODO.md` | Comprehensive project roadmap |
 
 ## Build & Run
@@ -107,6 +138,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Build target: SwiftX11 (macOS app)
 - Test clients: `xeyes`, `xterm` connected via `DISPLAY=:0`
 - Scrollbar test: `xterm -sb -rightbar -bc`
+- Scrollbar thumb drag: Option+click+drag (emulates middle button)
 
 ## Development Guidelines
 
@@ -117,6 +149,23 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Call `damageOrDirty(ctx, drawable)` after modifying window pixels
 - PolyFillRectangle is the reference pattern for correct stride-aware rasterization
 
+### Event State Fields
+- **Always** use `x11::input::toX11State(buttons, mods)` for the state field in all events (button, motion, crossing, key)
+- Internal button bits are at positions 0-4; X11 wire format requires bits 8-12
+- Internal modifier bits: Shift=0, Ctrl=1, Alt/Option=2, Cmd=3; X11 wire: Shift=0, Ctrl=2, Mod1=3, Mod4=6
+
+### Input Event Patterns
+- Button handler picks deepest window BEFORE `InputState::button()` (which sets `drag_xid`)
+- Passive grabs (GrabButton) are checked by walking from deepest child up to host
+- Motion events route to `drag_xid` during active drags, bypassing `pick_motion_target`
+- Focus uses `sendFocusEventDirect()` (bypasses FocusChangeMask) to emulate WM SetInputFocus behaviour
+- **Do NOT add click-to-focus in Button handler** — Focus handler (Cocoa becomeKey) handles it
+
+### Reply Requirements
+- Requests that generate replies MUST call `ctx.reply().sendReply32(seq, ...)` — missing replies cause XCB sequence desync crashes
+- **Known issue**: GrabPointer (opcode 26) reply is currently disabled — adding it caused XCB "Unknown sequence number" crash. Needs investigation (may be a sequence numbering issue in the reply system).
+- GrabKeyboard (opcode 31) reply works correctly with the same pattern
+
 ### Surface Lifecycle
 - Surfaces are keyed by **host (top-level) window XID** in the registry
 - Child windows resolve to host surface + offset via `computeOffsetInHost`
@@ -125,13 +174,13 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 ### Debugging
 - **Two trace tiers**:
-  - `#ifndef NDEBUG` (debug builds): Key lifecycle/diagnostic traces that are always on in debug — `[LIFECYCLE]`, `[BG_FILL]`, `[BG_FILL_RETRY]`, `[EXPOSE_SUBTREE]`, `[SET_PRESENTABLE]`, `[SURFACE_UPDATE]`, `[SURFACE_RESIZED]`
-  - `#ifdef X11_TRACE_VERBOSE`: High-frequency per-op traces gated behind a separate flag — `[RESOLVE]`, `[COPY_SURFACE]`, `[DAMAGE]`, `[DISPATCH]`, `[FOCUS]`, `[BTN]`, `[SCROLL]`, `[KEY]`, `[TEXT]`, `[CopyArea]`, `[ClearArea]`, `[CROSS]`, `[SEND]`, plus all `ctx.tracef()` calls (~71 call sites silenced at once)
+  - `#ifndef NDEBUG` (debug builds): Key lifecycle/diagnostic traces that are always on in debug — `[LIFECYCLE]`, `[BG_FILL]`, `[BG_FILL_RETRY]`, `[EXPOSE_SUBTREE]`, `[SET_PRESENTABLE]`, `[SURFACE_UPDATE]`, `[SURFACE_RESIZED]`, `[BTN_GRAB]`, `[BTN]`, `[FOCUS_DIRECT]`, `[SetInputFocus]`, `[GrabPointer]`, `[UngrabPointer]`, `[DRAG_MOTION]`
+  - `#ifdef X11_TRACE_VERBOSE`: High-frequency per-op traces gated behind a separate flag — `[RESOLVE]`, `[COPY_SURFACE]`, `[DAMAGE]`, `[DISPATCH]`, `[FOCUS]`, `[SCROLL]`, `[KEY]`, `[TEXT]`, `[CopyArea]`, `[ClearArea]`, `[CROSS]`, `[SEND]`, plus all `ctx.tracef()` calls (~71 call sites silenced at once)
 - To enable verbose tracing: add `-DX11_TRACE_VERBOSE` to OTHER_CPLUSPLUSFLAGS in Xcode build settings
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v0.4.3)
+### Current State (v0.6.0)
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
 - Host windows resolve directly to their Swift surface
 - Child windows resolve to host surface + computed offset (with negative offset clamping)
@@ -141,6 +190,18 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Damage rects threaded end-to-end**: C++ draw ops report precise rects → shared accumulator → Metal partial texture upload
 - **Shared damage accumulator**: `x11_shared_damage_union/consume` in UICommandQueue.cpp — mutex-protected, 64-entry fixed array, bypasses UI command queue drain latency
 - **Metal partial uploads**: `X11MetalRenderer.updateTexture()` uses `MTLTexture.replace(region:)` for sub-rect uploads; `fullUploadCountdown` forces full uploads for first 3 frames after texture creation
-- **Dead code removed** (v0.4.3): `WindowTable::DirtyRect/markDirtyRect/consumeDirtyRectIfReady`, `X11_REQ_DAMAGE/x11_requests_push_damage/x11_server_emit_window_damage`, `UICommand::Type::Damage` handler, Swift `DirtyRectU/dirtyByHostU/noteDamageRect/handleDamageRect/hostSizeU`
-- xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly
+- **Focus delivery**: `sendFocusEventDirect()` bypasses FocusChangeMask check, emulating WM SetInputFocus. Sends FocusIn to HOST on Cocoa becomeKey; toolkit (Xt) propagates to children via SetInputFocus (opcode 42).
+- **Button routing**: picks deepest mapped child before `InputState::button()`, checks passive grabs (GrabButton), correctly sets `drag_xid` to child window
+- **Motion state**: `toX11State()` used everywhere (button bits at X11 positions 8-12)
+- **Option+click → button 2**: macOS middle-mouse emulation for Xaw scrollbar thumb drag
+- **GrabPointer reply disabled**: causes XCB sequence desync; needs investigation
+- xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly — cursor blinks, scrollbar stays visible, trackpad scrolling works, Option+click thumb drag works
 - xeyes works correctly
+
+### Next Major Task: Multi-Client (No Globals)
+The next architectural milestone is eliminating global state:
+- Introduce `XServer` as an instance with owned registries (resources, atoms, colormaps, fonts, drawables)
+- Each connection becomes a `Client` object: byteOrder, seq, idBase/idMask, transport, pending replies/events
+- No global "current client" pointers; dispatcher always routes via `(XServer&, Client&)`
+
+After that: eliminate remaining C layer, then implement full X11 font handling.
