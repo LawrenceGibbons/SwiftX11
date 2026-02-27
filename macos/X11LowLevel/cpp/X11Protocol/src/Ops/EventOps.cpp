@@ -585,6 +585,43 @@ void EventOps::sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in)
                     same);
 
   ctx.transport().sendEvent32(wid, ev);
-} 
-  
+}
+
+
+void EventOps::sendFocusEventDirect(XProtoContext& ctx, uint32_t wid, bool is_in)
+{
+  if (!wid) return;
+
+  const x11::WindowView* vw = ctx.window(wid);
+  if (!vw || vw->owner_fd <= 0) return;
+
+  // NOTE: No FocusChangeMask check — this emulates SetInputFocus behaviour
+  // where the server always delivers FocusIn/FocusOut to the focus target.
+  // Used by our rootless WM (Cocoa focus / click-to-focus) to ensure the
+  // top-level shell widget receives FocusIn so it can propagate to children.
+
+  uint8_t ev[32];
+  const uint8_t type   = is_in ? 9 : 10;   // FocusIn / FocusOut
+  const uint8_t detail = 3;                // NotifyNonlinear
+  const uint8_t mode   = 0;                // NotifyNormal
+  const uint8_t same   = 1;
+
+  buildFocusEvent32(ev,
+                    type,
+                    detail,
+                    ctx.transport().lastSeq(),
+                    wid,
+                    mode,
+                    same);
+
+#ifndef NDEBUG
+  fprintf(stderr, "[FOCUS_DIRECT] wid=0x%08X %s mask=0x%08X\n",
+          (unsigned)wid, is_in ? "FocusIn" : "FocusOut",
+          (unsigned)vw->event_mask);
+#endif
+
+  ctx.transport().sendEvent32(wid, ev);
+}
+
+
 } // namespace x11

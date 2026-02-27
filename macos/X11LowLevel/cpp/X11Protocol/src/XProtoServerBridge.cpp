@@ -498,90 +498,41 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           
           
         // ------------------- Focus
+        // Emulates WM SetInputFocus: FocusIn always goes to the HOST
+        // (top-level shell) so the toolkit (Xt) can internally propagate
+        // focus to the correct child widget.  Uses sendFocusEventDirect
+        // to bypass FocusChangeMask (matching real SetInputFocus behaviour).
         case HostCmdType::Focus: {
           const uint32_t host = c.xid;
           if (!host) break;
 
           const uint32_t oldFocus = ctx.input().focus_xid;
 
-          auto isMappedWin = [&](uint32_t xid) -> bool {
-            if (!xid) return false;
-            x11::WindowView vw{};
-            if (!ctx.windows().snapshot(xid, vw)) return false;
-            return vw.mapped;
-          };
-
-          auto belongsToHost = [&](uint32_t xid) -> bool {
-            return xid && (ctx.windows().topLevelAncestorOf(xid) == host);
-          };
-
           if (c.focused) {
             ctx.input().focus_host = host;
 
-            // 0) Prefer keeping the existing focus if it still belongs to this host and is mapped.
-            uint32_t target = 0;
-            if (belongsToHost(oldFocus) && isMappedWin(oldFocus)) {
-              target = oldFocus;
+            // Focus the HOST — let the toolkit propagate to children
+            // via SetInputFocus (opcode 42).
+            ctx.input().focus_xid = host;
+            if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = host;
+
+            // FocusOut to previous focus window (if different)
+            if (oldFocus && oldFocus != host) {
+              srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
             }
-
-            // 1) Otherwise, prefer pointer owner if it belongs to this host, is mapped, and isn't just host.
-            if (!target) {
-              uint32_t p = ctx.input().pointer_xid;
-              if (p != 0 && p != host && belongsToHost(p) && isMappedWin(p)) {
-                target = p;
-              }
-            }
-
-            // 2) Otherwise choose deepest mapped under current host-local pointer.
-            if (!target) {
-              target = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
-                                                               ctx.input().win_x_u,
-                                                               ctx.input().win_y_u);
-              if (target && !isMappedWin(target)) target = 0;
-            }
-
-            // 3) Last resort: focus the host itself.
-            if (!target) target = host;
-
-            // Update focus bookkeeping.
-            ctx.input().focus_xid = target;
-
-            // Pointer_xid follow-focus only when not dragging/grabbing (keep your behavior).
-            if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = target;
-
-            // ---- CRITICAL: emit FocusOut/FocusIn to clients ----
-            // Only send FocusOut if oldFocus was real and on this host.
-            if (oldFocus && oldFocus != target && belongsToHost(oldFocus)) {
-              srv->eventOps().sendFocusEvent(ctx, oldFocus, /*is_in=*/false);
-            }
-            // FocusIn for new target (host or child).
-            srv->eventOps().sendFocusEvent(ctx, target, /*is_in=*/true);
-
-        #ifdef X11_TRACE_VERBOSE
-            fprintf(stderr, "[FOCUS] host=0x%08X old=0x%08X new=0x%08X pointer_xid=0x%08X win=(%d,%d)\n",
-                    (unsigned)host,
-                    (unsigned)oldFocus,
-                    (unsigned)ctx.input().focus_xid,
-                    (unsigned)ctx.input().pointer_xid,
-                    (int)ctx.input().win_x_u,
-                    (int)ctx.input().win_y_u);
-        #endif
+            // FocusIn to HOST — always delivered (bypass mask check)
+            srv->eventOps().sendFocusEventDirect(ctx, host, /*is_in=*/true);
 
           } else {
-            // Losing focus on this host: emit FocusOut for current focus if it belongs to this host.
+            // Losing focus on this host
             if (ctx.input().focus_host == host) ctx.input().focus_host = 0;
 
-            if (oldFocus && belongsToHost(oldFocus)) {
-              srv->eventOps().sendFocusEvent(ctx, oldFocus, /*is_in=*/false);
+            if (oldFocus) {
+              srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
             }
 
             ctx.input().focus_xid = 0;
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
-
-        #ifdef X11_TRACE_VERBOSE
-            fprintf(stderr, "[FOCUS] host=0x%08X lost focus (old=0x%08X)\n",
-                    (unsigned)host, (unsigned)oldFocus);
-        #endif
           }
 
           break;
@@ -646,29 +597,10 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           // not the host. Subsequent button/motion events will route here.
           ctx.input().button(under, c.isDown != 0, c.button, c.buttonsMask);
 
-          // ---- CLICK-TO-FOCUS ----
-          // Always send FocusIn to the HOST on left-click. xterm's shell
-          // widget relies on receiving FocusIn to propagate focus to the
-          // VT child and start the cursor blink timer.
-          // Only send FocusOut when switching between different hosts.
-          if (c.isDown != 0 && c.button == 1) {
-            const uint32_t prev = ctx.input().focus_xid;
-            const bool switchingHosts = (ctx.input().focus_host != host);
-
-            ctx.input().setFocus(host, host);
-
-          #ifdef X11_TRACE_VERBOSE
-            fprintf(stderr,
-                    "[FOCUS_SET] host=0x%08X prev=0x%08X switching=%d\n",
-                    (unsigned)host, (unsigned)prev, (int)switchingHosts);
-          #endif
-
-            // FocusOut only when leaving a different host
-            if (switchingHosts && prev && prev != host) {
-              srv->eventOps().sendFocusEvent(ctx, prev, /*is_in=*/false);
-            }
-            srv->eventOps().sendFocusEvent(ctx, host, /*is_in=*/true);
-          }
+          // NOTE: No click-to-focus here. Focus is handled by the
+          // HostCmdType::Focus handler (Cocoa becomeKey/resignKey) which
+          // sends FocusIn to the HOST. The toolkit (Xt) then propagates
+          // to children via SetInputFocus.
 
           // Pick a delivery window that selected the relevant mask.
           auto wantsBtn = [&](uint32_t xid) -> bool {

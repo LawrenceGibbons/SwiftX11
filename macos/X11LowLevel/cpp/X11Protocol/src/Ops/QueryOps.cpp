@@ -632,8 +632,8 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   (void)revertTo; // stored but unused for now
 
 #ifndef NDEBUG
-  ctx.tracef("[QueryOps] SetInputFocus old=0x%08X new=0x%08X revertTo=%u\n",
-             (unsigned)oldFocus, (unsigned)newFocus, (unsigned)revertTo);
+  fprintf(stderr, "[SetInputFocus] old=0x%08X new=0x%08X revertTo=%u\n",
+          (unsigned)oldFocus, (unsigned)newFocus, (unsigned)revertTo);
 #endif
 }
 

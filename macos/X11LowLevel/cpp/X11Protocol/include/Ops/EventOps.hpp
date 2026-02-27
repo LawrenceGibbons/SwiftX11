@@ -114,7 +114,11 @@ namespace x11 {
     
     
     void sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
-    
+
+    // WM-initiated focus: bypasses FocusChangeMask check (matches SetInputFocus
+    // behaviour — the focus target always receives the event).
+    void sendFocusEventDirect(XProtoContext& ctx, uint32_t wid, bool is_in);
+
   private:
     XProtoContext& ctx_;
   };
