@@ -78,13 +78,22 @@ void postMotion(uint32_t host_xid,
   // Only deliver MotionNotify when inside (or dragging/grab)
   if (!deliver) return;
 
-  // Route based on WINDOW-LOCAL coords (win_x/win_y), not root coords
-  const uint32_t target = pick_motion_target(*ctx, host_xid, win_x, win_y);
+  // During an active grab/drag, route motion to the grab owner.
+  // This is essential for scrollbar drag: xterm's scrollbar installs a
+  // passive grab via GrabButton; when button 1 is pressed, drag_xid is
+  // set to the scrollbar child. All subsequent motion must go there.
+  uint32_t target;
+  if (ctx->input().drag_xid) {
+    target = ctx->input().drag_xid;
+  } else {
+    // Normal case: route based on WINDOW-LOCAL coords
+    target = pick_motion_target(*ctx, host_xid, win_x, win_y);
+  }
 
 #if !defined(NDEBUG) && SWIFTX11_TRACE
   fprintf(stderr,
-          "[MOTION] host=0x%08X target=0x%08X win=(%d,%d) root=(%d,%d)\n",
-          (unsigned)host_xid, (unsigned)target,
+          "[MOTION] host=0x%08X target=0x%08X drag=0x%08X win=(%d,%d) root=(%d,%d)\n",
+          (unsigned)host_xid, (unsigned)target, (unsigned)ctx->input().drag_xid,
           (int)win_x, (int)win_y, (int)root_x, (int)root_y);
 #endif
 

@@ -33,6 +33,7 @@ extern "C" {
 #include "Core/XEventMask.hpp"
 #include "Core/X11Modifiers.hpp"
 #include "Core/InputRouting.hpp"
+#include "Core/GrabTable.hpp"
 #include "Core/timestamp.hpp"
 #include "SwiftX11Bridge.h"
 #include "WireEvents.hpp"
@@ -588,24 +589,53 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
 
         // ------------------- Button
         case HostCmdType::Button: {
-          // Canonicalize buttons + drag grab semantics in InputState
-          ctx.input().button(c.xid, c.isDown != 0, c.button, c.buttonsMask);
           ctx.input().mods = c.modsMask;
 
           const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
           if (!host) break;
 
-          // If a drag grab is active, route to grab owner (classic behavior).
-          // Otherwise, pick the deepest mapped window under the pointer.
+          // ---- STEP 1: Pick the deepest window BEFORE updating drag state ----
+          // This is critical: InputState::button() sets drag_xid on the
+          // 0→nonzero button transition. We must pick the child under the
+          // pointer first, so drag_xid gets set to the correct child window
+          // (not the host).
           uint32_t under = 0;
           if (ctx.input().drag_xid) {
+            // Already in an active grab/drag — route to grab owner
             under = ctx.input().drag_xid;
           } else {
             under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
                                                             ctx.input().win_x_u,
                                                             ctx.input().win_y_u);
             if (!under) under = host;
+
+            // ---- STEP 2: Check passive grabs (GrabButton) on press ----
+            // Walk from the deepest window up to the host checking each
+            // ancestor for a matching passive grab. If found, the grab
+            // window becomes the button event target and the implicit
+            // pointer grab owner (via drag_xid).
+            if (c.isDown) {
+              x11::PassiveGrab pg{};
+              uint32_t checkWin = under;
+              int safety = 0;
+              while (checkWin && safety++ < 64) {
+                if (x11::GrabTable::instance().match(checkWin, c.button,
+                        (uint16_t)(c.modsMask & 0xFFu), pg)) {
+                  under = pg.grabWindow;
+                  break;
+                }
+                if (checkWin == host) break;
+                x11::WindowView vw{};
+                if (!ctx.windows().snapshot(checkWin, vw)) break;
+                checkWin = vw.parent_xid;
+              }
+            }
           }
+
+          // ---- STEP 3: Update button state with the CORRECT target ----
+          // Now drag_xid will be set to 'under' (the child/grab window),
+          // not the host. Subsequent button/motion events will route here.
+          ctx.input().button(under, c.isDown != 0, c.button, c.buttonsMask);
 
           // ---- CLICK-TO-FOCUS (this is the key for xterm caret) ----
           if (c.isDown != 0 && c.button == 1) { // left press
@@ -625,9 +655,7 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
             }
             srv->eventOps().sendFocusEvent(ctx, under, /*is_in=*/true);
           }
-          
-          
-          
+
           // Pick a delivery window that selected the relevant mask.
           auto wantsBtn = [&](uint32_t xid) -> bool {
             if (!xid) return false;
