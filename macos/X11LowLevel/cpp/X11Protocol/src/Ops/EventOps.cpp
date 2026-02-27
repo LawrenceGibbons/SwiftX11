@@ -404,7 +404,7 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
   abs.absX = (int)(root_x - (int32_t)ex);
   abs.absY = (int)(root_y - (int32_t)ey);
 
-  const uint16_t st = (uint16_t)(buttons | mods);
+  const uint16_t st = x11::input::toX11State(buttons, mods);
 
   uint8_t ev[32];
   buildMotionEvent32(ev,
