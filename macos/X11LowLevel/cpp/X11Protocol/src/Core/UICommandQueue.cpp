@@ -251,3 +251,96 @@ extern "C" void x11_ui_push_damage(uint32_t xid, int32_t x_u, int32_t y_u, int32
   c.h_u = h_u;
   push_cmd(c);
 }
+
+// =============================================================================
+// Shared damage accumulator — bypasses UI command queue latency.
+// C++ writes here from the server thread; Swift reads at present time.
+// =============================================================================
+namespace {
+
+struct SharedDamageEntry {
+  uint32_t host_xid = 0;
+  int32_t  x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  bool     valid = false;
+};
+
+constexpr size_t kMaxSharedDamageHosts = 64;
+std::mutex g_sd_mu;
+SharedDamageEntry g_sd_entries[kMaxSharedDamageHosts];
+
+} // namespace
+
+extern "C" void x11_shared_damage_union(uint32_t host_xid,
+                                        int32_t x, int32_t y,
+                                        int32_t w, int32_t h) {
+  if (host_xid == 0 || w <= 0 || h <= 0) return;
+
+  const int32_t nx1 = x + w;
+  const int32_t ny1 = y + h;
+
+  std::lock_guard<std::mutex> lock(g_sd_mu);
+
+  // Find existing entry for this host
+  for (size_t i = 0; i < kMaxSharedDamageHosts; i++) {
+    auto& e = g_sd_entries[i];
+    if (e.host_xid == host_xid) {
+      if (e.valid) {
+        if (x   < e.x0) e.x0 = x;
+        if (y   < e.y0) e.y0 = y;
+        if (nx1 > e.x1) e.x1 = nx1;
+        if (ny1 > e.y1) e.y1 = ny1;
+      } else {
+        e.x0 = x;  e.y0 = y;
+        e.x1 = nx1; e.y1 = ny1;
+        e.valid = true;
+      }
+      return;
+    }
+    if (e.host_xid == 0) {
+      // Empty slot — claim it
+      e.host_xid = host_xid;
+      e.x0 = x;  e.y0 = y;
+      e.x1 = nx1; e.y1 = ny1;
+      e.valid = true;
+      return;
+    }
+  }
+  // Table full — silently drop (extremely unlikely with 64 slots)
+}
+
+extern "C" bool x11_shared_damage_consume(uint32_t host_xid,
+                                          int32_t* out_x, int32_t* out_y,
+                                          int32_t* out_w, int32_t* out_h) {
+  if (host_xid == 0) return false;
+
+  std::lock_guard<std::mutex> lock(g_sd_mu);
+
+  for (size_t i = 0; i < kMaxSharedDamageHosts; i++) {
+    auto& e = g_sd_entries[i];
+    if (e.host_xid == host_xid) {
+      if (!e.valid) return false;
+      if (out_x) *out_x = e.x0;
+      if (out_y) *out_y = e.y0;
+      if (out_w) *out_w = e.x1 - e.x0;
+      if (out_h) *out_h = e.y1 - e.y0;
+      e.valid = false;
+      e.x0 = e.y0 = e.x1 = e.y1 = 0;
+      return true;
+    }
+  }
+  return false;
+}
+
+extern "C" void x11_shared_damage_clear(uint32_t host_xid) {
+  if (host_xid == 0) return;
+
+  std::lock_guard<std::mutex> lock(g_sd_mu);
+
+  for (size_t i = 0; i < kMaxSharedDamageHosts; i++) {
+    auto& e = g_sd_entries[i];
+    if (e.host_xid == host_xid) {
+      e = SharedDamageEntry{};  // clear slot for reuse
+      return;
+    }
+  }
+}

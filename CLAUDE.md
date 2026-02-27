@@ -40,12 +40,19 @@ resolveDrawableRW(ctx, childXid, dst)
 
 ### Damage/Present Pipeline
 ```
-C++ draw op → damageOrDirty(ctx, drawable)
+C++ draw op → damageOrDirty(ctx, drawable, x, y, w, h)
   → routes to host window (topLevelAncestorOf)
-  → x11_requests_push_damage(host) or markDirty(host)
-  → Swift: WindowRegistry.noteDamageRect() → schedulePresent()
-  → X11View renders frame (software blit or Metal)
+  → translates child-local rect to host-surface coords
+  → x11_shared_damage_union(host, x, y, w, h)  [shared accumulator, mutex-protected]
+  → x11_ui_push_damage(host, x, y, w, h)       [UI command queue signal]
+  → Swift: schedulePresent(host)
+  → present timer fires (20ms coalesce)
+  → x11_shared_damage_consume(host) → DamageRect
+  → Metal: partial texture upload via MTLTexture.replace(region:)
+  → Software: full CGImage blit (no partial support)
 ```
+
+**Key design**: The shared damage accumulator (`x11_shared_damage_union/consume`) bypasses UI command queue drain latency. C++ writes at draw time, Swift reads at present time — zero queue delay. The UI command queue signal only triggers `schedulePresent()`; rect data comes from the accumulator.
 
 ### Resize Flow
 ```
@@ -87,9 +94,11 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp` | CreateWindow, MapWindow, ConfigureWindow, rootless resize |
 | `X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp` | Host command dispatch (SetPresentable, SurfaceResized, RootlessResize), sendExposeSubtree |
 | `X11LowLevel/cpp/X11Protocol/src/SurfaceBridge.cpp` | Surface registration, size-change detection → SurfaceResized |
-| `X11LowLevel/cpp/X11Protocol/src/Utils/Damage.hpp` | damageOrDirty() helper |
+| `X11LowLevel/cpp/X11Protocol/src/Utils/Damage.hpp` | damageOrDirty() helper — translates child→host, writes shared accumulator + signals |
+| `X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp` | UI command queue + shared damage accumulator (x11_shared_damage_union/consume/clear) |
 | `X11LowLevel/src/x11_requests.c` | Request queue (C), coalescing, rootless resize bridging |
 | `SwiftX11/Core/XServerController.swift` | Server startup, version banner |
+| `SwiftX11/UI/Windows/X11MetalRenderer.swift` | Metal texture management, partial sub-rect uploads |
 | `docs/TODO.md` | Comprehensive project roadmap |
 
 ## Build & Run
@@ -122,26 +131,16 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (post scrollbar fix, v0.3.1)
-- **C framebuffers are dead code**: No callers remain in C++ protocol layer. `g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h` can be deleted.
+### Current State (v0.4.3)
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
 - Host windows resolve directly to their Swift surface
 - Child windows resolve to host surface + computed offset (with negative offset clamping)
 - Present path copies the single host surface (no compositing)
 - `fillWindowBackgroundIfReady` in `sendExposeSubtree` retries background fills after SetPresentable
 - `SurfaceResized` mechanism re-exposes children when surface dimensions change
+- **Damage rects threaded end-to-end**: C++ draw ops report precise rects → shared accumulator → Metal partial texture upload
+- **Shared damage accumulator**: `x11_shared_damage_union/consume` in UICommandQueue.cpp — mutex-protected, 64-entry fixed array, bypasses UI command queue drain latency
+- **Metal partial uploads**: `X11MetalRenderer.updateTexture()` uses `MTLTexture.replace(region:)` for sub-rect uploads; `fullUploadCountdown` forces full uploads for first 3 frames after texture creation
+- **Dead code removed** (v0.4.3): `WindowTable::DirtyRect/markDirtyRect/consumeDirtyRectIfReady`, `X11_REQ_DAMAGE/x11_requests_push_damage/x11_server_emit_window_damage`, `UICommand::Type::Damage` handler, Swift `DirtyRectU/dirtyByHostU/noteDamageRect/handleDamageRect/hostSizeU`
 - xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly
-
-## Recently Fixed: xterm Scrollbar (v0.3.1)
-
-Two root causes were identified and fixed:
-
-### 1. Surface size timing race
-`setContentSize` is deferred via `DispatchQueue.main.async` but `scheduleAttachSettle` (which registers the surface) is queued first. FIFO ordering means the surface is registered at the NSWindow's default (small, e.g. 64×64) size. Child windows at large offsets (e.g., scrollbar at x=804) fall outside the surface and `resolveDrawableRW` produces effW=0, rejecting the resolve.
-
-**Fix**: `x11_surface_update` in `SurfaceBridge.cpp` detects surface dimension changes and queues a `SurfaceResized` host command, which triggers `sendExposeSubtree` to re-expose all mapped descendants at the correct geometry.
-
-### 2. Negative offset rejection
-xterm places its scrollbar at y=-1 to hide a border pixel. `resolveDrawableRW` was hard-rejecting any negative offset (`if (ox < 0 || oy < 0) return false`).
-
-**Fix**: `DrawableRW.cpp` now clamps negative offsets to 0 and reduces effective dimensions by the clipped amount, allowing children at positions like y=-1 to render (shifted by at most a few pixels — visually negligible).
+- xeyes works correctly

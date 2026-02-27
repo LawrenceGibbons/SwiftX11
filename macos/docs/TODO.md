@@ -1,6 +1,6 @@
 SwiftX11 TODO
 
-Last updated: 2026-02-25
+Last updated: 2026-02-27
 
 ⸻
 
@@ -44,6 +44,8 @@ Damage / present (Swift-driven)
   •  ✅ C++ reports damage as rects per host/top-level window (no “always damage” hacks).
   •  ✅ Swift unions rects and schedules exactly one present per host per runloop tick.
   •  ✅ Metal partial texture upload: damage rect threaded through present pipeline; `MTLTexture.replace(region:)` uploads only the dirty sub-rect (previous frame retained in texture).
+  •  ✅ Shared damage accumulator (`x11_shared_damage_union/consume`): bypasses UI command queue drain latency; C++ writes at draw time, Swift reads at present time.
+  •  ✅ Dead code cleanup: removed old DirtyRect accumulator, X11_REQ_DAMAGE C path, Swift DirtyRectU/noteDamageRect.
 
 Multi-client (no globals)
   •  Introduce `XServer` as an instance with owned registries (resources, atoms, colormaps, fonts, drawables).
@@ -151,23 +153,25 @@ ConfigureWindow
 5️⃣ Damage & Present Pipeline (Rootless Architecture)
 
 Current bring-up hacks to remove
-  •  Remove temporary “always damage” routing.
-  •  Eliminate unconditional push_damage workarounds.
+  •  ✅ Remove temporary “always damage” routing.
+  •  ✅ Eliminate unconditional push_damage workarounds.
 
 Final routing model
-  •  pixmap ops → never enqueue present
-  •  child window ops → route to top-level host
-  •  top-level ops → damage self
-  •  Ensure `server.queueDamage(host, rects)` always results in exactly one UI_DAMAGE per host per runloop tick`
+  •  ✅ pixmap ops → never enqueue present
+  •  ✅ child window ops → route to top-level host (via damageOrDirty + topLevelAncestorOf)
+  •  ✅ top-level ops → damage self
+  •  ✅ Exactly one present per host per runloop tick (20ms coalesce timer in schedulePresent)
 
 Dirty/presentable gating
-  •  Validate consumeDirtyIfReady semantics.
-  •  Ensure SetPresentable triggers one present if dirty.
+  •  ✅ SetPresentable triggers full-window damage via shared accumulator + signal.
   •  Remove race between ROOTLESS_RESIZE and snapshot.
 
 Damage precision
-  •  Pass rects instead of full-window damage.
-  •  Implement rect unioning on Swift side.
+  •  ✅ Pass rects instead of full-window damage (damageOrDirty with x,y,w,h).
+  •  ✅ Shared accumulator unions rects (x11_shared_damage_union); Swift reads at present time.
+  •  ✅ Metal partial texture upload (MTLTexture.replace(region:)).
+  •  Software render path: still full CGImage blit (CALayer doesn't support incremental updates — deferred).
+  •  Future: partial surface copy in x11_server_copy_window_bgra (currently copies full surface for thread safety).
 
 ⸻
 

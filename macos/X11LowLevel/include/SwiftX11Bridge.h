@@ -167,6 +167,24 @@ void x11_surface_update(uint32_t host_xid,
 void x11_surface_clear(uint32_t host_xid);
 
 // -------------------------------------------------------------------------------------
+// Shared damage accumulator  (C++ writes, Swift reads — no queue latency)
+// -------------------------------------------------------------------------------------
+// Union a damage rect for `host_xid`.  Thread-safe; called from the server thread.
+void x11_shared_damage_union(uint32_t host_xid,
+                             int32_t x, int32_t y,
+                             int32_t w, int32_t h);
+
+// Consume (read + clear) the accumulated damage rect for `host_xid`.
+// Returns true if a non-empty rect was accumulated; false otherwise.
+// Thread-safe; called from the Swift main thread at present time.
+bool x11_shared_damage_consume(uint32_t host_xid,
+                               int32_t* out_x, int32_t* out_y,
+                               int32_t* out_w, int32_t* out_h);
+
+// Remove any accumulated damage for a destroyed host window.
+void x11_shared_damage_clear(uint32_t host_xid);
+
+// -------------------------------------------------------------------------------------
 // Version
 // -------------------------------------------------------------------------------------
 const char* swiftx11_version(void);

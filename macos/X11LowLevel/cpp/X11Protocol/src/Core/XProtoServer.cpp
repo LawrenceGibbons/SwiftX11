@@ -305,19 +305,12 @@ bool XProtoServer::lookupWindow(uint32_t xid, WindowView* out) {
     ctx_.surfaces().set(key, s);
     ctx_.windows().setPresentable(key, true);
 
-    // IMPORTANT: only flush if something already drew (dirty was set by raster ops).
+    // Write full-window damage to shared accumulator and signal present.
     {
-      int32_t rx = 0, ry = 0, rw = 0, rh = 0;
-      if (ctx_.windows().consumeDirtyRectIfReady(key, rx, ry, rw, rh)) {
-#ifdef X11_TRACE_VERBOSE
-        fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> FLUSH dirty rect=(%d,%d %dx%d)\n",
-                (unsigned)key, (int)rx, (int)ry, (int)rw, (int)rh);
-#endif
-        x11_ui_push_damage(key, rx, ry, rw, rh);
-      } else {
-#ifdef X11_TRACE_VERBOSE
-        fprintf(stderr, "[UPDATE_SURFACE] key=0x%08X -> no dirty to flush\n", (unsigned)key);
-#endif
+      x11::WindowView uv{};
+      if (ctx_.windows().snapshot(key, uv)) {
+        x11_shared_damage_union(key, 0, 0, (int32_t)uv.w, (int32_t)uv.h);
+        x11_ui_push_damage(key, 0, 0, (int32_t)uv.w, (int32_t)uv.h);
       }
     }
   }
@@ -329,6 +322,7 @@ void XProtoServer::clearSurface(uint32_t xid) {
 
   ctx_.surfaces().clear(key);
   ctx_.windows().setPresentable(key, false);
+  x11_shared_damage_clear(key);
 }
 
 

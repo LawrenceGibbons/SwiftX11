@@ -28,7 +28,6 @@ typedef enum {
   X11_REQ_UNMAP,
   X11_REQ_CONFIGURE,   // resize for now
   X11_REQ_SET_TITLE,
-  X11_REQ_DAMAGE,
   X11_REQ_ROOTLESS_RESIZE,
   X11_REQ_WINDOW_PRESENTABLE,
 } x11_client_req_type_t;
@@ -104,10 +103,6 @@ static int req_push_locked(const x11_client_req_t *req)
       }
       // UNMAP after UNMAP for same xid -> drop
       if (prev->type == X11_REQ_UNMAP && req->type == X11_REQ_UNMAP) {
-        return 1;
-      }
-      // DAMAGE after DAMAGE for same xid -> drop (safe coalesce)
-      if (prev->type == X11_REQ_DAMAGE && req->type == X11_REQ_DAMAGE) {
         return 1;
       }
     }
@@ -439,27 +434,6 @@ int x11_requests_push_set_title(uint32_t xid, const char* title_utf8)
 }
 
 
-int x11_requests_push_damage(uint32_t xid)
-{
-  if (xid == 0) return 0;
-  x11_client_req_t r = {0};
-  r.type = X11_REQ_DAMAGE;
-  r.xid  = xid;
-  x11_backend_lock();
-  int ok = req_push_locked(&r);
-  x11_backend_unlock();
-
-#ifndef NDEBUG
-  // ok==0 means the queue was full and we dropped the request.
-  // ok==1 means enqueued OR coalesced (req_push_locked coalesces adjacent DAMAGE for same xid).
-  fprintf(stderr, "[REQ_DAMAGE_ENQ] x11_requests_push_damage: xid=0x%08X ok=%d\n",
-          (unsigned)xid, ok);
-#endif
-
-  if (ok) x11_server_wakeup();
-  return ok;
-}
-
 // Called by the server/runloop thread (e.g. from x11_server_step).
 void x11_requests_drain_on_server_thread(void)
 {
@@ -506,17 +480,6 @@ void x11_requests_drain_on_server_thread(void)
         x11_window_set_title(r.xid, r.title);
         break;
 
-      case X11_REQ_DAMAGE:
-#ifndef NDEBUG
-        fprintf(stderr,
-                "[SwiftX11] drain_on_server_thread: POP DAMAGE xid=0x%08X -> emit_window_damage\n",
-                (unsigned)r.xid);
-#endif
-        x11_server_emit_window_damage(r.xid); // implement in shim
-        break;
-        
-        
-        
       case X11_REQ_ROOTLESS_RESIZE: {
 #ifndef NDEBUG
         fprintf(stderr, "[SwiftX11] drain_on_server_thread: APPLY ROOTLESS_RESIZE xid=0x%08X %dx%d\n",

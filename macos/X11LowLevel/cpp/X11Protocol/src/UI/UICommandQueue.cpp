@@ -53,9 +53,6 @@ bool UICommandQueue::push(const UICommand& c)
     case UICommand::Type::SetTitle:
       return x11_requests_push_set_title(c.xid, safe_cstr(c.title_utf8)) != 0;
 
-    case UICommand::Type::Damage:
-      return x11_requests_push_damage(c.xid) != 0;
-
     case UICommand::Type::Presentable:
       return x11_requests_push_window_presentable(c.xid) != 0;
 

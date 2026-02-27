@@ -114,12 +114,6 @@ void x11_server_emit_window_create(uint32_t xid,
 void x11_server_emit_window_destroy(uint32_t xid);
 
 // -------------------------------------------------------------------
-// Damage callback from server → shim → Swift
-// Called by x11_requests_drain_on_server_thread when a damage arrives.
-// Swift implements this via a C bridge function.
-void x11_server_emit_window_damage(uint32_t xid);
-
-// -------------------------------------------------------------------
 // make the one authoritative bgra copy visible to Swift
 //int x11_server_copy_window_bgra(uint32_t xid,
 //                                uint8_t* out_bytes,
