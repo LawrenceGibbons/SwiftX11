@@ -123,7 +123,6 @@
 				cpp/X11Protocol/include/XProtoServerBridge.h,
 				include/x11_backend_internal.h,
 				include/x11_backend.h,
-				include/x11_events.h,
 				include/x11_parameters.h,
 				include/x11_server_internal.h,
 				include/x11_setup.h,

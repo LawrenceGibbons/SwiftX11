@@ -6,7 +6,6 @@
 //  This file models client → server requests (X11 protocol–like).
 //
 
-#include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -17,6 +16,11 @@
 #include "x11_xproto.h"
 #include "XProtoServerBridge.h"
 #include "SwiftX11Bridge.h"
+
+// Max title length for window titles in the request queue
+#ifndef X11_TEXT_MAX
+#define X11_TEXT_MAX 256
+#endif
 
 // ---------------- Client request queue (C -> server thread) ------------------
 
@@ -128,134 +132,6 @@ static int req_pop_locked(x11_client_req_t *out) {
   return 1;
 }
 
-
-static _Atomic uint32_t g_next_xid = 0x20000; // pick a range away from test ids
-
-static uint32_t alloc_xid(void) {
-  // simple monotonic; wrap to nonzero if needed
-  uint32_t xid = atomic_fetch_add_explicit(&g_next_xid, 1, memory_order_relaxed);
-  if (xid == 0) xid = atomic_fetch_add_explicit(&g_next_xid, 1, memory_order_relaxed);
-  return xid;
-}
-
-uint32_t x11_client_create_window(const char* title_utf8, int32_t w_u, int32_t h_u)
-{
-  if (w_u < 1) w_u = 1;
-  if (h_u < 1) h_u = 1;
-
-  x11_client_req_t r = {0};
-  r.type = X11_REQ_CREATE;
-  r.xid  = alloc_xid();
-  r.u.create.w_u = w_u;
-  r.u.create.h_u = h_u;
-
-  // Copy title into fixed buffer (truncate safely)
-  if (title_utf8) {
-    size_t n = strnlen(title_utf8, X11_TEXT_MAX-1);
-    memcpy(r.title, title_utf8, n);
-    r.title_len = (uint8_t)n;
-    if (n < X11_TEXT_MAX) r.title[n] = 0;
-    else r.title[X11_TEXT_MAX - 1] = 0;
-  } else {
-    r.title_len = 0;
-    r.title[0] = 0;
-  }
-
-  x11_backend_lock();
-  (void)req_push_locked(&r);
-  x11_backend_unlock();
-
-  x11_server_wakeup();
-  return r.xid;
-}
-
-void x11_client_destroy_window(uint32_t xid)
-{
-  if (xid == 0) return;
-  x11_client_req_t r = {0};
-  r.type = X11_REQ_DESTROY;
-  r.xid = xid;
-
-  x11_backend_lock();
-  (void)req_push_locked(&r);
-  x11_backend_unlock();
-  x11_server_wakeup();
-}
-
-void x11_client_destroy_window_async(uint32_t xid)
-{
-  // You can keep the async helper if you want, but for “client req queue”
-  // it's already async from UI perspective. So just alias:
-  x11_client_destroy_window(xid);
-}
-
-void x11_client_map_window(uint32_t xid)
-{
-  if (xid == 0) return;
-  x11_client_req_t r = {0};
-  r.type = X11_REQ_MAP;
-  r.xid = xid;
-
-  x11_backend_lock();
-  (void)req_push_locked(&r);
-  x11_backend_unlock();
-  x11_server_wakeup();
-}
-
-void x11_client_unmap_window(uint32_t xid)
-{
-  if (xid == 0) return;
-  x11_client_req_t r = {0};
-  r.type = X11_REQ_UNMAP;
-  r.xid = xid;
-
-  x11_backend_lock();
-  (void)req_push_locked(&r);
-  x11_backend_unlock();
-  x11_server_wakeup();
-}
-
-void x11_client_configure_window(uint32_t xid, int32_t w_u, int32_t h_u)
-{
-  if (xid == 0) return;
-  if (w_u < 1) w_u = 1;
-  if (h_u < 1) h_u = 1;
-
-  x11_client_req_t r = {0};
-  r.type = X11_REQ_CONFIGURE;
-  r.xid = xid;
-  r.u.configure.w_u = w_u;
-  r.u.configure.h_u = h_u;
-
-  x11_backend_lock();
-  (void)req_push_locked(&r);
-  x11_backend_unlock();
-  x11_server_wakeup();
-}
-
-void x11_client_set_window_title(uint32_t xid, const char* title_utf8)
-{
-  if (xid == 0) return;
-  x11_client_req_t r = {0};
-  r.type = X11_REQ_SET_TITLE;
-  r.xid  = xid;
-
-  if (title_utf8) {
-    size_t n = strnlen(title_utf8, X11_TEXT_MAX-1);
-    memcpy(r.title, title_utf8, n);
-    r.title_len = (uint8_t)n;
-    if (n < X11_TEXT_MAX) r.title[n] = 0;
-    else r.title[X11_TEXT_MAX - 1] = 0;
-  } else {
-    r.title_len = 0;
-    r.title[0] = 0;
-  }
-
-  x11_backend_lock();
-  (void)req_push_locked(&r);
-  x11_backend_unlock();
-  x11_server_wakeup();
-}
 
 // ---- Server-queue push APIs (used by x11_xproto thread)
 // These enqueue onto the same client->server request queue.
