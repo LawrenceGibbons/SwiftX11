@@ -257,46 +257,68 @@ namespace x11 {
       return best;
     };
     
-    child = pick_deepest_mapped_child(host, hostx, hosty);
-    if (child == host) {
-      // If host contains pointer, child should be 0 unless a true subwindow exists.
-      // We'll leave host here for bring-up; change to 0 later if you want strictness.
-    }
-    
     // --- Compute winX/winY relative to qwin ---
     if (qwin == kRootXid) {
       // When querying the root, window coords are root coords
       winx = rootx;
       winy = rooty;
+      // child: direct child of root that pointer is in = the current host
+      child = host;
     } else {
-      // Compute qwin local coords using host-local pointer coords.
-      // Walk from qwin up to host, accumulating offsets; if not under host, leave winx/winy=0.
-      int32_t lx = hostx;
-      int32_t ly = hosty;
-      
-      uint32_t cur = qwin;
-      int depth = 0;
-      while (cur && cur != host) {
-        WindowView cv{};
-        if (!ctx.windows().snapshot(cur, cv)) { cur = 0; break; }
-        lx -= cv.x;
-        ly -= cv.y;
-        cur = cv.parent_xid;
-        depth++;
-        if (depth > 64) { cur = 0; break; }
-      }
-      
-      if (cur == host || qwin == host) {
-        // Clamp to qwin bounds if we can snapshot it
-        WindowView qw{};
-        if (ctx.windows().snapshot(qwin, qw)) {
-          if (lx < 0) lx = 0;
-          if (ly < 0) ly = 0;
-          if (lx > (int32_t)qw.w) lx = (int32_t)qw.w;
-          if (ly > (int32_t)qw.h) ly = (int32_t)qw.h;
+      // Determine which host tree qwin belongs to
+      const uint32_t qwin_host = ctx.windows().topLevelAncestorOf(qwin);
+
+      if (qwin_host == host) {
+        // Same host as pointer — use host-local coords (fast path)
+        child = pick_deepest_mapped_child(host, hostx, hosty);
+        if (child == host) child = 0;
+
+        int32_t lx = hostx;
+        int32_t ly = hosty;
+
+        uint32_t cur = qwin;
+        int depth = 0;
+        while (cur && cur != host) {
+          WindowView cv{};
+          if (!ctx.windows().snapshot(cur, cv)) { cur = 0; break; }
+          lx -= cv.x;
+          ly -= cv.y;
+          cur = cv.parent_xid;
+          depth++;
+          if (depth > 64) { cur = 0; break; }
         }
-        winx = clamp16(lx);
-        winy = clamp16(ly);
+
+        if (cur == host || qwin == host) {
+          winx = clamp16(lx);
+          winy = clamp16(ly);
+        }
+      } else {
+        // Different host than pointer — use root coords + cached host screen origin.
+        // This handles the cross-host case (e.g. xeyes querying its own window
+        // while the pointer is over xterm's window).
+        child = 0; // pointer is not in qwin's host tree
+
+        const uint32_t lookup_host = (qwin_host != 0) ? qwin_host : qwin;
+        int32_t hox = 0, hoy = 0;
+        if (in.getHostOrigin(lookup_host, hox, hoy)) {
+          // Walk from qwin up to its host to get child offset within host
+          int32_t child_ox = 0, child_oy = 0;
+          if (qwin != lookup_host) {
+            uint32_t cur = qwin;
+            for (int hop = 0; hop < 64 && cur && cur != lookup_host && cur != kRootXid; hop++) {
+              WindowView cv{};
+              if (!ctx.windows().snapshot(cur, cv)) break;
+              child_ox += (int32_t)cv.x;
+              child_oy += (int32_t)cv.y;
+              cur = cv.parent_xid;
+            }
+          }
+          // qwin's screen position = host_screen_origin + child_offset_in_host
+          // window-local coords = root_position - qwin_screen_position
+          winx = clamp16(rootx32 - hox - child_ox);
+          winy = clamp16(rooty32 - hoy - child_oy);
+        }
+        // else: host never visited, winx/winy stay at 0
       }
     }
     
