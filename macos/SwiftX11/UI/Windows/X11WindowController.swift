@@ -99,11 +99,19 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
 
       // After ExposeChildren, wait for the client to process Expose events and
       // redraw into the new surface, then promote it as the display source.
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+      // 150ms gives the client time for: ConfigureNotify → ConfigureWindow →
+      // Expose → draw (~7 present cycles).
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
         guard let self else { return }
+        // Don't promote if user started another live resize
+        guard self.window?.inLiveResize != true else { return }
         if let view = WindowRegistry.shared.viewForHostXid(self.xid) {
           view.promoteDisplaySurface()
         }
+        // Force a present from the new surface.  While the display frame
+        // was active, all damage was consumed and discarded by schedulePresent;
+        // without this kick, the redrawn surface never gets presented.
+        WindowRegistry.shared.noteDamage(xid: self.xid, x: 0, y: 0, w: 0, h: 0)
       }
     }
   }

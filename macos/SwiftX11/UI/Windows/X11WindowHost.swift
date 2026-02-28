@@ -195,9 +195,14 @@ final class X11View: NSView {
       }
 
       // Retain old surface as display frame (prevents white flash during resize).
-      // The old frame is complete and consistent; the new surface may have white
-      // strips until the client redraws after Expose.
-      if let old, oldW > 0, oldH > 0, oldBPR > 0 {
+      // ONLY on the first allocation during live resize — subsequent steps would
+      // overwrite with partial (white-stripped) buffers from intermediate sizes.
+      // Keeping the initial pre-resize frame ensures a clean display throughout
+      // the entire resize.  Also skip for programmatic resizes (no live resize)
+      // since windowDidEndLiveResize won't fire to promote.
+      if displayFrame == nil,
+         self.window?.inLiveResize == true,
+         let old, oldW > 0, oldH > 0, oldBPR > 0 {
         displayFrame = old
         displayFrameW = oldW
         displayFrameH = oldH
