@@ -273,12 +273,16 @@ final class X11View: NSView {
     defer { Self.layoutDepthTLS.value -= 1 }
     super.layout()
 
-    imageLayer?.frame = bounds
-    mtkView?.frame = bounds
+    // Only set frames when they actually change — setting a frame (even to the
+    // same value) posts NSViewFrameDidChangeNotification, which can re-enter
+    // layout() and trigger _NSDetectedLayoutRecursion.
+    let b = bounds
+    if let il = imageLayer, il.frame != b { il.frame = b }
+    if let mv = mtkView, mv.frame != b { mv.frame = b }
 
     if pendingEnableMetal, wantsMetal,
        self.window != nil,
-       bounds.width >= 1, bounds.height >= 1 {
+       b.width >= 1, b.height >= 1 {
       pendingEnableMetal = false
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }
@@ -507,12 +511,19 @@ final class X11View: NSView {
   // MARK: - Public
   func setUseMetal(_ enabled: Bool) {
     wantsMetal = enabled
-    
+
     if !enabled {
       pendingEnableMetal = false   // ✅ cancel any deferred enable
     }
-    
+
     if enabled {
+      // Never run setupMetal during a layout pass — addSubview mutates the
+      // view hierarchy which posts frame-change notifications and re-enters
+      // layout(), triggering _NSDetectedLayoutRecursion.
+      if inLayout {
+        pendingEnableMetal = true
+        return
+      }
       // Defer Metal until we have a real AppKit window and non-zero bounds
       guard self.window != nil else {
         pendingEnableMetal = true
