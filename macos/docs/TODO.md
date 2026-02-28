@@ -226,6 +226,98 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 
 ---
 
+## Testing Applications by Phase
+
+Recommended X11 apps for validating each phase. Install via Homebrew (`brew install --cask xquartz` for base X11 tools) or from a Linux container. Most are available in the `x11-apps`, `xterm`, and `x11perf` packages.
+
+### Already Working (Baseline)
+| App | What it tests | Install |
+|-----|---------------|---------|
+| **xterm** (`xterm -sb -rightbar -bc`) | Core drawing (PutImage, text), input (keyboard, mouse), scrollbar (grabs, button routing), focus, cursors | `brew install xterm` or container |
+| **xeyes** | Pointer tracking (QueryPointer), window shape, motion events, multi-client | `x11-apps` package |
+
+### Phase 1: Core Protocol Gaps
+| App | What it tests | Install |
+|-----|---------------|---------|
+| **xdpyinfo** | Display/visual/extension enumeration — reveals what the server advertises | `x11-utils` package |
+| **xwininfo** | Window geometry, attributes, tree — tests QueryTree, GetWindowAttributes, GetGeometry | `x11-utils` package |
+| **xprop** | Property read/write — tests GetProperty, ChangeProperty, ListProperties | `x11-utils` package |
+| **xev** | Event diagnostics — shows every event type with full detail (masks, modifiers, state fields) | `x11-utils` package |
+| **xclock** (`xclock -analog`) | Xaw widgets, PolyLine, PolyFillArc, timer events, GC clipping | `x11-apps` package |
+| **xcalc** | Complex Xaw widget tree, ReparentWindow (if using Xt shell), keyboard input, GC operations | `x11-apps` package |
+| **xedit** | Text editing widget, selection (PRIMARY), multi-line text rendering | `x11-apps` package |
+| **xclipboard** | Clipboard/selection protocol end-to-end (CLIPBOARD, PRIMARY, TARGETS) | `x11-apps` package |
+| **xgc** | GC function exerciser — tests all GC functions (GXxor, GXand, etc.), line styles, fill styles, dashes | `x11-apps` package |
+| **xmag** | Screen magnifier — tests GetImage, CopyArea, pixmap operations | `x11-apps` package |
+| **x11perf** | Drawing performance benchmarks — stresses every core drawing op at volume | `x11perf` package |
+
+### Phase 2: X11 Extensions
+| App | What it tests | Install |
+|-----|---------------|---------|
+| **rendercheck** | RENDER extension test suite — validates Composite, glyph ops, picture formats, blend modes | `rendercheck` package |
+| **cairo-demo-*** | Cairo rendering tests — exercises RENDER through Cairo's XRender backend | Build from `cairo` source (`make check`) |
+| **gtk3-demo** | GTK3 widget showcase — tests RENDER, XFIXES, font rendering, complex widget trees | `gtk+3` package (`gtk3-demo`) |
+| **gtk4-demo** | GTK4 widget showcase — similar but may use different rendering paths | `gtk4` package (`gtk4-demo`) |
+| **gedit** / **mousepad** | Lightweight GTK text editors — practical RENDER + font + clipboard test | Container: `apt install gedit` or `mousepad` |
+| **xfce4-terminal** | GTK terminal emulator — more complex than xterm, uses RENDER for text | Container: `apt install xfce4-terminal` |
+
+### Phase 3: Font Infrastructure
+| App | What it tests | Install |
+|-----|---------------|---------|
+| **xfontsel** | Interactive XLFD font browser — tests ListFonts with wildcards, OpenFont, QueryFont | `x11-apps` package |
+| **xlsfonts** | Lists all available fonts — tests ListFonts pattern matching | `x11-apps` package |
+| **xfd** (`xfd -fn fixed`) | Displays all glyphs in a font — tests font metrics, 16-bit character rendering | `x11-apps` package |
+
+### Phase 4: Robustness
+| App | What it tests | Install |
+|-----|---------------|---------|
+| **xdpyinfo** (revisit) | Verify error-free extension/visual enumeration after robustness improvements | Already installed |
+| **ico** | Animated 3D icosahedron — stresses rapid PolyLine + ClearArea + window management | `x11-apps` package |
+| **bitmap** | Bitmap editor — tests detailed pixmap operations, XBM format | `bitmap` package |
+| **twm** | Classic X11 window manager — exercises WM_PROTOCOLS, ICCCM, ConfigureWindow, ReparentWindow | Container: `apt install twm` |
+
+### Phase 5: Performance & Container
+| App | What it tests | Install |
+|-----|---------------|---------|
+| **x11perf** (revisit) | Benchmark before/after optimization — measures throughput for all draw ops | Already installed |
+| **glxgears** / **glxinfo** | OpenGL/GLX queries (expect graceful failure or stub) | `mesa-utils` package |
+| **Docker xterm** | Validates TCP socket + DISPLAY forwarding from container | `docker run -e DISPLAY=host.docker.internal:0 ...` |
+
+### Final Validation: Vivado/Vitis
+| App | What it tests | Install |
+|-----|---------------|---------|
+| **Vivado GUI** | Java Swing — full validation of PutImage, GC ops, fonts, window management, BIG-REQUESTS | Xilinx Vivado in Docker container |
+| **Vitis IDE** | Eclipse SWT/GTK — full validation of RENDER, Cairo, Pango, complex widget trees | Xilinx Vitis in Docker container |
+| **Vivado Waveform Viewer** | Large PutImage (schematics), scrolling, zoom — stress test for BIG-REQUESTS + performance | Part of Vivado |
+
+### Quick Smoke Test Script
+```bash
+# Run after each phase to verify nothing regressed
+export DISPLAY=127.0.0.1:0
+
+# Baseline (should always work)
+xterm -sb -rightbar -bc &
+sleep 1
+xeyes &
+sleep 1
+
+# Phase 1+ diagnostics
+xdpyinfo | head -20          # display info
+xwininfo -root                # root window
+xprop -root                   # root properties
+xev -event keyboard &         # event monitor
+
+# Phase 1+ drawing
+xclock -analog &
+xcalc &
+
+# Phase 2+ (RENDER)
+# rendercheck               # run when RENDER is implemented
+# gtk3-demo &               # run when GTK works
+```
+
+---
+
 ## Priority Order for Vivado/Vitis
 
 1. **GC clipping (SetClipRectangles)** — Without this, drawing bleeds outside widget bounds
