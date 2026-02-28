@@ -96,6 +96,15 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       // (scrollbar, etc.) may not get re-exposed because applyRootlessResize
       // returns early when size hasn't changed.  This ensures a full redraw.
       x11_post_expose_children(self.xid)
+
+      // After ExposeChildren, wait for the client to process Expose events and
+      // redraw into the new surface, then promote it as the display source.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+        guard let self else { return }
+        if let view = WindowRegistry.shared.viewForHostXid(self.xid) {
+          view.promoteDisplaySurface()
+        }
+      }
     }
   }
   

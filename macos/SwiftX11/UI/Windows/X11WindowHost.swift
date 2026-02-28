@@ -111,6 +111,14 @@ final class X11View: NSView {
   private var hostSurfaceBPR: Int32 = 0
   private var hostSurfaceGen: UInt32 = 0
 
+  // Retained display buffer: during resize, holds the previous complete frame.
+  // Present reads from this instead of the active drawing surface (which may
+  // have white strips from ensureHostSurface reallocation).
+  private var displayFrame: Data?
+  private var displayFrameW: Int32 = 0
+  private var displayFrameH: Int32 = 0
+  private var displayFrameBPR: Int32 = 0
+
   fileprivate func ensureHostSurface(wPx: Int32, hPx: Int32) {
     guard xid != 0, wPx >= 1, hPx >= 1 else { return }
 
@@ -186,6 +194,16 @@ final class X11View: NSView {
         }
       }
 
+      // Retain old surface as display frame (prevents white flash during resize).
+      // The old frame is complete and consistent; the new surface may have white
+      // strips until the client redraws after Expose.
+      if let old, oldW > 0, oldH > 0, oldBPR > 0 {
+        displayFrame = old
+        displayFrameW = oldW
+        displayFrameH = oldH
+        displayFrameBPR = oldBPR
+      }
+
       // Commit
       hostSurface = newSurface
       hostSurfaceW = wPx
@@ -204,10 +222,27 @@ final class X11View: NSView {
     }
   }
 
+  /// Returns the retained display frame if one exists (during resize transitions).
+  /// The caller should present this instead of copying from the C++ drawing surface.
+  func retainedDisplayFrame() -> (data: Data, width: Int, height: Int, bytesPerRow: Int)? {
+    guard let df = displayFrame, displayFrameW > 0, displayFrameH > 0 else { return nil }
+    return (df, Int(displayFrameW), Int(displayFrameH), Int(displayFrameBPR))
+  }
+
+  /// Clear the retained display frame, causing the next present to read from
+  /// the active drawing surface (which should now be fully redrawn).
+  func promoteDisplaySurface() {
+    displayFrame = nil
+    displayFrameW = 0
+    displayFrameH = 0
+    displayFrameBPR = 0
+  }
+
   private func clearHostSurface() {
     guard xid != 0 else { return }
     x11_surface_clear(xid)
     hostSurface = nil
+    promoteDisplaySurface()  // release retained display frame
   }
   
   override init(frame frameRect: NSRect) {

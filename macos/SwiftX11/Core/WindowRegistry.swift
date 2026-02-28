@@ -481,8 +481,20 @@ final class WindowRegistry {
   
   
   private func snapshotAndPresentNow(sourceXid: UInt32, presentXid: UInt32, damageRect: DamageRect? = nil) {
-    guard windows[presentXid] != nil else { return }
+    guard let controller = windows[presentXid] else { return }
     guard !closingXids.contains(presentXid) else { return }
+
+    // If the view has a retained display frame (from a recent resize), present
+    // that instead of copying from the C++ drawing surface.  The display frame
+    // is the last complete frame before reallocation — no white strips.
+    if let view = controller.x11View,
+       let df = view.retainedDisplayFrame() {
+      // Force full upload (damage rect is stale for the display frame)
+      presentBGRA(xid: presentXid, data: df.data,
+                  width: df.width, height: df.height, bytesPerRow: df.bytesPerRow,
+                  damageRect: nil)
+      return
+    }
 
     func querySize() -> (w: Int32, h: Int32, bpr: Int32)? {
       var w: Int32 = 0, h: Int32 = 0, bpr: Int32 = 0
