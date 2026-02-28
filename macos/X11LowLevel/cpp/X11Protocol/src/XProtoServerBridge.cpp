@@ -382,15 +382,19 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             srv->eventOps().sendFocusEventDirect(ctx, host, /*is_in=*/true);
 
           } else {
-            // Losing focus on this host
-            if (ctx.input().focus_host == host) ctx.input().focus_host = 0;
+            // Losing focus on this host — only act if this host actually
+            // had focus.  A stale FocusOut for a destroyed/non-focused window
+            // must not steal focus from the real focus holder.
+            if (ctx.input().focus_host == host) {
+              ctx.input().focus_host = 0;
 
-            if (oldFocus) {
-              srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
+              if (oldFocus) {
+                srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
+              }
+
+              ctx.input().focus_xid = 0;
+              if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
             }
-
-            ctx.input().focus_xid = 0;
-            if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
           }
 
           break;
