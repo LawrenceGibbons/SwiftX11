@@ -226,11 +226,11 @@ final class WindowRegistry {
     
     mappedXids.insert(host)
 
-    X11View.logIfInLayout("mapWindow: orderFront host=0x\(String(host, radix: 16))",
+    X11View.logIfInLayout("mapWindow: makeKeyAndOrderFront host=0x\(String(host, radix: 16))",
                           view: controller.x11View)
 
     suppressNextMapFromCocoa.insert(host)
-    win.orderFront(nil)
+    win.makeKeyAndOrderFront(nil)
 
     schedulePresent(xid: host)
   }

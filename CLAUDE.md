@@ -165,8 +165,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 ### Reply Requirements
 - Requests that generate replies MUST call `ctx.reply().sendReply32(seq, ...)` — missing replies cause XCB sequence desync crashes
-- **Known issue**: GrabPointer (opcode 26) reply is currently disabled — adding it caused XCB "Unknown sequence number" crash. Needs investigation (may be a sequence numbering issue in the reply system).
-- GrabKeyboard (opcode 31) reply works correctly with the same pattern
+- GrabPointer (opcode 26) and GrabKeyboard (opcode 31) replies both use `sendReply32(seq, ...)`
 
 ### Surface Lifecycle
 - Surfaces are keyed by **host (top-level) window XID** in the registry
@@ -198,7 +197,6 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Button routing**: picks deepest mapped child before `InputState::button()`, checks passive grabs (GrabButton), correctly sets `drag_xid` to child window
 - **Motion state**: `toX11State()` used everywhere (button bits at X11 positions 8-12)
 - **Option+click → button 2**: macOS middle-mouse emulation for Xaw scrollbar thumb drag
-- **GrabPointer reply disabled**: causes XCB sequence desync; needs investigation
 - xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly — cursor blinks, scrollbar stays visible, trackpad scrolling works, Option+click thumb drag works
 - xeyes works correctly
 - **Multi-client architecture**: Server-wide state split from per-client state

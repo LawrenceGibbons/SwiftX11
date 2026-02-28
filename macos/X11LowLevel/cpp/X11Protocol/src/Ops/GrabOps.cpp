@@ -82,17 +82,10 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
 
   ctx.grabs().setPointerGrab(grabWindow, ownerEvents != 0, eventMask);
 
-  // GrabPointer REQUIRES a reply (status=GrabSuccess) per the X11 spec.
-  // HOWEVER: adding the reply caused an XCB sequence desync crash.
-  // Temporarily disabled while investigating. Xlib-based clients (xterm)
-  // appear to tolerate the missing reply because XGrabPointer's _
-  // XReply call will consume the next available reply on the wire.
-  // TODO: figure out why the reply causes [xcb] Unknown sequence number
-  //
-  // (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-  //   rep[1] = 0; // GrabSuccess
-  // });
-  (void)seq;
+  // GrabPointer reply: status=GrabSuccess (same pattern as GrabKeyboard).
+  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+    rep[1] = 0; // GrabSuccess
+  });
 
 #ifndef NDEBUG
   fprintf(stderr, "[GrabPointer] win=0x%08X owner=%u mask=0x%04X seq=%u\n",
