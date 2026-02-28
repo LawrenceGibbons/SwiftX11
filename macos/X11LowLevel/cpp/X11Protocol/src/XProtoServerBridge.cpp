@@ -275,24 +275,40 @@ static void processOneHostCmd(x11::XProtoServer* srv,
         }
 
         // ------------------- SurfaceResized
-        // Surface dimensions changed AFTER initial SetPresentable.
-        // This typically means Swift's setContentSize completed after the
-        // initial surface registration.  Child windows at far offsets
-        // (e.g., scrollbar at the right edge) may have been clipped to
-        // zero during the first sendExposeSubtree; re-expose them now.
+        // Surface dimensions changed.  Two distinct cases:
+        //
+        // A) Initial presentation (not yet presentable): Swift's setContentSize
+        //    completed after the initial surface registration.  Child windows at
+        //    far offsets (e.g., scrollbar) were clipped to zero by the first
+        //    sendExposeSubtree.  Full re-expose is needed.
+        //
+        // B) Live resize (already presentable): Surface reallocated during a
+        //    Cocoa drag.  Do NOT call sendExposeSubtree here — it fills the
+        //    entire host background which destructively wipes child content
+        //    (scrollbar etc.) that was drawn by the client.  The RootlessResize
+        //    handler (which follows shortly) sends ConfigureNotify so the client
+        //    repositions children via ConfigureWindow, and that handler now fills
+        //    each child's background at its new position.
         case HostCmdType::SurfaceResized: {
-          fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X -> re-expose subtree\n", (unsigned)c.xid);
+          x11::WindowView sv{};
+          bool haveSV = ctx.windows().snapshot(c.xid, sv);
 
-          // Fill backgrounds + re-expose the host and all mapped descendants.
-          sendExposeSubtree(ctx, srv->eventOps(), c.xid);
+          if (haveSV && !sv.presentable) {
+            // Case A: initial presentation — full re-expose needed.
+            fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (initial) -> re-expose subtree\n",
+                    (unsigned)c.xid);
+            sendExposeSubtree(ctx, srv->eventOps(), c.xid);
+          } else {
+            // Case B: live resize — skip destructive BG fill.
+            // Just signal damage so the present shows the current surface.
+            fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (resize) -> damage only\n",
+                    (unsigned)c.xid);
+          }
 
           // Write full-window damage to the shared accumulator and signal.
-          {
-            x11::WindowView sv{};
-            if (ctx.windows().snapshot(c.xid, sv)) {
-              x11_shared_damage_union(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
-              x11_ui_push_damage(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
-            }
+          if (haveSV) {
+            x11_shared_damage_union(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
+            x11_ui_push_damage(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
           }
           ctx.windows().markDirty(c.xid);
           break;
