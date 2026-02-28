@@ -495,7 +495,8 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   wire::wr16_le(ev + 24, (uint16_t)rx);
   wire::wr16_le(ev + 26, (uint16_t)ry);
   
-  wire::wr16_le(ev + 28, (uint16_t)(buttons | mods)); // state
+  const uint16_t st = x11::input::toX11State(buttons, mods);
+  wire::wr16_le(ev + 28, st); // state
   ev[30] = 1;
   ev[31] = 0;
 
