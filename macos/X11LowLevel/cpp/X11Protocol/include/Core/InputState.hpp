@@ -7,6 +7,8 @@
 
 #pragma once
 #include <cstdint>
+#include <unordered_map>
+#include <utility>
 
 namespace x11 {
 
@@ -28,6 +30,23 @@ namespace x11 {
     uint32_t drag_xid = 0;    // active grab window (nonzero buttons)
     uint32_t last_cursor_host = 0;
     uint32_t last_cursor_cid  = 0;
+
+    // Screen origin cache: maps host XID → (screen_x, screen_y).
+    // Updated whenever the pointer moves over a host window.
+    // screen_origin = root_coords - window_local_coords.
+    // Used by QueryPointer to compute window-local coords for windows
+    // on a different host than the pointer's current location.
+    std::unordered_map<uint32_t, std::pair<int32_t,int32_t>> hostOrigins;
+
+    // Look up a host window's cached screen origin.
+    // Returns false if the host hasn't been visited yet.
+    bool getHostOrigin(uint32_t host_xid, int32_t& ox, int32_t& oy) const {
+      auto it = hostOrigins.find(host_xid);
+      if (it == hostOrigins.end()) return false;
+      ox = it->second.first;
+      oy = it->second.second;
+      return true;
+    }
 
     inline void setFocus(uint32_t host, uint32_t xid) {
       focus_host = host;
@@ -52,6 +71,12 @@ namespace x11 {
       // I'd keep canonical `buttons`, but accept btns for now:
       buttons = btns;
       mods = m;
+
+      // Cache this host's screen origin (root_pos - window_local_pos).
+      // QueryPointer uses this to compute coords for windows on other hosts.
+      if (xid != 0) {
+        hostOrigins[xid] = {rx_u - wx_u, ry_u - wy_u};
+      }
     }
 
     void setFocusXid(uint32_t xid) { focus_xid = xid; }
