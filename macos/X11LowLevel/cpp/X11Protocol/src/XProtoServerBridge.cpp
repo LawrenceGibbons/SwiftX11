@@ -235,16 +235,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
         case HostCmdType::RootlessResize:
           // Runs on xproto thread now: safe vs drawing + fb resize.
           // applyRootlessResize updates host geometry and sends
-          // ConfigureNotify to host + direct children.
+          // ConfigureNotify to host (so xterm reconfigures children).
+          // Children get BG fill + Expose when xterm sends ConfigureWindow
+          // for them (handled in WindowAttrOps::handleConfigureWindow).
           applyRootlessResize(ctx, c.xid, c.w_px, c.h_px);
-
-          // Re-expose the subtree AFTER the geometry update.
-          // SurfaceResized fires BEFORE geometry is updated, so children
-          // at the far edge (e.g., scrollbar when shrinking) fail to draw
-          // because their old position is outside the new surface bounds.
-          // This second sendExposeSubtree gives all children a proper
-          // background fill + Expose at the now-correct host geometry.
-          sendExposeSubtree(ctx, srv->eventOps(), c.xid);
           break;
 
         // ------------------- SetPresentable

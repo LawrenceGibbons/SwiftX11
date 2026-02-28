@@ -478,20 +478,20 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
   // (Swift owns the backing surface; no C FB resize needed.)
   ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
   
-  // 2) Deliver ConfigureNotify to the *host* after a host-driven resize,
+  // 2) Deliver ConfigureNotify + Expose to the *host* after a host-driven resize,
   // so clients like xterm recompute their grid and resize subwindows.
   if (const x11::WindowView* vw = ctx.window(wid /*host*/)) {
     const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
-    if (wantCfg) {
-      ctx.transport().queueNotify(wid, /*wantConfigure=*/true, /*wantExpose=*/false);
+    const bool wantExp = ((vw->event_mask & (1u << 15)) != 0); // ExposureMask
+    if (wantCfg || wantExp) {
+      ctx.transport().queueNotify(wid, wantCfg, wantExp);
     }
   }
 
-  // 3) Background fills + Expose for host and ALL descendants are handled
-  // by sendExposeSubtree() in processOneHostCmd, called after this function.
-  // This ensures children draw at the correct positions even when the
-  // SurfaceResized phase (which fires before geometry update) couldn't
-  // resolve children at the far edge of a shrinking window.
+  // 3) Children are NOT re-exposed here — their geometry hasn't changed yet.
+  // When xterm processes the host ConfigureNotify, it sends ConfigureWindow
+  // for each child.  The ConfigureWindow handler fills the child's background
+  // at the new position and sends a direct Expose, ensuring prompt repaint.
 
   // 4) Redraw/present (gated). Resize → full window repaint.
   damageOrDirty(ctx, wid, 0, 0, (int32_t)new_w, (int32_t)new_h);

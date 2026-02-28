@@ -17,6 +17,8 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
+#include "Core/DrawableRW.hpp"
+#include "Utils/WireEvents.hpp"
 
 // Bridge -- Update C-side 
 #include "XProtoServerBridge.h"
@@ -280,17 +282,48 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // CHILD: geometry changed — it affects what the host should present.
       // Full host repaint (child moved/resized within host surface).
       damageOrDirty(ctx, host);
+
+      // Fill the child's background at its NEW position before delivering
+      // Expose.  This is critical during host resize: SurfaceResized fires
+      // before the host geometry is updated, so the scrollbar's old position
+      // may have been outside the surface bounds.  By the time xterm sends
+      // ConfigureWindow to reposition the scrollbar, the geometry is now
+      // correct and the child can be resolved and painted.
+      {
+        x11::WindowView cv{};
+        if (ctx.windows().snapshot(wid, cv) && cv.has_background_pixel) {
+          x11::DrawableRW dst{};
+          if (x11::resolveDrawableRW(ctx, wid, dst) &&
+              dst.pixels32 && dst.w > 0 && dst.h > 0 && dst.stridePixels > 0) {
+            const uint32_t bg = cv.background_pixel;
+            for (uint16_t yy = 0; yy < dst.h; yy++) {
+              uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+              for (uint16_t xx = 0; xx < dst.w; xx++) {
+                row[xx] = bg;
+              }
+            }
+            // Damage the child area specifically so the present shows it.
+            damageOrDirty(ctx, wid, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
+          }
+        }
+      }
     }
 
     // ------------------------------------------------------------------
-    // 3) ConfigureNotify / ExposeNotify selection on THE WINDOW BEING CONFIGURED
+    // 3) ConfigureNotify + Expose for THE WINDOW BEING CONFIGURED.
+    //    Send Expose directly (not just queued) to ensure the child
+    //    redraws promptly after being repositioned.
     // ------------------------------------------------------------------
     if (const WindowView* vw2 = ctx.window(wid)) {
       const bool wantCfg = ((vw2->event_mask & (1u << 17)) != 0); // StructureNotifyMask
-      const bool wantExp = ((vw2->event_mask & (1u << 15)) != 0); // ExposureMask
-      if (wantCfg || wantExp) {
-        ctx.transport().queueNotify(wid, wantCfg, wantExp);
+      if (wantCfg) {
+        ctx.transport().queueNotify(wid, /*wantConfigure=*/true, /*wantExpose=*/false);
       }
+      // Always send a direct Expose (bypasses notify queue coalescing).
+      // This ensures the child repaints at its new position immediately.
+      auto ev = x11::wireev::buildExpose(ctx.transport().lastSeq(),
+                                         wid, 0, 0, vw2->w, vw2->h, 0);
+      ctx.transport().sendEvent32(wid, ev.data());
     }
   }
   
