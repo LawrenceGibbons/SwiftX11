@@ -1,227 +1,240 @@
-SwiftX11 TODO
+# SwiftX11 TODO
 
-Last updated: 2026-02-27
+Last updated: 2026-02-28
 
-⸻
+Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
-0️⃣ Architecture Pivot (NOW)
+---
 
-Current status (bring-up progress)
-  •  ✅ Multi-client ID space plumbed: per-connection rid_base/rid_mask advertised in SetupSuccess and stored in transport.
-  •  ✅ UICommandQueue migrated to generic `UICommand` + `push(const UICommand&)` (still backed by x11_requests.* for now).
-  •  ✅ Swift host surfaces: Swift allocates persistent 32bpp CPU buffers per host window and publishes them via `x11_surface_update/clear`.
-  •  ✅ SurfaceRegistry: C++ prefers Swift surfaces for WINDOW drawables and carries stride (`stridePixels`) through `DrawableRW`.
-  •  ✅ Alpha/opacity: surfaces initialized opaque in Swift; raster fills force opaque alpha.
-  •  ✅ Drawing migrated to SurfaceRegistry where needed: PutImage(ZPixmap→WINDOW), ClearArea, ImageText8, PolyText8.
-  •  ✅ Metal + software parity sanity-checked during bring-up.
+## Completed
 
-Goal
-  •  Eliminate the C layer entirely: only C++ (core protocol + raster) and Swift (UI + networking).
-  •  Remove single-client globals: support multiple concurrent clients cleanly.
-  •  Make Swift the owner of all WINDOW backing stores (host + child) now.
+### Architecture
+- [x] Swift-owned WINDOW surfaces (CPU buffers allocated by Swift, drawn by C++ via DrawableSurfaceRegistry)
+- [x] Child window -> host surface routing with offset (resolveDrawableRW + computeOffsetInHost)
+- [x] Negative offset clamping for child windows at negative positions
+- [x] SurfaceResized re-expose mechanism for timing races
+- [x] bytesPerRow 64-byte aligned; all draw code uses stridePixels
+- [x] background_pixel stored in WindowTable, applied on MapWindow, used in ClearArea
 
-Swift-owned WINDOW surfaces
-  •  ✅ Swift allocates/resizes per-host WINDOW backing stores (persistent CPU buffer; can later be backed by MTLBuffer/MTLTexture).
-  •  ✅ C++ draws into Swift-provided surfaces via `SurfaceDesc { ptr, bytesPerRow, w, h, format, generation }` (C++ never owns/presents window framebuffer memory).
-  •  ✅ Swift publishes surfaces via C interop calls (`x11_surface_update/clear`).
-  •  ✅ bytesPerRow is 64-byte aligned; all draw code uses `stridePixels` (no `row = y*w` assumptions).
+### Damage / Present Pipeline
+- [x] Shared damage accumulator (x11_shared_damage_union/consume) bypasses UI queue latency
+- [x] Metal partial texture upload via MTLTexture.replace(region:)
+- [x] Damage rects threaded end-to-end: draw ops -> shared accumulator -> present
+- [x] 20ms coalesce timer in schedulePresent; exactly one present per host per tick
+- [x] Removed all "always damage" hacks and unconditional push_damage workarounds
 
-Surface registry (C++ API consumed by Swift)
-  •  Implemented: `DrawableSurfaceRegistry` keyed by XID (currently used for host WINDOW drawables).
-  •  Implemented: `updateSurface/clearSurface` entrypoints (currently reached via `x11_surface_update/clear` shims).
-  •  ✅ `DrawableRW` includes `stridePixels`; `resolveDrawableRW` resolves ALL windows via Swift surfaces only (no C FB fallback).
-  •  ✅ Child window drawables route to host surface with origin offsets via `computeOffsetInHost`.
-  •  ✅ C framebuffer allocation/resize/destroy removed from CreateWindow, ConfigureWindow, applyRootlessResize, DestroyWindow.
-  •  ✅ Present-time compositing simplified: `x11_xproto_copy_window_bgra` just copies the host Swift surface (no child C FB compositing).
-  •  ✅ CopyPlane source window resolution uses `resolveDrawableRW` instead of C FB.
-  •  ✅ `background_pixel` support: stored in WindowTable, applied on MapWindow, used in ClearArea.
-  •  ✅ Negative offset clamping: `resolveDrawableRW` clamps child windows at negative positions (e.g., xterm scrollbar at y=-1) instead of rejecting them.
-  •  ✅ `SurfaceResized` re-expose: `x11_surface_update` detects surface dimension changes and triggers `sendExposeSubtree` to re-expose all mapped children at correct geometry.
-  •  ✅ xterm scrollbar (`xterm -sb -rightbar -bc`) renders correctly.
-  •  ✅ Deleted C FB infrastructure (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`, `x11_backend_fb_dbg.hpp`).
+### Multi-Client Architecture
+- [x] XProtoServer persistent across sessions (owns WindowTable, PixmapTable, FontTable, etc.)
+- [x] XClient per-connection state (XProtoTransport, ReplyWriter, fd, rid_base/rid_mask)
+- [x] XProtoDaemon poll-based listener, creates XClient per connection
+- [x] Per-client resource ownership + cleanup on disconnect (eraseOwnedBy)
+- [x] Concurrent clients work (xterm + xeyes simultaneously)
 
-Damage / present (Swift-driven)
-  •  ✅ C++ reports damage as rects per host/top-level window (no “always damage” hacks).
-  •  ✅ Swift unions rects and schedules exactly one present per host per runloop tick.
-  •  ✅ Metal partial texture upload: damage rect threaded through present pipeline; `MTLTexture.replace(region:)` uploads only the dirty sub-rect (previous frame retained in texture).
-  •  ✅ Shared damage accumulator (`x11_shared_damage_union/consume`): bypasses UI command queue drain latency; C++ writes at draw time, Swift reads at present time.
-  •  ✅ Dead code cleanup: removed old DirtyRect accumulator, X11_REQ_DAMAGE C path, Swift DirtyRectU/noteDamageRect.
+### C Layer Elimination (v1.0.0)
+- [x] Deleted x11_shim.c (926 lines), x11_backend.c (747 lines), x11_requests.c (~380 lines), x11_xproto.c (538 lines)
+- [x] Deleted 8 associated headers (x11_shim.h, x11_backend.h, x11_requests.h, etc.)
+- [x] Created SwiftBridge.cpp (extern "C" pass-throughs to C++ bridge functions)
+- [x] Created X11Setup.cpp/hpp (setup handshake moved from x11_xproto.c)
+- [x] UICommandQueue::push() calls x11_ui_push_*() directly (no C request queue)
+- [x] Architecture simplified to: Swift <-> SwiftBridge.cpp (extern "C") <-> C++ classes
 
-Multi-client (no globals)
-  •  Introduce `XServer` as an instance with owned registries (resources, atoms, colormaps, fonts, drawables).
-  •  Each connection is a `Client` object: byteOrder, seq, idBase/idMask, transport, pending replies/events.
-  •  No global “current client” pointers; dispatcher always routes via `(XServer&, Client&)`.
+### Input / Events
+- [x] Button routing: picks deepest mapped child, checks passive grabs (GrabButton), sets drag_xid
+- [x] Motion routing: drag_xid during active drags, pick_motion_target otherwise
+- [x] Focus delivery: sendFocusEventDirect bypasses FocusChangeMask (emulates WM SetInputFocus)
+- [x] Option+click -> button 2 (middle mouse) for Xaw scrollbar thumb drag
+- [x] toX11State() maps internal modifier/button bits to X11 wire positions everywhere
+- [x] Key event modifier mapping fixed (sendKeyEvent uses toX11State)
+- [x] GrabPointer reply re-enabled (fixes XCB sequence crash during scrollbar use)
+- [x] Focus guard: stale FocusOut from destroyed window no longer steals focus
 
-C removal plan
-  •  Rename/migrate remaining `.c` backend files to C++ (`.cpp`) and delete `x11_backend_*` C APIs.
-  •  Swift calls into C++ via Swift C++ Interop (module map / clang module) rather than `@_cdecl` shims.
-  •  Keep the language boundary one-way: Swift drives the loop and invokes C++ (avoid callbacks from C++ into Swift).
+### Drawing Operations
+- [x] All shape primitives: PolyPoint, PolyLine, PolySegment, PolyRectangle, PolyArc, FillPoly, PolyFillRectangle, PolyFillArc
+- [x] PutImage (ZPixmap depth 24/32), CopyArea, CopyPlane, ClearArea, GetImage
+- [x] Text: ImageText8, PolyText8 via BDF glyph bitmaps
+- [x] Cursor management: CreateCursor, CreateGlyphCursor, FreeCursor, cursor shape application
 
-⸻
+### Debug / Instrumentation
+- [x] Two-tier trace system: #ifndef NDEBUG lifecycle traces + #ifdef X11_TRACE_VERBOSE per-op traces
+- [x] Version banner: SwiftX11 v{version} at startup
 
-1️⃣ Core Protocol Correctness
+---
 
-Wire / framing
-  •  Endianness: ByteReader/ReplyWriter must respect client byte order (swap for big-endian clients).
-  •  Audit all reply paths for consistent framing (seq, lenw, padding, no stray sendAll chunks).
-  •  Centralize reply header writing (avoid duplicated reply logic).
+## Phase 1: Core Protocol Gaps (Required for Vivado/Vitis)
 
-Opcode coverage
-  •  Finish remaining core opcodes encountered by xterm.
-  •  Implement cursor ops (93–96) fully.
-  •  Verify QueryBestSize (97) semantics.
+Vivado uses Java Swing (renders client-side via Java 2D, uploads via PutImage). Vitis uses Eclipse SWT backed by GTK/GDK/Cairo (renders client-side, uploads via CopyArea/PutImage). Both need solid window management, events, properties, and selections.
 
-GC semantics
-  •  Implement GC function (GXcopy, GXxor, etc.).
-  •  Apply GC planemask in all draw paths.
-  •  Enforce GC clipping region.
+### 1.1 GC Semantics (HIGH — affects all drawing)
+GC function, planemask, and clipping are used by every toolkit.
+- [ ] **GC function (GXcopy, GXxor, etc.)**: Apply in all draw paths (PolyFillRectangle, CopyArea, text ops, etc.). Currently everything is GXcopy-only.
+- [ ] **GC planemask**: Apply in all draw paths (currently ignored).
+- [ ] **SetClipRectangles (opcode 59)**: Implement GC clip region. Used heavily by toolkits to restrict drawing to widget bounds.
+- [ ] **SetDashes (opcode 58)**: Implement dash pattern for line drawing. Used for selection rectangles, focus indicators.
+- [ ] **GC clip enforcement**: All draw ops must check GC clip rect and skip/clamp pixels outside it.
+- [ ] **GC fill-style**: Support Solid, Tiled, OpaqueStippled, Stippled fills.
+- [ ] **GC tile/stipple**: Store tile/stipple pixmap in GC, apply during fills.
 
-⸻
+### 1.2 Missing Opcodes (HIGH — crash prevention)
+Unhandled opcodes log warnings but don't send replies, causing XCB sequence desync for reply-bearing requests. Java/GTK may use any of these.
+- [ ] **ReparentWindow (opcode 7)**: GTK reparents widgets internally. Must update parent chain in WindowTable and adjust geometry.
+- [ ] **ChangeActivePointerGrab (opcode 30)**: Modify event mask during active grab. Used by GTK drag-and-drop.
+- [ ] **QueryKeymap (opcode 44)**: Returns 32-byte keymap vector. Java checks this. Return all-zeros as stub.
+- [ ] **GetMotionEvents (opcode 39)**: Returns motion history. Return empty list as stub (reply required).
+- [ ] **SetFontPath (opcode 51)**: Accept and ignore (void, no reply needed).
+- [ ] **GetFontPath (opcode 52)**: Return empty font path list (reply required).
+- [ ] **DestroySubwindows (opcode 5)**: Destroy all children of a window.
+- [ ] **RotateProperties (opcode 114)**: Rotate property list. Accept and process or stub.
 
-2️⃣ Drawing / Raster Semantics
+### 1.3 16-bit Text (MEDIUM — Unicode support)
+Java/GTK use 16-bit text for internationalized strings.
+- [ ] **PolyText16 (opcode 75)**: Draw 16-bit character strings. Map to existing BDF fonts (high byte selects font page).
+- [ ] **ImageText16 (opcode 77)**: Draw 16-bit text with opaque background.
+- [ ] **QueryTextExtents**: Verify 16-bit character extent calculations work.
 
-CopyPlane
-  •  Support CopyPlane from depth>1 sources (use bitPlane mask).
-  •  Apply GC function + planemask.
-  •  Emit proper X11 errors (BadDrawable/BadGC/BadMatch).
-  •  Use actual bitmapBitOrder from setup instead of hardcoded LSBFirst.
-  •  Improve damage region precision (avoid full-host damage).
-  •  if src is a WINDOW, implement plane extraction from 32bpp framebuffer using bitPlane + planemask + GC.function.
+### 1.4 Selections / Clipboard (MEDIUM — copy/paste)
+Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with macOS.
+- [ ] **Selection request/notify flow**: Verify ConvertSelection/SelectionNotify works end-to-end between X11 clients.
+- [ ] **CLIPBOARD atom**: Register and handle CLIPBOARD in addition to PRIMARY.
+- [ ] **TARGETS**: Support TARGETS conversion (advertise available data types).
+- [ ] **macOS clipboard bridge**: Bridge NSPasteboard <-> X11 CLIPBOARD selection for cross-environment copy/paste.
 
+### 1.5 WarpPointer (MEDIUM — stub upgrade)
+- [ ] **WarpPointer (opcode 41)**: Currently accepted but pointer not moved. Java tooltips and dialogs may use this. Implement via CGWarpMouseCursorPosition.
 
-PutImage
-  •  Remove temporary routing hacks once full rootless model is stable.
-  •  ✅ Window destinations via Swift SurfaceRegistry: ZPixmap depth 24/32 (32bpp on wire) supported; keep pixmap XY1 path.
-  •  Support depth conversions where required.
+---
 
-General drawing
-  •  Implement proper error generation (BadDrawable, BadGC, BadMatch, BadValue).
-  •  Validate depth compatibility rules between src/dst.
-  •  ✅ ClearArea migrated to SurfaceRegistry (`resolveDrawableRW` + stridePixels).
-  •  ✅ Text drawing migrated: ImageText8 + PolyText8 draw via BDF glyph bitmaps (MSBFirst within bytes) and SurfaceRegistry.
+## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-PolyFillRectangle
-  •  Apply GC function / planemask / fill-style (right now this is “solid fg overwrite” only).
-  •  Support clip mask / clip rectangles from GC.
+Java 2D, GTK/Cairo, and Pango all query for extensions. SwiftX11 currently returns "not present" for all extensions (QueryExtension replies present=0). This works but forces fallback paths that may be slower or miss features.
 
-PolyFillArc
-  •  Implement GC function/planemask/clip mask support for arc fill.
-  •  Use fixed-point / integer rasterization (avoid float + atan2 for speed).
-  •  Improve damage region precision (rect of arc bounds or bbox intersection).
-  •  Handle a2==0 (no-op) and negative extents exactly per spec.
+### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing)
+The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
+- [ ] **QueryExtension("RENDER")**: Return present=1, major opcode for RENDER.
+- [ ] **RenderQueryVersion**: Negotiate version (0.11 is widely supported).
+- [ ] **RenderQueryPictFormats**: Return available picture formats (ARGB32, RGB24, A8, A1).
+- [ ] **CreatePicture / FreePicture**: Associate a Picture with a Drawable + PictFormat.
+- [ ] **Composite**: The core compositing operation. Combine src+mask -> dst with alpha blending. This is what Cairo uses for everything.
+- [ ] **FillRectangles**: Fill rectangles with a color on a Picture (used for solid fills with alpha).
+- [ ] **Trapezoids / Triangles**: Geometric fill operations (used by Cairo for vector paths).
+- [ ] **AddGlyphs / CompositeGlyphs8/16/32**: Server-side glyph caching + rendering. Pango/Cairo upload font glyphs once, then reference by ID for fast text drawing.
+- [ ] **CreateGlyphSet / FreeGlyphSet**: Glyph set management.
+- [ ] **SetPictureClipRectangles**: Clip region on Pictures.
 
-PolyArc
-  •  Implement lineWidth (GC) and proper stroke rasterization (not just “ring within eps”).
-  •  Implement GC clip mask/clip rectangles.
-  •  Implement GC function + planemask.
-  •  Improve arc precision: switch from float/atan2 to fixed-point stepping or midpoint ellipse algorithm.
-  •  Damage region: compute bbox of stroke (x/y/w/h) and use rect-based UI_DAMAGE later.
+### 2.2 BIG-REQUESTS Extension (HIGH — large images)
+Vivado schematics and waveform views can be large. Without BIG-REQUESTS, maximum request size is 262140 bytes (~256KB), limiting PutImage to ~256KB per call.
+- [ ] **QueryExtension("BIG-REQUESTS")**: Return present=1.
+- [ ] **BigReqEnable**: Return maximum request size (e.g., 16MB). Changes wire format: 4-byte length field becomes 8-byte for oversized requests.
+- [ ] **Wire format**: Detect extended-length requests (length==0 in header → read 4-byte extended length).
 
-ConfigureWindow
-  •  Support stack-mode / sibling / border-width fields (bits 4..7) or at least validate/ignore safely.
-  •  Emit correct X11 errors (BadWindow / BadValue) when wid doesn’t exist or values are malformed.
-  •  Swift owns WINDOW backing stores (host + child). C++ updates geometry/state only.
-  •  On map/resize, Swift (re)allocates surfaces and calls `server.updateSurface(xid, SurfaceDesc)`.
-  •  Continue sending ConfigureNotify to child even when clamped to host (rootless cascade per ICCCM).
+### 2.3 XFIXES Extension (MEDIUM — cursor, regions)
+GTK and Java use XFIXES for cursor visibility and region operations.
+- [ ] **QueryExtension("XFIXES")**: Return present=1.
+- [ ] **XFixesQueryVersion**: Negotiate version.
+- [ ] **XFixesShowCursor / HideCursor**: Cursor visibility control.
+- [ ] **XFixesCreateRegion / SetWindowShapeRegion**: Region operations.
+- [ ] **XFixesSelectCursorInput / GetCursorImage**: Cursor change notification.
 
-⸻
+### 2.4 SHAPE Extension (LOW — non-rectangular windows)
+Some splash screens and tooltips use shaped windows.
+- [ ] **QueryExtension("SHAPE")**: Return present=1.
+- [ ] **ShapeRectangles / ShapeMask**: Define non-rectangular window shape.
+- [ ] **ShapeQueryExtents**: Query window shape.
 
-3️⃣ Fonts (xterm bring-up → real implementation)
-  •  ✅ Bring-up text ops: ImageText8 + PolyText8 implemented enough for xterm; still needs full spec coverage (PolyText16/ImageText16, full item semantics, GC clip/rop correctness).
-  •  Complete FontOps so xterm runs without fallback hacks.
-  •  Ensure QueryFont / QueryTextExtents / ListFonts / ListFontsWithInfo match Xproto.h exactly.
-  •  Return correct font properties (SPACING, AVERAGE_WIDTH, etc.).
-  •  Replace bitmap-only stub logic with real font abstraction layer.
-  •  Long-term: integrate CoreText-backed scalable fonts.
+### 2.5 Other Extensions (LOW — query but don't need full impl)
+These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
+- [ ] **MIT-SHM**: Shared memory (not applicable over network/container — present=0 is correct).
+- [ ] **RANDR**: Screen configuration (single-screen stub).
+- [ ] **Xinerama**: Multi-monitor (single-screen stub).
+- [ ] **XInput / XInput2**: Extended input (present=0 is fine initially).
+- [ ] **DPMS**: Display power management (present=0).
+- [ ] **SYNC**: Synchronization (present=0).
+- [ ] **Generic Event Extension (GE)**: Required by XInput2 (present=0 if XI2 not implemented).
 
-⸻
+---
 
-4️⃣ Colormaps / Colors
-  •  Complete ColorOps cluster (78–92):
-  •  AllocColor
-  •  AllocNamedColor
-  •  AllocColorCells
-  •  AllocColorPlanes
-  •  FreeColors
-  •  StoreColors
-  •  LookupColor
-  •  Ensure QueryColors request parsing matches Xproto.h exactly.
-  •  Add proper colormap storage instead of implicit 24-bit unpack.
+## Phase 3: Font Infrastructure (Required for Readable UI)
 
-⸻
+Vivado and Vitis need proper fonts. The current BDF-only system works for xterm but won't satisfy GTK/Java apps that expect a richer font ecosystem.
 
-5️⃣ Damage & Present Pipeline (Rootless Architecture)
+### 3.1 Font Matching and XLFD (HIGH)
+- [ ] **Wildcard XLFD matching**: ListFonts with wildcards like `-*-helvetica-*-*-*-*-12-*-*-*-*-*-*-*` must match correctly. Currently may not handle all wildcard positions.
+- [ ] **Font aliases**: Support standard alias files (e.g., "fixed" -> specific XLFD).
+- [ ] **Scaled fonts**: Return synthetic font names for requested pixel sizes (scale BDF glyphs or report closest available).
 
-Current bring-up hacks to remove
-  •  ✅ Remove temporary “always damage” routing.
-  •  ✅ Eliminate unconditional push_damage workarounds.
+### 3.2 Additional BDF Fonts (HIGH)
+- [ ] **Bundle standard X11 fonts**: misc/fixed, 100dpi, 75dpi collections (cursor, helvetica, times, courier).
+- [ ] **Font directory scanning**: Load all .bdf files from configured directories at startup.
+- [ ] **PCF font support**: Read PCF (Portable Compiled Font) format — more compact than BDF, same data.
 
-Final routing model
-  •  ✅ pixmap ops → never enqueue present
-  •  ✅ child window ops → route to top-level host (via damageOrDirty + topLevelAncestorOf)
-  •  ✅ top-level ops → damage self
-  •  ✅ Exactly one present per host per runloop tick (20ms coalesce timer in schedulePresent)
+### 3.3 TrueType / CoreText Integration (MEDIUM — for RENDER extension)
+If RENDER is implemented, client-side font rendering (Pango/FreeType) becomes the primary path. Server-side fonts become less critical.
+- [ ] **Xft/fontconfig on client side**: Clients use their own FreeType + fontconfig to render glyphs, upload via RENDER CompositeGlyphs. Server just needs RENDER support.
+- [ ] **CoreText bridge (optional)**: Map X11 font requests to macOS system fonts via CoreText for high-quality server-side rendering.
 
-Dirty/presentable gating
-  •  ✅ SetPresentable triggers full-window damage via shared accumulator + signal.
-  •  Remove race between ROOTLESS_RESIZE and snapshot.
+---
 
-Damage precision
-  •  ✅ Pass rects instead of full-window damage (damageOrDirty with x,y,w,h).
-  •  ✅ Shared accumulator unions rects (x11_shared_damage_union); Swift reads at present time.
-  •  ✅ Metal partial texture upload (MTLTexture.replace(region:)).
-  •  Software render path: still full CGImage blit (CALayer doesn't support incremental updates — deferred).
-  •  Future: partial surface copy in x11_server_copy_window_bgra (currently copies full surface for thread safety).
+## Phase 4: Robustness and Correctness
 
-⸻
+### 4.1 Error Handling (HIGH)
+- [ ] **Proper X11 error generation**: BadWindow, BadDrawable, BadGC, BadMatch, BadValue, BadAtom, BadPixmap, BadFont, BadAccess, BadAlloc for all relevant requests.
+- [ ] **Error reply format**: Ensure error replies have correct seq, minor opcode, major opcode fields.
+- [ ] **Error for destroyed resources**: Requests referencing destroyed XIDs should generate BadWindow/BadDrawable instead of silently failing.
 
-6️⃣ Rootless Resize Model
-  •  Remove suppression complexity once stable.
-  •  Validate child clamp logic against ICCCM expectations.
-  •  Ensure windowResized never echoes infinite resize loops.
-  •  Separate logical X11 geometry from Cocoa pixel size cleanly.
+### 4.2 Wire Protocol Correctness (MEDIUM)
+- [ ] **Big-endian clients**: ByteReader/ReplyWriter currently assume little-endian. Java may connect with big-endian byte order. Need to respect client byte order from setup.
+- [ ] **Padding verification**: Ensure all replies are padded to 4-byte boundaries.
+- [ ] **Request length validation**: Verify request body length matches expected size for each opcode.
 
-⸻
+### 4.3 Window Management Correctness (MEDIUM)
+- [ ] **ConfigureWindow stack mode**: Handle Above/Below/TopIf/BottomIf/Opposite sibling stacking.
+- [ ] **ConfigureWindow border width**: Track and report (even if always 0).
+- [ ] **Override-redirect**: Honor override_redirect attribute (don't apply WM decoration/placement).
+- [ ] **Gravity**: Implement win_gravity and bit_gravity for resize behavior.
+- [ ] **Backing store**: Accept BackingStore attribute (can be NotUseful stub).
 
-7️⃣ Swift UI / AppKit Stability
-  •  Eliminate remaining layout recursion triggers.
-  •  Ensure setContentSize never runs inside layout.
-  •  ✅ Metal + software parity sanity-checked (surfaces + stride + opacity).
-  •  Ensure toggling Metal works:
-  •  before client launch
-  •  mid-session
-  •  during resize
-  •  Stabilize MTKView attach timing (drawableSize lifecycle).
+### 4.4 Colormap (LOW — TrueColor is sufficient)
+SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Current colormap stubs (accept requests, return reasonable defaults) should work.
+- [ ] **Verify TrueColor visual advertisement**: Ensure depth=24, class=TrueColor, red/green/blue masks correct in setup reply.
+- [ ] **AllocColor correctness**: For TrueColor, AllocColor should return the closest matching pixel value (currently returns the RGB packed into pixel — verify this is correct).
 
-⸻
+---
 
-8️⃣ Debug & Instrumentation
-  •  ✅ Two-tier trace system: `#ifndef NDEBUG` for key lifecycle/diagnostic traces; `#ifdef X11_TRACE_VERBOSE` for high-frequency per-op traces (~90+ call sites gated).
-  •  ✅ Version banner: `SwiftX11 v{version}` at startup in both Swift and C++.
-  •  Standardize logging categories (PROTO, REPLY, EVENT, DAMAGE, PRESENT, RESIZE).
-  •  Add global debug level switch.
-  •  Add server-side counters for:
-  •  push_damage enqueue count
-  •  drain count
-  •  present count
-  •  Add Swift framebuffer inspection tools (nonwhite scan already started).
+## Phase 5: Performance and Polish
 
-⸻
+### 5.1 Rendering Performance (MEDIUM)
+- [ ] **Software present path**: Implement partial CGImage blit (currently full surface copy).
+- [ ] **PutImage optimization**: Large PutImage calls (Vivado waveform/schematic) need efficient copy paths.
+- [ ] **Expose coalescing**: Batch expose events to reduce client redraw overhead.
 
-9️⃣ Cleanup / Refactor
-  •  Remove temporary SurfaceRegistry shims (`x11_surface_update/clear`) once Swift C++ interop is in place.
-  •  ✅ C framebuffer fallback (`x11_xproto_window_fb_rw`) removed from `resolveDrawableRW` — all windows resolve via Swift surfaces.
-  •  ✅ Deleted remaining C backend infrastructure (`g_fb[]`, `x11_backend_fb_*` functions, `x11_backend_fb.h`, `x11_backend_fb_dbg.hpp`).
-  •  Remove obsolete handler registrations (QueryColors duplicates, etc.).
-  •  Consolidate opcode constants (use x11::opcode::* everywhere).
-  •  Remove remaining hardcoded numerics.
-  •  Consolidate damageOrDirty into single canonical implementation.
-  •  Separate C “backend” from Xproto logic more cleanly.
+### 5.2 Container / Network Support (HIGH for Vivado use case)
+- [ ] **TCP socket listener**: Verify TCP connections work from Docker container (DISPLAY=host.docker.internal:0).
+- [ ] **Unix socket**: Add /tmp/.X11-unix/X0 Unix domain socket support for local containers.
+- [ ] **Xauth**: Basic MIT-MAGIC-COOKIE-1 authentication (or xhost + for development).
+- [ ] **Latency tolerance**: Ensure protocol handling doesn't assume local-only latency.
 
-⸻
+### 5.3 Keyboard (MEDIUM)
+- [ ] **Full keysym mapping**: Map macOS virtual keycodes to X11 keysyms comprehensively (currently minimal).
+- [ ] **Modifier mapping**: GetModifierMapping should return a mapping that matches macOS keyboard layout.
+- [ ] **Keymap state**: QueryKeymap returns current key state (currently not implemented).
+- [ ] **XKB (optional)**: Modern clients may query for XKB extension — return not-present is acceptable.
 
-🔟 Future Architecture (Long-Term)
-  •  Separate compositing from protocol (allow offscreen composition layer).
-  •  Add extension framework (XInput, RANDR, etc.).
-  •  Keep Swift as compositor/UI + networking; keep C++ as protocol+raster core; continue shrinking the boundary (no C).
-  •  Add basic ICCCM compliance (WM_HINTS, size hints, etc.).
+### 5.4 ICCCM / Window Manager Compliance (LOW)
+- [ ] **WM_HINTS**: Read and honor WM_HINTS property (icon, initial state, input model).
+- [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio).
+- [ ] **WM_PROTOCOLS**: Support WM_DELETE_WINDOW (send ClientMessage instead of destroying).
+- [ ] **_NET_WM_* (EWMH)**: Basic Extended Window Manager Hints support.
+
+---
+
+## Priority Order for Vivado/Vitis
+
+1. **GC clipping (SetClipRectangles)** — Without this, drawing bleeds outside widget bounds
+2. **Missing reply-bearing opcodes (QueryKeymap, GetMotionEvents, GetFontPath)** — Prevent XCB sequence crashes
+3. **ReparentWindow** — GTK reparents widgets internally
+4. **BIG-REQUESTS extension** — Large schematics/waveforms exceed 256KB request limit
+5. **Error handling** — Bad replies/missing errors confuse toolkits
+6. **RENDER extension** — Anti-aliased fonts make UI usable (without: bitmap fonts only)
+7. **Container networking** — TCP + Unix socket + xauth for Docker workflow
+8. **16-bit text** — Unicode labels in Vivado UI
+9. **Selections/clipboard** — Copy/paste between apps
+10. **Font infrastructure** — Broader font matching for toolkit defaults
