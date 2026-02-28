@@ -293,7 +293,7 @@ Recommended X11 apps for validating each phase. Install via Homebrew (`brew inst
 ### Quick Smoke Test Script
 ```bash
 # Run after each phase to verify nothing regressed
-export DISPLAY=127.0.0.1:0
+export DISPLAY=127.0.0.1:1
 
 # Baseline (should always work)
 xterm -sb -rightbar -bc &

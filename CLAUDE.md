@@ -138,7 +138,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - Xcode project: `macos/SwiftX11.xcodeproj`
 - Build target: SwiftX11 (macOS app)
-- Test clients: `xeyes`, `xterm` connected via `DISPLAY=:0`
+- Test clients: `xeyes`, `xterm` connected via `DISPLAY=127.0.0.1:1` (SwiftX11 runs on display :1 to avoid XQuartz conflict on :0)
+- Default DISPLAY is set in `~/.profile`: `export DISPLAY=127.0.0.1:1`
 - Scrollbar test: `xterm -sb -rightbar -bc`
 - Scrollbar thumb drag: Option+click+drag (emulates middle button)
 
@@ -181,8 +182,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.0.0)
-- **C layer eliminated**: All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
+### Current State (v1.0.3)
+- **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
 - Host windows resolve directly to their Swift surface
@@ -194,19 +195,30 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Shared damage accumulator**: `x11_shared_damage_union/consume` in UICommandQueue.cpp — mutex-protected, 64-entry fixed array, bypasses UI command queue drain latency
 - **Metal partial uploads**: `X11MetalRenderer.updateTexture()` uses `MTLTexture.replace(region:)` for sub-rect uploads; `fullUploadCountdown` forces full uploads for first 3 frames after texture creation
 - **Focus delivery**: `sendFocusEventDirect()` bypasses FocusChangeMask check, emulating WM SetInputFocus. Sends FocusIn to HOST on Cocoa becomeKey; toolkit (Xt) propagates to children via SetInputFocus (opcode 42).
+- **Focus guard** (v1.0.3): Stale FocusOut from destroyed non-focused windows no longer steals focus from the actual focus holder. FocusOut path guarded by `focus_host == host` check.
 - **Button routing**: picks deepest mapped child before `InputState::button()`, checks passive grabs (GrabButton), correctly sets `drag_xid` to child window
 - **Motion state**: `toX11State()` used everywhere (button bits at X11 positions 8-12)
+- **Key event modifiers** (v1.0.1): `sendKeyEvent()` uses `toX11State()` for correct modifier mapping (was previously using raw `buttons | mods` which mapped Option→Control, Control→Shift)
+- **GrabPointer reply** (v1.0.2): Re-enabled — uses same `sendReply32()` pattern as GrabKeyboard. Missing reply was causing XCB sequence desync on scrollbar use.
+- **Window focus on map** (v1.0.2): `mapWindow()` uses `makeKeyAndOrderFront()` instead of `orderFront()` so new windows receive focus and cursor blink starts immediately.
 - **Option+click → button 2**: macOS middle-mouse emulation for Xaw scrollbar thumb drag
 - xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly — cursor blinks, scrollbar stays visible, trackpad scrolling works, Option+click thumb drag works
-- xeyes works correctly
+- xeyes works correctly; killing xeyes while xterm has focus no longer breaks xterm cursor blink
 - **Multi-client architecture**: Server-wide state split from per-client state
   - `XProtoServer` is persistent — survives across client sessions, owns: `WindowTable`, `PixmapTable`, `FontTable`, `CursorTable`, `DrawableSurfaceRegistry`, `GrabTable`, `InputState`, `UICommandQueue`, `HostCommandQueue`
   - `XClient` holds per-connection state: `XProtoTransport`, `ReplyWriter`, fd, rid_base/rid_mask
   - `XProtoDaemon` owns the server (lazy init on first session) and creates `XClient` per connection
   - `XProtoContext` has `setClient()/clearClient()` to wire per-client transport into the shared context
   - Remaining globals: `g_daemon` (process-lifetime), `g_daemon_ptr` (bridge access), `g_ctx/g_ev/g_q` (NotifyBridge, set per-session)
+- **Display :1**: SwiftX11 runs on display :1 (TCP port 6001) to avoid conflict with XQuartz on :0. `~/.profile` sets `DISPLAY=127.0.0.1:1`.
 
-### Next Major Tasks
-1. **Multi-client Phase 2**: Concurrent client support — multiple `XClient` instances, per-client resource ownership
-2. **Font Handling**: Full X11 font protocol (ListFonts, QueryFont, etc.)
-3. **Broadened Drawing**: Additional X11 drawing primitives
+### Next Major Tasks (Vivado/Vitis Roadmap)
+See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
+1. **GC clipping (SetClipRectangles)** — drawing bleeds outside widget bounds without this
+2. **Missing reply-bearing opcodes** — prevent XCB sequence crashes
+3. **ReparentWindow** — GTK reparents widgets internally
+4. **BIG-REQUESTS extension** — large schematics/waveforms exceed 256KB
+5. **Error handling** — proper X11 error generation
+6. **RENDER extension** — anti-aliased fonts, alpha compositing
+7. **Container networking** — TCP + Unix socket for Docker workflow
+8. **16-bit text, selections/clipboard, font infrastructure**
