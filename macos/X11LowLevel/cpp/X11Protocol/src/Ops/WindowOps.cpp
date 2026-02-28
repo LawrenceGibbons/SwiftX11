@@ -25,6 +25,7 @@
 extern "C" {
 #include "SwiftX11Bridge.h"
 }
+#include "Utils/TraceDefs.hpp"
 
 namespace x11 {
 
@@ -38,16 +39,20 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
 
   DrawableRW dst{};
   if (!resolveDrawableRW(ctx, wid, dst)) {
+#if X11_TRACE_PRESENT_ENABLED
     fprintf(stderr, "[BG_FILL] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
+#endif
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
   const uint32_t bg = vw.background_pixel;
 
+#if X11_TRACE_PRESENT_ENABLED
   fprintf(stderr, "[BG_FILL] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u\n",
           (unsigned)wid, (unsigned)bg,
           (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
+#endif
 
   for (uint16_t y = 0; y < dst.h; y++) {
     uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
@@ -183,8 +188,10 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
   if (has_bg_pixel) {
     ctx.windows().setBackgroundPixel(wid, bg_pixel);
+#if X11_TRACE_LIFECYCLE_ENABLED
     fprintf(stderr, "[CreateWindow] wid=0x%08X bg_pixel=0x%08X\n",
             (unsigned)wid, (unsigned)bg_pixel);
+#endif
   }
   ctx.windows().setMapped(wid, false);
   ctx.windows().setPresentable(wid, false);
@@ -204,12 +211,13 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
 
-  // Always-on lifecycle trace for debugging child window issues.
+#if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[LIFECYCLE] CreateWindow wid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u evmask=0x%08X bg=%s\n",
           (unsigned)wid, (unsigned)parent,
           (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
           (unsigned)event_mask,
           has_bg_pixel ? "yes" : "no");
+#endif
 }
 
 
@@ -242,7 +250,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
     // Rootless rule: only top-level host windows drive Cocoa.
     const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
 
-    // Always-on lifecycle trace
+#if X11_TRACE_LIFECYCLE_ENABLED
     {
       WindowView mv{};
       ctx.windows().snapshot(wid, mv);
@@ -251,6 +259,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
               (unsigned)mv.parent_xid,
               (int)mv.x, (int)mv.y, (unsigned)mv.w, (unsigned)mv.h);
     }
+#endif
 
     // 2) Swift-side map + authoritative resize only for the host (UI command queue)
     if (host == wid) {
@@ -307,6 +316,7 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // Map all descendants (not including the parent itself)
   auto desc = ctx.windows().descendantsOf(parent);
 
+#if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[LIFECYCLE] MapSubwindows parent=0x%08X host=0x%08X numDesc=%zu\n",
           (unsigned)parent, (unsigned)host, desc.size());
   for (uint32_t xid : desc) {
@@ -318,6 +328,7 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
             ok ? (int)dv.x : 0, ok ? (int)dv.y : 0,
             ok ? (unsigned)dv.w : 0u, ok ? (unsigned)dv.h : 0u);
   }
+#endif
 
   // Track whether anything changed and whether we should flush host dirty once.
   bool anyMapped = false;

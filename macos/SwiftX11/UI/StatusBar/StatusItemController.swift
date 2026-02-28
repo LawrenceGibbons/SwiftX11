@@ -11,8 +11,6 @@ final class StatusItemController {
     installed = true
 
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    print("[STATUS] install: squareLength=\(NSStatusItem.squareLength)")
-    print("[STATUS] install: item.length=\(item.length)")
     self.statusItem = item
 
     guard let button = item.button else { return }

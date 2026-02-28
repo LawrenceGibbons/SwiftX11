@@ -237,7 +237,7 @@ final class XServerController: ObservableObject {
   
   @MainActor
   private func handleUICommand(_ cmd: x11_ui_cmd_t) {
-    print("[UI_CMD] type=\(cmd.type) xid=0x\(String(cmd.xid, radix:16))")
+    if X11Trace.lifecycle { print("[UI_CMD] type=\(cmd.type) xid=0x\(String(cmd.xid, radix:16))") }
     switch cmd.type {
 
     case X11_UI_TITLE:
@@ -253,20 +253,15 @@ final class XServerController: ObservableObject {
       WindowRegistry.shared.setTitle(xid: xid, title: title)
 
     case X11_UI_SET_CURSOR:
-      print ("[UI_CMD] SET_CURSOR cmd.host_xid=0x\(String(cmd.cursor.host_xid, radix:16))")
-      // Prefer the explicit payload.
-      //let host: UInt32 = (cmd.cursor.host_xid != 0) ? cmd.cursor.host_xid : cmd.xid
-      //let shapeRaw: Int32 = cmd.cursor.shape
       let host = cmd.cursor.host_xid
       let shapeRaw = cmd.cursor.shape
 
-
-      print("[UI_CMD] SET_CURSOR host=0x\(String(host, radix:16)) shapeRaw=\(shapeRaw) cursorXid=0x\(String(cmd.cursor.cursor_xid, radix:16))")
+      if X11Trace.input { print("[UI_CMD] SET_CURSOR host=0x\(String(host, radix:16)) shapeRaw=\(shapeRaw) cursorXid=0x\(String(cmd.cursor.cursor_xid, radix:16))") }
 
       if let v = WindowRegistry.shared.viewForHostXid(host) {
         v.applyCursorShapeRaw(shapeRaw)
       } else {
-        print("[UI_CMD] SET_CURSOR: no viewForHost(0x\(String(host, radix:16)))")
+        if X11Trace.input { print("[UI_CMD] SET_CURSOR: no viewForHost(0x\(String(host, radix:16)))") }
       }
       
     case X11_UI_RAISE:
@@ -279,8 +274,7 @@ final class XServerController: ObservableObject {
       WindowRegistry.shared.unmapWindow(xid: cmd.xid)
 
     case X11_UI_RESIZE:
-      // xxx temp
-      print("[SIZE][UI_CMD] applyX11Resize xid=0x\(String(format:"%X", cmd.xid)) wX11=\(cmd.w_u) hX11=\(cmd.h_u)")
+      if X11Trace.resize { print("[SIZE][UI_CMD] applyX11Resize xid=0x\(String(format:"%X", cmd.xid)) wX11=\(cmd.w_u) hX11=\(cmd.h_u)") }
       WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wX11: cmd.w_u, hX11: cmd.h_u)
 
     case X11_UI_CREATE:

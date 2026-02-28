@@ -39,6 +39,7 @@
 #include "Damage.hpp"
 #include "Core/HostCommandQueue.hpp"
 #include "Core/XClient.hpp"
+#include "Utils/TraceDefs.hpp"
 
 using x11::HostCmdType;
 using x11::HostCmd;
@@ -128,17 +129,21 @@ static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
 
   x11::DrawableRW dst{};
   if (!x11::resolveDrawableRW(ctx, wid, dst)) {
+#if X11_TRACE_PRESENT_ENABLED
     fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
+#endif
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
   const uint32_t bg = vw.background_pixel;
 
+#if X11_TRACE_PRESENT_ENABLED
   fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u off=(%d,%d)\n",
           (unsigned)wid, (unsigned)bg,
           (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels,
           (int)dst.offsetX, (int)dst.offsetY);
+#endif
 
   for (uint16_t y = 0; y < dst.h; y++) {
     uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
@@ -155,13 +160,17 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
 {
   const x11::WindowView* wv = ctx.window(wid);
   if (!wv) {
+#if X11_TRACE_LIFECYCLE_ENABLED
     fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X SKIP (no WindowView)\n", (unsigned)wid);
+#endif
     return;
   }
 
+#if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X wh=%ux%u mapped=%d evmask=0x%08X\n",
           (unsigned)wid, (unsigned)wv->w, (unsigned)wv->h,
           (int)wv->mapped, (unsigned)wv->event_mask);
+#endif
 
   auto ev = x11::wireev::buildExpose(ctx.transport().lastSeq(),
                                    wid,
@@ -183,7 +192,9 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
                                      x11::EventOps& evOps,
                                      uint32_t hostXid)
 {
+#if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
+#endif
 
   // Fill background + Expose the host itself.
   fillWindowBackgroundIfReady(ctx, hostXid);
@@ -191,19 +202,19 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
 
   // Fill background + Expose every mapped descendant.
   auto kids = ctx.windows().descendantsOf(hostXid);
+#if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
           (unsigned)hostXid, kids.size());
+#endif
   for (uint32_t kid : kids) {
     x11::WindowView kv{};
     if (!ctx.windows().snapshot(kid, kv)) continue;
-    if (!kv.mapped) {
-      fprintf(stderr, "[EXPOSE_SUBTREE] skip kid=0x%08X (unmapped)\n", (unsigned)kid);
-      continue;
-    }
+    if (!kv.mapped) continue;
 
     // Paint background before Expose (X11 spec requirement).
     fillWindowBackgroundIfReady(ctx, kid);
 
+#if X11_TRACE_LIFECYCLE_ENABLED
     // Diagnostic: verify the child window can resolve to the host surface.
     {
       x11::DrawableRW dbgDst{};
@@ -216,6 +227,7 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
               resolved ? (int)dbgDst.offsetY : 0,
               resolved ? (unsigned)dbgDst.stridePixels : 0u);
     }
+#endif
 
     sendExposeNow(ctx, evOps, kid);
   }
@@ -243,10 +255,8 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
         // ------------------- SetPresentable
         case HostCmdType::SetPresentable: {
+#if X11_TRACE_LIFECYCLE_ENABLED
           fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X\n", (unsigned)c.xid);
-          ctx.windows().setPresentable(c.xid, true);
-
-          // Check surface state right now.
           {
             x11::SurfaceDesc dbgS{};
             bool hasSurf = ctx.surfaces().get(c.xid, dbgS);
@@ -255,6 +265,8 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                     (unsigned)dbgS.w, (unsigned)dbgS.h,
                     (unsigned)dbgS.bytesPerRow, dbgS.ptr);
           }
+#endif
+          ctx.windows().setPresentable(c.xid, true);
 
           // Write full-window damage to the shared accumulator and signal
           // so any content drawn before the surface was presentable gets shown.
@@ -269,7 +281,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           // Re-expose the host and all mapped descendants so clients
           // redraw into the Swift surface now that it's presentable.
-          fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X -> EXPOSE subtree\n", (unsigned)c.xid);
           sendExposeSubtree(ctx, srv->eventOps(), c.xid);
           break;
         }
@@ -295,22 +306,56 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           if (haveSV && !sv.presentable) {
             // Case A: initial presentation — full re-expose needed.
+            // The first sendExposeSubtree (at SetPresentable time) may have
+            // run when the surface was at its initial (small) size.  Children
+            // at far offsets were clipped to zero and never rendered.
+#if X11_TRACE_RESIZE_ENABLED
             fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (initial) -> re-expose subtree\n",
                     (unsigned)c.xid);
+#endif
             sendExposeSubtree(ctx, srv->eventOps(), c.xid);
-          } else {
-            // Case B: live resize — skip destructive BG fill.
-            // Just signal damage so the present shows the current surface.
-            fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (resize) -> damage only\n",
-                    (unsigned)c.xid);
-          }
 
-          // Write full-window damage to the shared accumulator and signal.
-          if (haveSV) {
+            // Write full-window damage for the initial expose.
             x11_shared_damage_union(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
             x11_ui_push_damage(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
+            ctx.windows().markDirty(c.xid);
+          } else {
+            // Case B: live resize — skip EVERYTHING.
+            // Do NOT call sendExposeSubtree (destructive BG fill wipes children).
+            // Do NOT report damage here — it triggers a premature present that
+            // shows the surface with old/copied content before the client has
+            // redrawn at the new size.  The RootlessResize handler (which
+            // follows ~16ms later) updates geometry + reports damage, and the
+            // ConfigureWindow handler (triggered by xterm's response to
+            // ConfigureNotify) fills child backgrounds + sends Expose.
+#if X11_TRACE_RESIZE_ENABLED
+            fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (resize) -> skip\n",
+                    (unsigned)c.xid);
+#endif
           }
-          ctx.windows().markDirty(c.xid);
+          break;
+        }
+
+        // ------------------- ExposeChildren
+        // Sent at end of live resize to re-expose children whose content may
+        // have been lost during surface reallocation.  Does NOT fill backgrounds
+        // (non-destructive) — just sends Expose events so clients redraw.
+        case HostCmdType::ExposeChildren: {
+          auto kids = ctx.windows().descendantsOf(c.xid);
+          for (uint32_t kid : kids) {
+            x11::WindowView kv{};
+            if (!ctx.windows().snapshot(kid, kv)) continue;
+            if (!kv.mapped) continue;
+            sendExposeNow(ctx, srv->eventOps(), kid);
+          }
+          // Also expose the host itself and report damage to trigger a present.
+          sendExposeNow(ctx, srv->eventOps(), c.xid);
+          {
+            x11::WindowView sv{};
+            if (ctx.windows().snapshot(c.xid, sv)) {
+              damageOrDirty(ctx, c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
+            }
+          }
           break;
         }
 
@@ -464,7 +509,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 if (!ctx.windows().snapshot(checkWin, vw)) break;
                 checkWin = vw.parent_xid;
               }
-            #ifndef NDEBUG
+            #if X11_TRACE_INPUT_ENABLED
               fprintf(stderr,
                       "[BTN_GRAB] under=0x%08X btn=%u grab=%s grabWin=0x%08X\n",
                       (unsigned)under, (unsigned)c.button,
@@ -518,7 +563,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // child field: if delivering to ancestor, child is the subwindow under pointer
           const uint32_t child = (deliver != under) ? under : 0;
 
-        #ifndef NDEBUG
+        #if X11_TRACE_INPUT_ENABLED
           fprintf(stderr,
                   "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u drag=0x%08X\n",
                   (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
@@ -891,6 +936,14 @@ extern "C" void x11_proto_bridge_surface_resized(uint32_t xid)
   srv->hostCmds().push(HostCmd{HostCmdType::SurfaceResized, xid, 0, 0});
 }
 
+extern "C" void x11_proto_bridge_expose_children(uint32_t xid)
+{
+  if (xid == 0) return;
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return;
+  srv->hostCmds().push(HostCmd{HostCmdType::ExposeChildren, xid, 0, 0});
+}
+
 
 static x11::XProtoDaemon g_daemon;
 // Wire daemon pointer for bridge functions.
@@ -1210,8 +1263,10 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
 
   x11::SurfaceDesc s{};
   if (!ctx.surfaces().get(host, s) || !s.ptr || s.bytesPerRow == 0 || s.w == 0 || s.h == 0) {
+#if X11_TRACE_PRESENT_ENABLED
     fprintf(stderr, "[COPY_SURFACE] xid=0x%08X host=0x%08X FAIL no surface (ptr=%p wh=%ux%u bpr=%u)\n",
             (unsigned)xid, (unsigned)host, s.ptr, (unsigned)s.w, (unsigned)s.h, (unsigned)s.bytesPerRow);
+#endif
     return 0;
   }
 

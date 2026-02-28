@@ -283,30 +283,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // Full host repaint (child moved/resized within host surface).
       damageOrDirty(ctx, host);
 
-      // Fill the child's background at its NEW position before delivering
-      // Expose.  This is critical during host resize: SurfaceResized fires
-      // before the host geometry is updated, so the scrollbar's old position
-      // may have been outside the surface bounds.  By the time xterm sends
-      // ConfigureWindow to reposition the scrollbar, the geometry is now
-      // correct and the child can be resolved and painted.
-      {
-        x11::WindowView cv{};
-        if (ctx.windows().snapshot(wid, cv) && cv.has_background_pixel) {
-          x11::DrawableRW dst{};
-          if (x11::resolveDrawableRW(ctx, wid, dst) &&
-              dst.pixels32 && dst.w > 0 && dst.h > 0 && dst.stridePixels > 0) {
-            const uint32_t bg = cv.background_pixel;
-            for (uint16_t yy = 0; yy < dst.h; yy++) {
-              uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
-              for (uint16_t xx = 0; xx < dst.w; xx++) {
-                row[xx] = bg;
-              }
-            }
-            // Damage the child area specifically so the present shows it.
-            damageOrDirty(ctx, wid, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
-          }
-        }
-      }
+      // NOTE: We intentionally do NOT fill the child's background here.
+      // During live resize, the BG fill wipes the child's area with its
+      // background_pixel colour. A present then fires before the client
+      // redraws, producing a blank frame (e.g., scrollbar disappears).
+      // The client will paint the correct content in response to the
+      // Expose event we send below.  Omitting the fill means the surface
+      // may show stale pixels for one frame — acceptable and far less
+      // jarring than a blank/white flash.
     }
 
     // ------------------------------------------------------------------

@@ -73,7 +73,7 @@ final class WindowRegistry {
   private var lastSizePrintTimeByXid: [UInt32: CFTimeInterval] = [:]
   
   // Debug: enable verbose snapshot diagnostics
-  var debugSnapshotRouting: Bool = true
+  var debugSnapshotRouting: Bool = false
   
   private func isTopLevelX11Window(_ xid: UInt32) -> Bool {
     // Top-level means parent is the X11 root (1). If unknown, assume top-level
@@ -222,7 +222,7 @@ final class WindowRegistry {
     // Now that X11 says mapped, allow Cocoa resizes to flow back to X11.
     ignoreCocoaResizeUntilMapped.remove(host)
 
-    logAppend?("[MAP] host=0x\(String(host, radix:16)) mapped; awaiting X11_UI_RESIZE")
+    if X11Trace.lifecycle { logAppend?("[MAP] host=0x\(String(host, radix:16)) mapped; awaiting X11_UI_RESIZE") }
     
     mappedXids.insert(host)
 
@@ -331,7 +331,7 @@ final class WindowRegistry {
     let xids = String(format: "0x%X", xid)
     let parent_xids = String(format: "0x%X", parentXid)
 
-    logAppend?("Entered noteX11WIndowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height)")
+    if X11Trace.lifecycle { logAppend?("noteX11WindowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height)") }
     // Update/insert metadata (idempotent).
     infoByXid[xid] = X11WindowInfo(
       xid: xid,
@@ -481,10 +481,7 @@ final class WindowRegistry {
   
   
   private func snapshotAndPresentNow(sourceXid: UInt32, presentXid: UInt32, damageRect: DamageRect? = nil) {
-    guard windows[presentXid] != nil else {
-      print(String(format: "[SNAPSHOT] presentXid=0x%08X SKIP (no window entry)", presentXid))
-      return
-    }
+    guard windows[presentXid] != nil else { return }
     guard !closingXids.contains(presentXid) else { return }
 
     func querySize() -> (w: Int32, h: Int32, bpr: Int32)? {
@@ -494,13 +491,7 @@ final class WindowRegistry {
       return (w, h, bpr)
     }
 
-    guard var sz = querySize() else {
-      print(String(format: "[SNAPSHOT] sourceXid=0x%08X presentXid=0x%08X SKIP (querySize returned nil)",
-            sourceXid, presentXid))
-      return
-    }
-    print(String(format: "[SNAPSHOT] sourceXid=0x%08X presentXid=0x%08X sz=%dx%d bpr=%d",
-          sourceXid, presentXid, sz.w, sz.h, sz.bpr))
+    guard var sz = querySize() else { return }
 
     func copyFrame(sz: (w: Int32, h: Int32, bpr: Int32)) -> (data: Data, ok: Bool) {
       let byteCount = Int(sz.bpr) * Int(sz.h)
@@ -519,7 +510,7 @@ final class WindowRegistry {
       return (data, ok)
     }
 
-    logAppend?("[SNAP_Q] host=0x\(String(presentXid,radix:16)) source=0x\(String(sourceXid,radix:16)) sz=\(sz.w)x\(sz.h) bpr=\(sz.bpr)")
+    if X11Trace.present { logAppend?("[SNAP_Q] host=0x\(String(presentXid,radix:16)) source=0x\(String(sourceXid,radix:16)) sz=\(sz.w)x\(sz.h) bpr=\(sz.bpr)") }
     let a1 = copyFrame(sz: sz)
     if !a1.ok {
       guard let newSz = querySize() else { return }
@@ -616,7 +607,7 @@ final class WindowRegistry {
     
     // 2) First attempt
     let attempt1 = copyFrame(sz: sz)
-    logAppend?("snap(copy#1): xid=0x\(String(xid, radix: 16)) okCopy=\(attempt1.okCopy) ok=\(attempt1.ok) outW=\(attempt1.outW) outH=\(attempt1.outH) outBpr=\(attempt1.outBpr) expect=\(sz.w)x\(sz.h) bpr=\(sz.bpr)")
+    if X11Trace.present { logAppend?("snap(copy#1): xid=0x\(String(xid, radix: 16)) okCopy=\(attempt1.okCopy) ok=\(attempt1.ok) outW=\(attempt1.outW) outH=\(attempt1.outH) outBpr=\(attempt1.outBpr) expect=\(sz.w)x\(sz.h) bpr=\(sz.bpr)") }
     
     // 3) If size changed mid-copy, retry once after re-query
     if !attempt1.ok {
@@ -624,10 +615,10 @@ final class WindowRegistry {
       sz = newSz
       
       let attempt2 = copyFrame(sz: sz)
-      logAppend?("snap(copy#2): xid=0x\(String(xid, radix: 16)) okCopy=\(attempt2.okCopy) ok=\(attempt2.ok) outW=\(attempt2.outW) outH=\(attempt2.outH) outBpr=\(attempt2.outBpr) expect=\(sz.w)x\(sz.h) bpr=\(sz.bpr)")
+      if X11Trace.present { logAppend?("snap(copy#2): xid=0x\(String(xid, radix: 16)) okCopy=\(attempt2.okCopy) ok=\(attempt2.ok) outW=\(attempt2.outW) outH=\(attempt2.outH) outBpr=\(attempt2.outBpr) expect=\(sz.w)x\(sz.h) bpr=\(sz.bpr)") }
       
       guard attempt2.ok else {
-        logAppend?("snap: EARLY RETURN (retry failed)")
+        if X11Trace.present { logAppend?("snap: EARLY RETURN (retry failed)") }
         return
       }
       
@@ -662,7 +653,7 @@ final class WindowRegistry {
 
     // Suppress the next didBecomeKey notification since we're causing it.
     suppressNextRaiseFromCocoa.insert(xid)
-    print("[MAKEKEY] abiout to makeKeyAndOrderFront window=\(String(describing: win))")
+    if X11Trace.lifecycle { print("[MAKEKEY] about to makeKeyAndOrderFront window=\(String(describing: win))") }
 
     win.makeKeyAndOrderFront(nil)
   }
@@ -679,7 +670,7 @@ final class WindowRegistry {
     let h = max(1, h)
 
     let scale = windows[host]?.window?.backingScaleFactor ?? -1
-    logAppend?("[CFG_SEND] host=0x\(String(host,radix:16)) sendX11=\(w)x\(h)pt winScale=\(scale)")
+    if X11Trace.resize { logAppend?("[CFG_SEND] host=0x\(String(host,radix:16)) sendX11=\(w)x\(h)pt winScale=\(scale)") }
     
     // Record the size we are *actually sending* to X11 for the HOST.
     lastSentHostSizePtByXid[host] = (w: w, h: h)
@@ -829,7 +820,7 @@ final class WindowRegistry {
       //if !mappedXids.contains(xid) { return }
 
       // Debug
-      logAppend?("[RESIZE Cocoa→X11] xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) wPx=\(wPx) hPx=\(hPx) wPt=\(wPt) hPt=\(hPt)")
+      if X11Trace.resize { logAppend?("[RESIZE Cocoa→X11] xid=0x\(String(xid, radix:16)) host=0x\(String(host, radix:16)) wPx=\(wPx) hPx=\(hPx) wPt=\(wPt) hPt=\(hPt)") }
 
       sendConfigureAsync(xid: host, w: wPt, h: hPt)
       return
@@ -1121,7 +1112,7 @@ extension WindowRegistry {
     // that’s only valid for the duration of this closure.
     data.withUnsafeBytes { raw in
       guard let base = raw.baseAddress else { return }
-      logAppend?("snap: calling presentBGRA xid=0x\(String(xid, radix: 16)) w=\(width) h=\(height) bpr=\(bytesPerRow)")
+      if X11Trace.present { logAppend?("snap: calling presentBGRA xid=0x\(String(xid, radix: 16)) w=\(width) h=\(height) bpr=\(bytesPerRow)") }
       view.presentBGRA(framebuffer: base, width: width, height: height, bytesPerRow: bytesPerRow,
                        damageRect: damageRect)
     }

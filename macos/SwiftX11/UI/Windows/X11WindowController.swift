@@ -40,7 +40,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       guard let self, let window else { return }
 
       self.x11View?.logIfInLayout("About to setContentSize(\(width)x\(height)) for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self.x11View)
-      print("[WIN] setContentSize about to run in X11WindowController xid=0x\(String(xid, radix:16)) size=\(width)x\(height) window=\(String(describing: window))")
+      if X11Trace.lifecycle { print("[WIN] setContentSize about to run in X11WindowController xid=0x\(String(xid, radix:16)) size=\(width)x\(height)") }
       window.setContentSize(NSSize(width: width, height: height))
       self.x11View?.logIfInLayout("Did setContentSize(\(width)x\(height)) for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self.x11View)
     }
@@ -89,6 +89,13 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       guard let self else { return }
       self.windowDidResize(notification)
       WindowRegistry.shared.flushRepaintNow(xid: self.xid)
+
+      // Force Expose to all mapped children.  During live resize, each
+      // ensureHostSurface reallocation clears areas outside the old overlap
+      // to white.  If the user stops resizing during a flash, children
+      // (scrollbar, etc.) may not get re-exposed because applyRootlessResize
+      // returns early when size hasn't changed.  This ensures a full redraw.
+      x11_post_expose_children(self.xid)
     }
   }
   

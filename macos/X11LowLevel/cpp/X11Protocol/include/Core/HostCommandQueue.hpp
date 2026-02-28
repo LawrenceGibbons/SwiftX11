@@ -17,6 +17,7 @@ enum class HostCmdType : uint8_t {
   RootlessResize,
   SetPresentable,
   SurfaceResized,
+  ExposeChildren,   // Force Expose to all mapped children (no BG fill)
   PointerMove,
   PointerEnter,
   PointerLeave,

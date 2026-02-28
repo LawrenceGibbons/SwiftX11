@@ -117,8 +117,9 @@ final class X11View: NSView {
     let bpr = wPx * 4                  // tight rows for bring-up stability
     let needBytes = Int(bpr * hPx)
 
-    print(String(format: "[ENSURE_SURFACE] xid=0x%08X wPx=%d hPx=%d bpr=%d usingMetal=%d",
-          self.xid, wPx, hPx, bpr, self.usingMetal ? 1 : 0))
+    // Gated: fires on every resize step; too noisy for normal debug.
+    // print(String(format: "[ENSURE_SURFACE] xid=0x%08X wPx=%d hPx=%d bpr=%d usingMetal=%d",
+    //       self.xid, wPx, hPx, bpr, self.usingMetal ? 1 : 0))
 
     let needsAlloc =
       hostSurface == nil ||
@@ -248,7 +249,8 @@ final class X11View: NSView {
       
       logIfInLayout( "In scheduleDrawableSizeUpdate (size: \(size))", view:self)
       if mv.drawableSize != size {
-        print("[MTK] drawableSize about to set xid=\(xid) size=\(size) window=\(String(describing: mv.window))")
+        // Gated: fires on every resize step.
+        // print("[MTK] drawableSize about to set xid=\(xid) size=\(size) window=\(String(describing: mv.window))")
         mv.drawableSize = size
         //mv.drawableSize = size
       }
@@ -324,14 +326,17 @@ final class X11View: NSView {
   }
   
   func logIfInLayout(_ label: String, view: X11View?) {
+    // Gated: layout detection is expensive (Thread.callStackSymbols).
+    // Enable X11Trace.lifecycle to debug layout-related issues.
+    guard X11Trace.lifecycle else { return }
     if view == nil {
       print("[LAYOUT?] \(label) (view=nil)")
       return
     }
-    
+
     guard let view, view.inLayout else { return }
     guard LayoutLogGate.shared.shouldLog() else { return }
-    
+
     print("⚠️ [SwiftX11] \(label) called during layout")
     Thread.callStackSymbols.prefix(25).forEach { print($0) }
   }
@@ -365,7 +370,7 @@ final class X11View: NSView {
       // Only attempt if we’re not already first responder.
       if win.firstResponder !== self {
         logIfInLayout("About to makeFirstResponder for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self)
-        print("[FRSTRESP] abiout to makeFirstResponder window=\(String(describing: self.window))")
+        if X11Trace.lifecycle { print("[FRSTRESP] about to makeFirstResponder window=\(String(describing: self.window))") }
         
         win.makeFirstResponder(self)
       }
@@ -416,8 +421,8 @@ final class X11View: NSView {
     guard self.window != nil else { return }
     guard xid != 0 else { return }
     didNotifyPresentable = true
-    print(String(format: "[PRESENTABLE_ONCE] xid=0x%08X usingMetal=%d bounds=%.0fx%.0f",
-          self.xid, self.usingMetal ? 1 : 0, bounds.width, bounds.height))
+    if X11Trace.lifecycle { print(String(format: "[PRESENTABLE_ONCE] xid=0x%08X usingMetal=%d bounds=%.0fx%.0f",
+          self.xid, self.usingMetal ? 1 : 0, bounds.width, bounds.height)) }
     x11_post_window_presentable(xid)
   }
   
@@ -450,8 +455,8 @@ final class X11View: NSView {
       let wX11 = Int32(max(1, Int(bounds.width.rounded(.down))))
       let hX11 = Int32(max(1, Int(bounds.height.rounded(.down))))
       if wX11 >= 16 && hX11 >= 16 {
-        print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds OK %dx%d — registering surface",
-              self.xid, wX11, hX11))
+        if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds OK %dx%d — registering surface",
+              self.xid, wX11, hX11)) }
         ensureHostSurface(wPx: wX11, hPx: hX11)
         // make host presentable in software or metal mode
         self.notifyPresentableOnce()
@@ -459,8 +464,8 @@ final class X11View: NSView {
         // Bounds too small — setContentSize hasn't taken effect yet.
         // Retry shortly.  This is essential for software rendering which has
         // no handleDrawableSize fallback.
-        print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds too small %dx%d — retrying in 50ms",
-              self.xid, wX11, hX11))
+        if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds too small %dx%d — retrying in 50ms",
+              self.xid, wX11, hX11)) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
           guard let self else { return }
           self.scheduleAttachSettle()
@@ -578,23 +583,10 @@ final class X11View: NSView {
     // Copy bytes so the backing memory remains valid after C returns/frees.
     let data = Data(bytes: framebuffer, count: byteCount)
 
-    // debug only
-    let p0: UInt32 = data.withUnsafeBytes { raw in
-      raw.load(fromByteOffset: 0, as: UInt32.self)
-    }
-    print(String(format: "PRESENT xid=%u p0=0x%08X", xid, p0))
-
-
     if usingMetal {
       // Metal path: upload texture now; actual present happens in MTKViewDelegate.draw(in:)
       guard let mv = self.mtkView else { return }
       guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else { return }
-
-      if usingMetal, let mv = self.mtkView {
-        let ds = mv.drawableSize
-        let scale = self.window?.backingScaleFactor ?? -1
-        print("[PRESENT][Metal] xid=\(xid) src=\(width)x\(height) drawable=\(Int(ds.width))x\(Int(ds.height)) scale=\(scale)")
-      }
 
       self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
                                    damageRect: damageRect)
@@ -602,13 +594,13 @@ final class X11View: NSView {
       // Ask MTKView to draw exactly once (draw(in:) will use currentDrawable and present).
       mv.setNeedsDisplay(mv.bounds)
     } else {
-#if DEBUG
       swFrameSeq &+= 1
       let seq = swFrameSeq
-      let tid = pthread_mach_thread_np(pthread_self())
-      print(String(format: "[SWFRAME] recv xid=0x%08X seq=%llu wh=%dx%d bpr=%d tid=0x%X main=%d",
-                   xid, seq, width, height, bytesPerRow, tid, Thread.isMainThread ? 1 : 0))
-#endif
+      if X11Trace.present {
+        let tid = pthread_mach_thread_np(pthread_self())
+        print(String(format: "[SWFRAME] recv xid=0x%08X seq=%llu wh=%dx%d bpr=%d tid=0x%X main=%d",
+                     xid, seq, width, height, bytesPerRow, tid, Thread.isMainThread ? 1 : 0))
+      }
       // Software path: build a CGImage and put it into the layer.
       presentSoftware(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
     }
@@ -649,57 +641,30 @@ final class X11View: NSView {
       intent: .defaultIntent
     ) else { return }
     
-#if DEBUG
-    let seq = swFrameSeq   // or capture from caller
+    let seq = swFrameSeq
     let recvWH = (w: width, h: height, bpr: bytesPerRow)
-#endif
-    
+
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-#if DEBUG
-      let tid = pthread_mach_thread_np(pthread_self())
-      let last = self.swLastAppliedWH
-      let lastSeq = self.swLastAppliedSeq
-      let isStaleBySeq = seq < lastSeq
-      let isStaleBySize = (recvWH.w < last.w || recvWH.h < last.h) && (last.w > 0 && last.h > 0)
-      
-      print(String(format:
-                    "[SWFRAME] apply xid=0x%08X seq=%llu (last=%llu) wh=%dx%d bpr=%d lastWh=%dx%d lastBpr=%d staleSeq=%d staleSize=%d tid=0x%X",
-                   self.xid, seq, lastSeq,
-                   recvWH.w, recvWH.h, recvWH.bpr,
-                   last.w, last.h, last.bpr,
-                   isStaleBySeq ? 1 : 0,
-                   isStaleBySize ? 1 : 0,
-                   tid))
-      
+      if X11Trace.present {
+        let tid = pthread_mach_thread_np(pthread_self())
+        let last = self.swLastAppliedWH
+        let lastSeq = self.swLastAppliedSeq
+        let isStaleBySeq = seq < lastSeq
+        let isStaleBySize = (recvWH.w < last.w || recvWH.h < last.h) && (last.w > 0 && last.h > 0)
+
+        print(String(format:
+                      "[SWFRAME] apply xid=0x%08X seq=%llu (last=%llu) wh=%dx%d bpr=%d lastWh=%dx%d lastBpr=%d staleSeq=%d staleSize=%d tid=0x%X",
+                     self.xid, seq, lastSeq,
+                     recvWH.w, recvWH.h, recvWH.bpr,
+                     last.w, last.h, last.bpr,
+                     isStaleBySeq ? 1 : 0,
+                     isStaleBySize ? 1 : 0,
+                     tid))
+      }
       self.swLastAppliedSeq = max(self.swLastAppliedSeq, seq)
       self.swLastAppliedWH = recvWH
-#endif
       self.lastFrameData = data
-      
-#if DEBUG
-      let layer = self.imageLayer
-      print("""
-        [LAYERMAP] xid=0x\(String(self.xid, radix:16)) \
-        gravity=\(layer?.contentsGravity.rawValue ?? "nil") \
-        contentsRect=\(layer?.contentsRect ?? .zero) \
-        contentsCenter=\(layer?.contentsCenter ?? .zero) \
-        contentsScale=\(layer?.contentsScale ?? -1) \
-        winScale=\(self.window?.backingScaleFactor ?? -1)
-        """)
-      let winScale = self.window?.backingScaleFactor ?? -1
-      let layerScale = layer?.contentsScale ?? -2
-      let grav = layer?.contentsGravity.rawValue ?? "nil"
-      let b = self.bounds
-      let lf = layer?.frame ?? .zero
-      print("""
-              [SWAPPLY] xid=0x\(String(self.xid, radix:16)) \
-              img=\(width)x\(height) bpr=\(bytesPerRow) \
-              view.bounds=\(b) layer.frame=\(lf) \
-              winScale=\(winScale) layerScale=\(layerScale) gravity=\(grav) \
-              main=\(Thread.isMainThread)
-              """)
-#endif
       
       syncSoftwareLayerScale()
       self.imageLayer?.contents = cgImage
@@ -712,7 +677,7 @@ final class X11View: NSView {
     
     let view = X11MTKView(frame: bounds, device: device)
     
-    print("[MTK] create MTKView xid=\(xid) bounds=\(bounds) window=\(String(describing: self.window)) backingScale=\(self.window?.backingScaleFactor ?? -1)")
+    if X11Trace.lifecycle { print("[MTK] create MTKView xid=\(xid) bounds=\(bounds) window=\(String(describing: self.window)) backingScale=\(self.window?.backingScaleFactor ?? -1)") }
     
     view.owner = self
     view.xid = self.xid
@@ -823,7 +788,8 @@ final class X11View: NSView {
     guard usingMetal else { return }
     guard view.drawableSize.width >= 1, view.drawableSize.height >= 1 else { return }
     guard let renderer = self.renderer else { return }
-    print("MTK draw(in:) xid=\(xid) hasTex=\(renderer.hasTexture) drawable=\(String(describing: view.currentDrawable))")
+    // Gated: fires on every Metal draw call; too noisy.
+    // print("MTK draw(in:) xid=\(xid) hasTex=\(renderer.hasTexture) drawable=\(String(describing: view.currentDrawable))")
     renderer.draw(on: view)
   }
   
@@ -1157,9 +1123,7 @@ final class X11View: NSView {
     discardCursorRects()
     window?.invalidateCursorRects(for: self)
 
-  #if DEBUG
-    print("[CURSOR] applyCursorShapeRaw xid=0x\(String(xid, radix:16)) shapeRaw=\(shapeRaw) windowNil=\(window == nil)")
-  #endif
+    if X11Trace.input { print("[CURSOR] applyCursorShapeRaw xid=0x\(String(xid, radix:16)) shapeRaw=\(shapeRaw) windowNil=\(window == nil)") }
   }
   
   override func resetCursorRects() {
@@ -1256,8 +1220,9 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
     let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
 
-    print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X drawableSize=%dx%d",
-          xid, wPx, hPx))
+    // Gated: fires on every resize step; too noisy for normal debug.
+    // print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X drawableSize=%dx%d",
+    //       xid, wPx, hPx))
 
     // ---- HARD GATES ----
     guard wPx >= 16, hPx >= 16 else { return }
@@ -1269,15 +1234,16 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     let scale = owner?.window?.backingScaleFactor ?? 1.0
     let wX11 = Int32(max(1, Int((CGFloat(wPx) / scale).rounded(.down))))
     let hX11 = Int32(max(1, Int((CGFloat(hPx) / scale).rounded(.down))))
-    print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X scale=%.1f -> x11=%dx%d",
-          xid, scale, wX11, hX11))
+    // Gated: fires on every resize step; too noisy for normal debug.
+    // print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X scale=%.1f -> x11=%dx%d",
+    //       xid, scale, wX11, hX11))
     if wX11 >= 1 && hX11 >= 1 {
       owner?.ensureHostSurface(wPx: wX11, hPx: hX11)
     }
 
     if !didNotifyPresentable {
       didNotifyPresentable = true
-      print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X -> posting presentable", xid))
+      if X11Trace.lifecycle { print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X -> posting presentable", xid)) }
       x11_post_window_presentable(xid)
     }
 

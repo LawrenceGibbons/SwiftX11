@@ -16,6 +16,7 @@
 #include "Core/WindowTable.hpp"
 #include "Core/SurfaceDesc.hpp"
 #include "Core/DrawableSurfaceRegistry.hpp"
+#include "Utils/TraceDefs.hpp"
 
 
 namespace x11 {
@@ -150,11 +151,12 @@ bool resolveDrawableRW(XProtoContext& ctx,
       effH = (uint16_t)std::min<uint32_t>(childH, maxH);
     }
     if (effW == 0 || effH == 0) {
-      // Always log: this is a key diagnostic for clipping bugs (scrollbar etc.)
+#if X11_TRACE_RESOLVE_ENABLED
       fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL effWH=%ux%u (dv.wh=%ux%u off=%d,%d surf=%ux%u)\n",
               (unsigned)drawable, (unsigned)key, (unsigned)effW, (unsigned)effH,
               (unsigned)dv.w, (unsigned)dv.h, (int)ox, (int)oy,
               (unsigned)s.w, (unsigned)s.h);
+#endif
       return false;
     }
 
@@ -176,7 +178,8 @@ bool resolveDrawableRW(XProtoContext& ctx,
     out.offsetX = ox;
     out.offsetY = oy;
 
-    // Always-on: log the FIRST successful resolve for each child window.
+#if X11_TRACE_LIFECYCLE_ENABLED
+    // Log the FIRST successful resolve for each child window.
     if (drawable != key && s_reportedChildResolve.find(drawable) == s_reportedChildResolve.end()) {
       s_reportedChildResolve.insert(drawable);
       fprintf(stderr,
@@ -190,6 +193,7 @@ bool resolveDrawableRW(XProtoContext& ctx,
               (unsigned)dv.parent_xid,
               (int)dv.x, (int)dv.y);
     }
+#endif
 
 #ifdef X11_TRACE_VERBOSE
     fprintf(stderr,

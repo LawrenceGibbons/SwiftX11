@@ -26,5 +26,5 @@ let swiftX11PresentFrame: X11PresentFrameCB = { xid, ptr, w, h, bpr in
             bytesPerRow: Int(bpr)
         )
     }
-    print(String(format: "PRESENT xid=0x%X %dx%d", xid, w, h))
+    if X11Trace.present { print(String(format: "PRESENT xid=0x%X %dx%d", xid, w, h)) }
 }

@@ -157,6 +157,10 @@ void x11_post_window_destroy(uint32_t xid);
 // -------------------------------------------------------------------------------------
 void x11_post_window_resize(uint32_t xid, int32_t w_u, int32_t h_u);
 
+// Force Expose to all mapped children (no BG fill).
+// Call after live resize ends to recover child content lost during surface reallocation.
+void x11_post_expose_children(uint32_t xid);
+
 void x11_surface_update(uint32_t host_xid,
                         void* ptr,
                         uint32_t bytes_per_row,

@@ -14,6 +14,7 @@
 #include "Core/SurfaceDesc.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "XProtoServerBridge.h"
+#include "Utils/TraceDefs.hpp"
 
 // We need access to the current server instance managed by XProtoServerBridge.cpp.
 // This accessor is defined in XProtoServerBridge.cpp (see snippet below).
@@ -44,11 +45,13 @@ extern "C" void x11_surface_update(uint32_t host_xid,
   s.format = x11::SurfaceFormat::XRGB8888;
   s.generation = generation;
 
+#if X11_TRACE_RESIZE_ENABLED
   fprintf(stderr, "[SURFACE_UPDATE] xid=0x%08X ptr=%p bpr=%u wh=%ux%u gen=%u prev=%ux%u sizeChanged=%d\n",
           (unsigned)host_xid, ptr, (unsigned)bytes_per_row,
           (unsigned)w, (unsigned)h, (unsigned)generation,
           hadPrev ? (unsigned)prev.w : 0u, hadPrev ? (unsigned)prev.h : 0u,
           (int)sizeChanged);
+#endif
 
   srv->updateSurface(host_xid, s);
 
@@ -60,8 +63,12 @@ extern "C" void x11_surface_update(uint32_t host_xid,
   // and never rendered.  Triggering a new expose round-trip now that the
   // surface is at the correct size lets those children actually draw.
   if (sizeChanged) {
-    fprintf(stderr, "[SURFACE_UPDATE] xid=0x%08X -> queueing SurfaceResized re-expose\n",
-            (unsigned)host_xid);
+#if X11_TRACE_RESIZE_ENABLED
+    fprintf(stderr, "[SURFACE_UPDATE] xid=0x%08X -> queueing SurfaceResized (prev=%ux%u new=%ux%u)\n",
+            (unsigned)host_xid,
+            hadPrev ? (unsigned)prev.w : 0u, hadPrev ? (unsigned)prev.h : 0u,
+            (unsigned)w, (unsigned)h);
+#endif
     x11_proto_bridge_surface_resized(host_xid);
   }
 }

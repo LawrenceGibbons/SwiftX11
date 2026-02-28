@@ -59,6 +59,8 @@ extern "C" void x11_proto_bridge_apply_rootless_resize(uint32_t xid,
 
 extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid);
 
+extern "C" void x11_proto_bridge_expose_children(uint32_t xid);
+
 extern "C" int  x11_cpp_copy_host_surface_bgra(uint32_t xid,
                                                 uint8_t* out_bytes,
                                                 int32_t out_cap,
@@ -218,6 +220,16 @@ extern "C" void x11_post_window_resize(uint32_t xid, int32_t w_u, int32_t h_u)
 
   // Queue rootless resize to the server thread (geometry update + ConfigureNotify).
   x11_proto_bridge_apply_rootless_resize(xid, w_u, h_u);
+}
+
+// ===========================================================================
+// End-of-resize expose
+// ===========================================================================
+
+extern "C" void x11_post_expose_children(uint32_t xid)
+{
+  if (xid == 0) return;
+  x11_proto_bridge_expose_children(xid);
 }
 
 // ===========================================================================
