@@ -10,11 +10,26 @@
 #include <cassert>
 
 #include "Core/XProtoContext.hpp"
+#include "Core/XClient.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Core/WindowTable.hpp"
 
 namespace x11 {
+
+void XProtoContext::setClient(XClient* c) {
+  client_ = c;
+  if (c) {
+    transport_ = &c->transport();
+    reply_ = &c->reply();
+  }
+}
+
+void XProtoContext::clearClient() {
+  client_ = nullptr;
+  transport_ = nullptr;
+  reply_ = nullptr;
+}
 
 void XProtoContext::tracef(const char* fmt, ...) {
 #ifdef X11_TRACE_VERBOSE

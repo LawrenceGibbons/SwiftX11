@@ -9,11 +9,6 @@
 
 namespace x11 {
 
-GrabTable& GrabTable::instance() {
-  static GrabTable g;
-  return g;
-}
-
 void GrabTable::addOrReplace(const PassiveGrab& g) {
   std::lock_guard<std::mutex> lock(mu_);
   for (auto& e : passive_) {

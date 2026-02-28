@@ -4,6 +4,10 @@
 //
 //  Created by Lawrence Gibbons on 1/19/26.
 //
+//  Persistent server instance — owns all server-wide state (windows, pixmaps,
+//  fonts, cursors, surfaces, grabs, input, dispatch table).
+//  Per-client state (transport, reply writer) lives in XClient.
+//
 
 #pragma once
 #include <cstdint>
@@ -11,97 +15,88 @@
 #include <array>
 #include <memory>
 
-// scaffold
 #include <Core/XProtoContext.hpp>
-#include <Transport/XProtoTransport.hpp>
 #include <Core/XProtoRegistrar.hpp>
-#include <Ops/ReplyWriter.hpp>
 #include <Utils/ByteReader.hpp>
 #include <Core/WindowTable.hpp>
 #include <Core/PixmapTable.hpp>
 #include <Core/FontTable.hpp>
 #include <Core/CursorTable.hpp>
 #include <Core/DrawableSurfaceRegistry.hpp>
+#include <Core/GrabTable.hpp>
+#include <Core/InputState.hpp>
+#include <Core/HostCommandQueue.hpp>
+#include <UI/UICommandQueue.hpp>
 
 namespace x11 {
 
   class EventOps;
 
-// Minimal "owning" object that wires Context + Transport + EventOps.
-//
-// Today this exists mainly so you can:
-//  - move queue_notify / flush_notify_queue into Transport
-//  - make those behaviors unit-testable without touching the C globals
-//  - later hang opcode-family handlers off of this server instance
-//
-// Window lookup:
-//  - In production, you will inject a C callback that snapshots x11_win_t into WindowView.
-//  - In tests, you can populate a small in-memory map via setTestWindow().
+// Persistent server — created once on first client connection, survives across
+// sessions.  Each client session creates an XClient and wires it into the
+// context via ctx().setClient(&client).
 class XProtoServer : public XProtoRegistrar {
 public:
   using WindowLookupFn = x11::WindowLookupFn;
 
   XProtoServer();
   ~XProtoServer();
-  
+
   // Inject the production lookup (C-side snapshot) and an opaque user pointer.
   void setWindowLookup(WindowLookupFn fn, void* user);
 
   // Dispatch one decoded X11 request body into C++ ops.
-  // `seq` is the server-side request sequence number you are already tracking.
   void registerMajor(uint8_t major, HandlerFn fn, void* user) override;
   int  dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                 const uint8_t* payload, std::size_t remain);
 
-  // Transport plumbing.
-  void attachClientFd(int fd);
-  void setXprotoThreadSelf();
-  void noteLastSeq(uint16_t seq);
-
   // ---- Drawable surfaces ----
   void updateSurface(uint32_t xid, const SurfaceDesc& s);
   void clearSurface(uint32_t xid);
-  
-  // ---- Notify queue API (what you previously had as C globals) ----
+
+  // ---- Notify queue (convenience, delegates to ctx().transport()) ----
   void queueNotify(uint32_t wid, bool wantConfigure, bool wantExpose);
   void flushNotifyQueue();
 
-  // Accessors for tests / future opcode modules.
+  // ---- Accessors ----
   XProtoContext& ctx() { return ctx_; }
-  XProtoTransport& transport() { return transport_; }
+  const XProtoContext& ctx() const { return ctx_; }
   EventOps& eventOps() { return *eventOps_; }
 
-  // ---- Fonts ----
+  // Server-wide tables
+  WindowTable& windows() { return windows_; }
+  const WindowTable& windows() const { return windows_; }
   FontTable& fonts() { return fonts_; }
   const FontTable& fonts() const { return fonts_; }
+  GrabTable& grabs() { return grabs_; }
+  InputState& input() { return input_; }
+  HostCommandQueue& hostCmds() { return hostCmds_; }
 
   // ---- Test support ----
-  // Populate a fake window snapshot map used when no WindowLookupFn is installed.
   void setTestWindow(const WindowView& w);
   void clearTestWindows();
 
 private:
-  // Context callback used when you call setWindowLookup().
   static bool lookupWindowTrampoline(uint32_t xid, WindowView* out, void* user);
-
-  // Default lookup behavior:
-  //  - if an injected lookup exists, use it
-  //  - otherwise fall back to the test map
   bool lookupWindow(uint32_t xid, WindowView* out);
 
 private:
+  // Server-wide state (persists across client sessions)
   WindowTable windows_;
   PixmapTable pixmapTable_;
-  XProtoContext   ctx_;
-
-  // opcode-family modules
-  std::unique_ptr<x11::EventOps> eventOps_;
-  
-  XProtoTransport transport_;
-  ReplyWriter     reply_;
-  
+  FontTable fonts_;
+  x11::CursorTable cursors_;
   DrawableSurfaceRegistry surfaces_;
-  
+  GrabTable grabs_;
+  InputState input_;
+  UICommandQueue ui_;
+  HostCommandQueue hostCmds_;
+
+  // Protocol context (wiring hub — per-client pointers set via setClient)
+  XProtoContext ctx_;
+  std::unique_ptr<x11::EventOps> eventOps_;
+
+  // Opcode dispatch table
   struct Entry {
     HandlerFn fn = nullptr;
     void* user = nullptr;
@@ -112,18 +107,9 @@ private:
   WindowLookupFn injected_lookup_ = nullptr;
   void* injected_lookup_user_ = nullptr;
 
-  // Fonts
-  FontTable fonts_;
-  
-  // Cursor
-  x11::CursorTable cursors_;
-  
   // Test-only backing store (used when injected_lookup_ == nullptr).
-  // Kept in the .cpp to avoid exposing <unordered_map> in public headers.
   struct Impl;
   std::unique_ptr<Impl> impl_;
-  
 };
 
 } // namespace x11
-

@@ -122,6 +122,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `X11LowLevel/cpp/X11Protocol/src/SurfaceBridge.cpp` | Surface registration, size-change detection → SurfaceResized |
 | `X11LowLevel/cpp/X11Protocol/src/Utils/Damage.hpp` | damageOrDirty() helper — translates child→host, writes shared accumulator + signals |
 | `X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp` | UI command queue + shared damage accumulator (x11_shared_damage_union/consume/clear) |
+| `X11LowLevel/cpp/X11Protocol/include/Core/XClient.hpp` | Per-connection state: transport, reply writer, client ID space |
+| `X11LowLevel/cpp/X11Protocol/include/Core/HostCommandQueue.hpp` | Thread-safe host command queue (Cocoa → xproto thread) |
 | `X11LowLevel/cpp/X11Protocol/include/Core/InputState.hpp` | Pointer/button/focus state, drag_xid management |
 | `X11LowLevel/cpp/X11Protocol/include/Core/GrabTable.hpp` | Passive grab table (GrabButton) + active pointer grab (GrabPointer) |
 | `X11LowLevel/cpp/X11Protocol/include/Core/X11Modifiers.hpp` | toX11State(): maps internal button/mod bits to X11 wire positions |
@@ -180,7 +182,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v0.6.0)
+### Current State (v0.7.0)
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
 - Host windows resolve directly to their Swift surface
 - Child windows resolve to host surface + computed offset (with negative offset clamping)
@@ -197,11 +199,18 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **GrabPointer reply disabled**: causes XCB sequence desync; needs investigation
 - xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly — cursor blinks, scrollbar stays visible, trackpad scrolling works, Option+click thumb drag works
 - xeyes works correctly
+- **Multi-client architecture (Phase 1)**: Server-wide state split from per-client state
+  - `XProtoServer` is persistent — survives across client sessions, owns: `WindowTable`, `PixmapTable`, `FontTable`, `CursorTable`, `DrawableSurfaceRegistry`, `GrabTable`, `InputState`, `UICommandQueue`, `HostCommandQueue`
+  - `XClient` holds per-connection state: `XProtoTransport`, `ReplyWriter`, fd, rid_base/rid_mask
+  - `XProtoDaemon` owns the server (lazy init on first session) and creates `XClient` per connection
+  - `XProtoContext` has `setClient()/clearClient()` to wire per-client transport into the shared context
+  - `GrabTable` singleton eliminated — now server-owned instance accessed via `ctx.grabs()`
+  - `HostCommandQueue` extracted from anonymous namespace globals in XProtoServerBridge.cpp — now server-owned
+  - Globals eliminated: `g_srv`, `g_mods`, `g_mu`, `g_hostcmd_mu/q`, `g_ui` (static), `GrabTable::instance()`, `g_windows`
+  - Remaining globals: `g_daemon` (process-lifetime), `g_daemon_ptr` (bridge access), `g_ctx/g_ev/g_q` (NotifyBridge, set per-session)
 
-### Next Major Task: Multi-Client (No Globals)
-The next architectural milestone is eliminating global state:
-- Introduce `XServer` as an instance with owned registries (resources, atoms, colormaps, fonts, drawables)
-- Each connection becomes a `Client` object: byteOrder, seq, idBase/idMask, transport, pending replies/events
-- No global "current client" pointers; dispatcher always routes via `(XServer&, Client&)`
-
-After that: eliminate remaining C layer, then implement full X11 font handling.
+### Next Major Tasks
+1. **Multi-client Phase 2**: Concurrent client support — multiple `XClient` instances, per-client resource ownership
+2. **C Layer Elimination**: Remove x11_requests.c, x11_events.c, x11_backend.c, x11_shim.c
+3. **Font Handling**: Full X11 font protocol (ListFonts, QueryFont, etc.)
+4. **Broadened Drawing**: Additional X11 drawing primitives

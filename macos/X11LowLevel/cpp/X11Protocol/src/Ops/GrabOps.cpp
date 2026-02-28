@@ -80,7 +80,7 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
 
   br.skip(br.remaining());
 
-  GrabTable::instance().setPointerGrab(grabWindow, ownerEvents != 0, eventMask);
+  ctx.grabs().setPointerGrab(grabWindow, ownerEvents != 0, eventMask);
 
   // GrabPointer REQUIRES a reply (status=GrabSuccess) per the X11 spec.
   // HOWEVER: adding the reply caused an XCB sequence desync crash.
@@ -109,7 +109,7 @@ void GrabOps::handleUngrabPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   if (br.remaining() >= 4) (void)br.readU32(); // time
   br.skip(br.remaining());
 
-  GrabTable::instance().clearPointerGrab();
+  ctx.grabs().clearPointerGrab();
 
 #ifndef NDEBUG
   fprintf(stderr, "[UngrabPointer]\n");
@@ -155,7 +155,7 @@ void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t own
   g.ownerEvents = (ownerEvents != 0);
   g.eventMask = eventMask;
 
-  GrabTable::instance().addOrReplace(g);
+  ctx.grabs().addOrReplace(g);
 
 #ifndef NDEBUG
   ctx.tracef("[GrabOps] GrabButton win=0x%08X btn=%u mods=0x%04X owner=%u mask=0x%04X\n",
@@ -181,7 +181,7 @@ void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t b
 
   br.skip(br.remaining());
 
-  GrabTable::instance().remove(grabWindow, button, modifiers);
+  ctx.grabs().remove(grabWindow, button, modifiers);
 
 #ifndef NDEBUG
   ctx.tracef("[GrabOps] UngrabButton win=0x%08X btn=%u mods=0x%04X\n",

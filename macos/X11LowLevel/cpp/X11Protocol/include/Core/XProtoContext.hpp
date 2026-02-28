@@ -26,6 +26,7 @@ class FontTable;
 class CursorTable;
 class GrabTable;
 class DrawableSurfaceRegistry;
+class XClient;
 
 using WindowLookupFn = bool (*)(uint32_t xid, WindowView* out, void* user);
 
@@ -35,6 +36,14 @@ public:
 
   // ---- Logging ----
   void tracef(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+
+  // ---- Per-client wiring ----
+  // setClient wires transport + reply from the client into this context.
+  // clearClient nulls the per-client pointers (server-wide state remains).
+  void setClient(XClient* c);
+  void clearClient();
+  XClient* client() const { return client_; }
+  bool hasClient() const { return client_ != nullptr; }
 
   // ---- Transport wiring ----
   void setTransport(XProtoTransport* t) { transport_ = t; }
@@ -54,30 +63,31 @@ public:
   // Note: returned pointer is only valid until the next call (uses scratch_).
   const WindowView* window(uint32_t xid);
 
-  void setWindowTable(WindowTable* wt) { window_table_ = wt; } 
-  
+  void setWindowTable(WindowTable* wt) { window_table_ = wt; }
+
   // Read-only access (queries, snapshots, QueryOps, etc.)
   const WindowTable& windows() const;
-  
+
   // Mutating access (CreateWindow, ConfigureWindow, Map/Unmap, etc.)
   WindowTable& windows();
-  
-  void setPixmapTable(PixmapTable* pt) { pixmap_table_ = pt; }
-  
-  PixmapTable& pixmaps() { assert(pixmap_table_); return *pixmap_table_; }
-  
-  const PixmapTable& pixmaps() const { assert(pixmap_table_); return *pixmap_table_; }
-  
-  // Mouse handling
-  InputState& input() { return input_; }
-  const InputState& input() const { return input_; }
 
-  
-  // User Interface -- this should eventually migrate to XProtoServer
+  void setPixmapTable(PixmapTable* pt) { pixmap_table_ = pt; }
+
+  PixmapTable& pixmaps() { assert(pixmap_table_); return *pixmap_table_; }
+
+  const PixmapTable& pixmaps() const { assert(pixmap_table_); return *pixmap_table_; }
+
+  // Mouse/input handling (server-wide — one pointer per display)
+  void setInputState(InputState* is) { input_ = is; }
+  InputState& input() { assert(input_); return *input_; }
+  const InputState& input() const { assert(input_); return *input_; }
+
+
+  // User Interface
   void setUI(UICommandQueue* q) { ui_ = q; }
   UICommandQueue& ui() { assert(ui_); return *ui_; }
   const UICommandQueue& ui() const { assert(ui_); return *ui_; }
-  
+
   // Font Table
   void setFontTable(FontTable* ft) { font_table_ = ft; }
   FontTable& fonts() { assert(font_table_); return *font_table_; }
@@ -88,48 +98,51 @@ public:
   CursorTable& cursors() { assert(cursor_table_); return *cursor_table_; }
   const CursorTable& cursors() const { assert(cursor_table_); return *cursor_table_; }
 
-  // Button handling  
+  // Grab handling
   void setGrabTable(GrabTable* gt) { grab_table_ = gt; }
   GrabTable& grabs() { assert(grab_table_); return *grab_table_; }
   const GrabTable& grabs() const { assert(grab_table_); return *grab_table_; }
-  
-  // handle surfaces for drawing
+
+  // Drawable surfaces
   void setSurfaceRegistry(DrawableSurfaceRegistry* sr) { surface_registry_ = sr; }
   DrawableSurfaceRegistry& surfaces() { assert(surface_registry_); return *surface_registry_; }
   const DrawableSurfaceRegistry& surfaces() const { assert(surface_registry_); return *surface_registry_; }
 
 private:
+  // Per-client (set via setClient/clearClient)
+  XClient* client_ = nullptr;
   XProtoTransport* transport_ = nullptr;
   ReplyWriter* reply_ = nullptr;
-  
-  WindowTable* window_table_ = nullptr; 
+
+  // Server-wide (set once, persist across sessions)
+  WindowTable* window_table_ = nullptr;
 
   WindowLookupFn lookup_ = nullptr;
   void* lookup_user_ = nullptr;
 
   // scratch storage to avoid allocations
   WindowView scratch_{};
-  
+
   // Drawable Surface
   DrawableSurfaceRegistry* surface_registry_ = nullptr;
-  
+
   // pixel maps
   PixmapTable* pixmap_table_ = nullptr;
-  
-  // Mouse handling
-  InputState input_;
-  
+
+  // Mouse handling (pointer to server-owned InputState)
+  InputState* input_ = nullptr;
+
   // User Interface
   UICommandQueue* ui_ = nullptr;
-  
+
   // Fonts
   FontTable* font_table_ = nullptr;
-  
+
   // Cursor
   CursorTable* cursor_table_ = nullptr;
-  
-  // Button
-  GrabTable* grab_table_ = nullptr;  
+
+  // Grabs
+  GrabTable* grab_table_ = nullptr;
 
 };
 

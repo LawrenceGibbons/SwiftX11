@@ -33,7 +33,7 @@ struct PointerGrab {
 
 class GrabTable {
 public:
-  static GrabTable& instance();
+  GrabTable() = default;
 
   // Passive grabs (GrabButton/UngrabButton)
   void addOrReplace(const PassiveGrab& g);
@@ -46,7 +46,6 @@ public:
   bool getPointerGrab(PointerGrab& out) const;
 
 private:
-  GrabTable() = default;
 
   mutable std::mutex mu_;
   std::vector<PassiveGrab> passive_;
