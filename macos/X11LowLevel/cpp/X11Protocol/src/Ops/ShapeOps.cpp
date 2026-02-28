@@ -24,6 +24,7 @@
 
 // util
 #include "Damage.hpp"
+#include "Utils/TraceDefs.hpp"
 #include "Utils/GCClip.hpp"
 
 namespace x11 {
@@ -425,15 +426,11 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     
     const std::size_t nRects = br.remaining() / 8u;
     
-#ifndef NDEBUG
-  if (drawable == 0x10000012u) {
+#if X11_TRACE_PRESENT_ENABLED
     fprintf(stderr,
-            "[PolyFillRect] dst=0x%08X gc=0x%08X nrect=%u\n", // first=(%d,%d %u×%u)\n",
+            "[PolyFillRect] dst=0x%08X gc=0x%08X nrect=%u\n",
             (unsigned)drawable, (unsigned)gcXid,
             (unsigned)nRects);
-//            (int)rects[0].x, (int)rects[0].y);
-//            (unsigned)rects[0].w, (unsigned)rects[0].h);
-  }
 #endif
     
     if (nRects == 0) { br.skip(br.remaining()); return; }
@@ -463,19 +460,15 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
       
       // Ops/ShapeOps.cpp  (inside handlePolyFillRectangle)
 
-      #ifndef NDEBUG
+#if X11_TRACE_PRESENT_ENABLED
         auto isSmall = [](int32_t w, int32_t h) -> bool {
-          // “caret-ish”: small box, not a full repaint.
           return (w > 0 && h > 0 && w <= 48 && h <= 96 && (w * h) <= 2048);
         };
-
-        // Optional: rate-limit so logs don’t explode.
         static uint64_t s_lastPrintMs = 0;
         auto nowMs = []() -> uint64_t {
-          // Use whatever you already have. If you have x11_now_ms_monotonic(), use it.
           return (uint64_t)(x11_now_ms_monotonic());
         };
-      #endif
+#endif
 
       const  int16_t rx = br.readI16();
       const  int16_t ry = br.readI16();
@@ -495,36 +488,36 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
       int32_t y1 = std::min<int32_t>((int32_t)dst.h, ry1);
       if (x0 >= x1 || y0 >= y1) continue;
 
-#ifndef NDEBUG
-  const int32_t cw = (x1 - x0);
-  const int32_t ch = (y1 - y0);
+#if X11_TRACE_PRESENT_ENABLED
+  {
+    const int32_t cw = (x1 - x0);
+    const int32_t ch = (y1 - y0);
 
-  if (isSmall(cw, ch)) {
-    const uint64_t t = nowMs();
-    if (t - s_lastPrintMs >= 25) { // print at most ~40Hz
-      s_lastPrintMs = t;
+    if (isSmall(cw, ch)) {
+      const uint64_t t = nowMs();
+      if (t - s_lastPrintMs >= 25) { // print at most ~40Hz
+        s_lastPrintMs = t;
+        fprintf(stderr,
+                "[SMALL_RECT] t=%llu drawable=0x%08X gc=0x%08X fn=%u pm=0x%08X fg=0x%08X rect=(%d,%d %dx%d)\n",
+                (unsigned long long)t,
+                (unsigned)drawable, (unsigned)gcXid,
+                (unsigned)(gst.function & 0xFFu),
+                (unsigned)gst.plane_mask,
+                (unsigned)fg,
+                (int)x0, (int)y0, (int)cw, (int)ch);
+      }
+    }
+
+    // Very useful for caret debugging: small rects with non-copy functions.
+    if ((x1 - x0) * (y1 - y0) <= 256 || fn != 3) {
       fprintf(stderr,
-              "[SMALL_RECT] t=%llu drawable=0x%08X gc=0x%08X fn=%u pm=0x%08X fg=0x%08X rect=(%d,%d %dx%d)\n",
-              (unsigned long long)t,
-              (unsigned)drawable, (unsigned)gcXid,
-              (unsigned)(gst.function & 0xFFu),
-              (unsigned)gst.plane_mask,
-              (unsigned)fg,
-              (int)x0, (int)y0, (int)cw, (int)ch);
+              "[PolyFillRect] drawable=0x%08X rect=(%d,%d %dx%d) fn=%u pm=0x%08X fg=0x%08X\n",
+              (unsigned)drawable,
+              (int)x0, (int)y0, (int)(x1 - x0), (int)(y1 - y0),
+              (unsigned)fn, (unsigned)gst.plane_mask, (unsigned)fg);
     }
   }
 #endif
-
-    #ifndef NDEBUG
-      // Very useful for caret debugging: small rects with non-copy functions.
-      if ((x1 - x0) * (y1 - y0) <= 256 || fn != 3) {
-        fprintf(stderr,
-                "[PolyFillRect] drawable=0x%08X rect=(%d,%d %dx%d) fn=%u pm=0x%08X fg=0x%08X\n",
-                (unsigned)drawable,
-                (int)x0, (int)y0, (int)(x1 - x0), (int)(y1 - y0),
-                (unsigned)fn, (unsigned)gst.plane_mask, (unsigned)fg);
-      }
-    #endif
 
       // Fill with GC clip enforcement
       auto fillRect = [&](int32_t fx0, int32_t fy0, int32_t fx1, int32_t fy1) {
