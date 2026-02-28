@@ -45,8 +45,11 @@ public:
   void clearPointerGrab();
   bool getPointerGrab(PointerGrab& out) const;
 
-  // Reset all grabs (call on session teardown)
+  // Reset all grabs (call on session teardown — single client mode)
   void clearAll();
+
+  // Remove grabs for a set of destroyed windows (multi-client teardown)
+  void removeForWindows(const std::vector<uint32_t>& xids);
 
 private:
 

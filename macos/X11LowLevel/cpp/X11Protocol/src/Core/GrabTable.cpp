@@ -6,6 +6,7 @@
 //
 
 #include "Core/GrabTable.hpp"
+#include <algorithm>
 
 namespace x11 {
 
@@ -84,6 +85,22 @@ void GrabTable::clearAll() {
   std::lock_guard<std::mutex> lock(mu_);
   passive_.clear();
   pointer_ = PointerGrab{};
+}
+
+void GrabTable::removeForWindows(const std::vector<uint32_t>& xids) {
+  std::lock_guard<std::mutex> lock(mu_);
+  // Remove passive grabs whose grabWindow is in the destroyed set
+  passive_.erase(
+    std::remove_if(passive_.begin(), passive_.end(),
+      [&](const PassiveGrab& g) {
+        return std::find(xids.begin(), xids.end(), g.grabWindow) != xids.end();
+      }),
+    passive_.end());
+  // Clear active grab if it references a destroyed window
+  if (pointer_.active &&
+      std::find(xids.begin(), xids.end(), pointer_.grabWindow) != xids.end()) {
+    pointer_ = PointerGrab{};
+  }
 }
 
 } // namespace x11
