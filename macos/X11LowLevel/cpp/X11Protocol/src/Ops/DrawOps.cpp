@@ -31,7 +31,6 @@
 #include "Core/DrawableSurfaceRegistry.hpp"
 
 // bridging
-#include "x11_requests.h"
 #include "XProtoServerBridge.h"
 #include "Core/Font8x8.hpp"
 #include "Utils/WireLE.hpp"

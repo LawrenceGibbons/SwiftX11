@@ -22,9 +22,6 @@
 #include "Utils/RasterOp.hpp"
 #include "timestamp.hpp"
 
-// bridge to C and Swift
-#include "x11_requests.h"
-
 // util
 #include "Damage.hpp"
 

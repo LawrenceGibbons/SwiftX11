@@ -113,6 +113,7 @@
 				cpp/X11Protocol/include/Ops/ShapeOps.hpp,
 				cpp/X11Protocol/include/Ops/WindowAttrOps.hpp,
 				cpp/X11Protocol/include/Ops/WindowOps.hpp,
+				cpp/X11Protocol/include/Transport/X11Setup.hpp,
 				cpp/X11Protocol/include/Transport/XProtoDaemon.hpp,
 				cpp/X11Protocol/include/Transport/XProtoTransport.hpp,
 				cpp/X11Protocol/include/UI/UICommandQueue.hpp,
@@ -121,13 +122,6 @@
 				cpp/X11Protocol/include/XProtoConnectionWrapper.h,
 				cpp/X11Protocol/include/XProtoNotifyBridge.hpp,
 				cpp/X11Protocol/include/XProtoServerBridge.h,
-				include/x11_backend_internal.h,
-				include/x11_backend.h,
-				include/x11_parameters.h,
-				include/x11_server_internal.h,
-				include/x11_setup.h,
-				include/x11_shim.h,
-				include/x11_xproto.h,
 			);
 			publicHeaders = (
 				include/SwiftX11Bridge.h,
@@ -602,6 +596,12 @@
 				MARKETING_VERSION = 1.0;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
+				OTHER_LDFLAGS = (
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreFoundation,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = RLAN.X11LowLevel;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
@@ -640,6 +640,12 @@
 				MARKETING_VERSION = 1.0;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
+				OTHER_LDFLAGS = (
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreFoundation,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = RLAN.X11LowLevel;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
