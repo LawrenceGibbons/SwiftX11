@@ -27,6 +27,9 @@ void x11_proto_bridge_note_last_seq(uint16_t seq);
 // Called from drain_requests loop (top of loop and/or after dispatch).
 void x11_proto_bridge_flush_notify_queue(void);
 
+// Process a single host command (caller must activate the correct client).
+void x11_proto_bridge_process_host_cmd(const void* cmd_ptr);
+
 
 void x11_proto_bridge_queue_expose_rect(uint32_t wid,
                                         uint16_t x, uint16_t y,

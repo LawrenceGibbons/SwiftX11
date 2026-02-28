@@ -225,18 +225,15 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
 }
 
 
-extern "C" void x11_proto_bridge_flush_notify_queue(void)
+// Process a single host command.  Called from the daemon's drainHostCommands()
+// (one command at a time with the correct client activated) and from the
+// legacy flush_notify_queue path.
+static void processOneHostCmd(x11::XProtoServer* srv,
+                              x11::XProtoContext& ctx,
+                              const x11::HostCmd& c)
 {
-  auto* srv = x11_proto_bridge_get_server();
-  if (!srv) return;
-
-  auto& ctx = srv->ctx();
-
-  // ---- drain host commands on xproto thread ----
-  {
-    auto cmds = srv->hostCmds().takeAll();
-    for (const auto& c : cmds) {
-      switch (c.type) {
+  using x11::HostCmdType;
+  switch (c.type) {
         // ------------------- RootlessResize
         case HostCmdType::RootlessResize:
           // Runs on xproto thread now: safe vs drawing + fb resize
@@ -653,7 +650,32 @@ extern "C" void x11_proto_bridge_flush_notify_queue(void)
           break;
         }
 
-      } // switch
+  } // switch
+}
+
+
+// Callable from daemon (processes individual commands with correct client).
+extern "C" void x11_proto_bridge_process_host_cmd(const void* cmd_ptr)
+{
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return;
+  const auto& c = *reinterpret_cast<const x11::HostCmd*>(cmd_ptr);
+  processOneHostCmd(srv, srv->ctx(), c);
+}
+
+
+extern "C" void x11_proto_bridge_flush_notify_queue(void)
+{
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return;
+
+  auto& ctx = srv->ctx();
+
+  // Drain host commands on xproto thread.
+  {
+    auto cmds = srv->hostCmds().takeAll();
+    for (const auto& c : cmds) {
+      processOneHostCmd(srv, ctx, c);
     }
   }
 

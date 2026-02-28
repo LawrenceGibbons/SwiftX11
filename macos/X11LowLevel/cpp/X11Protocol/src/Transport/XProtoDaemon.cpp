@@ -172,6 +172,10 @@ void XProtoDaemon::runListener(int display, const char* bindAddr) {
       acceptClient();
     }
 
+    // Drain host commands FIRST so client requests (e.g. xeyes' QueryPointer)
+    // see the freshest InputState (pointer position updated by PointerMove).
+    drainHostCommands();
+
     // Check client sockets
     std::vector<int> toRemove;
     for (size_t i = 0; i < clientFds.size(); i++) {
@@ -194,9 +198,6 @@ void XProtoDaemon::runListener(int display, const char* bindAddr) {
     for (int fd : toRemove) {
       removeClient(fd);
     }
-
-    // Drain host commands (Cocoa → xproto thread)
-    drainHostCommands();
   }
 
   // Clean up all remaining clients
@@ -437,10 +438,9 @@ void XProtoDaemon::drainHostCommands() {
 
     activateClient(*cs);
 
-    // Re-queue the single command and let the bridge function process it.
-    // This avoids duplicating the large switch/case in XProtoServerBridge.cpp.
-    server_->hostCmds().push(c);
-    x11_proto_bridge_flush_notify_queue();
+    // Process this single command directly (no re-queue roundtrip).
+    x11_proto_bridge_process_host_cmd(&c);
+    server_->flushNotifyQueue();
 
     deactivateClient();
   }
