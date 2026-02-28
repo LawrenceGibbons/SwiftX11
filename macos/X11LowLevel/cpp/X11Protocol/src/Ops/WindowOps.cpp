@@ -478,48 +478,22 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
   // (Swift owns the backing surface; no C FB resize needed.)
   ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
   
-  // 2b) Deliver ConfigureNotify / Expose to the *host* after a host-driven resize,
+  // 2) Deliver ConfigureNotify to the *host* after a host-driven resize,
   // so clients like xterm recompute their grid and resize subwindows.
   if (const x11::WindowView* vw = ctx.window(wid /*host*/)) {
     const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
-    const bool wantExp = ((vw->event_mask & (1u << 15)) != 0); // ExposureMask
-    if (wantCfg || wantExp) {
-      ctx.transport().queueNotify(wid, wantCfg, wantExp);
+    if (wantCfg) {
+      ctx.transport().queueNotify(wid, /*wantConfigure=*/true, /*wantExpose=*/false);
     }
   }
 
-  // 3) Deliver events to direct children.
-  // (No C FB resize needed — children draw into the host's Swift surface.)
-  {
-    auto kids = ctx.windows().descendantsOf(wid);
-    for (uint32_t kid : kids) {
-      WindowView kv{};
-      if (!ctx.windows().snapshot(kid, kv)) continue;
+  // 3) Background fills + Expose for host and ALL descendants are handled
+  // by sendExposeSubtree() in processOneHostCmd, called after this function.
+  // This ensures children draw at the correct positions even when the
+  // SurfaceResized phase (which fires before geometry update) couldn't
+  // resolve children at the far edge of a shrinking window.
 
-      // Deliver ConfigureNotify + Expose to direct children of the host
-      // so clients (xeyes, xterm) know the host resized and can redraw.
-      // We do NOT resize children here — the client is responsible for
-      // resizing its own children via ConfigureWindow.
-      if (kv.parent_xid == wid) {
-        if (const WindowView* ckv = ctx.window(kid)) {
-          const bool kidCfg = ((ckv->event_mask & (1u << 17)) != 0); // StructureNotifyMask
-          const bool kidExp = (ckv->mapped && ((ckv->event_mask & (1u << 15)) != 0)); // ExposureMask
-          if (kidCfg || kidExp) {
-            ctx.transport().queueNotify(kid, kidCfg, kidExp);
-          }
-        }
-      }
-    }
-  }
-
-  // 4) Notify owning client on host if selected.
-  if (const WindowView* vw = ctx.window(wid)) {
-    const bool wantCfg = ((vw->event_mask & (1u << 17)) != 0);
-    const bool wantExp = (vw->mapped && ((vw->event_mask & (1u << 15)) != 0));
-    if (wantCfg || wantExp) ctx.transport().queueNotify(wid, wantCfg, wantExp);
-  }
-
-  // 5) Redraw/present (gated). Resize → full window repaint.
+  // 4) Redraw/present (gated). Resize → full window repaint.
   damageOrDirty(ctx, wid, 0, 0, (int32_t)new_w, (int32_t)new_h);
 }
   
