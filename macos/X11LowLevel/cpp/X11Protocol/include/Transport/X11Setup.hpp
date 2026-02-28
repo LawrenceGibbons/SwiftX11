@@ -1,23 +1,19 @@
 //
-//  x11_setup.h
-//  SwiftX11
+//  X11Setup.hpp
+//  X11LowLevel
 //
-//  Created by Lawrence Gibbons on 2/3/26.
+//  X11 connection setup handshake functions.
+//  Moved from x11_xproto.c → C++ (extern "C" linkage preserved).
 //
 
 #pragma once
-#include <stdint.h>
+#include <cstdint>
 
-#ifdef __cplusplus
 extern "C" {
-#endif
 
 void x11_send_setup_failed_le(int fd, const char* msg);
 void x11_send_setup_success_minimal_little_endian(int fd,
                                                   uint32_t rid_base,
                                                   uint32_t rid_mask);
 
-#ifdef __cplusplus
-}
-#endif
-
+} // extern "C"

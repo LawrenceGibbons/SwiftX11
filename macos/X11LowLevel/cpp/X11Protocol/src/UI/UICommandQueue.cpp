@@ -5,21 +5,16 @@
 //  Created by Lawrence Gibbons on 2/6/26.
 //
 
-//
-//  UICommandQueue.cpp
-//  X11LowLevel
-//
-//  Created by Lawrence Gibbons on 2/6/26.
-//
-
 #include "UI/UICommandQueue.hpp"
 
 #include <cstdint>
 
 extern "C" {
-#include "x11_requests.h"
 #include "SwiftX11Bridge.h"
 }
+
+// Pushes to HostCommandQueue (already defined in XProtoServerBridge.cpp)
+extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid);
 
 namespace x11 {
 
@@ -32,29 +27,37 @@ bool UICommandQueue::push(const UICommand& c)
     case UICommand::Type::Create: {
       const int32_t w = clamp_dim(c.w_px);
       const int32_t h = clamp_dim(c.h_px);
-      return x11_requests_push_create(c.xid, c.parent, safe_cstr(c.title_utf8), w, h) != 0;
+      x11_ui_push_create(c.xid, c.parent, w, h);
+      return true;
     }
 
     case UICommand::Type::Destroy:
-      return x11_requests_push_destroy(c.xid) != 0;
+      x11_ui_push_destroy(c.xid);
+      return true;
 
     case UICommand::Type::Map:
-      return x11_requests_push_map(c.xid) != 0;
+      x11_ui_push_map(c.xid);
+      return true;
 
     case UICommand::Type::Unmap:
-      return x11_requests_push_unmap(c.xid) != 0;
+      x11_ui_push_unmap(c.xid);
+      return true;
 
     case UICommand::Type::Configure: {
       const int32_t w = clamp_dim(c.w_px);
       const int32_t h = clamp_dim(c.h_px);
-      return x11_requests_push_configure(c.xid, w, h) != 0;
+      x11_ui_push_resize(c.xid, w, h);
+      return true;
     }
 
     case UICommand::Type::SetTitle:
-      return x11_requests_push_set_title(c.xid, safe_cstr(c.title_utf8)) != 0;
+      x11_ui_push_title(c.xid, safe_cstr(c.title_utf8));
+      return true;
 
     case UICommand::Type::Presentable:
-      return x11_requests_push_window_presentable(c.xid) != 0;
+      // Pushes to HostCommandQueue for xproto-thread processing.
+      x11_proto_bridge_window_set_presentable_and_flush(c.xid);
+      return true;
 
     case UICommand::Type::SetCursor:
       // Interpret c.xid as host_xid for rootless cursor updates.
@@ -68,7 +71,8 @@ bool UICommandQueue::push(const UICommand& c)
 
 void UICommandQueue::drainOnServerThread()
 {
-  x11_requests_drain_on_server_thread();
+  // No-op: C request queue eliminated.
+  // All commands are now pushed directly to the UI queue or HostCommandQueue.
 }
 
 } // namespace x11

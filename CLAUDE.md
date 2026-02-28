@@ -8,8 +8,7 @@ SwiftX11 is an X11 protocol server running natively on macOS, implementing the X
 
 ### Language Layers
 - **Swift** (`macos/SwiftX11/`): UI owner — AppKit windows, Metal/software rendering, surface allocation, damage scheduling, networking (accepts X11 connections)
-- **C++** (`macos/X11LowLevel/cpp/X11Protocol/`): Protocol core — request parsing, reply/event framing, raster drawing ops, resource tables (windows, pixmaps, GCs, fonts, atoms, colormaps)
-- **C** (`macos/X11LowLevel/src/`): Legacy shim layer being eliminated — request queue, bridging. C framebuffer infrastructure is dead code (no callers remain)
+- **C++** (`macos/X11LowLevel/cpp/X11Protocol/`): Protocol core — request parsing, reply/event framing, raster drawing ops, resource tables (windows, pixmaps, GCs, fonts, atoms, colormaps), Swift bridge (`SwiftBridge.cpp` implements the `extern "C"` functions in `SwiftX11Bridge.h`)
 
 ### Key Design: Swift-Owned Surfaces
 Swift allocates all WINDOW backing stores (host-level CPU buffers). C++ draws into these via `DrawableSurfaceRegistry`:
@@ -71,7 +70,7 @@ CreateWindow → C++ WindowTable entry + pushCreate → Swift noteX11WindowCreat
 MapWindow → setMapped + fillWindowBackground + queue Expose
   (host: x11_ui_push_map + x11_ui_push_resize → Swift creates NSWindow)
   (NOTE: fillWindowBackground for children FAILS here — surface not registered yet)
-Swift main thread → ensureHostSurface → x11_surface_update → x11_requests_push_set_presentable
+Swift main thread → ensureHostSurface → x11_surface_update → x11_post_window_presentable
 SetPresentable → setPresentable + fillWindowBackgroundIfReady + sendExposeSubtree
   (This is when backgrounds actually get painted and children get valid Expose)
 ```
@@ -128,7 +127,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `X11LowLevel/cpp/X11Protocol/include/Core/GrabTable.hpp` | Passive grab table (GrabButton) + active pointer grab (GrabPointer) |
 | `X11LowLevel/cpp/X11Protocol/include/Core/X11Modifiers.hpp` | toX11State(): maps internal button/mod bits to X11 wire positions |
 | `X11LowLevel/cpp/X11Protocol/include/Core/XEventMask.hpp` | X11 event mask constants (FocusChange, ButtonPress, PointerMotion, etc.) |
-| `X11LowLevel/src/x11_requests.c` | Request queue (C), coalescing, rootless resize bridging |
+| `X11LowLevel/cpp/X11Protocol/src/SwiftBridge.cpp` | extern "C" bridge: lifecycle, input, resize, presentable (replaces x11_shim.c) |
+| `X11LowLevel/cpp/X11Protocol/src/Transport/X11Setup.cpp` | X11 connection setup handshake (replaces x11_xproto.c) |
 | `SwiftX11/Core/XServerController.swift` | Server startup, version banner |
 | `SwiftX11/UI/Windows/X11MetalRenderer.swift` | Metal texture management, partial sub-rect uploads |
 | `X11LowLevel/include/SwiftX11Version.h` | Single source of truth for version string |
@@ -182,7 +182,9 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v0.7.0)
+### Current State (v1.0.0)
+- **C layer eliminated**: All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
+- **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
 - Host windows resolve directly to their Swift surface
 - Child windows resolve to host surface + computed offset (with negative offset clamping)
@@ -199,18 +201,14 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **GrabPointer reply disabled**: causes XCB sequence desync; needs investigation
 - xterm with scrollbar (`xterm -sb -rightbar -bc`) works correctly — cursor blinks, scrollbar stays visible, trackpad scrolling works, Option+click thumb drag works
 - xeyes works correctly
-- **Multi-client architecture (Phase 1)**: Server-wide state split from per-client state
+- **Multi-client architecture**: Server-wide state split from per-client state
   - `XProtoServer` is persistent — survives across client sessions, owns: `WindowTable`, `PixmapTable`, `FontTable`, `CursorTable`, `DrawableSurfaceRegistry`, `GrabTable`, `InputState`, `UICommandQueue`, `HostCommandQueue`
   - `XClient` holds per-connection state: `XProtoTransport`, `ReplyWriter`, fd, rid_base/rid_mask
   - `XProtoDaemon` owns the server (lazy init on first session) and creates `XClient` per connection
   - `XProtoContext` has `setClient()/clearClient()` to wire per-client transport into the shared context
-  - `GrabTable` singleton eliminated — now server-owned instance accessed via `ctx.grabs()`
-  - `HostCommandQueue` extracted from anonymous namespace globals in XProtoServerBridge.cpp — now server-owned
-  - Globals eliminated: `g_srv`, `g_mods`, `g_mu`, `g_hostcmd_mu/q`, `g_ui` (static), `GrabTable::instance()`, `g_windows`
   - Remaining globals: `g_daemon` (process-lifetime), `g_daemon_ptr` (bridge access), `g_ctx/g_ev/g_q` (NotifyBridge, set per-session)
 
 ### Next Major Tasks
 1. **Multi-client Phase 2**: Concurrent client support — multiple `XClient` instances, per-client resource ownership
-2. **C Layer Elimination**: Remove x11_requests.c, x11_events.c, x11_backend.c, x11_shim.c
-3. **Font Handling**: Full X11 font protocol (ListFonts, QueryFont, etc.)
-4. **Broadened Drawing**: Additional X11 drawing primitives
+2. **Font Handling**: Full X11 font protocol (ListFonts, QueryFont, etc.)
+3. **Broadened Drawing**: Additional X11 drawing primitives

@@ -19,9 +19,10 @@
 #include "Utils/WireLE.hpp" // your wire::wr16_le / wr32_le etc
 #include "Utils/WireErrors.hpp"
 
-// Your existing dbg_require_xproto_thread is currently in C.
-// Expose it as an extern so C++ can call it.
-extern "C" void dbg_require_xproto_thread(const char* what);
+// Stub: the old C-level xproto thread check was in the deleted x11_xproto.c.
+// XProtoTransport::sendAll() has its own thread check (xproto_thread_valid_),
+// so this is now a no-op.
+static inline void dbg_require_xproto_thread(const char* /*what*/) {}
 
 namespace x11 {
 

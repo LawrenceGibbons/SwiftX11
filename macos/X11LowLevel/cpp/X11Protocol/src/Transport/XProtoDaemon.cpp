@@ -31,11 +31,11 @@
 #include "Core/GrabTable.hpp"
 #include "Core/InputState.hpp"
 #include "Ops/EventOps.hpp"
-#include "x11_setup.h"
+#include "Transport/X11Setup.hpp"
 
 extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
 extern "C" void x11_cpp_notify_shutdown(void);
-extern "C" void x11_requests_push_destroy(uint32_t xid);
+extern "C" void x11_ui_push_destroy(uint32_t xid);
 
 static std::atomic<uint32_t> g_nextClientSlot{1}; // 0 reserved
 
@@ -295,7 +295,7 @@ void XProtoDaemon::removeClient(int fd) {
   // Erase windows owned by this client
   std::vector<uint32_t> owned = server_->ctx().windows().eraseOwnedBy(fd);
   for (uint32_t wid : owned) {
-    x11_requests_push_destroy(wid);
+    x11_ui_push_destroy(wid);
   }
 
   // Remove grabs for destroyed windows

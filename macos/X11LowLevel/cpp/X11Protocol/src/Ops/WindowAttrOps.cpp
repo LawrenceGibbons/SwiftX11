@@ -22,7 +22,7 @@
 #include "XProtoServerBridge.h"
 
 extern "C" {
-#include "x11_requests.h"
+#include "SwiftX11Bridge.h"
 }
 
 // util
@@ -274,7 +274,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       damageOrDirty(ctx, wid, 0, 0, (int32_t)w, (int32_t)h);
 
       // Only the top-level host drives Cocoa resize.
-      x11_requests_push_configure(wid, (int32_t)w, (int32_t)h);
+      x11_ui_push_resize(wid, (int32_t)w, (int32_t)h);
 
     } else if (host != 0) {
       // CHILD: geometry changed — it affects what the host should present.

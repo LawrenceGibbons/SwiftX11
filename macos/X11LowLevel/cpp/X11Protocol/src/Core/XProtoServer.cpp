@@ -13,7 +13,7 @@
 #include "Core/SurfaceDesc.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
-#include "x11_server_internal.h"
+#include "Core/timestamp.hpp"
 
 extern "C" {
 #include "SwiftX11Bridge.h"
@@ -131,7 +131,7 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
   if (!e.fn) {
 #ifndef NDEBUG
     static uint64_t last_warn_ns = 0;
-    uint64_t now = x11_now_ns();
+    uint64_t now = x11_now_ns_monotonic();
     if (now - last_warn_ns > 500000000ULL) {
       last_warn_ns = now;
       fprintf(stderr,

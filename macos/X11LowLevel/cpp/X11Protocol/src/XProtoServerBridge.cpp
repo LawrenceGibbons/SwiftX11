@@ -15,9 +15,6 @@
 #include <cstdint>
 
 #include "XProtoServerBridge.h"
-extern "C" {
-#include "x11_requests.h"
-}
 #include "Core/XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
 #include "Ops/QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 #include "Core/WindowTable.hpp"
@@ -92,7 +89,7 @@ extern "C" void x11_proto_bridge_end_session(int client_fd)
   // Erase windows owned by this client fd (child-first order).
   std::vector<uint32_t> owned = srv->ctx().windows().eraseOwnedBy(client_fd);
   for (uint32_t wid : owned) {
-    x11_requests_push_destroy(wid);
+    x11_ui_push_destroy(wid);
   }
 
   // Reset per-session server state so the next client starts clean.

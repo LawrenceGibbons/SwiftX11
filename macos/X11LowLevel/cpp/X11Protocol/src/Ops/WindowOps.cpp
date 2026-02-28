@@ -11,16 +11,10 @@
 #include "Transport/XProtoTransport.hpp"
 #include "Core/WindowTable.hpp"
 #include "Core/DrawableRW.hpp"
-#include "x11_requests.h"
 #include "Core/HostResize.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "Utils/WireEvents.hpp"
-
-// bridge
-extern "C" {
-  #include "x11_requests.h"
-}
 
 // util
 #include "Damage.hpp"
@@ -231,9 +225,8 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // 1) Authoritative C++ state
   ctx.windows().erase(wid);
 
-  // 2) Swift/UI teardown event path (existing behavior)
-  // This queues X11_REQ_DESTROY -> shim -> Swift close
-  x11_requests_push_destroy(wid);
+  // 2) Swift/UI teardown event path
+  x11_ui_push_destroy(wid);
 }
   
   
@@ -410,7 +403,7 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   // 3) Swift/UI visibility: only top-level host should actually be hidden.
   // If wid is a child, Cocoa window should remain; compositing will omit it.
   if (host == wid) {
-    x11_requests_push_unmap(wid);
+    x11_ui_push_unmap(wid);
   } else if (host != 0) {
     // Optional: if you maintain per-xid Swift state, you may still want to tell Swift
     // "child is unmapped" for hit-testing, but do NOT hide the NSWindow.
