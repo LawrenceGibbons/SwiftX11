@@ -40,10 +40,11 @@ private:
   // `minor` is unused for these core requests but kept for uniformity.
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
-  void handleCreateGC(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 55
-  void handleChangeGC(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 56
-  void handleCopyGC  (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 57
-  void handleFreeGC  (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 60
+  void handleCreateGC        (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 55
+  void handleChangeGC        (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 56
+  void handleCopyGC          (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 57
+  void handleSetClipRectangles(XProtoContext& ctx, uint16_t seq, uint8_t ordering, ByteReader& br); // major 59
+  void handleFreeGC          (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 60
 
   static uint32_t mapPixelToARGB(uint32_t val);
   static void applyValueMask(uint32_t vmask, ByteReader& br, GCState& st);

@@ -24,6 +24,7 @@
 
 // util
 #include "Damage.hpp"
+#include "Utils/GCClip.hpp"
 
 namespace x11 {
 
@@ -84,9 +85,11 @@ void ShapeOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 static inline void plotPixel(uint32_t* pixels, uint32_t stride,
                              int32_t clipW, int32_t clipH,
                              int32_t x, int32_t y,
-                             uint32_t color, uint8_t fn, uint32_t planeMask)
+                             uint32_t color, uint8_t fn, uint32_t planeMask,
+                             const x11::GCState* gc = nullptr)
 {
   if (x < 0 || x >= clipW || y < 0 || y >= clipH) return;
+  if (gc && !x11::gcPointVisible(*gc, x, y)) return;
   uint32_t& dst = pixels[(size_t)y * stride + (size_t)x];
   if (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu) {
     dst = color;
@@ -98,7 +101,8 @@ static inline void plotPixel(uint32_t* pixels, uint32_t stride,
 static void drawThinLine(uint32_t* pixels, uint32_t stride,
                          int32_t clipW, int32_t clipH,
                          int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                         uint32_t color, uint8_t fn, uint32_t planeMask)
+                         uint32_t color, uint8_t fn, uint32_t planeMask,
+                         const x11::GCState* gc = nullptr)
 {
   // Fast path: horizontal line
   if (y0 == y1) {
@@ -109,11 +113,11 @@ static void drawThinLine(uint32_t* pixels, uint32_t stride,
     const int32_t rx = std::min<int32_t>(x1, clipW - 1);
     if (lx > rx) return;
     uint32_t* row = pixels + (size_t)ly * stride;
-    if (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu) {
-      for (int32_t x = lx; x <= rx; x++) row[x] = color;
-    } else {
-      for (int32_t x = lx; x <= rx; x++)
-        row[x] = x11_apply_rop_argb(row[x], color, fn, planeMask);
+    const bool fastWrite = (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu);
+    for (int32_t x = lx; x <= rx; x++) {
+      if (gc && !x11::gcPointVisible(*gc, x, ly)) continue;
+      if (fastWrite) row[x] = color;
+      else           row[x] = x11_apply_rop_argb(row[x], color, fn, planeMask);
     }
     return;
   }
@@ -126,13 +130,12 @@ static void drawThinLine(uint32_t* pixels, uint32_t stride,
     const int32_t ty = std::max<int32_t>(0, y0);
     const int32_t by = std::min<int32_t>(y1, clipH - 1);
     if (ty > by) return;
-    if (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu) {
-      for (int32_t y = ty; y <= by; y++) pixels[(size_t)y * stride + (size_t)lx] = color;
-    } else {
-      for (int32_t y = ty; y <= by; y++) {
-        uint32_t& d = pixels[(size_t)y * stride + (size_t)lx];
-        d = x11_apply_rop_argb(d, color, fn, planeMask);
-      }
+    const bool fastWrite = (fn == 3 && (planeMask & 0x00FFFFFFu) == 0x00FFFFFFu);
+    for (int32_t y = ty; y <= by; y++) {
+      if (gc && !x11::gcPointVisible(*gc, lx, y)) continue;
+      uint32_t& d = pixels[(size_t)y * stride + (size_t)lx];
+      if (fastWrite) d = color;
+      else           d = x11_apply_rop_argb(d, color, fn, planeMask);
     }
     return;
   }
@@ -145,7 +148,7 @@ static void drawThinLine(uint32_t* pixels, uint32_t stride,
   int32_t err = dx - dy;
 
   for (;;) {
-    plotPixel(pixels, stride, clipW, clipH, x0, y0, color, fn, planeMask);
+    plotPixel(pixels, stride, clipW, clipH, x0, y0, color, fn, planeMask, gc);
     if (x0 == x1 && y0 == y1) break;
     int32_t e2 = 2 * err;
     if (e2 > -dy) { err -= dy; x0 += sx; }
@@ -172,6 +175,7 @@ void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coo
   const uint32_t fgOpaque = gst.fg | 0xFF000000u;
   const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
   const uint32_t pm = gst.plane_mask;
+  const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
 
   int32_t cx = 0, cy = 0; // running position for Previous mode
   for (size_t i = 0; i < nPts; i++) {
@@ -183,7 +187,7 @@ void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coo
     } else {
       cx = px; cy = py;
     }
-    plotPixel(dst.pixels32, dst.stridePixels, dst.w, dst.h, cx, cy, fgOpaque, fn, pm);
+    plotPixel(dst.pixels32, dst.stridePixels, dst.w, dst.h, cx, cy, fgOpaque, fn, pm, gcClip);
   }
   br.skip(br.remaining());
   if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
@@ -208,6 +212,7 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coor
   const uint32_t fgOpaque = gst.fg | 0xFF000000u;
   const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
   const uint32_t pm = gst.plane_mask;
+  const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
 
   // Read first point
   int32_t prevX = br.readI16();
@@ -226,7 +231,7 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coor
       curY = py;
     }
     drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 prevX, prevY, curX, curY, fgOpaque, fn, pm);
+                 prevX, prevY, curX, curY, fgOpaque, fn, pm, gcClip);
     prevX = curX;
     prevY = curY;
   }
@@ -253,6 +258,7 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
   const uint32_t fgOpaque = gst.fg | 0xFF000000u;
   const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
   const uint32_t pm = gst.plane_mask;
+  const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
 
   for (size_t i = 0; i < nSegs; i++) {
     if (br.remaining() < 8) break;
@@ -261,7 +267,7 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
     int32_t x2 = br.readI16();
     int32_t y2 = br.readI16();
     drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x1, y1, x2, y2, fgOpaque, fn, pm);
+                 x1, y1, x2, y2, fgOpaque, fn, pm, gcClip);
   }
   br.skip(br.remaining());
   if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
@@ -286,6 +292,7 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
   const uint32_t fgOpaque = gst.fg | 0xFF000000u;
   const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
   const uint32_t pm = gst.plane_mask;
+  const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
 
   for (size_t i = 0; i < nRects; i++) {
     if (br.remaining() < 8) break;
@@ -300,13 +307,13 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
     int32_t x1 = rx + rw, y1 = ry + rh;
 
     drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x0, y0, x1, y0, fgOpaque, fn, pm); // top
+                 x0, y0, x1, y0, fgOpaque, fn, pm, gcClip); // top
     drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x0, y1, x1, y1, fgOpaque, fn, pm); // bottom
+                 x0, y1, x1, y1, fgOpaque, fn, pm, gcClip); // bottom
     drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x0, y0, x0, y1, fgOpaque, fn, pm); // left
+                 x0, y0, x0, y1, fgOpaque, fn, pm, gcClip); // left
     drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x1, y0, x1, y1, fgOpaque, fn, pm); // right
+                 x1, y0, x1, y1, fgOpaque, fn, pm, gcClip); // right
   }
   br.skip(br.remaining());
   if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
@@ -396,6 +403,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 
       uint32_t* row = dst.pixels32 + (size_t)scanY * (size_t)dst.stridePixels;
       for (int32_t xx = xL; xx <= xR; xx++) {
+        if (gc.has_clip && !x11::gcPointVisible(gc, xx, scanY)) continue;
         row[xx] = fg;
       }
     }
@@ -486,7 +494,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
       int32_t x1 = std::min<int32_t>((int32_t)dst.w, rx1);
       int32_t y1 = std::min<int32_t>((int32_t)dst.h, ry1);
       if (x0 >= x1 || y0 >= y1) continue;
-      
+
 #ifndef NDEBUG
   const int32_t cw = (x1 - x0);
   const int32_t ch = (y1 - y0);
@@ -518,26 +526,28 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
       }
     #endif
 
-      wroteAnything = true;
-      if (x0 < bbX0) bbX0 = x0;
-      if (y0 < bbY0) bbY0 = y0;
-      if (x1 > bbX1) bbX1 = x1;
-      if (y1 > bbY1) bbY1 = y1;
+      // Fill with GC clip enforcement
+      auto fillRect = [&](int32_t fx0, int32_t fy0, int32_t fx1, int32_t fy1) {
+        wroteAnything = true;
+        if (fx0 < bbX0) bbX0 = fx0;
+        if (fy0 < bbY0) bbY0 = fy0;
+        if (fx1 > bbX1) bbX1 = fx1;
+        if (fy1 > bbY1) bbY1 = fy1;
 
-      for (int32_t y = y0; y < y1; y++) {
-        uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
-
-        if (fastFill) {
-          for (int32_t x = x0; x < x1; x++) {
-            row[(size_t)x] = fgOpaque;
-          }
-        } else {
-          for (int32_t x = x0; x < x1; x++) {
-            uint32_t out = x11_apply_rop_argb(row[(size_t)x], fgOpaque, gst.function, gst.plane_mask);
-            row[(size_t)x] = (out & 0x00FFFFFFu) | 0xFF000000u;
+        for (int32_t y = fy0; y < fy1; y++) {
+          uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+          if (fastFill) {
+            for (int32_t x = fx0; x < fx1; x++) row[(size_t)x] = fgOpaque;
+          } else {
+            for (int32_t x = fx0; x < fx1; x++) {
+              uint32_t out = x11_apply_rop_argb(row[(size_t)x], fgOpaque, gst.function, gst.plane_mask);
+              row[(size_t)x] = (out & 0x00FFFFFFu) | 0xFF000000u;
+            }
           }
         }
-      }
+      };
+
+      x11::gcClipForEachRect(gst, x0, y0, x1, y1, fillRect);
     }
 
     // IMPORTANT: make the caret toggles present.
@@ -575,11 +585,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
     // GC fg — force opaque alpha for XRGB8888 surfaces.
+    GCState gst{};
     uint32_t fg = 0xFF000000u;
-    {
-      GCState st{};
-      if (GCTable::instance().find(gc_id, st)) fg = st.fg | 0xFF000000u;
-    }
+    if (GCTable::instance().find(gc_id, gst)) fg = gst.fg | 0xFF000000u;
 
     const int dstW = (int)dst.w;
     const int dstH = (int)dst.h;
@@ -626,6 +634,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
             if (!angle_in_arc(theta, start, extent)) continue;
           }
 
+          if (gst.has_clip && !x11::gcPointVisible(gst, px, py)) continue;
           dstPixels[(size_t)py * (size_t)dstStride + (size_t)px] = fg;
         }
       }
@@ -667,11 +676,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
     // GC fg — force opaque alpha for XRGB8888 surfaces.
+    GCState gst{};
     uint32_t fg = 0xFF000000u;
-    {
-      GCState st{};
-      if (GCTable::instance().find(gc_id, st)) fg = st.fg | 0xFF000000u;
-    }
+    if (GCTable::instance().find(gc_id, gst)) fg = gst.fg | 0xFF000000u;
 
     const int dstW = (int)dst.w;
     const int dstH = (int)dst.h;
@@ -725,6 +732,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
             if (!angle_in_arc(theta, start, extent)) continue;
           }
 
+          if (gst.has_clip && !x11::gcPointVisible(gst, px, py)) continue;
           dstPixels[(size_t)py * (size_t)dstStride + (size_t)px] = fg;
         }
       }

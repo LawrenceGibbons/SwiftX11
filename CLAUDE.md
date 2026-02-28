@@ -182,7 +182,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.0.3)
+### Current State (v1.1.0)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -196,6 +196,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Metal partial uploads**: `X11MetalRenderer.updateTexture()` uses `MTLTexture.replace(region:)` for sub-rect uploads; `fullUploadCountdown` forces full uploads for first 3 frames after texture creation
 - **Focus delivery**: `sendFocusEventDirect()` bypasses FocusChangeMask check, emulating WM SetInputFocus. Sends FocusIn to HOST on Cocoa becomeKey; toolkit (Xt) propagates to children via SetInputFocus (opcode 42).
 - **Focus guard** (v1.0.3): Stale FocusOut from destroyed non-focused windows no longer steals focus from the actual focus holder. FocusOut path guarded by `focus_host == host` check.
+- **GC clipping** (v1.1.0): SetClipRectangles (opcode 59) fully implemented. GCState stores clip_rects vector, clip_x_origin/y_origin, has_clip flag. CreateGC/ChangeGC handle clip valuemask bits 17-19, CopyGC copies clip state. All draw ops enforce clip: PolyFillRectangle uses rect-intersection via `gcClipForEachRect`, per-pixel ops (lines, arcs, text, CopyArea) use `gcPointVisible`. PutImage uses rect-level clipping for efficiency. `Utils/GCClip.hpp` provides the clip utility functions.
 - **Button routing**: picks deepest mapped child before `InputState::button()`, checks passive grabs (GrabButton), correctly sets `drag_xid` to child window
 - **Motion state**: `toX11State()` used everywhere (button bits at X11 positions 8-12)
 - **Key event modifiers** (v1.0.1): `sendKeyEvent()` uses `toX11State()` for correct modifier mapping (was previously using raw `buttons | mods` which mapped Option→Control, Control→Shift)

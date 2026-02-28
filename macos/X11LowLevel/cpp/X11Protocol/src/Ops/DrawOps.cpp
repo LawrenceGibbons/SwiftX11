@@ -38,6 +38,7 @@
 
 // util
 #include "Damage.hpp"
+#include "Utils/GCClip.hpp"
 
 namespace x11 {
 
@@ -132,7 +133,8 @@ uint32_t DrawOps::computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits) {
 static inline void drawGlyph1bppBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
                                      int dstLeftX, int dstTopY,
                                      const x11::font::Glyph& g,
-                                     uint32_t fg)
+                                     uint32_t fg,
+                                     const x11::GCState* gc = nullptr)
 {
   const int bw = g.bbx_w;
   const int bh = g.bbx_h;
@@ -155,6 +157,7 @@ static inline void drawGlyph1bppBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
       const uint8_t byte = row[gx >> 3];
       const uint8_t bit  = 0x80u >> (gx & 7);
       if (byte & bit) {
+        if (gc && !x11::gcPointVisible(*gc, xx, yy)) continue;
         pix[(size_t)yy * fbW + (size_t)xx] = fg;
       }
     }
@@ -212,7 +215,7 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   if (br.remaining() < 20) { br.skip(br.remaining()); return; }
 
   const uint32_t drawable = br.readU32();
-  (void)br.readU32(); // gc (unused for now)
+  const uint32_t gcXid    = br.readU32();
 
   const uint16_t width  = br.readU16();
   const uint16_t height = br.readU16();
@@ -226,6 +229,10 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   br.skip(2); // pad0/pad1
 
   if (width == 0 || height == 0) { br.skip(br.remaining()); return; }
+
+  // Resolve GC for clip
+  x11::GCState piGC{};
+  (void)x11::GCTable::instance().find(gcXid, piGC);
 
   // Is destination a window?
   const bool dstIsWindow = ctx.windows().exists(drawable);
@@ -297,26 +304,72 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
                (unsigned)surf.w, (unsigned)surf.h, (unsigned)surf.bytesPerRow);
 #endif
 
-    // Copy rows, clipped to surface bounds.
-    for (uint16_t yy = 0; yy < height; yy++) {
-      const int32_t dy = baseY + (int32_t)yy;
-      if (dy < 0 || dy >= (int32_t)surf.h) continue;
+    // Copy rows, clipped to surface bounds + GC clip rects.
+    // Compute drawable-bounds-clipped region first.
+    int32_t dbX0 = std::max<int32_t>(0, baseX);
+    int32_t dbY0 = std::max<int32_t>(0, baseY);
+    int32_t dbX1 = std::min<int32_t>((int32_t)surf.w, baseX + (int32_t)width);
+    int32_t dbY1 = std::min<int32_t>((int32_t)surf.h, baseY + (int32_t)height);
 
-      const uint8_t* srow = src + (size_t)yy * (size_t)srcStride;
-      uint8_t* drow = dstBase + (size_t)dy * (size_t)surf.bytesPerRow;
+    // Note: GC clip origin is in drawable-local coords (relative to the child window).
+    // PutImage's dstX/dstY are also in drawable-local coords.
+    // The clip rects from SetClipRectangles are in clip-mask coords (offset by clip_x_origin/y_origin).
+    // Since we're working in host-surface coords here (baseX/baseY includes the child offset),
+    // we need to translate: effective clip rect in host coords =
+    //   (clip_rect.x + gc.clip_x_origin + offX, clip_rect.y + gc.clip_y_origin + offY)
+    // But gcClipForEachRect expects drawable-local coords. Our draw region in drawable-local
+    // coords is (dstX, dstY) to (dstX+width, dstY+height). We'll clip in drawable-local space
+    // then translate to host coords.
 
-      int32_t x0 = baseX;
-      int32_t x1 = baseX + (int32_t)width;
-      if (x0 < 0) x0 = 0;
-      if (x1 > (int32_t)surf.w) x1 = (int32_t)surf.w;
-      if (x1 <= x0) continue;
+    auto copyRegion = [&](int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1) {
+      // cx0..cx1, cy0..cy1 are in drawable-local coords. Translate to host-surface coords.
+      const int32_t hx0 = cx0 + offX;
+      const int32_t hy0 = cy0 + offY;
+      const int32_t hx1 = cx1 + offX;
+      const int32_t hy1 = cy1 + offY;
+      // Clip to surface bounds
+      const int32_t fx0 = std::max<int32_t>(0, hx0);
+      const int32_t fy0 = std::max<int32_t>(0, hy0);
+      const int32_t fx1 = std::min<int32_t>((int32_t)surf.w, hx1);
+      const int32_t fy1 = std::min<int32_t>((int32_t)surf.h, hy1);
+      if (fx0 >= fx1 || fy0 >= fy1) return;
 
-      const int32_t copyPx = x1 - x0;
-      const int32_t srcX0  = x0 - baseX;
+      for (int32_t dy = fy0; dy < fy1; dy++) {
+        const int32_t srcRow = dy - baseY;
+        if (srcRow < 0 || srcRow >= (int32_t)height) continue;
+        const uint8_t* srow = src + (size_t)srcRow * (size_t)srcStride;
+        uint8_t* drow = dstBase + (size_t)dy * (size_t)surf.bytesPerRow;
 
-      std::memcpy(drow + (size_t)x0 * 4u,
-                  srow + (size_t)srcX0 * 4u,
-                  (size_t)copyPx * 4u);
+        const int32_t srcX0 = fx0 - baseX;
+        const int32_t copyPx = fx1 - fx0;
+        std::memcpy(drow + (size_t)fx0 * 4u,
+                    srow + (size_t)srcX0 * 4u,
+                    (size_t)copyPx * 4u);
+      }
+    };
+
+    if (!piGC.has_clip) {
+      // No GC clip — copy full region
+      for (int32_t dy = dbY0; dy < dbY1; dy++) {
+        const int32_t srcRow = dy - baseY;
+        if (srcRow < 0 || srcRow >= (int32_t)height) continue;
+        const uint8_t* srow = src + (size_t)srcRow * (size_t)srcStride;
+        uint8_t* drow = dstBase + (size_t)dy * (size_t)surf.bytesPerRow;
+
+        const int32_t srcX0 = dbX0 - baseX;
+        const int32_t copyPx = dbX1 - dbX0;
+        if (copyPx <= 0) continue;
+        std::memcpy(drow + (size_t)dbX0 * 4u,
+                    srow + (size_t)srcX0 * 4u,
+                    (size_t)copyPx * 4u);
+      }
+    } else {
+      // GC clip active — clip in drawable-local coords, then copy
+      x11::gcClipForEachRect(piGC,
+                             (int32_t)dstX, (int32_t)dstY,
+                             (int32_t)dstX + (int32_t)width,
+                             (int32_t)dstY + (int32_t)height,
+                             copyRegion);
     }
 
     // Damage the drawn region (drawable-local coords; damageOrDirty translates to host).
@@ -643,13 +696,22 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     (dstAbsY0 < srcAbsY0 + ch) && (dstAbsY0 + ch > srcAbsY0);
 
   // ------------------------------------------------------------
-  // Copy / ROP with overlap-safe ordering
+  // Copy / ROP with overlap-safe ordering + GC clip
   // ------------------------------------------------------------
+  const bool gcClipActive = gc.has_clip;
+
   auto rowCopyFast = [&](int sy, int dy) {
     const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcStride + (size_t)sx0;
     uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstStride + (size_t)dx0;
-    std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
-    for (int i = 0; i < cw; i++) dp[i] = (dp[i] & 0x00FFFFFFu) | 0xFF000000u;
+    if (!gcClipActive) {
+      std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
+      for (int i = 0; i < cw; i++) dp[i] = (dp[i] & 0x00FFFFFFu) | 0xFF000000u;
+    } else {
+      for (int i = 0; i < cw; i++) {
+        if (!x11::gcPointVisible(gc, dx0 + i, dy)) continue;
+        dp[i] = (sp[i] & 0x00FFFFFFu) | 0xFF000000u;
+      }
+    }
   };
 
   auto rowRop = [&](int sy, int dy, bool rightToLeft) {
@@ -658,11 +720,13 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     if (!rightToLeft) {
       for (int i = 0; i < cw; i++) {
+        if (gcClipActive && !x11::gcPointVisible(gc, dx0 + i, dy)) continue;
         uint32_t out = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
         dp[i] = (out & 0x00FFFFFFu) | 0xFF000000u;
       }
     } else {
       for (int i = cw - 1; i >= 0; i--) {
+        if (gcClipActive && !x11::gcPointVisible(gc, dx0 + i, dy)) continue;
         uint32_t out = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
         dp[i] = (out & 0x00FFFFFFu) | 0xFF000000u;
       }
@@ -680,8 +744,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const int sy = sy0 + r;
     const int dy = dy0 + r;
 
-    if (canMemmoveFast) {
+    if (canMemmoveFast && !gcClipActive) {
       rowCopyFast(sy, dy);
+    } else if (canMemmoveFast) {
+      rowCopyFast(sy, dy); // handles clip inside
     } else {
       bool rtl = false;
       if (overlaps && (dstAbsY0 + r) == (srcAbsY0 + r)) {
@@ -893,6 +959,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
           if (on) dstBits[dByteIndex] |= mask;
           else    dstBits[dByteIndex] &= (uint8_t)~mask;
         } else {
+          if (gst.has_clip && !x11::gcPointVisible(gst, dx, dy)) continue;
           dstPixels[(size_t)dy * (size_t)dstStridePx + (size_t)dx] = on ? fg : bg;
         }
       }
@@ -1022,6 +1089,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const x11::font::BdfFont* f = resolveFont(ctx, gc);
     if (!f) { br.skip(br.remaining()); return; }
 
+    const x11::GCState* gcClip = gc.has_clip ? &gc : nullptr;
+
     auto drawGlyph1bpp32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
       const int gw = g.bbx_w;
       const int gh = g.bbx_h;
@@ -1053,7 +1122,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
           const uint8_t mask = (uint8_t)(1u << (7u - sBit));
           const bool on = (srow[sByte] & mask) != 0;
 
-          if (on) drow[(size_t)dx] = fgO;
+          if (on) {
+            if (gcClip && !x11::gcPointVisible(*gcClip, dx, dy)) continue;
+            drow[(size_t)dx] = fgO;
+          }
         }
       }
     };
@@ -1147,6 +1219,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     int overallW = 0;
     for (uint8_t ch : text) overallW += f->advanceFor((int)ch);
 
+    const x11::GCState* gcClipIT = gc.has_clip ? &gc : nullptr;
+
     auto fillRect32 = [&](int rx, int ry, int rw, int rh, uint32_t color) {
       if (rw <= 0 || rh <= 0) return;
 
@@ -1163,10 +1237,13 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
       const uint32_t c = (color & 0x00FFFFFFu) | 0xFF000000u;
 
-      for (int yy = y0; yy < y1; yy++) {
-        uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
-        for (int xx = x0; xx < x1; xx++) row[(size_t)xx] = c;
-      }
+      auto fillSub = [&](int32_t fx0, int32_t fy0, int32_t fx1, int32_t fy1) {
+        for (int32_t yy = fy0; yy < fy1; yy++) {
+          uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+          for (int32_t xx = fx0; xx < fx1; xx++) row[(size_t)xx] = c;
+        }
+      };
+      x11::gcClipForEachRect(gc, x0, y0, x1, y1, fillSub);
     };
 
     auto drawGlyph1bpp32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
@@ -1195,17 +1272,15 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
           if (dx < 0 || dx >= (int)dst.w) continue;
 
           const uint32_t bit = (uint32_t)xx;
-          //const uint32_t sByte = bit >> 3;
-          //const uint32_t sBit  = bit & 7u;
-
           const uint32_t sByte = bit >> 3;
           const uint32_t sBit  = bit & 7u;
           const uint8_t  mask  = (uint8_t)(1u << (7u - sBit));   // MSBFirst
           const bool on = (srow[sByte] & mask) != 0;
-          
-          // LSBFirst bit order, consistent with your other paths.
-          //const bool on = (srow[sByte] & (uint8_t)(1u << sBit)) != 0;
-          if (on) drow[(size_t)dx] = fgO;
+
+          if (on) {
+            if (gcClipIT && !x11::gcPointVisible(*gcClipIT, dx, dy)) continue;
+            drow[(size_t)dx] = fgO;
+          }
         }
       }
     };

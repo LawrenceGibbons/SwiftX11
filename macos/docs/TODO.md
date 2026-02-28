@@ -68,9 +68,9 @@ Vivado uses Java Swing (renders client-side via Java 2D, uploads via PutImage). 
 GC function, planemask, and clipping are used by every toolkit.
 - [ ] **GC function (GXcopy, GXxor, etc.)**: Apply in all draw paths (PolyFillRectangle, CopyArea, text ops, etc.). Currently everything is GXcopy-only.
 - [ ] **GC planemask**: Apply in all draw paths (currently ignored).
-- [ ] **SetClipRectangles (opcode 59)**: Implement GC clip region. Used heavily by toolkits to restrict drawing to widget bounds.
+- [x] **SetClipRectangles (opcode 59)**: GC clip region stored as vector of ClipRect in GCState. Parsed from wire format with clip-x-origin, clip-y-origin.
 - [ ] **SetDashes (opcode 58)**: Implement dash pattern for line drawing. Used for selection rectangles, focus indicators.
-- [ ] **GC clip enforcement**: All draw ops must check GC clip rect and skip/clamp pixels outside it.
+- [x] **GC clip enforcement**: All draw ops check GC clip rects (PolyFillRectangle uses rect-intersection, per-pixel ops use gcPointVisible). CreateGC/ChangeGC handle clip bits 17-19, CopyGC copies clip state.
 - [ ] **GC fill-style**: Support Solid, Tiled, OpaqueStippled, Stippled fills.
 - [ ] **GC tile/stipple**: Store tile/stipple pixmap in GC, apply during fills.
 

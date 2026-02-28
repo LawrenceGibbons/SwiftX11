@@ -120,6 +120,7 @@
 				cpp/X11Protocol/include/Transport/XProtoTransport.hpp,
 				cpp/X11Protocol/include/UI/UICommandQueue.hpp,
 				cpp/X11Protocol/include/Utils/ByteReader.hpp,
+				cpp/X11Protocol/include/Utils/GCClip.hpp,
 				cpp/X11Protocol/include/Utils/WireLE.hpp,
 				cpp/X11Protocol/include/XProtoConnectionWrapper.h,
 				cpp/X11Protocol/include/XProtoNotifyBridge.hpp,
