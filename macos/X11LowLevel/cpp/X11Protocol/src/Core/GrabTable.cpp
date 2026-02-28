@@ -80,4 +80,10 @@ bool GrabTable::getPointerGrab(PointerGrab& out) const {
   return out.active;
 }
 
+void GrabTable::clearAll() {
+  std::lock_guard<std::mutex> lock(mu_);
+  passive_.clear();
+  pointer_ = PointerGrab{};
+}
+
 } // namespace x11

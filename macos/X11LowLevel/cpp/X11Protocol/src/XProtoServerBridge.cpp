@@ -95,6 +95,10 @@ extern "C" void x11_proto_bridge_end_session(int client_fd)
     x11_requests_push_destroy(wid);
   }
 
+  // Reset per-session server state so the next client starts clean.
+  srv->ctx().grabs().clearAll();
+  srv->ctx().input() = x11::InputState{};
+
   // Destroy the per-session client.
   x11::XClient* client = srv->ctx().client();
   srv->ctx().clearClient();

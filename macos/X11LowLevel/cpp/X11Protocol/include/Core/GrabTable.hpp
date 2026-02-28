@@ -45,6 +45,9 @@ public:
   void clearPointerGrab();
   bool getPointerGrab(PointerGrab& out) const;
 
+  // Reset all grabs (call on session teardown)
+  void clearAll();
+
 private:
 
   mutable std::mutex mu_;
