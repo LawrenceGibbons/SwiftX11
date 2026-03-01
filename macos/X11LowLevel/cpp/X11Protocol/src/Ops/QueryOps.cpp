@@ -513,15 +513,12 @@ namespace x11 {
 
     if (name == "BIG-REQUESTS") {
       present = 1; major = ext::kBigReq;
-    } else if (name == "RENDER") {
-      present = 1; major = ext::kRENDER;
     }
-    // Extensions with version-query-only stubs — NOT advertised as present
-    // until their core operations are implemented:
-    //   XFIXES (cursor/region ops), SHAPE (shape ops), RANDR (output config)
-    //   Xinerama, GE
-    // Advertising them causes clients to take code paths that rely on
-    // working ops (e.g. xeyes + SHAPE → broken rendering).
+    // Other extensions (RENDER, XFIXES, SHAPE, RANDR, Xinerama, GE) have
+    // partial stubs but are NOT advertised yet.  Advertising them causes
+    // clients to take different code paths that rely on working ops
+    // (SHAPE → xeyes broken, RENDER → xeyes uses Composite not core draw).
+    // Enable individually once their key operations are implemented.
 
 #ifndef NDEBUG
     fprintf(stderr, "[QueryExtension] \"%s\" -> present=%u major=%u\n",
@@ -551,9 +548,8 @@ namespace x11 {
     // to prevent clients from taking code paths that rely on working ops.
     static const char* extensions[] = {
       "BIG-REQUESTS",
-      "RENDER",
     };
-    static constexpr uint8_t nExt = 2;
+    static constexpr uint8_t nExt = 1;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
