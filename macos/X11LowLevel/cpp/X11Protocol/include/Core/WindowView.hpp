@@ -32,6 +32,10 @@ struct WindowView {
   uint32_t background_pixel = 0;
   bool     has_background_pixel = false;
 
+  // Window border (server-drawn around child windows)
+  uint16_t border_width = 0;
+  uint32_t border_pixel = 0xFF000000u; // ARGB, default black
+
   // state flags
   bool mapped = false;
   bool presentable = false;

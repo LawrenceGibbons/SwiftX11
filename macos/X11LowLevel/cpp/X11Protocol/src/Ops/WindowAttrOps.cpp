@@ -99,6 +99,9 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     uint32_t newBgPixel = 0;
     bool sawBgPixel = false;
 
+    uint32_t newBorderPixel = 0;
+    bool sawBorderPixel = false;
+
     // Value list is 32-bit items in increasing bit order.
     // We must consume every provided value in order, even if we ignore most.
     for (uint32_t bit = 0; bit < 32 && br.remaining() >= 4; bit++) {
@@ -114,6 +117,15 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           sawBgPixel = true;
           ctx.tracef("[CWA] CWBackPixel wid=0x%08X val=0x%08X → argb=0x%08X\n",
                      wid, val, newBgPixel);
+          break;
+
+        case 3: // CWBorderPixel
+          if (val == 0)       newBorderPixel = 0xFF000000u;
+          else if (val == 1)  newBorderPixel = 0xFFFFFFFFu;
+          else                newBorderPixel = 0xFF000000u | (val & 0x00FFFFFFu);
+          sawBorderPixel = true;
+          ctx.tracef("[CWA] CWBorderPixel wid=0x%08X val=0x%08X → argb=0x%08X\n",
+                     wid, val, newBorderPixel);
           break;
 
         case 11: // CWEventMask
@@ -164,6 +176,11 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 #endif
     }
 
+    // ---- Apply border pixel if present ----
+    if (sawBorderPixel) {
+      ctx.windows().setBorderPixel(wid, newBorderPixel);
+    }
+
     // ---- Apply event mask only if present ----
     if (!sawEventMask) return;
 
@@ -197,12 +214,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Pull current values (so “partial configure” keeps the rest)
     int32_t  x32 = 0, y32 = 0;
     uint32_t w32 = 1, h32 = 1;
+    uint16_t borderW = 0;
 
     if (const WindowView* vw = ctx.window(wid)) {
       x32  = vw->x;
       y32  = vw->y;
       w32  = vw->w ? vw->w : 1;
       h32  = vw->h ? vw->h : 1;
+      borderW = vw->border_width;
     }
 
     auto clamp_i16 = [](int32_t v) -> int16_t {
@@ -228,8 +247,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         case 1: y32 = (int32_t)v; break; // Y
         case 2: w32 = v; break; // Width
         case 3: h32 = v; break; // Height
+        case 4: borderW = (uint16_t)(v & 0xFFFF); break; // BorderWidth
         default:
-          // Ignore others (stacking/border/etc) for now.
           break;
       }
     }
@@ -242,8 +261,13 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint16_t w = clamp_u16_nonzero(w32);
     const uint16_t h = clamp_u16_nonzero(h32);
 
-    ctx.tracef("[CONFIGURE] wid=0x%08X x=%d y=%d w=%u h=%u host=0x%08X\n",
-               wid, (int)x, (int)y, (unsigned)w, (unsigned)h, host);
+    ctx.tracef("[CONFIGURE] wid=0x%08X x=%d y=%d w=%u h=%u bw=%u host=0x%08X\n",
+               wid, (int)x, (int)y, (unsigned)w, (unsigned)h, (unsigned)borderW, host);
+
+    // Apply border width if changed
+    if (vmask & (1u << 4)) {
+      ctx.windows().setBorderWidth(wid, borderW);
+    }
 
     // ------------------------------------------------------------------
     // 1) Update WindowTable geometry (X11 semantics)
@@ -396,6 +420,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       y = vw->y;
       w = vw->w;
       h = vw->h;
+      border = vw->border_width;
     }
     
     // Use ReplyWriter helper (already in your code)

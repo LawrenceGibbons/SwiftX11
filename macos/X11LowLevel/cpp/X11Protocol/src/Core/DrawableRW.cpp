@@ -40,9 +40,11 @@ static bool computeOffsetInHost(WindowTable& wt,
     WindowView vw{};
     if (!wt.snapshot(cur, vw)) return false;
 
-    // accumulate this node's offset in its parent
-    outX += (int32_t)vw.x;
-    outY += (int32_t)vw.y;
+    // accumulate this node's offset in its parent.
+    // In X11, (x,y) is the outer border corner; the drawable starts at
+    // (x + border_width, y + border_width) in parent coords.
+    outX += (int32_t)vw.x + (int32_t)vw.border_width;
+    outY += (int32_t)vw.y + (int32_t)vw.border_width;
 
     if (vw.parent_xid == 0) return false;
     if (vw.parent_xid == host) return true;

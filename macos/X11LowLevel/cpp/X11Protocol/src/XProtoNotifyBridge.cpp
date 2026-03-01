@@ -197,19 +197,21 @@ namespace x11 {
       while (cur && cur != host_xid) {
         WindowView cv{};
         if (!ctx.windows().snapshot(cur, cv)) return false;
-        // subtract this window's offset in its parent
-        outLocalX -= cv.x;
-        outLocalY -= cv.y;
+        // subtract this window's offset in its parent (including border_width)
+        outLocalX -= (cv.x + cv.border_width);
+        outLocalY -= (cv.y + cv.border_width);
         cur = cv.parent_xid;
         outDepth++;
         if (outDepth > 64) return false;
       }
       if (cur != host_xid && xid != host_xid) return false;
       
-      // Now outLocalX/outLocalY are in xid's local coords.
-      return (outLocalX >= 0 && outLocalY >= 0 &&
-              outLocalX < (int32_t)vw.w &&
-              outLocalY < (int32_t)vw.h);
+      // Now outLocalX/outLocalY are in xid's local (drawable) coords.
+      // Include border region in hit test (border is part of the window's footprint).
+      const int32_t bw_i = (int32_t)vw.border_width;
+      return (outLocalX >= -bw_i && outLocalY >= -bw_i &&
+              outLocalX < (int32_t)vw.w + bw_i &&
+              outLocalY < (int32_t)vw.h + bw_i);
     };
     
     for (uint32_t xid : nodes) {

@@ -46,8 +46,8 @@ uint32_t pickDeepestMappedWindowAtHostPoint(XProtoContext& ctx, uint32_t host_xi
     while (cur && cur != host_xid) {
       WindowView cv{};
       if (!ctx.windows().snapshot(cur, cv)) return false;
-      lx -= cv.x;
-      ly -= cv.y;
+      lx -= (cv.x + cv.border_width);
+      ly -= (cv.y + cv.border_width);
       cur = cv.parent_xid;
       depth++;
       if (++safety > 64) return false;
@@ -63,7 +63,9 @@ uint32_t pickDeepestMappedWindowAtHostPoint(XProtoContext& ctx, uint32_t host_xi
 
     int32_t lx=0, ly=0; int depth=0;
     if (!depthAndLocal(xid, lx, ly, depth)) continue;
-    if (lx < 0 || ly < 0 || lx >= (int32_t)vw.w || ly >= (int32_t)vw.h) continue;
+    // Include border region in hit test (border is part of the window's footprint)
+    const int32_t bw_i = (int32_t)vw.border_width;
+    if (lx < -bw_i || ly < -bw_i || lx >= (int32_t)vw.w + bw_i || ly >= (int32_t)vw.h + bw_i) continue;
 
     if (depth > bestDepth) {
       best = xid;

@@ -104,6 +104,10 @@ public:
   // background pixel
   void setBackgroundPixel(uint32_t xid, uint32_t pixel_argb);
 
+  // border
+  void setBorderWidth(uint32_t xid, uint16_t bw);
+  void setBorderPixel(uint32_t xid, uint32_t pixel_argb);
+
   // Reparent: change parent and position
   bool reparent(uint32_t xid, uint32_t newParent, int16_t x, int16_t y);
 
@@ -133,6 +137,10 @@ private:
     // X11 window background pixel (ARGB8888, alpha forced opaque).
     uint32_t background_pixel = 0;
     bool     has_background_pixel = false;
+
+    // Window border (server-drawn around child windows)
+    uint16_t border_width = 0;
+    uint32_t border_pixel = 0xFF000000u; // ARGB, default black
 
     bool mapped = false;
     bool presentable = false;

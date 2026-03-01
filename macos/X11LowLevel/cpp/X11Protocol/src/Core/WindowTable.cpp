@@ -137,8 +137,10 @@ bool WindowTable::absoluteOffsetInHost(uint32_t host, uint32_t xid,
     const WindowState* st = findLocked(cur);
     if (!st) return false;
 
-    outX += (int32_t)st->x;
-    outY += (int32_t)st->y;
+    // In X11, (x,y) is the outer border corner; the drawable starts at
+    // (x + border_width, y + border_width) in parent coords.
+    outX += (int32_t)st->x + (int32_t)st->border_width;
+    outY += (int32_t)st->y + (int32_t)st->border_width;
 
     if (st->parent == 0) return false;
     if (st->parent == host) return true;
@@ -202,6 +204,8 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.presentable = st->presentable;
   out.dirty = st->dirty;
   out.owner_fd = st->owner_fd;
+  out.border_width = st->border_width;
+  out.border_pixel = st->border_pixel;
   return true;
 }
 
@@ -212,6 +216,24 @@ void WindowTable::setBackgroundPixel(uint32_t xid, uint32_t pixel_argb) {
   if (!st) return;
   st->background_pixel = pixel_argb;
   st->has_background_pixel = true;
+  st->serial++;
+}
+
+void WindowTable::setBorderWidth(uint32_t xid, uint16_t bw) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->border_width = bw;
+  st->serial++;
+}
+
+void WindowTable::setBorderPixel(uint32_t xid, uint32_t pixel_argb) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->border_pixel = pixel_argb;
   st->serial++;
 }
 

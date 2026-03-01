@@ -118,8 +118,8 @@ static bool computeEventXYFromHostLocal(x11::XProtoContext& ctx,
   while (cur && cur != host) {
     x11::WindowView cv{};
     if (!ctx.windows().snapshot(cur, cv)) return false;
-    lx -= cv.x;
-    ly -= cv.y;
+    lx -= (cv.x + cv.border_width);
+    ly -= (cv.y + cv.border_width);
     cur = cv.parent_xid;
     if (++safety > 64) return false;
   }
@@ -432,10 +432,19 @@ void EventOps::sendButtonEvent(XProtoContext& ctx,
 {
   // event-local coords
   int16_t ex = 0, ey = 0;
-  if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey)) {
+  bool coordOk = computeEventXYFromHostLocal(ctx, wid, &ex, &ey);
+  if (!coordOk) {
     ex = clamp16_i32(ctx.input().win_x_u);
     ey = clamp16_i32(ctx.input().win_y_u);
   }
+
+#ifndef NDEBUG
+  fprintf(stderr,
+          "[BTN_EVENT] wid=0x%08X %s btn=%u event_xy=(%d,%d) root_xy=(%d,%d) coordOk=%d child=0x%08X\n",
+          (unsigned)wid, is_press ? "PRESS" : "RELEASE",
+          (unsigned)button, (int)ex, (int)ey,
+          (int)root_x, (int)root_y, (int)coordOk, (unsigned)child_xid);
+#endif
 
   int rootW = 0, rootH = 0;
   getRootWH(ctx, rootW, rootH);

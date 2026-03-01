@@ -153,6 +153,52 @@ static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
   }
 }
 
+// Draw the server-side border around a child window (re-expose path).
+// Same logic as fillWindowBorder in WindowOps.cpp but for the SetPresentable/
+// SurfaceResized re-expose path, where surfaces are guaranteed ready.
+static void fillWindowBorderIfReady(x11::XProtoContext& ctx, uint32_t childXid) {
+  x11::WindowView cv{};
+  if (!ctx.windows().snapshot(childXid, cv)) return;
+  if (cv.border_width == 0) return;
+  if (cv.parent_xid == 0 || cv.parent_xid == 1) return;
+
+  x11::DrawableRW parentDst{};
+  if (!x11::resolveDrawableRW(ctx, cv.parent_xid, parentDst)) return;
+  if (!parentDst.pixels32 || parentDst.w == 0 || parentDst.h == 0) return;
+
+  const int32_t bw = (int32_t)cv.border_width;
+  const uint32_t bp = cv.border_pixel;
+  const int32_t bx = (int32_t)cv.x;
+  const int32_t by = (int32_t)cv.y;
+  const int32_t totalW = (int32_t)cv.w + 2 * bw;
+  const int32_t totalH = (int32_t)cv.h + 2 * bw;
+
+  auto fillRect = [&](int32_t rx, int32_t ry, int32_t rw, int32_t rh) {
+    if (rx < 0) { rw += rx; rx = 0; }
+    if (ry < 0) { rh += ry; ry = 0; }
+    if (rx + rw > (int32_t)parentDst.w) rw = (int32_t)parentDst.w - rx;
+    if (ry + rh > (int32_t)parentDst.h) rh = (int32_t)parentDst.h - ry;
+    if (rw <= 0 || rh <= 0) return;
+    for (int32_t y = ry; y < ry + rh; y++) {
+      uint32_t* row = parentDst.pixels32 + (size_t)y * parentDst.stridePixels;
+      for (int32_t x = rx; x < rx + rw; x++) {
+        row[x] = bp;
+      }
+    }
+  };
+
+  fillRect(bx, by, totalW, bw);                              // top
+  fillRect(bx, by + bw + (int32_t)cv.h, totalW, bw);         // bottom
+  fillRect(bx, by + bw, bw, (int32_t)cv.h);                   // left
+  fillRect(bx + bw + (int32_t)cv.w, by + bw, bw, (int32_t)cv.h); // right
+
+#if X11_TRACE_PRESENT_ENABLED
+  fprintf(stderr, "[BORDER_RETRY] childXid=0x%08X parent=0x%08X bw=%d bp=0x%08X at=(%d,%d) total=%dx%d\n",
+          (unsigned)childXid, (unsigned)cv.parent_xid,
+          (int)bw, (unsigned)bp, (int)bx, (int)by, (int)totalW, (int)totalH);
+#endif
+}
+
 // Send a full-window Expose to a single window.
 static inline void sendExposeNow(x11::XProtoContext& ctx,
                                  x11::EventOps& /*evOps*/,
@@ -200,7 +246,7 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
   fillWindowBackgroundIfReady(ctx, hostXid);
   sendExposeNow(ctx, evOps, hostXid);
 
-  // Fill background + Expose every mapped descendant.
+  // Fill borders + backgrounds + Expose every mapped descendant.
   auto kids = ctx.windows().descendantsOf(hostXid);
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
@@ -211,7 +257,8 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
     if (!ctx.windows().snapshot(kid, kv)) continue;
     if (!kv.mapped) continue;
 
-    // Paint background before Expose (X11 spec requirement).
+    // Paint border + background before Expose (X11 spec requirement).
+    fillWindowBorderIfReady(ctx, kid);
     fillWindowBackgroundIfReady(ctx, kid);
 
 #if X11_TRACE_LIFECYCLE_ENABLED
@@ -472,6 +519,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
           if (!host) break;
 
+          // Update InputState position from this button event's coordinates,
+          // so picking and event delivery use the actual click position
+          // (not stale coords from the last PointerMove).
+          ctx.input().win_x_u = c.win_x_u;
+          ctx.input().win_y_u = c.win_y_u;
+
           // ---- STEP 1: Pick the deepest window BEFORE updating drag state ----
           // This is critical: InputState::button() sets drag_xid on the
           // 0→nonzero button transition. We must pick the child under the
@@ -483,8 +536,8 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             under = ctx.input().drag_xid;
           } else {
             under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
-                                                            ctx.input().win_x_u,
-                                                            ctx.input().win_y_u);
+                                                            c.win_x_u,
+                                                            c.win_y_u);
             if (!under) under = host;
 
             // ---- STEP 2: Check passive grabs (GrabButton) on press ----
@@ -563,11 +616,58 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // child field: if delivering to ancestor, child is the subwindow under pointer
           const uint32_t child = (deliver != under) ? under : 0;
 
-        #if X11_TRACE_INPUT_ENABLED
-          fprintf(stderr,
-                  "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u drag=0x%08X\n",
-                  (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
-                  (int)(c.isDown != 0), (unsigned)c.button, (unsigned)ctx.input().drag_xid);
+        #ifndef NDEBUG
+          {
+            // Enhanced button event trace for debugging xcalc button routing
+            fprintf(stderr,
+                    "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u drag=0x%08X\n",
+                    (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
+                    (int)(c.isDown != 0), (unsigned)c.button, (unsigned)ctx.input().drag_xid);
+            fprintf(stderr,
+                    "[BTN]   win_xy=(%d,%d) root_xy=(%d,%d)\n",
+                    (int)ctx.input().win_x_u, (int)ctx.input().win_y_u,
+                    (int)ctx.input().root_x_u, (int)ctx.input().root_y_u);
+
+            // Print geometry of 'under' and 'deliver' windows
+            x11::WindowView underVw{}, deliverVw{};
+            if (ctx.windows().snapshot(under, underVw)) {
+              fprintf(stderr,
+                      "[BTN]   under geom=(%d,%d %ux%u) parent=0x%08X mask=0x%08X\n",
+                      (int)underVw.x, (int)underVw.y,
+                      (unsigned)underVw.w, (unsigned)underVw.h,
+                      (unsigned)underVw.parent_xid, (unsigned)underVw.event_mask);
+            }
+            if (deliver != under && ctx.windows().snapshot(deliver, deliverVw)) {
+              fprintf(stderr,
+                      "[BTN]   deliver geom=(%d,%d %ux%u) parent=0x%08X mask=0x%08X\n",
+                      (int)deliverVw.x, (int)deliverVw.y,
+                      (unsigned)deliverVw.w, (unsigned)deliverVw.h,
+                      (unsigned)deliverVw.parent_xid, (unsigned)deliverVw.event_mask);
+            }
+
+            // On press, dump all immediate children of deliver's parent (sibling buttons)
+            if (c.isDown) {
+              uint32_t parentOfDeliver = 0;
+              x11::WindowView dvw{};
+              if (ctx.windows().snapshot(deliver, dvw)) parentOfDeliver = dvw.parent_xid;
+              if (parentOfDeliver && parentOfDeliver != host) {
+                // Dump siblings (other buttons)
+                auto siblings = ctx.windows().descendantsOf(parentOfDeliver);
+                int printed = 0;
+                for (uint32_t sib : siblings) {
+                  x11::WindowView sv{};
+                  if (!ctx.windows().snapshot(sib, sv)) continue;
+                  if (sv.parent_xid != parentOfDeliver) continue; // only direct children
+                  if (!sv.mapped) continue;
+                  fprintf(stderr,
+                          "[BTN]   sibling=0x%08X geom=(%d,%d %ux%u) mask=0x%08X\n",
+                          (unsigned)sib, (int)sv.x, (int)sv.y,
+                          (unsigned)sv.w, (unsigned)sv.h, (unsigned)sv.event_mask);
+                  if (++printed > 40) { fprintf(stderr, "[BTN]   ... (truncated)\n"); break; }
+                }
+              }
+            }
+          }
         #endif
 
           srv->eventOps().sendButtonEvent(ctx, deliver,

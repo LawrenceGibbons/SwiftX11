@@ -67,9 +67,11 @@ namespace x11 {
       last_xid = xid;
       win_x_u = wx_u; win_y_u = wy_u;
       root_x_u = rx_u; root_y_u = ry_u;
-      // For motion, trust btns if you want. Or keep canonical `buttons` only.
-      // I'd keep canonical `buttons`, but accept btns for now:
-      buttons = btns;
+      // Do NOT overwrite `buttons` from motion events.  button() is the
+      // canonical authority for button state.  A PointerMove with deliver=0
+      // (e.g. tracking-area update after mouseUp) can carry a stale
+      // buttons=0 that would silently reset the field between press and
+      // release, preventing drag_xid from clearing.
       mods = m;
 
       // Cache this host's screen origin (root_pos - window_local_pos).
@@ -118,8 +120,27 @@ namespace x11 {
 
       buttons = mask;
 
-      if (before == 0 && buttons != 0) drag_xid = xid;
-      else if (before != 0 && buttons == 0) drag_xid = 0;
+#ifndef NDEBUG
+      fprintf(stderr,
+              "[INPUT_BTN] xid=0x%08X %s btn=%u before=0x%08X after_mask=0x%08X mask=0x%08X buttons=0x%08X drag=0x%08X->",
+              (unsigned)xid, is_press ? "press" : "release",
+              (unsigned)button_num, (unsigned)before, (unsigned)after_mask,
+              (unsigned)mask, (unsigned)buttons, (unsigned)drag_xid);
+#endif
+
+      // Robust drag tracking: don't depend on 'before' being preserved
+      // between press and release (a PointerMove can corrupt it).
+      //   - All buttons released → always clear drag
+      //   - First button down while not dragging → start drag
+      if (buttons == 0) {
+        drag_xid = 0;
+      } else if (drag_xid == 0) {
+        drag_xid = xid;
+      }
+
+#ifndef NDEBUG
+      fprintf(stderr, "0x%08X\n", (unsigned)drag_xid);
+#endif
     }
 
     uint32_t routePointer(uint32_t from_xid) const {

@@ -67,6 +67,79 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
   }
 }
 
+// Draw the server-side border around a child window.
+// X11 spec: the server paints borders in the PARENT's drawable, surrounding the
+// child's interior (drawable) area.  In our rootless model, all drawing goes into
+// the host (top-level) surface.
+//
+// The child's (x,y) position is the outer border corner in parent coordinates.
+// Total footprint: (x, y) to (x + w + 2*bw - 1, y + h + 2*bw - 1).
+// The drawable interior starts at (x + bw, y + bw).
+static void fillWindowBorder(XProtoContext& ctx, uint32_t childXid) {
+  WindowView cv{};
+  if (!ctx.windows().snapshot(childXid, cv)) return;
+  if (cv.border_width == 0) return;
+
+  // Can't draw borders for host windows (parent=root has no surface)
+  if (cv.parent_xid == 0 || cv.parent_xid == 1) return;
+
+  // Resolve parent's drawable (will be in the host surface)
+  DrawableRW parentDst{};
+  if (!resolveDrawableRW(ctx, cv.parent_xid, parentDst)) {
+#if X11_TRACE_PRESENT_ENABLED
+    fprintf(stderr, "[BORDER] childXid=0x%08X SKIP parent resolve failed\n", (unsigned)childXid);
+#endif
+    return;
+  }
+  if (!parentDst.pixels32 || parentDst.w == 0 || parentDst.h == 0) return;
+
+  const int32_t bw = (int32_t)cv.border_width;
+  const uint32_t bp = cv.border_pixel;
+
+  // Border outer rect in parent drawable coords
+  const int32_t bx = (int32_t)cv.x;
+  const int32_t by = (int32_t)cv.y;
+  const int32_t totalW = (int32_t)cv.w + 2 * bw;
+  const int32_t totalH = (int32_t)cv.h + 2 * bw;
+
+  // Lambda to fill a rect clipped to parent drawable
+  auto fillRect = [&](int32_t rx, int32_t ry, int32_t rw, int32_t rh) {
+    if (rx < 0) { rw += rx; rx = 0; }
+    if (ry < 0) { rh += ry; ry = 0; }
+    if (rx + rw > (int32_t)parentDst.w) rw = (int32_t)parentDst.w - rx;
+    if (ry + rh > (int32_t)parentDst.h) rh = (int32_t)parentDst.h - ry;
+    if (rw <= 0 || rh <= 0) return;
+
+    for (int32_t y = ry; y < ry + rh; y++) {
+      uint32_t* row = parentDst.pixels32 + (size_t)y * parentDst.stridePixels;
+      for (int32_t x = rx; x < rx + rw; x++) {
+        row[x] = bp;
+      }
+    }
+  };
+
+  // Top border strip
+  fillRect(bx, by, totalW, bw);
+  // Bottom border strip
+  fillRect(bx, by + bw + (int32_t)cv.h, totalW, bw);
+  // Left border strip
+  fillRect(bx, by + bw, bw, (int32_t)cv.h);
+  // Right border strip
+  fillRect(bx + bw + (int32_t)cv.w, by + bw, bw, (int32_t)cv.h);
+
+  // Damage the border region on the host
+  if (parentDst.isWindow) {
+    damageOrDirty(ctx, cv.parent_xid, bx, by, totalW, totalH);
+  }
+
+#if X11_TRACE_PRESENT_ENABLED
+  fprintf(stderr, "[BORDER] childXid=0x%08X parent=0x%08X bw=%d bp=0x%08X at=(%d,%d) total=%dx%d\n",
+          (unsigned)childXid, (unsigned)cv.parent_xid,
+          (int)bw, (unsigned)bp,
+          (int)bx, (int)by, (int)totalW, (int)totalH);
+#endif
+}
+
 static inline void sendInitialExposeNow(x11::XProtoContext& ctx, uint32_t wid) {
   if (wid == 0) return;
 
@@ -130,7 +203,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   const uint16_t wpx    = br.readU16();
   const uint16_t hpx    = br.readU16();
 
-  (void)br.readU16(); // borderWidth
+  const uint16_t borderWidth = br.readU16();
   (void)br.readU16(); // class
   (void)br.readU32(); // visual
   const uint32_t vmask = br.readU32();
@@ -138,7 +211,9 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   uint32_t event_mask = 0;
   uint32_t bg_pixel = 0;
   bool     has_bg_pixel = false;
-  // Consume values for *all* bits set; record bit 1 (CWBackPixel) and bit 11 (CWEventMask).
+  uint32_t border_pixel_raw = 0;
+  bool     has_border_pixel = false;
+  // Consume values for *all* bits set; record bit 1 (CWBackPixel), bit 3 (CWBorderPixel), bit 11 (CWEventMask).
   for (uint32_t bit = 0; bit < 32; bit++) {
     if (!(vmask & (1u << bit))) continue;
     if (br.remaining() < 4) break;
@@ -149,6 +224,10 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
       else if (val == 1)  bg_pixel = 0xFFFFFFFFu;       // white
       else                bg_pixel = 0xFF000000u | (val & 0x00FFFFFFu);
       has_bg_pixel = true;
+    }
+    if (bit == 3) { // CWBorderPixel
+      border_pixel_raw = val;
+      has_border_pixel = true;
     }
     if (bit == 11) event_mask = val;
   }
@@ -190,6 +269,17 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   // ---- CREATE (server state only) ----
   const int owner_fd = ctx.transport().clientFd();
   ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
+  if (borderWidth > 0) {
+    ctx.windows().setBorderWidth(wid, borderWidth);
+  }
+  if (has_border_pixel) {
+    // Map X11 pixel value to ARGB8888
+    uint32_t bp_argb;
+    if (border_pixel_raw == 0)       bp_argb = 0xFF000000u;
+    else if (border_pixel_raw == 1)  bp_argb = 0xFFFFFFFFu;
+    else                             bp_argb = 0xFF000000u | (border_pixel_raw & 0x00FFFFFFu);
+    ctx.windows().setBorderPixel(wid, bp_argb);
+  }
   if (has_bg_pixel) {
     ctx.windows().setBackgroundPixel(wid, bg_pixel);
 #if X11_TRACE_LIFECYCLE_ENABLED
@@ -305,6 +395,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteR
   // If was mapped, remap
   if (wasMapped) {
     ctx.windows().setMapped(wid, true);
+    fillWindowBorder(ctx, wid);
     fillWindowBackground(ctx, wid);
     sendInitialExposeNow(ctx, wid);
   }
@@ -351,7 +442,8 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteR
       }
     }
 
-    // 3) Fill window with background_pixel (X11 spec: server paints background before Expose).
+    // 3) Fill window border + background (X11 spec: server paints before Expose).
+    fillWindowBorder(ctx, wid);
     fillWindowBackground(ctx, wid);
 
     // 4) Queue an initial full-window Expose on map (bring-up).
@@ -422,7 +514,8 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
     // 1) Authoritative state
     ctx.windows().setMapped(xid, true);
 
-    // Fill background (X11 spec: server paints background before Expose)
+    // Fill border + background (X11 spec: server paints before Expose)
+    fillWindowBorder(ctx, xid);
     fillWindowBackground(ctx, xid);
 
     // Queue initial Expose rect (bring-up)
