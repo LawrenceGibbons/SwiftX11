@@ -44,15 +44,15 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 - PolyText16 (opcode 75): CHAR2B encoding (byte1 high, byte2 low), TEXTITEM16 elements
 - ImageText16 (opcode 77): CHAR2B encoding, background rect fill + foreground glyphs
 
-**Extension stubs** (version queries + basic ops):
+**Extension handler code** (version queries + basic ops — **NOT advertised to clients yet**):
 - XFIXES (major 134): QueryVersion → 5.0
 - SHAPE (major 135): QueryVersion → 1.1
 - RANDR (major 136): QueryVersion → 1.5
 - Xinerama (major 137): QueryVersion → 1.1, IsActive → true, QueryScreens → 1 screen 1920x1080
 - GE (major 138): QueryVersion → 1.0
-- All registered in QueryExtension and ListExtensions
+- Handler code registered in dispatch table; QueryExtension returns present=0 until ops are complete
 
-**RENDER extension** (major 139, minimal but functional):
+**RENDER extension** (major 139 — handler code exists, **NOT advertised to clients yet**):
 - QueryVersion → 0.11
 - QueryPictFormats: ARGB32, RGB24, A8, A4, A1 formats + screen/visual mapping
 - CreatePicture/ChangePicture/FreePicture: picture table management
@@ -62,48 +62,48 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 - QueryFilters: "nearest" and "bilinear"
 - Glyph stubs: CreateGlyphSet/FreeGlyphSet/ReferenceGlyphSet/AddGlyphs/FreeGlyphs/CompositeGlyphs (consume silently)
 - Transform/Filter/Gradient stubs: consume silently
+- **Missing**: Trapezoids/Triangles, CompositeGlyphs rendering, Composite mask parameter
 
 **Selections/clipboard**: Already implemented (SetSelectionOwner, GetSelectionOwner, ConvertSelection, SendEvent)
 
+**Critical lesson learned**: Do NOT advertise extensions via QueryExtension until core operations are complete. Advertising SHAPE caused xeyes to use shape clipping (broken). Advertising RENDER caused xeyes to use Composite (broken — missing Trapezoids). Extensions must be enabled one at a time with testing.
+
 ---
 
-## Active Issues to Investigate
+## Known Issues (deferred)
 
-### 1. xcalc Missing Button Outlines (HIGH)
+### xcalc Missing Button Outlines (Phase 3)
 **Symptom**: Button borders/outlines not visible in xcalc.
-**What we know**: PolyRectangle and PolyLine DO apply GC function via RasterOp.hpp. GC function and planemask are already implemented and used by draw ops.
-**Likely cause**: GC color issue — possibly GXxor with fg~bg producing invisible output, or a GC state not being set correctly for the outline drawing GC.
-**Investigation approach**: Add trace logging in PolyRectangle/PolyLine to dump GC state (function, fg, bg, plane_mask) during xcalc rendering.
+**Likely cause**: GC color issue — GXxor with fg~bg producing invisible output, or GC state not set correctly for outline drawing GC.
+**Deferred**: User confirmed xcalc is acceptable until Phase 3.
 
-### 2. xcalc All Buttons Send "2" (HIGH)
+### xcalc All Buttons Send "2" (Phase 3)
 **Symptom**: Pressing any button position in xcalc always sends the value "2".
 **Likely cause**: Coordinate translation failing for xcalc's Xaw widget tree.
-**Investigation approach**: Trace button events with `[BTN]` debug output, check which child XID is picked and what x,y coordinates are reported.
+**Deferred**: User confirmed xcalc is acceptable until Phase 3.
 
-### 3. xterm Uncleared Pixels at Bottom
+### xterm Uncleared Pixels at Bottom (LOW)
 **Symptom**: Occasional stale/uncleared pixels visible at bottom edge of xterm window.
-**Investigation approach**: Check if it correlates with resize events or scroll operations.
 
-### 4. xclock/xcalc FontSet Warnings
+### xclock/xcalc FontSet Warnings (Phase 3)
 **Symptom**: "Missing charsets in String to FontSet conversion"
-**Not fixable in Phase 1/2** — requires additional BDF/PCF font bundling.
+Requires additional BDF/PCF font bundling.
 
 ---
 
 ## Next Tasks (Priority Order)
 
-### 1. Debug xcalc Issues
-The xcalc button outline and button-value issues are the most pressing — they indicate potential problems that would affect Vivado too.
+### 1. Window Close → Client Kill
+Red close button should terminate the X11 client (WM_DELETE_WINDOW or socket close). Cmd+W should also work.
 
 ### 2. Error Handling
-Proper X11 error generation (BadWindow, BadDrawable, etc.)
+Proper X11 error generation (BadWindow, BadDrawable, BadGC, etc.) with correct error reply format.
 
-### 3. RENDER Glyph Rendering
-CompositeGlyphs8/16/32 and AddGlyphs are currently stubs. Need actual glyph bitmap storage and rendering for anti-aliased font display.
+### 3. Enable RENDER Extension
+Complete missing operations (Trapezoids, CompositeGlyphs rendering, Composite mask), then advertise RENDER=present. Test with `rendercheck` and xeyes.
 
-### 4. RENDER Enhancements
-- Mask parameter in Composite (currently ignored)
-- Trapezoids/Triangles (needed by some Cairo paths)
+### 4. Enable Remaining Extensions
+Complete and advertise one at a time: SHAPE (ShapeRectangles/ShapeMask), XFIXES (cursor visibility), RANDR, Xinerama, GE. Test each with xeyes/xterm before advertising the next.
 
 ---
 

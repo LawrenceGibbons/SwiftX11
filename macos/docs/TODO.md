@@ -114,11 +114,11 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. SwiftX11 currently returns "not present" for all extensions (QueryExtension replies present=0). This works but forces fallback paths that may be slower or miss features.
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.4.0)**: Only **BIG-REQUESTS** is advertised as present. Handler code exists for RENDER, XFIXES, SHAPE, RANDR, Xinerama, and GE, but these are **NOT advertised** to clients — advertising an extension with incomplete operations causes clients to take broken code paths (e.g., xeyes uses SHAPE clipping when SHAPE is present, RENDER Composite instead of core drawing when RENDER is present). Extensions will be advertised one at a time as their core operations become complete.
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
-- [x] **QueryExtension("RENDER")**: Returns present=1, major opcode 139 (v1.4.0).
+- [x] **QueryExtension("RENDER")**: Handler code returns present=1, major opcode 139 — but **NOT advertised** to clients yet (v1.4.0).
 - [x] **RenderQueryVersion**: Returns version 0.11 (v1.4.0).
 - [x] **RenderQueryPictFormats**: Returns ARGB32, RGB24, A8, A4, A1 formats + screen mapping to TrueColor visual (v1.4.0).
 - [x] **CreatePicture / FreePicture**: Picture table maps PID → drawable+format (v1.4.0).
@@ -143,7 +143,7 @@ Vivado schematics and waveform views can be large. Without BIG-REQUESTS, maximum
 
 ### 2.3 XFIXES Extension (MEDIUM — cursor, regions)
 GTK and Java use XFIXES for cursor visibility and region operations.
-- [x] **QueryExtension("XFIXES")**: Returns present=1, major opcode 134 (v1.4.0).
+- [x] **QueryExtension("XFIXES")**: Handler code returns present=1, major opcode 134 — but **NOT advertised** to clients yet (v1.4.0).
 - [x] **XFixesQueryVersion**: Returns version 5.0 (v1.4.0).
 - [ ] **XFixesShowCursor / HideCursor**: Cursor visibility control.
 - [ ] **XFixesCreateRegion / SetWindowShapeRegion**: Region operations.
@@ -151,7 +151,7 @@ GTK and Java use XFIXES for cursor visibility and region operations.
 
 ### 2.4 SHAPE Extension (LOW — non-rectangular windows)
 Some splash screens and tooltips use shaped windows.
-- [x] **QueryExtension("SHAPE")**: Returns present=1, major opcode 135 (v1.4.0).
+- [x] **QueryExtension("SHAPE")**: Handler code returns present=1, major opcode 135 — but **NOT advertised** to clients yet (v1.4.0).
 - [x] **ShapeQueryVersion**: Returns version 1.1 (v1.4.0).
 - [ ] **ShapeRectangles / ShapeMask**: Define non-rectangular window shape.
 - [ ] **ShapeQueryExtents**: Query window shape.
@@ -159,12 +159,12 @@ Some splash screens and tooltips use shaped windows.
 ### 2.5 Other Extensions (LOW — query but don't need full impl)
 These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
 - [ ] **MIT-SHM**: Shared memory (not applicable over network/container — present=0 is correct).
-- [x] **RANDR**: Returns present=1, major 136, RRQueryVersion returns 1.5, single-screen stub (v1.4.0).
-- [x] **Xinerama**: Returns present=1, major 137, XineramaIsActive=1, QueryScreens returns 1 screen 1920×1080 (v1.4.0).
+- [x] **RANDR**: Handler code returns present=1, major 136, RRQueryVersion returns 1.5, single-screen stub — but **NOT advertised** yet (v1.4.0).
+- [x] **Xinerama**: Handler code returns present=1, major 137, XineramaIsActive=1, QueryScreens returns 1 screen 1920×1080 — but **NOT advertised** yet (v1.4.0).
 - [ ] **XInput / XInput2**: Extended input (present=0 is fine initially).
 - [ ] **DPMS**: Display power management (present=0).
 - [ ] **SYNC**: Synchronization (present=0).
-- [x] **Generic Event Extension (GE)**: Returns present=1, major 138, GEQueryVersion returns 1.0 (v1.4.0).
+- [x] **Generic Event Extension (GE)**: Handler code returns present=1, major 138, GEQueryVersion returns 1.0 — but **NOT advertised** yet (v1.4.0).
 
 ---
 
@@ -346,12 +346,15 @@ xcalc &
 ~~2. **Missing reply-bearing opcodes** — DONE (v1.2.0)~~
 ~~3. **ReparentWindow** — DONE (v1.2.0)~~
 ~~4. **xcalc button outlines + routing** — DONE (v1.3.0): server-drawn borders + button routing fix~~
+~~1. **GC function/planemask enforcement** — DONE (v1.4.0)~~
+~~2. **BIG-REQUESTS extension** — DONE (v1.4.0), advertised and functional~~
+~~3. **16-bit text** — DONE (v1.4.0): PolyText16, ImageText16~~
+~~4. **WarpPointer** — DONE (v1.4.0): opcode 41 via CGWarpMouseCursorPosition~~
+~~5. **Extension stubs** — DONE (v1.4.0): handler code for RENDER, XFIXES, SHAPE, RANDR, Xinerama, GE (NOT yet advertised)~~
 1. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
-2. **GC function/planemask enforcement** — GXcopy is applied but some draw paths may not use GC state correctly
-3. **BIG-REQUESTS extension** — Large schematics/waveforms exceed 256KB request limit
-4. **Error handling** — Bad replies/missing errors confuse toolkits
-5. **RENDER extension** — Anti-aliased fonts make UI usable (without: bitmap fonts only)
+2. **Error handling** — Bad replies/missing errors confuse toolkits
+3. **Enable RENDER extension** — Complete Trapezoids + CompositeGlyphs, then advertise. Anti-aliased fonts make UI usable.
+4. **Enable remaining extensions** — Complete core operations for SHAPE, XFIXES, RANDR, Xinerama, GE, then advertise one at a time.
+5. **Selections/clipboard** — Copy/paste between apps (basic ops exist, needs end-to-end testing)
 6. **Container networking** — TCP + Unix socket + xauth for Docker workflow
-7. **16-bit text** — Unicode labels in Vivado UI
-8. **Selections/clipboard** — Copy/paste between apps
-9. **Font infrastructure** — Broader font matching for toolkit defaults
+7. **Font infrastructure** — Broader font matching for toolkit defaults
