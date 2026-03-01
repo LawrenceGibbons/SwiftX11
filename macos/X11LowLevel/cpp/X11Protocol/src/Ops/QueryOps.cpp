@@ -513,19 +513,15 @@ namespace x11 {
 
     if (name == "BIG-REQUESTS") {
       present = 1; major = ext::kBigReq;
-    } else if (name == "XFIXES") {
-      present = 1; major = ext::kXFIXES; first_event = ext::kXFIXES_FirstEvent;
-    } else if (name == "SHAPE") {
-      present = 1; major = ext::kSHAPE; first_event = ext::kSHAPE_FirstEvent;
-    } else if (name == "RANDR") {
-      present = 1; major = ext::kRANDR; first_event = ext::kRANDR_FirstEvent;
-    } else if (name == "XINERAMA" || name == "PANORAMIX") {
-      present = 1; major = ext::kXinerama;
-    } else if (name == "Generic Event Extension") {
-      present = 1; major = ext::kGE; first_event = ext::kGE_FirstEvent;
     } else if (name == "RENDER") {
       present = 1; major = ext::kRENDER;
     }
+    // Extensions with version-query-only stubs — NOT advertised as present
+    // until their core operations are implemented:
+    //   XFIXES (cursor/region ops), SHAPE (shape ops), RANDR (output config)
+    //   Xinerama, GE
+    // Advertising them causes clients to take code paths that rely on
+    // working ops (e.g. xeyes + SHAPE → broken rendering).
 
 #ifndef NDEBUG
     fprintf(stderr, "[QueryExtension] \"%s\" -> present=%u major=%u\n",
@@ -550,17 +546,14 @@ namespace x11 {
   void QueryOps::handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining()); // request has no extra fields we care about
 
-    // List of supported extensions
+    // Only list extensions that are fully (or minimally) functional.
+    // Stub-only extensions (XFIXES, SHAPE, RANDR, Xinerama, GE) omitted
+    // to prevent clients from taking code paths that rely on working ops.
     static const char* extensions[] = {
       "BIG-REQUESTS",
-      "XFIXES",
-      "SHAPE",
-      "RANDR",
-      "XINERAMA",
-      "Generic Event Extension",
       "RENDER",
     };
-    static constexpr uint8_t nExt = 7;
+    static constexpr uint8_t nExt = 2;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
