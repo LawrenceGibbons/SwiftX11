@@ -353,6 +353,10 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
         serveMacOSClipboard(ctx, requestor, selection, target, property, time);
         return;
       }
+#ifndef NDEBUG
+      fprintf(stderr, "[CLIPBOARD] macOS NOT newer (cc %lld <= %lld) — forwarding to X11 owner 0x%08X\n",
+              (long long)currentCC, (long long)storedCC, (unsigned)owner);
+#endif
     }
 
     // X11 client owns this selection and has newer content — forward SelectionRequest
@@ -448,15 +452,19 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
         x11_clipboard_set_text(reinterpret_cast<const char*>(p.data.data()),
                                (uint32_t)p.data.size());
 
-        // Update stored changeCount so ConvertSelection knows this push was ours
-        // (prevents interpreting our own push as an external macOS change).
-        int64_t cc = x11_clipboard_get_change_count();
-        {
-          std::lock_guard<std::mutex> lk(sSelMtx);
-          sSelMacCC[selAtom] = cc;
-        }
+        // NOTE: Do NOT update sSelMacCC here.  sSelMacCC was set at
+        // SetSelectionOwner time (before the push).  Our push bumps the
+        // macOS changeCount past that stored value, which means
+        // ConvertSelection will always see currentCC > storedCC and
+        // serve from the macOS clipboard.  Since our push put the same
+        // text there, the result is identical.  But if the user later
+        // copies in macOS (Cmd+C), the CC goes up even further, and
+        // ConvertSelection correctly serves the newer macOS content.
+        // If we updated sSelMacCC here, a user Cmd+C that happened
+        // BEFORE our push would be invisible (storedCC == currentCC).
 
 #ifndef NDEBUG
+        int64_t cc = x11_clipboard_get_change_count();
         fprintf(stderr, "[CLIPBOARD] Captured %zu bytes from X11 (sel=%u) -> macOS (cc=%lld)\n",
                 p.data.size(), (unsigned)selAtom, (long long)cc);
 #endif
