@@ -16,6 +16,10 @@ class SelectionOps {
 public:
   explicit SelectionOps(XProtoRegistrar& reg);
 
+  // Process any deferred clipboard capture requests.
+  // Called from the dispatch loop AFTER the current request is fully processed.
+  static void flushPendingCapture(XProtoContext& ctx);
+
 private:
   static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
   void handle(XProtoContext& ctx, DispatchContext& dc);
