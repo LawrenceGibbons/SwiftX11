@@ -106,21 +106,6 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
     sSelMacCC[selection] = cc;
   }
 
-  // Proactively request selection data from the new owner so we can push it
-  // to the macOS clipboard.  The owner will respond with SendEvent(SelectionNotify),
-  // which handleSendEvent intercepts and pushes to NSPasteboard.
-  if (owner != 0 && (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD)) {
-    uint8_t req[32] = {0};
-    req[0] = 30; // SelectionRequest
-    wire::wr32_le(req + 4,  time);
-    wire::wr32_le(req + 8,  owner);                    // owner
-    wire::wr32_le(req + 12, owner);                    // requestor = owner itself
-    wire::wr32_le(req + 16, selection);
-    wire::wr32_le(req + 20, atom::kUTF8_STRING);      // target
-    wire::wr32_le(req + 24, atom::kSWIFTX11_CLIP);   // property (internal)
-    (void)ctx.transport().sendEvent32(owner, req);
-  }
-
 #ifndef NDEBUG
   fprintf(stderr, "[SelectionOps] SetSelectionOwner sel=%u owner=0x%08X prev=0x%08X\n",
           (unsigned)selection, (unsigned)owner, (unsigned)prevOwner);
