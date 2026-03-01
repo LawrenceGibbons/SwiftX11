@@ -43,6 +43,7 @@ private:
   void handleCreateGC        (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 55
   void handleChangeGC        (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 56
   void handleCopyGC          (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 57
+  void handleSetDashes       (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 58
   void handleSetClipRectangles(XProtoContext& ctx, uint16_t seq, uint8_t ordering, ByteReader& br); // major 59
   void handleFreeGC          (XProtoContext& ctx, uint16_t seq, ByteReader& br);  // major 60
 

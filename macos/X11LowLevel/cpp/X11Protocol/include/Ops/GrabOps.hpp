@@ -33,6 +33,7 @@ private:
   void handleAllowEvents(XProtoContext& ctx, uint16_t seq, uint8_t mode, ByteReader& br);          // 35
   void handleGrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br);                         // 36
   void handleUngrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br);                       // 37
+  void handleChangeActivePointerGrab(XProtoContext& ctx, uint16_t seq, ByteReader& br);            // 30
 };
 
 } // namespace x11

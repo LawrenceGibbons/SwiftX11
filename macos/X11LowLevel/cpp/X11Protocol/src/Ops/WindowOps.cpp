@@ -86,8 +86,10 @@ static inline void sendInitialExposeNow(x11::XProtoContext& ctx, uint32_t wid) {
 }
   
 WindowOps::WindowOps(XProtoRegistrar& reg) {
-  reg.registerMajor(x11::opcode::CreateWindow,    &WindowOps::onMajor, this);  // CreateWindow
-  reg.registerMajor(x11::opcode::DestroyWindow,   &WindowOps::onMajor, this);  // DestroyWindow
+  reg.registerMajor(x11::opcode::CreateWindow,      &WindowOps::onMajor, this);  // CreateWindow
+  reg.registerMajor(x11::opcode::DestroyWindow,     &WindowOps::onMajor, this);  // DestroyWindow
+  reg.registerMajor(x11::opcode::DestroySubwindows, &WindowOps::onMajor, this);  // 5
+  reg.registerMajor(x11::opcode::ReparentWindow,    &WindowOps::onMajor, this);  // 7
   reg.registerMajor(x11::opcode::MapWindow,       &WindowOps::onMajor, this);  // MapWindow
   reg.registerMajor(x11::opcode::MapSubwindows,   &WindowOps::onMajor, this);  // MapSubwindows
   reg.registerMajor(x11::opcode::UnmapWindow  ,   &WindowOps::onMajor, this);  // UnmapWindow
@@ -101,8 +103,10 @@ void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case x11::opcode::CreateWindow    :  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
-    case x11::opcode::DestroyWindow   :  handleDestroyWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::CreateWindow      :  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
+    case x11::opcode::DestroyWindow     :  handleDestroyWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::DestroySubwindows :  handleDestroySubwindows(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ReparentWindow    :  handleReparentWindow(ctx, dc.seq, dc.br); return;
     case x11::opcode::MapWindow       :  handleMapWindow(ctx, dc.seq, dc.br); return;
     case x11::opcode::MapSubwindows   :  handleMapSubwindows(ctx, dc.seq, dc.br); return;
     case x11::opcode::UnmapWindow     : handleUnmapWindow(ctx, dc.seq, dc.br); return;
@@ -236,8 +240,82 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // 2) Swift/UI teardown event path
   x11_ui_push_destroy(wid);
 }
-  
-  
+
+// -------------------- DestroySubwindows (opcode 5)
+void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t wid = br.readU32();
+  br.skip(br.remaining());
+  if (wid == 0) return;
+
+  // Get all descendants in BFS order, then destroy deepest first
+  auto desc = ctx.windows().descendantsOf(wid);
+
+  // Reverse: destroy deepest children first (leaf → root)
+  for (auto it = desc.rbegin(); it != desc.rend(); ++it) {
+    const uint32_t child = *it;
+    ctx.windows().erase(child);
+    x11_ui_push_destroy(child);
+  }
+
+#if X11_TRACE_LIFECYCLE_ENABLED
+  fprintf(stderr, "[LIFECYCLE] DestroySubwindows parent=0x%08X destroyed=%zu children\n",
+          (unsigned)wid, desc.size());
+#endif
+}
+
+// -------------------- ReparentWindow (opcode 7)
+void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+  const uint32_t wid       = br.readU32();
+  const uint32_t newParent = br.readU32();
+  const int16_t  x         = (int16_t)br.readU16();
+  const int16_t  y         = (int16_t)br.readU16();
+  br.skip(br.remaining());
+  if (wid == 0) return;
+
+  // Snapshot current state
+  WindowView vw{};
+  if (!ctx.windows().snapshot(wid, vw)) return;
+  const bool wasMapped = vw.mapped;
+
+  // If mapped, unmap first (X11 spec: ReparentWindow unmaps if mapped)
+  if (wasMapped) {
+    ctx.windows().setMapped(wid, false);
+  }
+
+  // Reparent in WindowTable
+  ctx.windows().reparent(wid, newParent, x, y);
+
+  // Send ReparentNotify (event type 21) to the window itself
+  {
+    const uint16_t evSeq = ctx.transport().nextEventSeq();
+    uint8_t ev[32] = {};
+    ev[0] = 21; // ReparentNotify
+    wire::wr16_le(ev + 2, evSeq);
+    wire::wr32_le(ev + 4, wid);       // event = window itself
+    wire::wr32_le(ev + 8, wid);       // window
+    wire::wr32_le(ev + 12, newParent); // parent
+    wire::wr16_le(ev + 16, (uint16_t)x);
+    wire::wr16_le(ev + 18, (uint16_t)y);
+    ev[20] = 0; // override-redirect = false
+    (void)ctx.transport().sendEvent32(wid, ev);
+  }
+
+  // If was mapped, remap
+  if (wasMapped) {
+    ctx.windows().setMapped(wid, true);
+    fillWindowBackground(ctx, wid);
+    sendInitialExposeNow(ctx, wid);
+  }
+
+#if X11_TRACE_LIFECYCLE_ENABLED
+  fprintf(stderr, "[LIFECYCLE] ReparentWindow wid=0x%08X newParent=0x%08X xy=(%d,%d) wasMapped=%d\n",
+          (unsigned)wid, (unsigned)newParent, (int)x, (int)y, (int)wasMapped);
+#endif
+}
+
+
   void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
     const uint32_t wid = br.readU32();

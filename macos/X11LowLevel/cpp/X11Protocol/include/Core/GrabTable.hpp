@@ -44,6 +44,7 @@ public:
   void setPointerGrab(uint32_t grabWindow, bool ownerEvents, uint16_t eventMask);
   void clearPointerGrab();
   bool getPointerGrab(PointerGrab& out) const;
+  void updatePointerGrabEventMask(uint16_t eventMask);
 
   // Reset all grabs (call on session teardown — single client mode)
   void clearAll();

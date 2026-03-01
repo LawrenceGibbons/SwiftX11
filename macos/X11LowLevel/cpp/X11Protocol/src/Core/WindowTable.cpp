@@ -598,4 +598,16 @@ uint32_t WindowTable::cursor(uint32_t xid) const {
   return 0;
 }
   
+bool WindowTable::reparent(uint32_t xid, uint32_t newParent, int16_t x, int16_t y) {
+  if (xid == 0) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = map_.find(xid);
+  if (it == map_.end()) return false;
+  it->second.parent = newParent;
+  it->second.x = x;
+  it->second.y = y;
+  it->second.serial++;
+  return true;
+}
+
 } // namespace x11

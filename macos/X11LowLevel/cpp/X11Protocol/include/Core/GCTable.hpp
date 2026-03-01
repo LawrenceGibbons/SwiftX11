@@ -30,8 +30,27 @@ namespace x11 {
     bool     has_clip = false;  // false=None (no clipping), true=active clip
     // Note: has_clip=true with empty clip_rects means "clip everything"
 
+    // Line/fill/arc attributes (bits 4-13, 20-22)
+    uint16_t line_width    = 0;     // bit 4
+    uint8_t  line_style    = 0;     // bit 5  (0=Solid, 1=OnOffDash, 2=DoubleDash)
+    uint8_t  cap_style     = 1;     // bit 6  (0=NotLast, 1=Butt, 2=Round, 3=Projecting)
+    uint8_t  join_style    = 0;     // bit 7  (0=Miter, 1=Round, 2=Bevel)
+    uint8_t  fill_style    = 0;     // bit 8  (0=Solid, 1=Tiled, 2=Stippled, 3=OpaqueStippled)
+    uint8_t  fill_rule     = 0;     // bit 9  (0=EvenOdd, 1=Winding)
+    uint32_t tile          = 0;     // bit 10 (pixmap XID)
+    uint32_t stipple       = 0;     // bit 11 (pixmap XID)
+    int16_t  ts_x_origin   = 0;    // bit 12
+    int16_t  ts_y_origin   = 0;    // bit 13
+
     bool     graphics_exposures = true; // bit 16
     uint8_t  subwindow_mode = 0;        // bit 15 (0=ClipByChildren, 1=IncludeInferiors)
+
+    uint16_t dash_offset   = 0;    // bit 20
+    uint8_t  dashes_single = 4;    // bit 21 (single dash length)
+    uint8_t  arc_mode      = 0;    // bit 22 (0=Chord, 1=PieSlice)
+
+    // SetDashes (opcode 58) dash list
+    std::vector<uint8_t> dash_list = {4, 4};
   };
   
   

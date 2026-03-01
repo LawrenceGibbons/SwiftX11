@@ -45,6 +45,8 @@ private:
   void handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 40
   void handleWarpPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 41
   void handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t revertTo, ByteReader& br); // 42
+  void handleGetMotionEvents(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 39
+  void handleQueryKeymap(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 44
 };
 
 } // namespace x11

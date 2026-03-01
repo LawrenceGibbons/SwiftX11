@@ -104,6 +104,9 @@ public:
   // background pixel
   void setBackgroundPixel(uint32_t xid, uint32_t pixel_argb);
 
+  // Reparent: change parent and position
+  bool reparent(uint32_t xid, uint32_t newParent, int16_t x, int16_t y);
+
   // cursor
   void setCursor(uint32_t xid, uint32_t cursor_xid);
   uint32_t cursor(uint32_t xid) const; // optional

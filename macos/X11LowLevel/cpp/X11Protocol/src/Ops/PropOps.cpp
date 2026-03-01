@@ -132,6 +132,7 @@ PropOps::PropOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::DeleteProperty,   &PropOps::onMajor, this); // 19 DeleteProperty
   reg.registerMajor(x11::opcode::GetProperty,      &PropOps::onMajor, this); // 20 GetProperty
   reg.registerMajor(x11::opcode::ListProperties,   &PropOps::onMajor, this); // 21 ListProperties
+  reg.registerMajor(x11::opcode::RotateProperties, &PropOps::onMajor, this); // 114 RotateProperties
 }
 
 void PropOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -144,7 +145,8 @@ void PropOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::ChangeProperty: handleChangeProperty(ctx, dc.seq, dc.minor /*mode*/, dc.br); return;
     case x11::opcode::DeleteProperty: handleDeleteProperty(ctx, dc.seq, dc.br); return;
     case x11::opcode::GetProperty   : handleGetProperty(ctx, dc.seq, dc.minor /*deleteFlag*/, dc.br); return;
-    case x11::opcode::ListProperties: handleListProperties(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ListProperties:   handleListProperties(ctx, dc.seq, dc.br); return;
+    case x11::opcode::RotateProperties: handleRotateProperties(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[PropOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -373,5 +375,11 @@ void PropOps::handleListProperties(XProtoContext& ctx, uint16_t seq, ByteReader&
 }
   
   
+
+// major 114 RotateProperties (void stub)
+// Request: CARD32 window + CARD16 nProps + INT16 delta + nProps*CARD32 atoms
+void PropOps::handleRotateProperties(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+  br.skip(br.remaining());
+}
 
 } // namespace x11

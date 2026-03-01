@@ -25,6 +25,7 @@ GrabOps::GrabOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::GrabKey,       &GrabOps::onMajor, this); // 33
   reg.registerMajor(x11::opcode::UngrabKey,     &GrabOps::onMajor, this); // 34
   reg.registerMajor(x11::opcode::AllowEvents,   &GrabOps::onMajor, this); // 35
+  reg.registerMajor(x11::opcode::ChangeActivePointerGrab, &GrabOps::onMajor, this); // 30
   reg.registerMajor(x11::opcode::GrabServer,    &GrabOps::onMajor, this); // 36
   reg.registerMajor(x11::opcode::UngrabServer,  &GrabOps::onMajor, this); // 37
 }
@@ -45,6 +46,7 @@ void GrabOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::GrabKey:       handleGrabKey(ctx, dc.seq, dc.minor, dc.br); return;
     case x11::opcode::UngrabKey:     handleUngrabKey(ctx, dc.seq, dc.minor, dc.br); return;
     case x11::opcode::AllowEvents:   handleAllowEvents(ctx, dc.seq, dc.minor, dc.br); return;
+    case x11::opcode::ChangeActivePointerGrab: handleChangeActivePointerGrab(ctx, dc.seq, dc.br); return;
     case x11::opcode::GrabServer:    handleGrabServer(ctx, dc.seq, dc.br); return;
     case x11::opcode::UngrabServer:  handleUngrabServer(ctx, dc.seq, dc.br); return;
     default:
@@ -221,6 +223,22 @@ void GrabOps::handleGrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteRea
 // 37 UngrabServer (void, no-op)
 void GrabOps::handleUngrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
+}
+
+// -----------------------------
+// 30 ChangeActivePointerGrab (void)
+// Body (12 bytes): CARD32 cursor, CARD32 time, CARD16 eventMask, CARD16 pad
+// -----------------------------
+void GrabOps::handleChangeActivePointerGrab(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+  (void)br.readU32(); // cursor
+  (void)br.readU32(); // time
+  const uint16_t eventMask = br.readU16();
+  (void)br.readU16(); // pad
+  br.skip(br.remaining());
+
+  // Update the active pointer grab's event mask if a grab is active
+  ctx.grabs().updatePointerGrabEventMask(eventMask);
 }
 
 } // namespace x11

@@ -25,6 +25,8 @@ private:
   // ---- Core window ops ----
   void handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t depth, ByteReader& br);         // major 1
   void handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);                       // major 4
+  void handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteReader& br);                   // major 5
+  void handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);                      // major 7
   
   // Major 8: MapWindow (you already did)  
   void handleMapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);

@@ -81,6 +81,13 @@ bool GrabTable::getPointerGrab(PointerGrab& out) const {
   return out.active;
 }
 
+void GrabTable::updatePointerGrabEventMask(uint16_t eventMask) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (pointer_.active) {
+    pointer_.eventMask = eventMask;
+  }
+}
+
 void GrabTable::clearAll() {
   std::lock_guard<std::mutex> lock(mu_);
   passive_.clear();

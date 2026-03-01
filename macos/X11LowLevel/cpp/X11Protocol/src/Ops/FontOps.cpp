@@ -68,6 +68,8 @@ FontOps::FontOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::ListFonts,         &FontOps::onMajor, this); // ListFonts
   reg.registerMajor(x11::opcode::ListFontsWithInfo,  &FontOps::onMajor, this); // ListFontsWithInfo
   reg.registerMajor(x11::opcode::QueryBestSize   , &FontOps::onMajor, this); // QueryBestSize
+  reg.registerMajor(x11::opcode::SetFontPath     , &FontOps::onMajor, this); // 51
+  reg.registerMajor(x11::opcode::GetFontPath     , &FontOps::onMajor, this); // 52
 }
 
 void FontOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -90,6 +92,8 @@ void FontOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::ListFonts:         handleListFonts(ctx, dc.seq, dc.br); return;
     case x11::opcode::ListFontsWithInfo: handleListFontsWithInfo(ctx, dc.seq, dc.br); return;
     case x11::opcode::QueryBestSize   : handleQueryBestSize(ctx, dc.seq, dc.minor, dc.br); return;
+    case x11::opcode::SetFontPath    : handleSetFontPath(ctx, dc.seq, dc.br); return;
+    case x11::opcode::GetFontPath    : handleGetFontPath(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       return;
@@ -590,4 +594,17 @@ void FontOps::handleQueryBestSize(XProtoContext& ctx, uint16_t seq, uint8_t clas
 }
   
   
+// MARK: ---- 51: SetFontPath (void, accept and ignore) ----
+void FontOps::handleSetFontPath(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+  br.skip(br.remaining());
+}
+
+// MARK: ---- 52: GetFontPath (stub: empty list) ----
+void FontOps::handleGetFontPath(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  br.skip(br.remaining());
+  (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+    // rep[8..9] = nStrings = 0 (already zeroed)
+  });
+}
+
 } // namespace x11

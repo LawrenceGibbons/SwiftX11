@@ -43,6 +43,12 @@ private:
   // 97 QueryBestSize
   void handleQueryBestSize(XProtoContext& ctx, uint16_t seq, uint8_t class_, ByteReader& br);
 
+  // 51 SetFontPath (void)
+  void handleSetFontPath(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+
+  // 52 GetFontPath (reply)
+  void handleGetFontPath(XProtoContext& ctx, uint16_t seq, ByteReader& br);
+
 private:
   // Bring-up: track “opened” font IDs so QueryFont can succeed.
   // (Later replace with a proper FontTable and font metrics.)

@@ -31,6 +31,8 @@ namespace x11 {
     reg.registerMajor(x11::opcode::TranslateCoords,   &QueryOps::onMajor, this); // 40
     reg.registerMajor(x11::opcode::WarpPointer,        &QueryOps::onMajor, this); // 41
     reg.registerMajor(x11::opcode::SetInputFocus,      &QueryOps::onMajor, this); // 42
+    reg.registerMajor(x11::opcode::GetMotionEvents,   &QueryOps::onMajor, this); // 39
+    reg.registerMajor(x11::opcode::QueryKeymap,       &QueryOps::onMajor, this); // 44
   }
   
   void QueryOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -50,6 +52,8 @@ namespace x11 {
       case x11::opcode::TranslateCoords  : handleTranslateCoords(ctx, dc.seq, dc.br); return;
       case x11::opcode::WarpPointer      : handleWarpPointer(ctx, dc.seq, dc.br); return;
       case x11::opcode::SetInputFocus    : handleSetInputFocus(ctx, dc.seq, dc.minor, dc.br); return;
+      case x11::opcode::GetMotionEvents : handleGetMotionEvents(ctx, dc.seq, dc.br); return;
+      case x11::opcode::QueryKeymap     : handleQueryKeymap(ctx, dc.seq, dc.br); return;
       default:
         dc.br.skip(dc.br.remaining());
         ctx.tracef("[QueryOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -657,6 +661,28 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   fprintf(stderr, "[SetInputFocus] old=0x%08X new=0x%08X revertTo=%u\n",
           (unsigned)oldFocus, (unsigned)newFocus, (unsigned)revertTo);
 #endif
+}
+
+// ---- 39: GetMotionEvents (stub: empty list) ----
+void QueryOps::handleGetMotionEvents(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  br.skip(br.remaining());
+  (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+    // rep[8..11] = nEvents = 0 (already zeroed)
+  });
+}
+
+// ---- 44: QueryKeymap (stub: all keys up) ----
+void QueryOps::handleQueryKeymap(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+  br.skip(br.remaining());
+  // Reply: 32-byte header + 8 extra bytes = 40 bytes total.
+  // Keymap occupies rep[8..31] (24 bytes) + 8 extra bytes = 32 bytes of keymap.
+  std::array<uint8_t, 40> rep{};
+  rep[0] = 1; // Reply
+  rep[2] = (uint8_t)(seq & 0xFF);
+  rep[3] = (uint8_t)((seq >> 8) & 0xFF);
+  rep[4] = 2; // length in 4-byte units (8 extra bytes / 4)
+  // Bytes 8..39 = all zeros (no keys pressed)
+  (void)ctx.reply().sendReplyRaw(rep.data(), rep.size());
 }
 
 } // namespace x11

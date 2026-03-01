@@ -12,6 +12,7 @@ GCOps::GCOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::CreateGC,          &GCOps::onMajor, this); // 55
   reg.registerMajor(x11::opcode::ChangeGC,          &GCOps::onMajor, this); // 56
   reg.registerMajor(x11::opcode::CopyGC,            &GCOps::onMajor, this); // 57
+  reg.registerMajor(x11::opcode::SetDashes,          &GCOps::onMajor, this); // 58
   reg.registerMajor(x11::opcode::SetClipRectangles, &GCOps::onMajor, this); // 59
   reg.registerMajor(x11::opcode::FreeGC,            &GCOps::onMajor, this); // 60
 }
@@ -26,6 +27,7 @@ void GCOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::CreateGC:          handleCreateGC(ctx, dc.seq, dc.br); return;
     case x11::opcode::ChangeGC:          handleChangeGC(ctx, dc.seq, dc.br); return;
     case x11::opcode::CopyGC:            handleCopyGC(ctx, dc.seq, dc.br); return;
+    case x11::opcode::SetDashes:          handleSetDashes(ctx, dc.seq, dc.br); return;
     case x11::opcode::SetClipRectangles: handleSetClipRectangles(ctx, dc.seq, dc.minor, dc.br); return;
     case x11::opcode::FreeGC:            handleFreeGC(ctx, dc.seq, dc.br); return;
     default:
@@ -59,6 +61,16 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
       case 1:  st.plane_mask = val; break;
       case 2:  st.fg         = mapPixelToARGB(val); break;
       case 3:  st.bg         = mapPixelToARGB(val); break;
+      case 4:  st.line_width = (uint16_t)(val & 0xFFFFu); break;
+      case 5:  st.line_style = (uint8_t)(val & 0x03u); break;
+      case 6:  st.cap_style  = (uint8_t)(val & 0x03u); break;
+      case 7:  st.join_style = (uint8_t)(val & 0x03u); break;
+      case 8:  st.fill_style = (uint8_t)(val & 0x03u); break;
+      case 9:  st.fill_rule  = (uint8_t)(val & 0x01u); break;
+      case 10: st.tile       = val; break;
+      case 11: st.stipple    = val; break;
+      case 12: st.ts_x_origin = (int16_t)(val & 0xFFFFu); break;
+      case 13: st.ts_y_origin = (int16_t)(val & 0xFFFFu); break;
       case 14: st.font       = val; break;
       case 15: st.subwindow_mode = (uint8_t)(val & 0x01u); break;
       case 16: st.graphics_exposures = (val != 0); break;
@@ -68,6 +80,9 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
         // clip-mask: None (0) clears clip; non-zero = pixmap (not yet implemented)
         if (val == 0) { st.has_clip = false; st.clip_rects.clear(); }
         break;
+      case 20: st.dash_offset   = (uint16_t)(val & 0xFFFFu); break;
+      case 21: st.dashes_single = (uint8_t)(val & 0xFFu); break;
+      case 22: st.arc_mode      = (uint8_t)(val & 0x01u); break;
       default: break;
     }
   }
@@ -150,16 +165,48 @@ void GCOps::handleCopyGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   if (vmask & (1u << 1))  dst.plane_mask = src.plane_mask;
   if (vmask & (1u << 2))  dst.fg         = src.fg;
   if (vmask & (1u << 3))  dst.bg         = src.bg;
+  if (vmask & (1u << 4))  dst.line_width = src.line_width;
+  if (vmask & (1u << 5))  dst.line_style = src.line_style;
+  if (vmask & (1u << 6))  dst.cap_style  = src.cap_style;
+  if (vmask & (1u << 7))  dst.join_style = src.join_style;
+  if (vmask & (1u << 8))  dst.fill_style = src.fill_style;
+  if (vmask & (1u << 9))  dst.fill_rule  = src.fill_rule;
+  if (vmask & (1u << 10)) dst.tile       = src.tile;
+  if (vmask & (1u << 11)) dst.stipple    = src.stipple;
+  if (vmask & (1u << 12)) dst.ts_x_origin = src.ts_x_origin;
+  if (vmask & (1u << 13)) dst.ts_y_origin = src.ts_y_origin;
   if (vmask & (1u << 14)) dst.font       = src.font;
   if (vmask & (1u << 15)) dst.subwindow_mode = src.subwindow_mode;
   if (vmask & (1u << 16)) dst.graphics_exposures = src.graphics_exposures;
   if (vmask & (1u << 17)) dst.clip_x_origin = src.clip_x_origin;
   if (vmask & (1u << 18)) dst.clip_y_origin = src.clip_y_origin;
   if (vmask & (1u << 19)) { dst.has_clip = src.has_clip; dst.clip_rects = src.clip_rects; }
+  if (vmask & (1u << 20)) dst.dash_offset   = src.dash_offset;
+  if (vmask & (1u << 21)) dst.dashes_single = src.dashes_single;
+  if (vmask & (1u << 22)) dst.arc_mode      = src.arc_mode;
 
   GCTable::instance().upsert(dst);
   ctx.tracef("[GCOps] CopyGC src=0x%08X dst=0x%08X vmask=0x%08X\n",
              (unsigned)srcGcXid, (unsigned)dstGcXid, (unsigned)vmask);
+}
+
+// major 58 SetDashes
+void GCOps::handleSetDashes(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+  // Wire format: CARD32 gc + CARD16 dashOffset + CARD16 nDashes + nDashes bytes (padded to 4)
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t gcXid      = br.readU32();
+  const uint16_t dashOffset = br.readU16();
+  const uint16_t nDashes    = br.readU16();
+
+  auto st = GCTable::instance().getOrCreate(gcXid);
+  st.dash_offset = dashOffset;
+  st.dash_list.clear();
+  st.dash_list.reserve(nDashes);
+  for (uint16_t i = 0; i < nDashes && br.remaining() > 0; i++) {
+    st.dash_list.push_back(br.readU8());
+  }
+  br.skip(br.remaining()); // consume padding
+  GCTable::instance().upsert(st);
 }
 
 // major 59 SetClipRectangles

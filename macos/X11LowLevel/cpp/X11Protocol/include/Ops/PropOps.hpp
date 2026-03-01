@@ -30,6 +30,7 @@ private:
   void handleDeleteProperty(XProtoContext& ctx, uint16_t seq,                     ByteReader& br);
   void handleGetProperty(XProtoContext&    ctx, uint16_t seq, uint8_t deleteFlag, ByteReader& br);
   void handleListProperties(XProtoContext& ctx, uint16_t seq,                     ByteReader& br);
+  void handleRotateProperties(XProtoContext& ctx, uint16_t seq,                   ByteReader& br); // major 114
 
 };
 
