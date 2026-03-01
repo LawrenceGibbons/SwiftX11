@@ -96,7 +96,8 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
   }
 
   // If previous owner was different and non-zero, send SelectionClear (type 29)
-  if (prevOwner != 0 && prevOwner != owner) {
+  // Skip root window (1) — our clipboard proxy, no client to receive the event.
+  if (prevOwner > 1 && prevOwner != owner) {
     uint8_t ev[32] = {0};
     ev[0] = 29; // SelectionClear
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
@@ -359,7 +360,19 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
 #endif
     }
 
-    // X11 client owns this selection and has newer content — forward SelectionRequest
+    // If owner is root window (1) — this is our proxy after ClipboardCapture.
+    // Root has no client transport, so serve from macOS clipboard directly.
+    if (owner == 1) {
+#ifndef NDEBUG
+      fprintf(stderr, "[CLIPBOARD] owner=root (proxy) — serving from macOS\n");
+#endif
+      if (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD) {
+        serveMacOSClipboard(ctx, requestor, selection, target, property, time);
+        return;
+      }
+    }
+
+    // X11 client owns this selection — forward SelectionRequest
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
@@ -463,9 +476,21 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
         // If we updated sSelMacCC here, a user Cmd+C that happened
         // BEFORE our push would be invisible (storedCC == currentCC).
 
+        // Take over selection ownership: set internal owner to root
+        // window (XID 1).  Xt's XtGetSelectionValue calls
+        // XGetSelectionOwner first; if the returned XID isn't an Xt
+        // widget, Xt sends ConvertSelection to the server instead of
+        // doing a local conversion.  Root (1) is never an Xt widget,
+        // so this forces the server round-trip and lets our
+        // ConvertSelection handler serve from the macOS clipboard.
+        {
+          std::lock_guard<std::mutex> lk(sSelMtx);
+          sSelOwner[selAtom] = 1; // root window
+        }
+
 #ifndef NDEBUG
         int64_t cc = x11_clipboard_get_change_count();
-        fprintf(stderr, "[CLIPBOARD] Captured %zu bytes from X11 (sel=%u) -> macOS (cc=%lld)\n",
+        fprintf(stderr, "[CLIPBOARD] Captured %zu bytes from X11 (sel=%u) -> macOS (cc=%lld), owner→root\n",
                 p.data.size(), (unsigned)selAtom, (long long)cc);
 #endif
       }
