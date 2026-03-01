@@ -32,6 +32,11 @@ namespace x11 {
 static std::mutex sSelMtx;
 static std::unordered_map<uint32_t /*atom*/, uint32_t /*owner_wid*/> sSelOwner;
 
+// macOS changeCount at the time each selection was claimed by an X11 owner.
+// Used to detect when the macOS clipboard has been updated externally (e.g.
+// user Cmd+C in Safari) after an X11 app claimed the selection.
+static std::unordered_map<uint32_t /*atom*/, int64_t> sSelMacCC;
+
 // ---------------------------------------------------------------------------
 // Construction — register opcodes 22-25
 // ---------------------------------------------------------------------------
@@ -92,6 +97,28 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
     wire::wr32_le(ev + 8,  prevOwner);  // window
     wire::wr32_le(ev + 12, selection);  // atom
     (void)ctx.transport().sendEvent32(prevOwner, ev);
+  }
+
+  // Track macOS changeCount so ConvertSelection can detect external macOS changes
+  {
+    int64_t cc = x11_clipboard_get_change_count();
+    std::lock_guard<std::mutex> lk(sSelMtx);
+    sSelMacCC[selection] = cc;
+  }
+
+  // Proactively request selection data from the new owner so we can push it
+  // to the macOS clipboard.  The owner will respond with SendEvent(SelectionNotify),
+  // which handleSendEvent intercepts and pushes to NSPasteboard.
+  if (owner != 0 && (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD)) {
+    uint8_t req[32] = {0};
+    req[0] = 30; // SelectionRequest
+    wire::wr32_le(req + 4,  time);
+    wire::wr32_le(req + 8,  owner);                    // owner
+    wire::wr32_le(req + 12, owner);                    // requestor = owner itself
+    wire::wr32_le(req + 16, selection);
+    wire::wr32_le(req + 20, atom::kUTF8_STRING);      // target
+    wire::wr32_le(req + 24, atom::kSWIFTX11_CLIP);   // property (internal)
+    (void)ctx.transport().sendEvent32(owner, req);
   }
 
 #ifndef NDEBUG
@@ -295,7 +322,27 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
 #endif
 
   if (owner != 0) {
-    // X11 client owns this selection — forward SelectionRequest to owner
+    // Check if macOS clipboard has newer content than when the X11 owner was set.
+    // This handles the case where user Cmd+C in Safari, then pastes in xterm.
+    if (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD) {
+      int64_t storedCC = -1;
+      {
+        std::lock_guard<std::mutex> lk(sSelMtx);
+        auto it = sSelMacCC.find(selection);
+        if (it != sSelMacCC.end()) storedCC = it->second;
+      }
+      int64_t currentCC = x11_clipboard_get_change_count();
+      if (currentCC > storedCC) {
+#ifndef NDEBUG
+        fprintf(stderr, "[CLIPBOARD] macOS clipboard newer (cc %lld > %lld) — serving from macOS\n",
+                (long long)currentCC, (long long)storedCC);
+#endif
+        serveMacOSClipboard(ctx, requestor, selection, target, property, time);
+        return;
+      }
+    }
+
+    // X11 client owns this selection and has newer content — forward SelectionRequest
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
     wire::wr32_le(ev + 4,  time);
@@ -362,12 +409,14 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
     (void)ctx.transport().sendEvent32(resolvedDest, event);
   }
 
-  // If this is a SelectionNotify for CLIPBOARD, capture data for macOS bridge
+  // If this is a SelectionNotify for PRIMARY or CLIPBOARD, capture data for macOS bridge
   const uint8_t evType = event[0] & 0x7Fu;
   if (evType == 31) { // SelectionNotify
     const uint32_t selAtom = wire::rd32_le(event + 12);
     const uint32_t propAtom = wire::rd32_le(event + 20);
-    if ((selAtom == atom::kCLIPBOARD) && propAtom != 0 && resolvedDest != 0) {
+    if ((selAtom == atom::kCLIPBOARD || selAtom == atom::kPRIMARY) &&
+        propAtom != 0 && resolvedDest != 0)
+    {
       // The selection owner just set a property on the requestor.
       // Read it and push to macOS clipboard.
       PropertyTable::Prop p{};
@@ -376,8 +425,18 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
       {
         x11_clipboard_set_text(reinterpret_cast<const char*>(p.data.data()),
                                (uint32_t)p.data.size());
+
+        // Update stored changeCount so ConvertSelection knows this push was ours
+        // (prevents interpreting our own push as an external macOS change).
+        int64_t cc = x11_clipboard_get_change_count();
+        {
+          std::lock_guard<std::mutex> lk(sSelMtx);
+          sSelMacCC[selAtom] = cc;
+        }
+
 #ifndef NDEBUG
-        fprintf(stderr, "[CLIPBOARD] Captured %zu bytes from X11 -> macOS\n", p.data.size());
+        fprintf(stderr, "[CLIPBOARD] Captured %zu bytes from X11 (sel=%u) -> macOS (cc=%lld)\n",
+                p.data.size(), (unsigned)selAtom, (long long)cc);
 #endif
       }
     }

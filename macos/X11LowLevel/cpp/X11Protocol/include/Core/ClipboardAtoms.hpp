@@ -22,6 +22,7 @@ static constexpr uint32_t kMULTIPLE          = 74;
 static constexpr uint32_t kINCR              = 75;
 static constexpr uint32_t kWM_PROTOCOLS      = 76;
 static constexpr uint32_t kWM_DELETE_WINDOW  = 77;
+static constexpr uint32_t kSWIFTX11_CLIP    = 78; // internal: proactive clipboard capture property
 
 // Predefined atoms (1-68) commonly needed
 static constexpr uint32_t kPRIMARY           = 1;
@@ -30,7 +31,7 @@ static constexpr uint32_t kATOM              = 4;
 static constexpr uint32_t kSTRING            = 31;
 
 static constexpr uint32_t kFirstPreRegistered = 69;
-static constexpr uint32_t kLastPreRegistered  = 77;
+static constexpr uint32_t kLastPreRegistered  = 78;
 
 } // namespace atom
 } // namespace x11

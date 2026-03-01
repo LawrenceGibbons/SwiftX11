@@ -105,7 +105,13 @@ final class XServerController: ObservableObject {
       }
     }
 
+    // Change-count: lets C++ detect when macOS clipboard changed externally
+    let changeCounter: x11_clipboard_change_count_fn = {
+      return Int64(NSPasteboard.general.changeCount)
+    }
+
     x11_clipboard_register(getter, setter)
+    x11_clipboard_register_change_count(changeCounter)
     append("Clipboard bridge registered")
   }
   

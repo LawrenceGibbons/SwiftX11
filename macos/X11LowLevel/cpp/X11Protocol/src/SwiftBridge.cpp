@@ -281,3 +281,16 @@ extern "C" void x11_clipboard_set_text(const char* text, uint32_t len)
   if (!g_clip_set || !text || len == 0) return;
   g_clip_set(text, len);
 }
+
+static x11_clipboard_change_count_fn g_clip_cc = nullptr;
+
+extern "C" void x11_clipboard_register_change_count(x11_clipboard_change_count_fn fn)
+{
+  g_clip_cc = fn;
+}
+
+extern "C" int64_t x11_clipboard_get_change_count(void)
+{
+  if (!g_clip_cc) return -1;
+  return g_clip_cc();
+}

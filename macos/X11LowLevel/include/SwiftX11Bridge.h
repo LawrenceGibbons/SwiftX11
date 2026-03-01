@@ -211,6 +211,12 @@ uint32_t x11_clipboard_get_text(char* buf, uint32_t max_len);
 // Internal: write text to macOS clipboard.
 void x11_clipboard_set_text(const char* text, uint32_t len);
 
+// Change-count: returns NSPasteboard.general.changeCount so C++ can detect
+// when the macOS clipboard has been updated externally (by another macOS app).
+typedef int64_t (*x11_clipboard_change_count_fn)(void);
+void x11_clipboard_register_change_count(x11_clipboard_change_count_fn fn);
+int64_t x11_clipboard_get_change_count(void);
+
 // -------------------------------------------------------------------------------------
 // Version
 // -------------------------------------------------------------------------------------
