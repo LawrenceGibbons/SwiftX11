@@ -182,7 +182,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.1.0)
+### Current State (v1.2.0)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -197,6 +197,13 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Focus delivery**: `sendFocusEventDirect()` bypasses FocusChangeMask check, emulating WM SetInputFocus. Sends FocusIn to HOST on Cocoa becomeKey; toolkit (Xt) propagates to children via SetInputFocus (opcode 42).
 - **Focus guard** (v1.0.3): Stale FocusOut from destroyed non-focused windows no longer steals focus from the actual focus holder. FocusOut path guarded by `focus_host == host` check.
 - **GC clipping** (v1.1.0): SetClipRectangles (opcode 59) fully implemented. GCState stores clip_rects vector, clip_x_origin/y_origin, has_clip flag. CreateGC/ChangeGC handle clip valuemask bits 17-19, CopyGC copies clip state. All draw ops enforce clip: PolyFillRectangle uses rect-intersection via `gcClipForEachRect`, per-pixel ops (lines, arcs, text, CopyArea) use `gcPointVisible`. PutImage uses rect-level clipping for efficiency. `Utils/GCClip.hpp` provides the clip utility functions.
+- **Retained display buffer** (v1.1.1): Pre-resize frame kept for flicker-free resize.
+- **GC value mask completion** (v1.2.0): All 23 GC value mask bits (0-22) now parsed and stored in GCState. Added: line_width, line_style, cap_style, join_style, fill_style, fill_rule, tile, stipple, ts_x/y_origin, dash_offset, dashes_single, arc_mode, dash_list. CopyGC copies all fields.
+- **SetDashes** (v1.2.0, opcode 58): Stores dash offset and dash list in GCState.
+- **ReparentWindow** (v1.2.0, opcode 7): Updates parent chain in WindowTable, sends ReparentNotify event, handles unmap/remap if window was mapped.
+- **DestroySubwindows** (v1.2.0, opcode 5): Destroys all descendants in depth-first order via descendantsOf().
+- **Reply-bearing stubs** (v1.2.0): QueryKeymap (44, all-zeros), GetMotionEvents (39, empty list), GetFontPath (52, empty list) — prevent XCB sequence desync.
+- **Void stubs** (v1.2.0): SetFontPath (51), ChangeActivePointerGrab (30, updates active grab event mask), RotateProperties (114).
 - **Button routing**: picks deepest mapped child before `InputState::button()`, checks passive grabs (GrabButton), correctly sets `drag_xid` to child window
 - **Motion state**: `toX11State()` used everywhere (button bits at X11 positions 8-12)
 - **Key event modifiers** (v1.0.1): `sendKeyEvent()` uses `toX11State()` for correct modifier mapping (was previously using raw `buttons | mods` which mapped Option→Control, Control→Shift)
@@ -213,13 +220,18 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
   - Remaining globals: `g_daemon` (process-lifetime), `g_daemon_ptr` (bridge access), `g_ctx/g_ev/g_q` (NotifyBridge, set per-session)
 - **Display :1**: SwiftX11 runs on display :1 (TCP port 6001) to avoid conflict with XQuartz on :0. `~/.profile` sets `DISPLAY=127.0.0.1:1`.
 
+### Known Issues (v1.2.0)
+- **xcalc missing button outlines**: PolyRectangle/PolyLine draw ops apply GC function correctly, but outlines not visible. Likely GC color or ROP issue — needs runtime GC state tracing during xcalc rendering.
+- **xcalc all buttons send "2"**: `computeEventXYFromHostLocal()` may be failing for xcalc's widget tree, falling back to host-local coords. Needs investigation of button event coordinate translation.
+- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Phase 3 font infrastructure issue. Xlib's XCreateFontSet() expects multiple charset fonts; SwiftX11 has minimal BDF coverage.
+- **xterm occasional uncleared pixels at bottom**: Stale pixels visible at bottom of xterm window in some cases. May be a damage rect or ClearArea issue.
+
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
-1. **GC clipping (SetClipRectangles)** — drawing bleeds outside widget bounds without this
-2. **Missing reply-bearing opcodes** — prevent XCB sequence crashes
-3. **ReparentWindow** — GTK reparents widgets internally
-4. **BIG-REQUESTS extension** — large schematics/waveforms exceed 256KB
-5. **Error handling** — proper X11 error generation
-6. **RENDER extension** — anti-aliased fonts, alpha compositing
-7. **Container networking** — TCP + Unix socket for Docker workflow
-8. **16-bit text, selections/clipboard, font infrastructure**
+1. **xcalc/xclock debugging** — investigate missing outlines, button-always-sends-2, stale pixels
+2. **GC function/planemask enforcement** — GXcopy is applied but some draw paths may not use GC state correctly
+3. **BIG-REQUESTS extension** — large schematics/waveforms exceed 256KB
+4. **Error handling** — proper X11 error generation
+5. **RENDER extension** — anti-aliased fonts, alpha compositing
+6. **Container networking** — TCP + Unix socket for Docker workflow
+7. **16-bit text, selections/clipboard, font infrastructure**

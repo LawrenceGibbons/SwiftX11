@@ -69,21 +69,22 @@ GC function, planemask, and clipping are used by every toolkit.
 - [ ] **GC function (GXcopy, GXxor, etc.)**: Apply in all draw paths (PolyFillRectangle, CopyArea, text ops, etc.). Currently everything is GXcopy-only.
 - [ ] **GC planemask**: Apply in all draw paths (currently ignored).
 - [x] **SetClipRectangles (opcode 59)**: GC clip region stored as vector of ClipRect in GCState. Parsed from wire format with clip-x-origin, clip-y-origin.
-- [ ] **SetDashes (opcode 58)**: Implement dash pattern for line drawing. Used for selection rectangles, focus indicators.
+- [x] **SetDashes (opcode 58)**: Dash offset and dash list stored in GCState (v1.2.0). Rendering with dashes not yet implemented.
 - [x] **GC clip enforcement**: All draw ops check GC clip rects (PolyFillRectangle uses rect-intersection, per-pixel ops use gcPointVisible). CreateGC/ChangeGC handle clip bits 17-19, CopyGC copies clip state.
-- [ ] **GC fill-style**: Support Solid, Tiled, OpaqueStippled, Stippled fills.
-- [ ] **GC tile/stipple**: Store tile/stipple pixmap in GC, apply during fills.
+- [x] **GC value mask bits 4-13, 20-22**: All 23 GC value mask bits now parsed from wire and stored in GCState (v1.2.0): line_width, line_style, cap_style, join_style, fill_style, fill_rule, tile, stipple, ts_x/y_origin, dash_offset, dashes_single, arc_mode. CopyGC copies all fields.
+- [ ] **GC fill-style rendering**: Support Solid, Tiled, OpaqueStippled, Stippled fills (values stored, rendering not yet implemented).
+- [ ] **GC tile/stipple rendering**: Apply tile/stipple pixmap during fills (XIDs stored, rendering not yet implemented).
 
 ### 1.2 Missing Opcodes (HIGH — crash prevention)
 Unhandled opcodes log warnings but don't send replies, causing XCB sequence desync for reply-bearing requests. Java/GTK may use any of these.
-- [ ] **ReparentWindow (opcode 7)**: GTK reparents widgets internally. Must update parent chain in WindowTable and adjust geometry.
-- [ ] **ChangeActivePointerGrab (opcode 30)**: Modify event mask during active grab. Used by GTK drag-and-drop.
-- [ ] **QueryKeymap (opcode 44)**: Returns 32-byte keymap vector. Java checks this. Return all-zeros as stub.
-- [ ] **GetMotionEvents (opcode 39)**: Returns motion history. Return empty list as stub (reply required).
-- [ ] **SetFontPath (opcode 51)**: Accept and ignore (void, no reply needed).
-- [ ] **GetFontPath (opcode 52)**: Return empty font path list (reply required).
-- [ ] **DestroySubwindows (opcode 5)**: Destroy all children of a window.
-- [ ] **RotateProperties (opcode 114)**: Rotate property list. Accept and process or stub.
+- [x] **ReparentWindow (opcode 7)**: Updates parent chain in WindowTable, sends ReparentNotify event, handles unmap/remap (v1.2.0).
+- [x] **ChangeActivePointerGrab (opcode 30)**: Updates active grab event mask via GrabTable (v1.2.0).
+- [x] **QueryKeymap (opcode 44)**: Returns 32 zero bytes (no keys pressed) (v1.2.0).
+- [x] **GetMotionEvents (opcode 39)**: Returns empty event list (v1.2.0).
+- [x] **SetFontPath (opcode 51)**: Accepts and ignores (v1.2.0).
+- [x] **GetFontPath (opcode 52)**: Returns empty font path list (v1.2.0).
+- [x] **DestroySubwindows (opcode 5)**: Destroys all descendants in depth-first order (v1.2.0).
+- [x] **RotateProperties (opcode 114)**: Accepts and ignores (stub) (v1.2.0).
 
 ### 1.3 16-bit Text (MEDIUM — Unicode support)
 Java/GTK use 16-bit text for internationalized strings.
@@ -320,13 +321,14 @@ xcalc &
 
 ## Priority Order for Vivado/Vitis
 
-1. **GC clipping (SetClipRectangles)** — Without this, drawing bleeds outside widget bounds
-2. **Missing reply-bearing opcodes (QueryKeymap, GetMotionEvents, GetFontPath)** — Prevent XCB sequence crashes
-3. **ReparentWindow** — GTK reparents widgets internally
-4. **BIG-REQUESTS extension** — Large schematics/waveforms exceed 256KB request limit
-5. **Error handling** — Bad replies/missing errors confuse toolkits
-6. **RENDER extension** — Anti-aliased fonts make UI usable (without: bitmap fonts only)
-7. **Container networking** — TCP + Unix socket + xauth for Docker workflow
-8. **16-bit text** — Unicode labels in Vivado UI
-9. **Selections/clipboard** — Copy/paste between apps
-10. **Font infrastructure** — Broader font matching for toolkit defaults
+~~1. **GC clipping (SetClipRectangles)** — DONE (v1.1.0)~~
+~~2. **Missing reply-bearing opcodes** — DONE (v1.2.0)~~
+~~3. **ReparentWindow** — DONE (v1.2.0)~~
+1. **xcalc/xclock debugging** — Missing button outlines, button-always-sends-2, investigate GC/color state
+2. **BIG-REQUESTS extension** — Large schematics/waveforms exceed 256KB request limit
+3. **Error handling** — Bad replies/missing errors confuse toolkits
+4. **RENDER extension** — Anti-aliased fonts make UI usable (without: bitmap fonts only)
+5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
+6. **16-bit text** — Unicode labels in Vivado UI
+7. **Selections/clipboard** — Copy/paste between apps
+8. **Font infrastructure** — Broader font matching for toolkit defaults
