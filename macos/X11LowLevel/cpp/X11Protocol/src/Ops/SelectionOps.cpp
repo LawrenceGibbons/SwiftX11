@@ -8,8 +8,10 @@
 
 #include "Ops/SelectionOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Core/XProtoServer.hpp"
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
+#include "Core/HostCommandQueue.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
@@ -24,6 +26,9 @@ extern "C" {
 #include "SwiftX11Bridge.h"
 }
 
+// Access the server's HostCommandQueue for deferred clipboard capture.
+extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
+
 namespace x11 {
 
 // ---------------------------------------------------------------------------
@@ -37,17 +42,6 @@ static std::unordered_map<uint32_t /*atom*/, uint32_t /*owner_wid*/> sSelOwner;
 // user Cmd+C in Safari) after an X11 app claimed the selection.
 static std::unordered_map<uint32_t /*atom*/, int64_t> sSelMacCC;
 
-// Deferred clipboard capture: set by handleSetSelectionOwner, processed by
-// flushPendingCapture after the request dispatch completes.  Sending the
-// SelectionRequest inside handleSetSelectionOwner caused xterm to disconnect
-// (event injected during request processing).
-struct PendingCapture {
-  bool     active    = false;
-  uint32_t owner     = 0;
-  uint32_t selection = 0;
-  uint32_t time      = 0;
-};
-static PendingCapture sPendingCapture;
 
 // ---------------------------------------------------------------------------
 // Construction — register opcodes 22-25
@@ -118,10 +112,20 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
     sSelMacCC[selection] = cc;
   }
 
-  // Schedule deferred clipboard capture (processed by flushPendingCapture
-  // after this request dispatch completes).
+  // Queue a deferred clipboard capture via HostCommandQueue.
+  // This will be processed on the NEXT poll iteration in drainHostCommands,
+  // which activates the owning client in a separate cycle — avoiding the
+  // fatal IO error that occurs when sending a SelectionRequest to a client
+  // during its own request processing.
   if (owner != 0 && (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD)) {
-    sPendingCapture = { true, owner, selection, time };
+    auto* srv = x11_proto_bridge_get_server();
+    if (srv) {
+      x11::HostCmd hc{};
+      hc.type = x11::HostCmdType::ClipboardCapture;
+      hc.xid = owner;
+      hc.keyCode = selection; // reuse keyCode field for selection atom
+      srv->hostCmds().push(hc);
+    }
   }
 
 #ifndef NDEBUG
@@ -451,31 +455,5 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// Deferred clipboard capture — called from the dispatch loop after the
-// current request is fully processed.  Sends SelectionRequest to the
-// new owner so the selection data can be captured and pushed to macOS.
-// ---------------------------------------------------------------------------
-void SelectionOps::flushPendingCapture(XProtoContext& ctx) {
-  if (!sPendingCapture.active) return;
-
-  const auto pc = sPendingCapture;
-  sPendingCapture.active = false;
-
-  uint8_t req[32] = {0};
-  req[0] = 30; // SelectionRequest
-  wire::wr32_le(req + 4,  pc.time);
-  wire::wr32_le(req + 8,  pc.owner);                   // owner
-  wire::wr32_le(req + 12, pc.owner);                   // requestor = owner itself
-  wire::wr32_le(req + 16, pc.selection);
-  wire::wr32_le(req + 20, atom::kUTF8_STRING);        // target
-  wire::wr32_le(req + 24, atom::kSWIFTX11_CLIP);     // property (internal)
-  (void)ctx.transport().sendEvent32(pc.owner, req);
-
-#ifndef NDEBUG
-  fprintf(stderr, "[CLIPBOARD] Deferred SelectionRequest sel=%u owner=0x%08X\n",
-          (unsigned)pc.selection, (unsigned)pc.owner);
-#endif
-}
 
 } // namespace x11

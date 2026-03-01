@@ -39,6 +39,8 @@
 #include "Damage.hpp"
 #include "Core/HostCommandQueue.hpp"
 #include "Core/XClient.hpp"
+#include "Core/ClipboardAtoms.hpp"
+#include "Utils/WireLE.hpp"
 #include "Utils/TraceDefs.hpp"
 
 using x11::HostCmdType;
@@ -813,6 +815,35 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                        c.isDown != 0,
                                        x11_kc,
                                        ctx.input().buttons, c.modsMask);
+          break;
+        }
+
+        // ------------------- ClipboardCapture
+        // Proactive selection request: when an X11 app claims PRIMARY or
+        // CLIPBOARD ownership, we send it a SelectionRequest so it writes
+        // its data to a property we can capture and push to macOS pasteboard.
+        // This runs on a separate poll iteration via drainHostCommands with
+        // the owning client properly activated — avoiding the fatal IO error
+        // that occurred when sending during the same readAndDispatch call.
+        case HostCmdType::ClipboardCapture: {
+          const uint32_t owner     = c.xid;
+          const uint32_t selection = c.keyCode; // selection atom stored in keyCode
+          if (!owner) break;
+
+          uint8_t ev[32] = {0};
+          ev[0] = 30; // SelectionRequest
+          x11::wire::wr32_le(ev + 4,  0); // time = CurrentTime
+          x11::wire::wr32_le(ev + 8,  owner);                    // owner
+          x11::wire::wr32_le(ev + 12, owner);                    // requestor = owner
+          x11::wire::wr32_le(ev + 16, selection);
+          x11::wire::wr32_le(ev + 20, x11::atom::kUTF8_STRING); // target
+          x11::wire::wr32_le(ev + 24, x11::atom::kSWIFTX11_CLIP); // property
+          (void)ctx.transport().sendEvent32(owner, ev);
+
+#ifndef NDEBUG
+          fprintf(stderr, "[CLIPBOARD] HostCmd SelectionRequest sel=%u owner=0x%08X\n",
+                  (unsigned)selection, (unsigned)owner);
+#endif
           break;
         }
 

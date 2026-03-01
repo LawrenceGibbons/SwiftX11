@@ -32,7 +32,6 @@
 #include "Core/InputState.hpp"
 #include "Ops/EventOps.hpp"
 #include "Transport/X11Setup.hpp"
-#include "Ops/SelectionOps.hpp"
 
 extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
 extern "C" void x11_cpp_notify_shutdown(void);
@@ -443,11 +442,6 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // those are drained separately in drainHostCommands with correct
   // per-client activation).
   server_->flushNotifyQueue();
-
-  // Send deferred clipboard capture SelectionRequest (if SetSelectionOwner
-  // flagged one).  Must happen after dispatch + notify flush, while the
-  // client is still activated.
-  x11::SelectionOps::flushPendingCapture(server_->ctx());
 
   deactivateClient();
 
