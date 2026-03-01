@@ -80,8 +80,8 @@ GC function, planemask, and clipping are used by every toolkit.
 - [x] **SetDashes (opcode 58)**: Dash offset and dash list stored in GCState (v1.2.0). Rendering with dashes not yet implemented.
 - [x] **GC clip enforcement**: All draw ops check GC clip rects (PolyFillRectangle uses rect-intersection, per-pixel ops use gcPointVisible). CreateGC/ChangeGC handle clip bits 17-19, CopyGC copies clip state.
 - [x] **GC value mask bits 4-13, 20-22**: All 23 GC value mask bits now parsed from wire and stored in GCState (v1.2.0): line_width, line_style, cap_style, join_style, fill_style, fill_rule, tile, stipple, ts_x/y_origin, dash_offset, dashes_single, arc_mode. CopyGC copies all fields.
-- [ ] **GC fill-style rendering**: Support Solid, Tiled, OpaqueStippled, Stippled fills (values stored, rendering not yet implemented).
-- [ ] **GC tile/stipple rendering**: Apply tile/stipple pixmap during fills (XIDs stored, rendering not yet implemented).
+- [x] **GC fill-style rendering**: FillSolid/FillTiled/FillStippled/FillOpaqueStippled implemented in PolyFillRectangle, FillPoly, PolyFillArc via FillStyle.hpp helper (v1.5.0).
+- [x] **GC tile/stipple rendering**: Tile pixmap sampled at (px-ts_x_origin)%tile_w, stipple bit-tested at (px-ts_x_origin)%stip_w with proper modulo wrapping (v1.5.0).
 
 ### 1.2 Missing Opcodes (HIGH — crash prevention)
 Unhandled opcodes log warnings but don't send replies, causing XCB sequence desync for reply-bearing requests. Java/GTK may use any of these.
@@ -98,14 +98,14 @@ Unhandled opcodes log warnings but don't send replies, causing XCB sequence desy
 Java/GTK use 16-bit text for internationalized strings.
 - [x] **PolyText16 (opcode 75)**: 16-bit character strings via CHAR2B encoding, supports font changes (v1.4.0).
 - [x] **ImageText16 (opcode 77)**: 16-bit text with opaque background fill (v1.4.0).
-- [ ] **QueryTextExtents**: Verify 16-bit character extent calculations work.
+- [x] **QueryTextExtents**: Already handles 16-bit CHAR2B characters correctly (verified v1.5.0).
 
 ### 1.4 Selections / Clipboard (MEDIUM — copy/paste)
 Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with macOS.
-- [ ] **Selection request/notify flow**: Verify ConvertSelection/SelectionNotify works end-to-end between X11 clients.
-- [ ] **CLIPBOARD atom**: Register and handle CLIPBOARD in addition to PRIMARY.
-- [ ] **TARGETS**: Support TARGETS conversion (advertise available data types).
-- [ ] **macOS clipboard bridge**: Bridge NSPasteboard <-> X11 CLIPBOARD selection for cross-environment copy/paste.
+- [x] **Selection request/notify flow**: ConvertSelection/SelectionNotify works end-to-end. macOS pasteboard served when no X11 owner (v1.5.0).
+- [x] **CLIPBOARD atom**: Pre-registered as atom 69 along with TARGETS(70), UTF8_STRING(71), TIMESTAMP(72), TEXT(73), MULTIPLE(74), INCR(75), WM_PROTOCOLS(76), WM_DELETE_WINDOW(77) (v1.5.0).
+- [x] **TARGETS**: ConvertSelection for TARGETS returns list of supported types (UTF8_STRING, STRING, TEXT, TIMESTAMP) (v1.5.0).
+- [x] **macOS clipboard bridge**: Swift registers get/set callbacks via x11_clipboard_register(). C++ reads NSPasteboard for CLIPBOARD/PRIMARY ConvertSelection when no X11 owner. X11→macOS sync intercepts SelectionNotify in SendEvent (v1.5.0).
 
 ### 1.5 WarpPointer (MEDIUM — stub upgrade)
 - [x] **WarpPointer (opcode 41)**: Implemented via UICommandQueue → Swift → CGWarpMouseCursorPosition (v1.4.0). Supports root-relative, window-relative, and delta warps.
@@ -351,10 +351,11 @@ xcalc &
 ~~3. **16-bit text** — DONE (v1.4.0): PolyText16, ImageText16~~
 ~~4. **WarpPointer** — DONE (v1.4.0): opcode 41 via CGWarpMouseCursorPosition~~
 ~~5. **Extension stubs** — DONE (v1.4.0): handler code for RENDER, XFIXES, SHAPE, RANDR, Xinerama, GE (NOT yet advertised)~~
+~~6. **Selections/clipboard** — DONE (v1.5.0): macOS ↔ X11 clipboard bridge, pre-registered atoms, TARGETS support~~
+~~7. **GC fill-style rendering** — DONE (v1.5.0): Tiled/Stippled/OpaqueStippled fills in PolyFillRectangle/FillPoly/PolyFillArc~~
 1. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
 2. **Error handling** — Bad replies/missing errors confuse toolkits
 3. **Enable RENDER extension** — Complete Trapezoids + CompositeGlyphs, then advertise. Anti-aliased fonts make UI usable.
 4. **Enable remaining extensions** — Complete core operations for SHAPE, XFIXES, RANDR, Xinerama, GE, then advertise one at a time.
-5. **Selections/clipboard** — Copy/paste between apps (basic ops exist, needs end-to-end testing)
-6. **Container networking** — TCP + Unix socket + xauth for Docker workflow
-7. **Font infrastructure** — Broader font matching for toolkit defaults
+5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
+6. **Font infrastructure** — Broader font matching for toolkit defaults

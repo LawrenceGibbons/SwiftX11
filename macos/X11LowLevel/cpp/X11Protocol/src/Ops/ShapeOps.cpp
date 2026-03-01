@@ -26,6 +26,7 @@
 #include "Damage.hpp"
 #include "Utils/TraceDefs.hpp"
 #include "Utils/GCClip.hpp"
+#include "Utils/FillStyle.hpp"
 
 namespace x11 {
 
@@ -404,6 +405,11 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
   const uint32_t pm = gc.plane_mask;
   const bool fastFill = (fn == 3) && ((pm & 0x00FFFFFFu) == 0x00FFFFFFu);
 
+  // Fill-style cache
+  x11::FillStyleCache fsc{};
+  x11::fillStyleSetup(fsc, gc, ctx.pixmaps());
+  const bool solidFill = x11::fillStyleIsSolid(fsc);
+
   // Find bounding box
   int32_t minY = pts[0].y, maxY = pts[0].y;
   for (const auto& p : pts) {
@@ -444,8 +450,15 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
       uint32_t* row = dst.pixels32 + (size_t)scanY * (size_t)dst.stridePixels;
       for (int32_t xx = xL; xx <= xR; xx++) {
         if (gc.has_clip && !x11::gcPointVisible(gc, xx, scanY)) continue;
-        if (fastFill) row[xx] = fg;
-        else          row[xx] = x11_apply_rop_argb(row[xx], fg, fn, pm);
+        if (solidFill) {
+          if (fastFill) row[xx] = fg;
+          else          row[xx] = x11_apply_rop_argb(row[xx], fg, fn, pm);
+        } else {
+          auto fr = x11::fillStyleResolve(fsc, xx, scanY);
+          if (!fr.draw) continue;
+          if (fastFill) row[xx] = fr.color;
+          else          row[xx] = x11_apply_rop_argb(row[xx], fr.color, fn, pm);
+        }
       }
     }
   }
@@ -490,6 +503,11 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     const uint8_t  fn   = (uint8_t)(gst.function & 0x0Fu);
     const uint32_t pm24 = (gst.plane_mask & 0x00FFFFFFu);
     const bool fastFill = (fn == 3 /*GXcopy*/) && (pm24 == 0x00FFFFFFu);
+
+    // Fill-style cache for tiled/stippled fills
+    x11::FillStyleCache fsc{};
+    x11::fillStyleSetup(fsc, gst, ctx.pixmaps());
+    const bool solidFill = x11::fillStyleIsSolid(fsc);
 
     // Track whether we actually wrote anything (for damage) and bounding box.
     bool wroteAnything = false;
@@ -569,12 +587,23 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 
         for (int32_t y = fy0; y < fy1; y++) {
           uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
-          if (fastFill) {
+          if (solidFill && fastFill) {
             for (int32_t x = fx0; x < fx1; x++) row[(size_t)x] = fgOpaque;
-          } else {
+          } else if (solidFill) {
             for (int32_t x = fx0; x < fx1; x++) {
               uint32_t out = x11_apply_rop_argb(row[(size_t)x], fgOpaque, gst.function, gst.plane_mask);
               row[(size_t)x] = (out & 0x00FFFFFFu) | 0xFF000000u;
+            }
+          } else {
+            for (int32_t x = fx0; x < fx1; x++) {
+              auto fr = x11::fillStyleResolve(fsc, x, y);
+              if (!fr.draw) continue;
+              if (fastFill) {
+                row[(size_t)x] = fr.color;
+              } else {
+                uint32_t out = x11_apply_rop_argb(row[(size_t)x], fr.color, gst.function, gst.plane_mask);
+                row[(size_t)x] = (out & 0x00FFFFFFu) | 0xFF000000u;
+              }
             }
           }
         }
@@ -625,6 +654,11 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     const uint32_t pm = gst.plane_mask;
     const bool fastFill = (fn == 3) && ((pm & 0x00FFFFFFu) == 0x00FFFFFFu);
 
+    // Fill-style cache
+    x11::FillStyleCache fsc{};
+    x11::fillStyleSetup(fsc, gst, ctx.pixmaps());
+    const bool solidFill = x11::fillStyleIsSolid(fsc);
+
     const int dstW = (int)dst.w;
     const int dstH = (int)dst.h;
     const int dstStride = (int)dst.stridePixels;
@@ -671,9 +705,17 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
           }
 
           if (gst.has_clip && !x11::gcPointVisible(gst, px, py)) continue;
-          uint32_t& d = dstPixels[(size_t)py * (size_t)dstStride + (size_t)px];
-          if (fastFill) d = fg;
-          else          d = x11_apply_rop_argb(d, fg, fn, pm);
+          if (solidFill) {
+            uint32_t& d = dstPixels[(size_t)py * (size_t)dstStride + (size_t)px];
+            if (fastFill) d = fg;
+            else          d = x11_apply_rop_argb(d, fg, fn, pm);
+          } else {
+            auto fr = x11::fillStyleResolve(fsc, px, py);
+            if (!fr.draw) continue;
+            uint32_t& d = dstPixels[(size_t)py * (size_t)dstStride + (size_t)px];
+            if (fastFill) d = fr.color;
+            else          d = x11_apply_rop_argb(d, fr.color, fn, pm);
+          }
         }
       }
     }

@@ -1,7 +1,7 @@
 # SwiftX11 — Session Handoff Prompt
 
 **Date**: 2026-03-01
-**Version**: v1.4.0
+**Version**: v1.5.0
 **Branch**: `develop++`
 
 ---
@@ -68,6 +68,24 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 
 **Critical lesson learned**: Do NOT advertise extensions via QueryExtension until core operations are complete. Advertising SHAPE caused xeyes to use shape clipping (broken). Advertising RENDER caused xeyes to use Composite (broken — missing Trapezoids). Extensions must be enabled one at a time with testing.
 
+### v1.5.0: Phase 1 Completion — Clipboard Bridge + GC Fill-Styles
+
+**Selections/clipboard bridge** (macOS ↔ X11):
+- Pre-registered atoms 69-77: CLIPBOARD, TARGETS, UTF8_STRING, TIMESTAMP, TEXT, MULTIPLE, INCR, WM_PROTOCOLS, WM_DELETE_WINDOW
+- ClipboardAtoms.hpp defines well-known atom constants
+- PropertyTable.hpp extracted to shared header for access from SelectionOps
+- Swift registers get/set callbacks via `x11_clipboard_register()` from XServerController
+- macOS→X11: ConvertSelection reads NSPasteboard when no X11 selection owner (CLIPBOARD or PRIMARY)
+- X11→macOS: SendEvent intercepts SelectionNotify for CLIPBOARD, reads property data, writes to NSPasteboard
+- TARGETS conversion returns list of supported types (UTF8_STRING, STRING, TEXT, TIMESTAMP)
+
+**GC fill-style rendering** (FillSolid/FillTiled/FillStippled/FillOpaqueStippled):
+- FillStyle.hpp utility: FillStyleCache + fillStyleSetup() + fillStyleResolve() per-pixel
+- Tile: samples 32bpp tile pixmap at `((px - ts_x_origin) % tile_w, (py - ts_y_origin) % tile_h)`
+- Stipple: tests 1bpp stipple bitmap bit; FillStippled skips bg pixels, FillOpaqueStippled draws bg
+- Modified: PolyFillRectangle, FillPoly, PolyFillArc — all use fill-style-aware rendering
+- Solid fill fast path preserved (zero overhead when fill_style==0)
+
 ---
 
 ## Known Issues (deferred)
@@ -120,7 +138,7 @@ xeyes                      # pointer tracking, multi-client
 xcalc                      # button outlines + routing test
 xclock -analog             # Xaw widgets, arcs, timer events
 
-# Verify version banner in console: "SwiftX11 v1.4.0"
+# Verify version banner in console: "SwiftX11 v1.5.0"
 ```
 
 ---

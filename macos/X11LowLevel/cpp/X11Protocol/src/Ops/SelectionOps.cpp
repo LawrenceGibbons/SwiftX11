@@ -2,26 +2,38 @@
 //  SelectionOps.cpp
 //  X11LowLevel
 //
+//  Handles selection opcodes 22-25 (SetSelectionOwner, GetSelectionOwner,
+//  ConvertSelection, SendEvent) with macOS clipboard bridge for CLIPBOARD.
+//
 
 #include "Ops/SelectionOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Core/PropertyTable.hpp"
+#include "Core/ClipboardAtoms.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
+
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
 
 namespace x11 {
 
 // ---------------------------------------------------------------------------
-// Static selection table: atom → owner window XID
+// Static selection table: atom -> owner window XID
 // ---------------------------------------------------------------------------
 static std::mutex sSelMtx;
 static std::unordered_map<uint32_t /*atom*/, uint32_t /*owner_wid*/> sSelOwner;
 
 // ---------------------------------------------------------------------------
-// Construction — register opcodes 22–25
+// Construction — register opcodes 22-25
 // ---------------------------------------------------------------------------
 SelectionOps::SelectionOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::SetSelectionOwner, &SelectionOps::onMajor, this); // 22
@@ -82,9 +94,9 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
     (void)ctx.transport().sendEvent32(prevOwner, ev);
   }
 
-#ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[SelectionOps] SetSelectionOwner sel=0x%08X owner=0x%08X prev=0x%08X\n",
-             (unsigned)selection, (unsigned)owner, (unsigned)prevOwner);
+#ifndef NDEBUG
+  fprintf(stderr, "[SelectionOps] SetSelectionOwner sel=%u owner=0x%08X prev=0x%08X\n",
+          (unsigned)selection, (unsigned)owner, (unsigned)prevOwner);
 #endif
 }
 
@@ -113,9 +125,142 @@ void SelectionOps::handleGetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
   });
 
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[SelectionOps] GetSelectionOwner sel=0x%08X → owner=0x%08X\n",
+  ctx.tracef("[SelectionOps] GetSelectionOwner sel=%u -> owner=0x%08X\n",
              (unsigned)selection, (unsigned)owner);
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// Helper: serve CLIPBOARD from macOS pasteboard (no X11 owner)
+// Writes property on requestor window and sends SelectionNotify.
+// Returns true if handled, false if clipboard bridge unavailable.
+// ---------------------------------------------------------------------------
+static bool serveMacOSClipboard(XProtoContext& ctx,
+                                uint32_t requestor,
+                                uint32_t selection,
+                                uint32_t target,
+                                uint32_t property,
+                                uint32_t time)
+{
+  // If target == TARGETS, return list of supported target atoms
+  if (target == atom::kTARGETS) {
+    // Write TARGETS list as CARD32 array (format=32)
+    const uint32_t targets[] = {
+      atom::kTARGETS,
+      atom::kUTF8_STRING,
+      atom::kSTRING,
+      atom::kTEXT,
+      atom::kTIMESTAMP,
+    };
+    const uint32_t nTargets = sizeof(targets) / sizeof(targets[0]);
+
+    // Encode as little-endian CARD32 array
+    std::vector<uint8_t> payload(nTargets * 4);
+    for (uint32_t i = 0; i < nTargets; i++) {
+      wire::wr32_le(payload.data() + i * 4, targets[i]);
+    }
+
+    PropertyTable::instance().setReplace(
+      requestor, property,
+      atom::kATOM, // type = ATOM
+      32,          // format = 32
+      payload.data(), payload.size()
+    );
+
+    // Send SelectionNotify
+    uint8_t ev[32] = {0};
+    ev[0] = 31; // SelectionNotify
+    wire::wr32_le(ev + 4,  time);
+    wire::wr32_le(ev + 8,  requestor);
+    wire::wr32_le(ev + 12, selection);
+    wire::wr32_le(ev + 16, target);
+    wire::wr32_le(ev + 20, property);
+    (void)ctx.transport().sendEvent32(requestor, ev);
+
+#ifndef NDEBUG
+    fprintf(stderr, "[CLIPBOARD] Served TARGETS (%u atoms) to 0x%08X\n",
+            nTargets, (unsigned)requestor);
+#endif
+    return true;
+  }
+
+  // If target == TIMESTAMP, return CurrentTime (0)
+  if (target == atom::kTIMESTAMP) {
+    uint8_t ts[4] = {0};
+    wire::wr32_le(ts, 0); // CurrentTime
+    PropertyTable::instance().setReplace(
+      requestor, property,
+      atom::kTIMESTAMP, 32, ts, 4
+    );
+
+    uint8_t ev[32] = {0};
+    ev[0] = 31;
+    wire::wr32_le(ev + 4,  time);
+    wire::wr32_le(ev + 8,  requestor);
+    wire::wr32_le(ev + 12, selection);
+    wire::wr32_le(ev + 16, target);
+    wire::wr32_le(ev + 20, property);
+    (void)ctx.transport().sendEvent32(requestor, ev);
+    return true;
+  }
+
+  // For UTF8_STRING, STRING, or TEXT — serve text from macOS pasteboard
+  if (target == atom::kUTF8_STRING ||
+      target == atom::kSTRING ||
+      target == atom::kTEXT)
+  {
+    // Read macOS clipboard
+    char buf[65536];
+    uint32_t len = x11_clipboard_get_text(buf, sizeof(buf));
+
+    if (len == 0) {
+      // Clipboard empty or no bridge — send SelectionNotify with property=None
+      uint8_t ev[32] = {0};
+      ev[0] = 31;
+      wire::wr32_le(ev + 4,  time);
+      wire::wr32_le(ev + 8,  requestor);
+      wire::wr32_le(ev + 12, selection);
+      wire::wr32_le(ev + 16, target);
+      wire::wr32_le(ev + 20, 0); // property = None
+      (void)ctx.transport().sendEvent32(requestor, ev);
+      return true;
+    }
+
+    // Write text to requestor's property
+    PropertyTable::instance().setReplace(
+      requestor, property,
+      target, // type = same as requested target
+      8,      // format = 8 (byte string)
+      reinterpret_cast<const uint8_t*>(buf), len
+    );
+
+    // Send SelectionNotify with property set
+    uint8_t ev[32] = {0};
+    ev[0] = 31;
+    wire::wr32_le(ev + 4,  time);
+    wire::wr32_le(ev + 8,  requestor);
+    wire::wr32_le(ev + 12, selection);
+    wire::wr32_le(ev + 16, target);
+    wire::wr32_le(ev + 20, property);
+    (void)ctx.transport().sendEvent32(requestor, ev);
+
+#ifndef NDEBUG
+    fprintf(stderr, "[CLIPBOARD] Served %u bytes from macOS pasteboard to 0x%08X\n",
+            len, (unsigned)requestor);
+#endif
+    return true;
+  }
+
+  // Unknown target — send failure
+  uint8_t ev[32] = {0};
+  ev[0] = 31;
+  wire::wr32_le(ev + 4,  time);
+  wire::wr32_le(ev + 8,  requestor);
+  wire::wr32_le(ev + 12, selection);
+  wire::wr32_le(ev + 16, target);
+  wire::wr32_le(ev + 20, 0); // property = None (conversion failed)
+  (void)ctx.transport().sendEvent32(requestor, ev);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,10 +274,13 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
   const uint32_t requestor = br.readU32();
   const uint32_t selection = br.readU32();
   const uint32_t target    = br.readU32();
-  const uint32_t property  = br.readU32();
+  uint32_t property        = br.readU32();
   const uint32_t time      = br.readU32();
 
   br.skip(br.remaining());
+
+  // Per ICCCM: if property is None, use target as property
+  if (property == 0) property = target;
 
   uint32_t owner = 0;
   {
@@ -141,8 +289,13 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     if (it != sSelOwner.end()) owner = it->second;
   }
 
+#ifndef NDEBUG
+  fprintf(stderr, "[SelectionOps] ConvertSelection sel=%u target=%u req=0x%08X owner=0x%08X\n",
+          (unsigned)selection, (unsigned)target, (unsigned)requestor, (unsigned)owner);
+#endif
+
   if (owner != 0) {
-    // Send SelectionRequest (type 30) to owner
+    // X11 client owns this selection — forward SelectionRequest to owner
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
     wire::wr32_le(ev + 4,  time);
@@ -152,22 +305,25 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     wire::wr32_le(ev + 20, target);
     wire::wr32_le(ev + 24, property);
     (void)ctx.transport().sendEvent32(owner, ev);
-  } else {
-    // No owner — send SelectionNotify (type 31) to requestor with property=None
-    uint8_t ev[32] = {0};
-    ev[0] = 31; // SelectionNotify
-    wire::wr32_le(ev + 4,  time);
-    wire::wr32_le(ev + 8,  requestor);
-    wire::wr32_le(ev + 12, selection);
-    wire::wr32_le(ev + 16, target);
-    wire::wr32_le(ev + 20, 0); // property = None
-    (void)ctx.transport().sendEvent32(requestor, ev);
+    return;
   }
 
-#ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[SelectionOps] ConvertSelection sel=0x%08X req=0x%08X owner=0x%08X\n",
-             (unsigned)selection, (unsigned)requestor, (unsigned)owner);
-#endif
+  // No X11 owner — try macOS clipboard bridge for CLIPBOARD and PRIMARY
+  if (selection == atom::kCLIPBOARD || selection == atom::kPRIMARY) {
+    if (serveMacOSClipboard(ctx, requestor, selection, target, property, time)) {
+      return;
+    }
+  }
+
+  // No owner and no bridge — send SelectionNotify with property=None
+  uint8_t ev[32] = {0};
+  ev[0] = 31; // SelectionNotify
+  wire::wr32_le(ev + 4,  time);
+  wire::wr32_le(ev + 8,  requestor);
+  wire::wr32_le(ev + 12, selection);
+  wire::wr32_le(ev + 16, target);
+  wire::wr32_le(ev + 20, 0); // property = None
+  (void)ctx.transport().sendEvent32(requestor, ev);
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +360,27 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
 
   if (resolvedDest != 0) {
     (void)ctx.transport().sendEvent32(resolvedDest, event);
+  }
+
+  // If this is a SelectionNotify for CLIPBOARD, capture data for macOS bridge
+  const uint8_t evType = event[0] & 0x7Fu;
+  if (evType == 31) { // SelectionNotify
+    const uint32_t selAtom = wire::rd32_le(event + 12);
+    const uint32_t propAtom = wire::rd32_le(event + 20);
+    if ((selAtom == atom::kCLIPBOARD) && propAtom != 0 && resolvedDest != 0) {
+      // The selection owner just set a property on the requestor.
+      // Read it and push to macOS clipboard.
+      PropertyTable::Prop p{};
+      if (PropertyTable::instance().get(resolvedDest, propAtom, p) &&
+          p.format == 8 && !p.data.empty())
+      {
+        x11_clipboard_set_text(reinterpret_cast<const char*>(p.data.data()),
+                               (uint32_t)p.data.size());
+#ifndef NDEBUG
+        fprintf(stderr, "[CLIPBOARD] Captured %zu bytes from X11 -> macOS\n", p.data.size());
+#endif
+      }
+    }
   }
 
 #ifdef X11_TRACE_VERBOSE

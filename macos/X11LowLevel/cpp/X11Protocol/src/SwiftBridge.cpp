@@ -255,3 +255,29 @@ extern "C" int x11_server_copy_window_bgra(uint32_t xid,
 {
   return x11_cpp_copy_host_surface_bgra(xid, out_bytes, out_cap, out_w, out_h, out_bpr);
 }
+
+// ===========================================================================
+// Clipboard bridge (macOS NSPasteboard <-> X11 CLIPBOARD)
+// ===========================================================================
+
+static x11_clipboard_get_text_fn g_clip_get = nullptr;
+static x11_clipboard_set_text_fn g_clip_set = nullptr;
+
+extern "C" void x11_clipboard_register(x11_clipboard_get_text_fn get_fn,
+                                         x11_clipboard_set_text_fn set_fn)
+{
+  g_clip_get = get_fn;
+  g_clip_set = set_fn;
+}
+
+extern "C" uint32_t x11_clipboard_get_text(char* buf, uint32_t max_len)
+{
+  if (!g_clip_get || !buf || max_len == 0) return 0;
+  return g_clip_get(buf, max_len);
+}
+
+extern "C" void x11_clipboard_set_text(const char* text, uint32_t len)
+{
+  if (!g_clip_set || !text || len == 0) return;
+  g_clip_set(text, len);
+}

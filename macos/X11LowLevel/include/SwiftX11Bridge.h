@@ -192,6 +192,26 @@ bool x11_shared_damage_consume(uint32_t host_xid,
 void x11_shared_damage_clear(uint32_t host_xid);
 
 // -------------------------------------------------------------------------------------
+// Clipboard bridge (macOS NSPasteboard <-> X11 CLIPBOARD selection)
+// -------------------------------------------------------------------------------------
+// Getter: copies current macOS pasteboard text into buf (up to max_len bytes).
+//         Returns number of bytes written (0 if clipboard empty or no text).
+typedef uint32_t (*x11_clipboard_get_text_fn)(char* buf, uint32_t max_len);
+
+// Setter: pushes text to macOS pasteboard.
+typedef void (*x11_clipboard_set_text_fn)(const char* text, uint32_t len);
+
+// Register clipboard callbacks. Called from Swift at server startup.
+void x11_clipboard_register(x11_clipboard_get_text_fn get_fn,
+                             x11_clipboard_set_text_fn set_fn);
+
+// Internal: read macOS clipboard text. Returns byte count (0 if unavailable).
+uint32_t x11_clipboard_get_text(char* buf, uint32_t max_len);
+
+// Internal: write text to macOS clipboard.
+void x11_clipboard_set_text(const char* text, uint32_t len);
+
+// -------------------------------------------------------------------------------------
 // Version
 // -------------------------------------------------------------------------------------
 const char* swiftx11_version(void);

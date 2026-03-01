@@ -6,6 +6,7 @@
 //
 
 #include "Core/AtomTable.hpp"
+#include "Core/ClipboardAtoms.hpp"
 
 #include <cstring>
 #include <string>
@@ -104,6 +105,24 @@ struct AtomTableState {
     for (uint32_t i = 1; i <= 68; i++) {
       name_to_atom.emplace(std::string(kPredef[i - 1]), i);
     }
+    // Pre-register commonly used dynamic atoms at well-known IDs (69+).
+    // These must match the constants in ClipboardAtoms.hpp.
+    static const struct { const char* name; uint32_t id; } kExtra[] = {
+      { "CLIPBOARD",        x11::atom::kCLIPBOARD },
+      { "TARGETS",          x11::atom::kTARGETS },
+      { "UTF8_STRING",      x11::atom::kUTF8_STRING },
+      { "TIMESTAMP",        x11::atom::kTIMESTAMP },
+      { "TEXT",             x11::atom::kTEXT },
+      { "MULTIPLE",         x11::atom::kMULTIPLE },
+      { "INCR",            x11::atom::kINCR },
+      { "WM_PROTOCOLS",     x11::atom::kWM_PROTOCOLS },
+      { "WM_DELETE_WINDOW", x11::atom::kWM_DELETE_WINDOW },
+    };
+    for (const auto& e : kExtra) {
+      name_to_atom.emplace(std::string(e.name), e.id);
+      atom_to_name.emplace(e.id, std::string(e.name));
+    }
+    next_atom = x11::atom::kLastPreRegistered + 1;
   }
 };
 

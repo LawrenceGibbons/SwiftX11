@@ -73,8 +73,40 @@ final class XServerController: ObservableObject {
     append(ok ? "Server started" : "Failed to start server")
     if ok {
       GlobalPointerTracker.shared.start()
-      startDrainTimer() 
+      startDrainTimer()
+      registerClipboardBridge()
     }
+  }
+
+  /// Register clipboard callbacks so C++ can read/write macOS pasteboard.
+  private func registerClipboardBridge() {
+    // Getter: read NSPasteboard text into buffer, return byte count
+    let getter: x11_clipboard_get_text_fn = { buf, maxLen in
+      guard let buf = buf, maxLen > 0 else { return 0 }
+      guard let text = NSPasteboard.general.string(forType: .string) else { return 0 }
+      var copyLen: Int = 0
+      text.withCString { cstr in
+        let len = strlen(cstr)
+        copyLen = min(Int(maxLen), len)
+        if copyLen > 0 {
+          memcpy(buf, cstr, copyLen)
+        }
+      }
+      return UInt32(copyLen)
+    }
+
+    // Setter: write text to NSPasteboard
+    let setter: x11_clipboard_set_text_fn = { text, len in
+      guard let text = text, len > 0 else { return }
+      let data = Data(bytes: text, count: Int(len))
+      if let s = String(data: data, encoding: .utf8) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+      }
+    }
+
+    x11_clipboard_register(getter, setter)
+    append("Clipboard bridge registered")
   }
   
   func stop() {
