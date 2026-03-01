@@ -25,6 +25,7 @@ enum class HostCmdType : uint8_t {
   ScrollTicks,
   Key,
   Focus,
+  ClipboardCapture,  // proactive selection request: xid=owner, keyCode=selection atom
 };
 
 struct HostCmd {
