@@ -410,6 +410,13 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   // Set bit 0x80 on event[0] (SendEvent flag per X11 spec)
   event[0] |= 0x80u;
 
+  // Stamp server sequence number into forwarded event (bytes 2-3).
+  // Clients construct events with seq=0; XCB on the receiving end validates
+  // that the sequence number is non-zero and monotonically increasing.
+  // A real X11 server always overwrites bytes 2-3 with the recipient's
+  // last-processed sequence number.
+  wire::wr16_le(event + 2, ctx.transport().lastSeq());
+
   // Resolve special destinations
   uint32_t resolvedDest = destination;
   if (destination == 0) {
