@@ -399,11 +399,13 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   }
 
   // ============================================================================================
-  // PIXMAP path: XYPixmap depth=1 (existing behavior)
+  // PIXMAP path: XYBitmap/XYPixmap depth=1
   // ============================================================================================
 
-  // Only implement XYPixmap depth=1 right now for pixmaps.
-  if (format != 1 || depth != 1) {
+  // Handle XYBitmap (0) and XYPixmap (1) for depth-1 pixmaps.
+  // XYBitmap and XYPixmap carry the same single bitplane for depth=1.
+  // XCreateBitmapFromData sends format=0 (XYBitmap), so both must be supported.
+  if ((format != 0 && format != 1) || depth != 1) {
     br.skip(br.remaining());
     return;
   }

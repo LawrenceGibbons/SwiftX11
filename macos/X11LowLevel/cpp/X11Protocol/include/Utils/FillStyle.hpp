@@ -4,6 +4,7 @@
 #include "Core/PixmapTable.hpp"
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>
 
 namespace x11 {
 
@@ -59,6 +60,9 @@ static inline bool fillStyleSetup(FillStyleCache& c,
     // FillTiled — need tile pixmap (32bpp)
     PixmapView pv{};
     if (!pix.snapshot(gst.tile, pv) || !pv.pixels || pv.w == 0 || pv.h == 0) {
+#ifndef NDEBUG
+      fprintf(stderr, "[FILL_STYLE] FillTiled tile=0x%X FAIL → fallback solid\n", (unsigned)gst.tile);
+#endif
       c.valid = false;
       c.style = 0;  // fallback to solid
       return false;
@@ -66,11 +70,19 @@ static inline bool fillStyleSetup(FillStyleCache& c,
     c.tile_pixels = pv.pixels;
     c.tile_w      = pv.w;
     c.tile_h      = pv.h;
+#ifndef NDEBUG
+    fprintf(stderr, "[FILL_STYLE] FillTiled tile=0x%X %ux%u OK\n",
+            (unsigned)gst.tile, (unsigned)pv.w, (unsigned)pv.h);
+#endif
   }
   else if (c.style == 2 || c.style == 3) {
     // FillStippled / FillOpaqueStippled — need stipple pixmap (1bpp)
     PixmapView pv{};
     if (!pix.snapshot(gst.stipple, pv) || !pv.bits || pv.w == 0 || pv.h == 0) {
+#ifndef NDEBUG
+      fprintf(stderr, "[FILL_STYLE] style=%u stipple=0x%X FAIL → fallback solid\n",
+              (unsigned)c.style, (unsigned)gst.stipple);
+#endif
       c.valid = false;
       c.style = 0;  // fallback to solid
       return false;
@@ -79,6 +91,11 @@ static inline bool fillStyleSetup(FillStyleCache& c,
     c.stip_stride = pv.stride_bytes;
     c.stip_w      = pv.w;
     c.stip_h      = pv.h;
+#ifndef NDEBUG
+    fprintf(stderr, "[FILL_STYLE] style=%u stipple=0x%X %ux%u stride=%u OK\n",
+            (unsigned)c.style, (unsigned)gst.stipple, (unsigned)pv.w, (unsigned)pv.h,
+            (unsigned)pv.stride_bytes);
+#endif
   }
   return true;
 }
