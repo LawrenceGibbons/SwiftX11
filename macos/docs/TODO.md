@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-02-28
+Last updated: 2026-03-01
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -38,7 +38,15 @@ Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK r
 - [x] UICommandQueue::push() calls x11_ui_push_*() directly (no C request queue)
 - [x] Architecture simplified to: Swift <-> SwiftBridge.cpp (extern "C") <-> C++ classes
 
+### Window Borders (v1.3.0)
+- [x] Server-drawn child window borders (fillWindowBorder renders border strips in parent drawable)
+- [x] border_width and border_pixel stored in WindowState/WindowView
+- [x] All 5 parent-chain offset computations account for border_width (drawable at x+bw, y+bw)
+- [x] Hit testing in pick functions includes border region
+- [x] ChangeWindowAttributes CWBorderPixel, ConfigureWindow CWBorderWidth, GetGeometry border_width
+
 ### Input / Events
+- [x] Button routing fix (v1.3.0): updateMotion no longer corrupts buttons field; drag logic resilient; button handler uses HostCmd coords
 - [x] Button routing: picks deepest mapped child, checks passive grabs (GrabButton), sets drag_xid
 - [x] Motion routing: drag_xid during active drags, pick_motion_target otherwise
 - [x] Focus delivery: sendFocusEventDirect bypasses FocusChangeMask (emulates WM SetInputFocus)
@@ -188,7 +196,7 @@ If RENDER is implemented, client-side font rendering (Pango/FreeType) becomes th
 
 ### 4.3 Window Management Correctness (MEDIUM)
 - [ ] **ConfigureWindow stack mode**: Handle Above/Below/TopIf/BottomIf/Opposite sibling stacking.
-- [ ] **ConfigureWindow border width**: Track and report (even if always 0).
+- [x] **ConfigureWindow border width**: Tracked, stored, and rendered (v1.3.0).
 - [ ] **Override-redirect**: Honor override_redirect attribute (don't apply WM decoration/placement).
 - [ ] **Gravity**: Implement win_gravity and bit_gravity for resize behavior.
 - [ ] **Backing store**: Accept BackingStore attribute (can be NotUseful stub).
@@ -219,7 +227,13 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [ ] **Keymap state**: QueryKeymap returns current key state (currently not implemented).
 - [ ] **XKB (optional)**: Modern clients may query for XKB extension — return not-present is acceptable.
 
-### 5.4 ICCCM / Window Manager Compliance (LOW)
+### 5.4 Window Close / Client Lifecycle (HIGH — user experience)
+- [ ] **Window close kills client**: When user clicks the red close button (Cocoa windowWillClose), the X11 client should be terminated. Two approaches:
+  - **WM_DELETE_WINDOW** (ICCCM-compliant): If WM_PROTOCOLS includes WM_DELETE_WINDOW, send a ClientMessage event. Well-behaved clients (xterm, xcalc) will exit gracefully.
+  - **Forceful disconnect**: If client doesn't support WM_DELETE_WINDOW (or as fallback), close the client socket (fd) to force disconnect. The server's eraseOwnedBy() cleanup handles resource teardown.
+- [ ] **Keyboard shortcut**: Cmd+W should also trigger window close with the same behavior.
+
+### 5.5 ICCCM / Window Manager Compliance (LOW)
 - [ ] **WM_HINTS**: Read and honor WM_HINTS property (icon, initial state, input model).
 - [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio).
 - [ ] **WM_PROTOCOLS**: Support WM_DELETE_WINDOW (send ClientMessage instead of destroying).
@@ -324,11 +338,13 @@ xcalc &
 ~~1. **GC clipping (SetClipRectangles)** — DONE (v1.1.0)~~
 ~~2. **Missing reply-bearing opcodes** — DONE (v1.2.0)~~
 ~~3. **ReparentWindow** — DONE (v1.2.0)~~
-1. **xcalc/xclock debugging** — Missing button outlines, button-always-sends-2, investigate GC/color state
-2. **BIG-REQUESTS extension** — Large schematics/waveforms exceed 256KB request limit
-3. **Error handling** — Bad replies/missing errors confuse toolkits
-4. **RENDER extension** — Anti-aliased fonts make UI usable (without: bitmap fonts only)
-5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
-6. **16-bit text** — Unicode labels in Vivado UI
-7. **Selections/clipboard** — Copy/paste between apps
-8. **Font infrastructure** — Broader font matching for toolkit defaults
+~~4. **xcalc button outlines + routing** — DONE (v1.3.0): server-drawn borders + button routing fix~~
+1. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
+2. **GC function/planemask enforcement** — GXcopy is applied but some draw paths may not use GC state correctly
+3. **BIG-REQUESTS extension** — Large schematics/waveforms exceed 256KB request limit
+4. **Error handling** — Bad replies/missing errors confuse toolkits
+5. **RENDER extension** — Anti-aliased fonts make UI usable (without: bitmap fonts only)
+6. **Container networking** — TCP + Unix socket + xauth for Docker workflow
+7. **16-bit text** — Unicode labels in Vivado UI
+8. **Selections/clipboard** — Copy/paste between apps
+9. **Font infrastructure** — Broader font matching for toolkit defaults

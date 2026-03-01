@@ -182,7 +182,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.2.0)
+### Current State (v1.3.0)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -204,7 +204,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **DestroySubwindows** (v1.2.0, opcode 5): Destroys all descendants in depth-first order via descendantsOf().
 - **Reply-bearing stubs** (v1.2.0): QueryKeymap (44, all-zeros), GetMotionEvents (39, empty list), GetFontPath (52, empty list) — prevent XCB sequence desync.
 - **Void stubs** (v1.2.0): SetFontPath (51), ChangeActivePointerGrab (30, updates active grab event mask), RotateProperties (114).
-- **Button routing**: picks deepest mapped child before `InputState::button()`, checks passive grabs (GrabButton), correctly sets `drag_xid` to child window
+- **Server-drawn window borders** (v1.3.0): `border_width` and `border_pixel` stored in WindowState/WindowView. `fillWindowBorder()` renders border strips in parent's drawable. All 5 parent-chain offset computations account for border_width (drawable starts at x+bw, y+bw in parent coords). Hit testing in pick functions includes border region. ChangeWindowAttributes handles CWBorderPixel, ConfigureWindow handles CWBorderWidth, GetGeometry returns border_width.
+- **Button routing fix** (v1.3.0): `updateMotion()` no longer overwrites `buttons` field (was corrupted by PointerMove with deliver=0 between press and release). Drag logic resilient to stale `before` values. Button handler uses HostCmd coordinates instead of stale InputState position. Picks deepest mapped child before `InputState::button()`, checks passive grabs (GrabButton), correctly sets `drag_xid` to child window.
 - **Motion state**: `toX11State()` used everywhere (button bits at X11 positions 8-12)
 - **Key event modifiers** (v1.0.1): `sendKeyEvent()` uses `toX11State()` for correct modifier mapping (was previously using raw `buttons | mods` which mapped Option→Control, Control→Shift)
 - **GrabPointer reply** (v1.0.2): Re-enabled — uses same `sendReply32()` pattern as GrabKeyboard. Missing reply was causing XCB sequence desync on scrollbar use.
@@ -220,15 +221,15 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
   - Remaining globals: `g_daemon` (process-lifetime), `g_daemon_ptr` (bridge access), `g_ctx/g_ev/g_q` (NotifyBridge, set per-session)
 - **Display :1**: SwiftX11 runs on display :1 (TCP port 6001) to avoid conflict with XQuartz on :0. `~/.profile` sets `DISPLAY=127.0.0.1:1`.
 
-### Known Issues (v1.2.0)
-- **xcalc missing button outlines**: PolyRectangle/PolyLine draw ops apply GC function correctly, but outlines not visible. Likely GC color or ROP issue — needs runtime GC state tracing during xcalc rendering.
-- **xcalc all buttons send "2"**: `computeEventXYFromHostLocal()` may be failing for xcalc's widget tree, falling back to host-local coords. Needs investigation of button event coordinate translation.
+### Known Issues (v1.3.0)
+- **xcalc wrong characters**: sqrt sign and some other special characters display incorrectly — Phase 3 font/encoding issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Phase 3 font infrastructure issue. Xlib's XCreateFontSet() expects multiple charset fonts; SwiftX11 has minimal BDF coverage.
 - **xterm occasional uncleared pixels at bottom**: Stale pixels visible at bottom of xterm window in some cases. May be a damage rect or ClearArea issue.
+- **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
 
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
-1. **xcalc/xclock debugging** — investigate missing outlines, button-always-sends-2, stale pixels
+1. **Window close → client kill/disconnect** — red button should terminate X11 client or send WM_DELETE_WINDOW
 2. **GC function/planemask enforcement** — GXcopy is applied but some draw paths may not use GC state correctly
 3. **BIG-REQUESTS extension** — large schematics/waveforms exceed 256KB
 4. **Error handling** — proper X11 error generation
