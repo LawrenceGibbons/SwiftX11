@@ -832,6 +832,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           uint8_t ev[32] = {0};
           ev[0] = 30; // SelectionRequest
+          x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq()); // sequence number (required by XCB)
           x11::wire::wr32_le(ev + 4,  0); // time = CurrentTime
           x11::wire::wr32_le(ev + 8,  owner);                    // owner
           x11::wire::wr32_le(ev + 12, owner);                    // requestor = owner
