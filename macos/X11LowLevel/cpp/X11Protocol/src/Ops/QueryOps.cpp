@@ -533,11 +533,11 @@ namespace x11 {
 #endif
 
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      wire::wr32_le(rep.data() + 4, 0);
-      rep[1]  = present;
-      rep[8]  = major;
-      rep[9]  = first_event;
-      rep[10] = first_error;
+      wire::wr32_le(rep.data() + 4, 0); // length = 0
+      rep[8]  = present;
+      rep[9]  = major;
+      rep[10] = first_event;
+      rep[11] = first_error;
     });
   }
   
