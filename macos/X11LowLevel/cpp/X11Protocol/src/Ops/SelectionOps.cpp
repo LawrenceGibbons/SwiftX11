@@ -99,6 +99,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
   if (prevOwner != 0 && prevOwner != owner) {
     uint8_t ev[32] = {0};
     ev[0] = 29; // SelectionClear
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4,  time);
     wire::wr32_le(ev + 8,  prevOwner);  // window
     wire::wr32_le(ev + 12, selection);  // atom
@@ -204,6 +205,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     // Send SelectionNotify
     uint8_t ev[32] = {0};
     ev[0] = 31; // SelectionNotify
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4,  time);
     wire::wr32_le(ev + 8,  requestor);
     wire::wr32_le(ev + 12, selection);
@@ -228,7 +230,8 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     );
 
     uint8_t ev[32] = {0};
-    ev[0] = 31;
+    ev[0] = 31; // SelectionNotify
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4,  time);
     wire::wr32_le(ev + 8,  requestor);
     wire::wr32_le(ev + 12, selection);
@@ -250,7 +253,8 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     if (len == 0) {
       // Clipboard empty or no bridge — send SelectionNotify with property=None
       uint8_t ev[32] = {0};
-      ev[0] = 31;
+      ev[0] = 31; // SelectionNotify
+      wire::wr16_le(ev + 2, ctx.transport().lastSeq());
       wire::wr32_le(ev + 4,  time);
       wire::wr32_le(ev + 8,  requestor);
       wire::wr32_le(ev + 12, selection);
@@ -270,7 +274,8 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
 
     // Send SelectionNotify with property set
     uint8_t ev[32] = {0};
-    ev[0] = 31;
+    ev[0] = 31; // SelectionNotify
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4,  time);
     wire::wr32_le(ev + 8,  requestor);
     wire::wr32_le(ev + 12, selection);
@@ -287,7 +292,8 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
 
   // Unknown target — send failure
   uint8_t ev[32] = {0};
-  ev[0] = 31;
+  ev[0] = 31; // SelectionNotify
+  wire::wr16_le(ev + 2, ctx.transport().lastSeq());
   wire::wr32_le(ev + 4,  time);
   wire::wr32_le(ev + 8,  requestor);
   wire::wr32_le(ev + 12, selection);
@@ -352,6 +358,7 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     // X11 client owns this selection and has newer content — forward SelectionRequest
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4,  time);
     wire::wr32_le(ev + 8,  owner);
     wire::wr32_le(ev + 12, requestor);
@@ -372,6 +379,7 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
   // No owner and no bridge — send SelectionNotify with property=None
   uint8_t ev[32] = {0};
   ev[0] = 31; // SelectionNotify
+  wire::wr16_le(ev + 2, ctx.transport().lastSeq());
   wire::wr32_le(ev + 4,  time);
   wire::wr32_le(ev + 8,  requestor);
   wire::wr32_le(ev + 12, selection);
