@@ -1,7 +1,7 @@
 # SwiftX11 — Session Handoff Prompt
 
-**Date**: 2026-02-28
-**Version**: v1.2.0
+**Date**: 2026-03-01
+**Version**: v1.4.0
 **Branch**: `develop++`
 
 ---
@@ -26,35 +26,44 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 
 ---
 
-## What Was Accomplished (v1.1.0 → v1.2.0)
+## What Was Accomplished (v1.2.0 → v1.4.0)
 
-### v1.1.1: Retained Display Buffer
-- Pre-resize frame kept for flicker-free window resize
-- Forces present after surface promotion to avoid white flash
+### v1.3.0: Borders + Button Routing Fixes
+- GC function (GXxor, etc.) and planemask enforcement in PolyFillArc, PolyArc, FillPoly, PolyLine, PolySegment, PolyPoint
+- WarpPointer (opcode 41) via UICommandQueue → Swift → CGWarpMouseCursorPosition
 
-### v1.2.0: Phase 1 Core Protocol Gaps
-All Phase 1 opcodes implemented:
+### v1.4.0: Phase 2 Extensions + Remaining Phase 1
 
-**Reply-bearing stubs** (crash prevention):
-- QueryKeymap (44): Returns 32 zero bytes (no keys pressed)
-- GetMotionEvents (39): Returns empty event list
-- GetFontPath (52): Returns empty font path list
+**BIG-REQUESTS extension** (full implementation):
+- QueryExtension("BIG-REQUESTS") returns present=1, major opcode 133
+- BigReqEnable (opcode 133) sets per-client flag, replies with max_request_length=1M words (4MB)
+- Wire format: length==0 in header → read 4-byte extended length (phase 0.5 in readAndDispatch)
+- Per-client `big_req_enabled_` flag on XClient
 
-**Void stubs**:
-- SetFontPath (51): Accepts and ignores
-- ChangeActivePointerGrab (30): Updates active grab event mask via GrabTable
-- DestroySubwindows (5): Destroys all descendants in depth-first order
-- RotateProperties (114): Accepts and ignores
+**16-bit text**:
+- PolyText16 (opcode 75): CHAR2B encoding (byte1 high, byte2 low), TEXTITEM16 elements
+- ImageText16 (opcode 77): CHAR2B encoding, background rect fill + foreground glyphs
 
-**GC value mask completion**:
-- All 23 value mask bits (0-22) now parsed and stored in GCState
-- New fields: line_width, line_style, cap_style, join_style, fill_style, fill_rule, tile, stipple, ts_x/y_origin, dash_offset, dashes_single, arc_mode, dash_list
-- CopyGC extended to copy all new fields
-- SetDashes (58): Stores dash offset and dash list
+**Extension stubs** (version queries + basic ops):
+- XFIXES (major 134): QueryVersion → 5.0
+- SHAPE (major 135): QueryVersion → 1.1
+- RANDR (major 136): QueryVersion → 1.5
+- Xinerama (major 137): QueryVersion → 1.1, IsActive → true, QueryScreens → 1 screen 1920x1080
+- GE (major 138): QueryVersion → 1.0
+- All registered in QueryExtension and ListExtensions
 
-**ReparentWindow** (opcode 7):
-- WindowTable::reparent() updates parent, x, y
-- Handler unmaps if mapped, reparents, sends ReparentNotify event (type 21), remaps if was mapped
+**RENDER extension** (major 139, minimal but functional):
+- QueryVersion → 0.11
+- QueryPictFormats: ARGB32, RGB24, A8, A4, A1 formats + screen/visual mapping
+- CreatePicture/ChangePicture/FreePicture: picture table management
+- Composite: PictOpSrc, PictOpOver, PictOpAdd, PictOpClear (solid-fill + drawable-to-drawable)
+- FillRectangles: solid color fill with compositing ops
+- CreateSolidFill: solid color pictures
+- QueryFilters: "nearest" and "bilinear"
+- Glyph stubs: CreateGlyphSet/FreeGlyphSet/ReferenceGlyphSet/AddGlyphs/FreeGlyphs/CompositeGlyphs (consume silently)
+- Transform/Filter/Gradient stubs: consume silently
+
+**Selections/clipboard**: Already implemented (SetSelectionOwner, GetSelectionOwner, ConvertSelection, SendEvent)
 
 ---
 
@@ -63,24 +72,21 @@ All Phase 1 opcodes implemented:
 ### 1. xcalc Missing Button Outlines (HIGH)
 **Symptom**: Button borders/outlines not visible in xcalc.
 **What we know**: PolyRectangle and PolyLine DO apply GC function via RasterOp.hpp. GC function and planemask are already implemented and used by draw ops.
-**Likely cause**: GC color issue — possibly GXxor with fg≈bg producing invisible output, or a GC state not being set correctly for the outline drawing GC.
-**Investigation approach**: Add trace logging in PolyRectangle/PolyLine to dump GC state (function, fg, bg, plane_mask) during xcalc rendering. Compare with what xcalc expects.
+**Likely cause**: GC color issue — possibly GXxor with fg~bg producing invisible output, or a GC state not being set correctly for the outline drawing GC.
+**Investigation approach**: Add trace logging in PolyRectangle/PolyLine to dump GC state (function, fg, bg, plane_mask) during xcalc rendering.
 
 ### 2. xcalc All Buttons Send "2" (HIGH)
 **Symptom**: Pressing any button position in xcalc always sends the value "2".
-**What we know**: Button events pick the deepest mapped child window under the pointer, then walk up to find a window with ButtonPress mask. The event's x,y coordinates are translated via `computeEventXYFromHostLocal()`.
-**Likely cause**: Coordinate translation failing for xcalc's Xaw widget tree — all button presses resolve to the same child widget or the x,y coordinates map to the same button. Could be related to how Xaw internally positions button widgets vs. how we report event coordinates.
-**Investigation approach**: Trace button events with `[BTN]` debug output, check which child XID is picked and what x,y coordinates are reported. Compare with the actual widget geometry in WindowTable.
+**Likely cause**: Coordinate translation failing for xcalc's Xaw widget tree.
+**Investigation approach**: Trace button events with `[BTN]` debug output, check which child XID is picked and what x,y coordinates are reported.
 
 ### 3. xterm Uncleared Pixels at Bottom
 **Symptom**: Occasional stale/uncleared pixels visible at bottom edge of xterm window.
-**What we know**: This is intermittent. May be a damage rect boundary issue or ClearArea not covering the full area during resize/scroll.
-**Investigation approach**: Check if it correlates with resize events or scroll operations. May be a 1-pixel-off issue in damage rect calculation.
+**Investigation approach**: Check if it correlates with resize events or scroll operations.
 
 ### 4. xclock/xcalc FontSet Warnings
-**Symptom**: "Missing charsets in String to FontSet conversion" / "Unable to load any usable fontset"
-**What we know**: Phase 3 font infrastructure issue. Xlib's XCreateFontSet() calls ListFonts expecting multiple charset fonts; SwiftX11 has minimal BDF coverage (only fixed/cursor fonts).
-**Not fixable in Phase 1** — would require bundling additional BDF/PCF fonts.
+**Symptom**: "Missing charsets in String to FontSet conversion"
+**Not fixable in Phase 1/2** — requires additional BDF/PCF font bundling.
 
 ---
 
@@ -89,25 +95,15 @@ All Phase 1 opcodes implemented:
 ### 1. Debug xcalc Issues
 The xcalc button outline and button-value issues are the most pressing — they indicate potential problems that would affect Vivado too.
 
-**For outlines**: Trace PolyRectangle during xcalc draw. Check GC state — is `function` correct? Is fg/bg set to values that would be visible? Is `mapPixelToARGB()` mapping correctly for xcalc's colors?
-
-**For button routing**: Trace `[BTN]` events with xcalc running. Check:
-- Which child XID is `pick_deepest_mapped_child` returning?
-- What x,y coordinates are in the ButtonPress event?
-- Are these coordinates in child-local space or host-local space?
-- Does `computeEventXYFromHostLocal()` in EventOps.cpp correctly translate to child-local coords?
-
-### 2. BIG-REQUESTS Extension
-Vivado schematics exceed 256KB request limit. Implement:
-- QueryExtension("BIG-REQUESTS") → present=1
-- BigReqEnable → return max request size
-- Wire format: length==0 → read 4-byte extended length
-
-### 3. Error Handling
+### 2. Error Handling
 Proper X11 error generation (BadWindow, BadDrawable, etc.)
 
-### 4. RENDER Extension
-Anti-aliased fonts and alpha compositing for GTK/Java apps.
+### 3. RENDER Glyph Rendering
+CompositeGlyphs8/16/32 and AddGlyphs are currently stubs. Need actual glyph bitmap storage and rendering for anti-aliased font display.
+
+### 4. RENDER Enhancements
+- Mask parameter in Composite (currently ignored)
+- Trapezoids/Triangles (needed by some Cairo paths)
 
 ---
 
@@ -124,7 +120,7 @@ xeyes                      # pointer tracking, multi-client
 xcalc                      # button outlines + routing test
 xclock -analog             # Xaw widgets, arcs, timer events
 
-# Verify version banner in console: "SwiftX11 v1.2.0"
+# Verify version banner in console: "SwiftX11 v1.4.0"
 ```
 
 ---
@@ -140,6 +136,8 @@ Read these files to understand the codebase:
 - `X11LowLevel/cpp/X11Protocol/src/Ops/ShapeOps.cpp` — PolyRectangle, PolyLine, PolyArc draw ops
 - `X11LowLevel/cpp/X11Protocol/include/Core/GCTable.hpp` — GCState struct with all GC fields
 - `X11LowLevel/cpp/X11Protocol/src/Ops/GCOps.cpp` — CreateGC/ChangeGC/CopyGC/SetDashes
+- `X11LowLevel/cpp/X11Protocol/src/Ops/RenderOps.cpp` — RENDER extension implementation
+- `X11LowLevel/cpp/X11Protocol/src/Ops/ExtensionOps.cpp` — Extension stubs (XFIXES, SHAPE, RANDR, etc.)
 - `X11LowLevel/include/SwiftX11Version.h` — Single source of truth for version string
 
 ---
@@ -153,6 +151,7 @@ Read these files to understand the codebase:
 - **toX11State()** — always use for event state fields (modifier/button bit mapping)
 - **stridePixels** — always use `dst.stridePixels` not `dst.w` for pixel row indexing
 - **Branch**: all work on `develop++`, use `git -C /Users/lkg/Documents/Vivado/SwiftX11 merge <branch> --no-edit` to merge from worktree
+- **Extension opcodes**: BIG-REQUESTS=133, XFIXES=134, SHAPE=135, RANDR=136, Xinerama=137, GE=138, RENDER=139 (defined in X11ExtOpcodes.hpp)
 - **Opcode dispatch**: Modules register via `reg.registerMajor(opcode, &Class::onMajor, this)` in constructors
 - **Wire helpers**: `wire::wr16_le`, `wire::wr32_le`, `wire::rd16_le`, `wire::rd32_le` for little-endian encoding
 - **ByteReader**: `br.readU32()`, `br.readU16()`, `br.readU8()`, `br.readI16()`, `br.skip(n)`, `br.remaining()`

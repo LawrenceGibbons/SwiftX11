@@ -252,6 +252,15 @@ extern "C" void x11_ui_push_damage(uint32_t xid, int32_t x_u, int32_t y_u, int32
   push_cmd(c);
 }
 
+extern "C" void x11_ui_push_warp_pointer(uint32_t host_xid, int32_t x, int32_t y) {
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_WARP_POINTER;
+  c.xid = host_xid;  // 0 means root-relative (screen coords)
+  c.x_u = x;
+  c.y_u = y;
+  push_cmd(c);
+}
+
 // =============================================================================
 // Shared damage accumulator — bypasses UI command queue latency.
 // C++ writes here from the server thread; Swift reads at present time.

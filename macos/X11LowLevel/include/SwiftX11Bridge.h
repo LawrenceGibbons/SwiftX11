@@ -34,6 +34,7 @@ typedef enum {
   X11_UI_DESTROY,
   X11_UI_DAMAGE,
   X11_UI_SET_CURSOR,
+  X11_UI_WARP_POINTER,
 } x11_ui_cmd_type_t;
 
 // SwiftX11Bridge.h
@@ -83,6 +84,8 @@ void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t
 void x11_ui_push_destroy(uint32_t xid);
 void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px);
 void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape);
+// WarpPointer: host_xid=0 means root-relative (screen coords); otherwise host-window-local.
+void x11_ui_push_warp_pointer(uint32_t host_xid, int32_t x, int32_t y);
 
 // -------------------------------------------------------------------------------------
 // Input injection

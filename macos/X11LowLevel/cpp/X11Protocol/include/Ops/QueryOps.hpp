@@ -47,6 +47,7 @@ private:
   void handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t revertTo, ByteReader& br); // 42
   void handleGetMotionEvents(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 39
   void handleQueryKeymap(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 44
+  void handleBigReqEnable(XProtoContext& ctx, uint16_t seq, ByteReader& br); // 133 (BIG-REQUESTS)
 };
 
 } // namespace x11

@@ -22,6 +22,8 @@
 #include <Ops/PointerOps.hpp>
 #include <Ops/SelectionOps.hpp>
 #include <Ops/MiscOps.hpp>
+#include <Ops/ExtensionOps.hpp>
+#include <Ops/RenderOps.hpp>
 
 namespace x11 {
 
@@ -42,6 +44,8 @@ namespace x11 {
     PointerOps    pointerOps;
     SelectionOps  selectionOps;
     MiscOps       miscOps;
+    ExtensionOps  extensionOps;
+    RenderOps     renderOps;
 
     explicit XProtoModules(XProtoRegistrar& reg)
     : queryOps(reg)
@@ -60,6 +64,8 @@ namespace x11 {
     , pointerOps(reg)
     , selectionOps(reg)
     , miscOps(reg)
+    , extensionOps(reg)
+    , renderOps(reg)
     {}
   };
 }

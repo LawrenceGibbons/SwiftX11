@@ -73,8 +73,10 @@ DrawOps::DrawOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::CopyPlane, &DrawOps::onMajor, this);  // 63
   reg.registerMajor(x11::opcode::PutImage,  &DrawOps::onMajor, this);  // 72
   reg.registerMajor(x11::opcode::GetImage,  &DrawOps::onMajor, this);  // 73
-  reg.registerMajor(x11::opcode::PolyText8,  &DrawOps::onMajor, this); // 74
-  reg.registerMajor(x11::opcode::ImageText8, &DrawOps::onMajor, this); // 76
+  reg.registerMajor(x11::opcode::PolyText8,   &DrawOps::onMajor, this); // 74
+  reg.registerMajor(x11::opcode::PolyText16,  &DrawOps::onMajor, this); // 75
+  reg.registerMajor(x11::opcode::ImageText8,  &DrawOps::onMajor, this); // 76
+  reg.registerMajor(x11::opcode::ImageText16, &DrawOps::onMajor, this); // 77
 }
 
 void DrawOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -89,8 +91,10 @@ void DrawOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::CopyPlane: handleCopyPlane(ctx, dc.seq, dc.br); return;
     case x11::opcode::PutImage:  handlePutImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
     case x11::opcode::GetImage:  handleGetImage(ctx, dc.seq, dc.minor /*format*/, dc.br); return;
-    case x11::opcode::PolyText8:  handlePolyText8(ctx, dc.seq, dc.br); return; // 74
-    case x11::opcode::ImageText8: handleImageText8(ctx, dc.seq, dc.minor /*n*/, dc.br); return; // 76, dc.minor is string length
+    case x11::opcode::PolyText8:   handlePolyText8(ctx, dc.seq, dc.br); return;  // 74
+    case x11::opcode::PolyText16:  handlePolyText16(ctx, dc.seq, dc.br); return; // 75
+    case x11::opcode::ImageText8:  handleImageText8(ctx, dc.seq, dc.minor /*n*/, dc.br); return;  // 76
+    case x11::opcode::ImageText16: handleImageText16(ctx, dc.seq, dc.minor /*n*/, dc.br); return; // 77
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[DrawOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -230,9 +234,12 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
   if (width == 0 || height == 0) { br.skip(br.remaining()); return; }
 
-  // Resolve GC for clip
+  // Resolve GC for clip + ROP
   x11::GCState piGC{};
   (void)x11::GCTable::instance().find(gcXid, piGC);
+  const uint8_t  piFn   = (uint8_t)(piGC.function & 0x0Fu);
+  const uint32_t piPm   = piGC.plane_mask;
+  const bool     piFast = (piFn == 3) && ((piPm & 0x00FFFFFFu) == 0x00FFFFFFu);
 
   // Is destination a window?
   const bool dstIsWindow = ctx.windows().exists(drawable);
@@ -342,9 +349,16 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
 
         const int32_t srcX0 = fx0 - baseX;
         const int32_t copyPx = fx1 - fx0;
-        std::memcpy(drow + (size_t)fx0 * 4u,
-                    srow + (size_t)srcX0 * 4u,
-                    (size_t)copyPx * 4u);
+        if (piFast) {
+          std::memcpy(drow + (size_t)fx0 * 4u,
+                      srow + (size_t)srcX0 * 4u,
+                      (size_t)copyPx * 4u);
+        } else {
+          const uint32_t* sp = reinterpret_cast<const uint32_t*>(srow) + srcX0;
+          uint32_t* dp = reinterpret_cast<uint32_t*>(drow) + fx0;
+          for (int32_t i = 0; i < copyPx; i++)
+            dp[i] = x11_apply_rop_argb(dp[i], sp[i] | 0xFF000000u, piFn, piPm);
+        }
       }
     };
 
@@ -359,9 +373,16 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
         const int32_t srcX0 = dbX0 - baseX;
         const int32_t copyPx = dbX1 - dbX0;
         if (copyPx <= 0) continue;
-        std::memcpy(drow + (size_t)dbX0 * 4u,
-                    srow + (size_t)srcX0 * 4u,
-                    (size_t)copyPx * 4u);
+        if (piFast) {
+          std::memcpy(drow + (size_t)dbX0 * 4u,
+                      srow + (size_t)srcX0 * 4u,
+                      (size_t)copyPx * 4u);
+        } else {
+          const uint32_t* sp = reinterpret_cast<const uint32_t*>(srow) + srcX0;
+          uint32_t* dp = reinterpret_cast<uint32_t*>(drow) + dbX0;
+          for (int32_t i = 0; i < copyPx; i++)
+            dp[i] = x11_apply_rop_argb(dp[i], sp[i] | 0xFF000000u, piFn, piPm);
+        }
       }
     } else {
       // GC clip active — clip in drawable-local coords, then copy
@@ -827,7 +848,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       fg = gst.fg;
       bg = gst.bg;
     }
-    // else keep defaults
+    const uint8_t  cpFn   = (uint8_t)(gst.function & 0x0Fu);
+    const uint32_t cpPm   = gst.plane_mask;
+    const bool     cpFast = (cpFn == 3) && ((cpPm & 0x00FFFFFFu) == 0x00FFFFFFu);
     
     // ------------------------------------------------------------
     // Resolve src as either:
@@ -960,7 +983,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
           else    dstBits[dByteIndex] &= (uint8_t)~mask;
         } else {
           if (gst.has_clip && !x11::gcPointVisible(gst, dx, dy)) continue;
-          dstPixels[(size_t)dy * (size_t)dstStridePx + (size_t)dx] = on ? fg : bg;
+          const uint32_t src_px = on ? fg : bg;
+          uint32_t& d = dstPixels[(size_t)dy * (size_t)dstStridePx + (size_t)dx];
+          if (cpFast) d = src_px;
+          else        d = x11_apply_rop_argb(d, src_px, cpFn, cpPm);
         }
       }
     }
@@ -1090,6 +1116,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (!f) { br.skip(br.remaining()); return; }
 
     const x11::GCState* gcClip = gc.has_clip ? &gc : nullptr;
+    const uint8_t ptFn = (uint8_t)(gc.function & 0x0Fu);
+    const uint32_t ptPm = gc.plane_mask;
+    const bool ptFast = (ptFn == 3) && ((ptPm & 0x00FFFFFFu) == 0x00FFFFFFu);
 
     auto drawGlyph1bpp32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
       const int gw = g.bbx_w;
@@ -1124,7 +1153,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
           if (on) {
             if (gcClip && !x11::gcPointVisible(*gcClip, dx, dy)) continue;
-            drow[(size_t)dx] = fgO;
+            if (ptFast) drow[(size_t)dx] = fgO;
+            else        drow[(size_t)dx] = x11_apply_rop_argb(drow[(size_t)dx], fgO, ptFn, ptPm);
           }
         }
       }
@@ -1308,6 +1338,247 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     if (dst.isWindow) {
       // Background fill rect is the largest affected region.
+      damageOrDirty(ctx, drawable,
+                    (int32_t)x, (int32_t)y - fontAscent,
+                    (int32_t)overallW, (int32_t)(fontAscent + fontDescent));
+    }
+  }
+
+  // ---- 75: PolyText16 ----
+  //
+  // Identical to PolyText8 except each character is a CHAR2B (2 bytes, byte1||byte2).
+  // TEXTITEM16:
+  //   BYTE len       0..254 = number of CHAR2B chars, 255 = font change
+  //   INT8 delta
+  //   if len==255: CARD32 font
+  //   else:        CHAR2B string[len]   (len * 2 bytes)
+  void DrawOps::handlePolyText16(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br)
+  {
+    if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+
+    const uint32_t drawable = br.readU32();
+    const uint32_t gcXid    = br.readU32();
+    int32_t penX            = (int16_t)br.readU16();
+    const int32_t baseY     = (int16_t)br.readU16();
+
+    x11::DrawableRW dst{};
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) { br.skip(br.remaining()); return; }
+
+    x11::GCState gc{};
+    (void)getGC(gcXid, gc);
+
+    const x11::font::BdfFont* f = resolveFont(ctx, gc);
+    if (!f) { br.skip(br.remaining()); return; }
+
+    const x11::GCState* gcClip = gc.has_clip ? &gc : nullptr;
+    const uint8_t ptFn = (uint8_t)(gc.function & 0x0Fu);
+    const uint32_t ptPm = gc.plane_mask;
+    const bool ptFast = (ptFn == 3) && ((ptPm & 0x00FFFFFFu) == 0x00FFFFFFu);
+
+    auto drawGlyph1bpp32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w;
+      const int gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
+
+      const uint32_t fgO = (fg & 0x00FFFFFFu) | 0xFF000000u;
+      const int srcStride = g.rowStrideBytes();
+      if (srcStride <= 0) return;
+      const size_t need = (size_t)srcStride * (size_t)gh;
+      if (g.bitmap.size() < need) return;
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* srow = g.bitmap.data() + (size_t)yy * (size_t)srcStride;
+
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+
+          const uint32_t bit = (uint32_t)xx;
+          const uint32_t sByte = bit >> 3;
+          const uint32_t sBit  = bit & 7u;
+          const uint8_t mask = (uint8_t)(1u << (7u - sBit));
+          const bool on = (srow[sByte] & mask) != 0;
+
+          if (on) {
+            if (gcClip && !x11::gcPointVisible(*gcClip, dx, dy)) continue;
+            if (ptFast) drow[(size_t)dx] = fgO;
+            else        drow[(size_t)dx] = x11_apply_rop_argb(drow[(size_t)dx], fgO, ptFn, ptPm);
+          }
+        }
+      }
+    };
+
+    while (br.remaining() >= 2) {
+      const uint8_t len = br.readU8();
+      const int8_t  delta = (int8_t)br.readU8();
+
+      penX += (int32_t)delta;
+
+      if (len == 0) continue;
+
+      if (len == 255) {
+        if (br.remaining() < 4) { br.skip(br.remaining()); break; }
+        const uint32_t newFont = br.readU32();
+        gc.font = newFont;
+        const x11::font::BdfFont* nf = resolveFont(ctx, gc);
+        if (nf) f = nf;
+        continue;
+      }
+
+      // Each CHAR2B is 2 bytes
+      if (br.remaining() < (size_t)len * 2u) { br.skip(br.remaining()); break; }
+
+      for (uint8_t i = 0; i < len; i++) {
+        // CHAR2B: byte1 (high) then byte2 (low)
+        const uint8_t byte1 = br.readU8();
+        const uint8_t byte2 = br.readU8();
+        const int encoding = ((int)byte1 << 8) | (int)byte2;
+
+        const x11::font::Glyph* g = f->getGlyph(encoding);
+        if (!g) g = f->getGlyph(f->defaultChar);
+        if (!g) g = f->getGlyph((int)'?');
+        if (!g) { penX += f->advanceFor(encoding); continue; }
+
+        const int leftX = (int)penX + g->bbx_xoff;
+        const int topY  = (int)baseY - g->bbx_yoff - (g->bbx_h - 1);
+
+        drawGlyph1bpp32(leftX, topY, *g, gc.fg);
+
+        penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor(encoding);
+      }
+    }
+
+    br.skip(br.remaining());
+
+    if (dst.isWindow) {
+      damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
+    }
+  }
+
+
+  // ---- 77: ImageText16 ----
+  //
+  // Identical to ImageText8 except each character is a CHAR2B (2 bytes, byte1||byte2).
+  // n (from minor/data byte) is the number of CHAR2B characters (not bytes).
+  void DrawOps::handleImageText16(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br)
+  {
+    if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+
+    const uint32_t drawable = br.readU32();
+    const uint32_t gcXid    = br.readU32();
+    const int16_t x         = (int16_t)br.readU16();
+    const int16_t y         = (int16_t)br.readU16();
+
+    if (br.remaining() < (size_t)n * 2u) { br.skip(br.remaining()); return; }
+    std::vector<int> text(n);
+    for (uint8_t i = 0; i < n; i++) {
+      const uint8_t byte1 = br.readU8();
+      const uint8_t byte2 = br.readU8();
+      text[i] = ((int)byte1 << 8) | (int)byte2;
+    }
+    br.skip(br.remaining());
+
+    x11::DrawableRW dst{};
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) return;
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
+
+    x11::GCState gc{};
+    (void)getGC(gcXid, gc);
+
+    const x11::font::BdfFont* f = resolveFont(ctx, gc);
+    if (!f) return;
+
+    const int fontAscent  = (f->ascent  > 0) ? f->ascent  : 12;
+    const int fontDescent = (f->descent > 0) ? f->descent : 4;
+
+    // Compute overall width
+    int overallW = 0;
+    for (int ch : text) overallW += f->advanceFor(ch);
+
+    const x11::GCState* gcClipIT = gc.has_clip ? &gc : nullptr;
+
+    auto fillRect32 = [&](int rx, int ry, int rw, int rh, uint32_t color) {
+      if (rw <= 0 || rh <= 0) return;
+
+      int x0 = rx, y0 = ry, x1 = rx + rw, y1 = ry + rh;
+      if (x0 < 0) x0 = 0;
+      if (y0 < 0) y0 = 0;
+      if (x1 > (int)dst.w) x1 = (int)dst.w;
+      if (y1 > (int)dst.h) y1 = (int)dst.h;
+      if (x0 >= x1 || y0 >= y1) return;
+
+      const uint32_t c = (color & 0x00FFFFFFu) | 0xFF000000u;
+
+      auto fillSub = [&](int32_t fx0, int32_t fy0, int32_t fx1, int32_t fy1) {
+        for (int32_t yy = fy0; yy < fy1; yy++) {
+          uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+          for (int32_t xx = fx0; xx < fx1; xx++) row[(size_t)xx] = c;
+        }
+      };
+      x11::gcClipForEachRect(gc, x0, y0, x1, y1, fillSub);
+    };
+
+    auto drawGlyph1bpp32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w;
+      const int gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
+
+      const uint32_t fgO = (fg & 0x00FFFFFFu) | 0xFF000000u;
+      const int srcStride = g.rowStrideBytes();
+      if (srcStride <= 0) return;
+      const size_t need = (size_t)srcStride * (size_t)gh;
+      if (g.bitmap.size() < need) return;
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* srow = g.bitmap.data() + (size_t)yy * (size_t)srcStride;
+
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+
+          const uint32_t bit = (uint32_t)xx;
+          const uint32_t sByte = bit >> 3;
+          const uint32_t sBit  = bit & 7u;
+          const uint8_t  mask  = (uint8_t)(1u << (7u - sBit));
+          const bool on = (srow[sByte] & mask) != 0;
+
+          if (on) {
+            if (gcClipIT && !x11::gcPointVisible(*gcClipIT, dx, dy)) continue;
+            drow[(size_t)dx] = fgO;
+          }
+        }
+      }
+    };
+
+    // Background fill
+    fillRect32((int)x, (int)y - fontAscent, overallW, fontAscent + fontDescent, gc.bg);
+
+    // Draw glyphs
+    int penX = (int)x;
+    for (int ch : text) {
+      const x11::font::Glyph* g = f->getGlyph(ch);
+      if (!g) g = f->getGlyph(f->defaultChar);
+      if (!g) g = f->getGlyph((int)'?');
+      if (!g) { penX += f->advanceFor(ch); continue; }
+
+      const int leftX = penX + g->bbx_xoff;
+      const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
+
+      drawGlyph1bpp32(leftX, topY, *g, gc.fg);
+
+      penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor(ch);
+    }
+
+    if (dst.isWindow) {
       damageOrDirty(ctx, drawable,
                     (int32_t)x, (int32_t)y - fontAscent,
                     (int32_t)overallW, (int32_t)(fontAscent + fontDescent));

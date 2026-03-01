@@ -343,7 +343,7 @@ void XProtoDaemon::deactivateClient() {
 
 bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Phase 0: read 4-byte request header
-  if (cs.hdr_have < 4) {
+  if (cs.hdr_have < 4 && !cs.reading_ext_len) {
     ssize_t r = ::recv(fd, cs.hdr + cs.hdr_have, 4 - cs.hdr_have, 0);
     if (r == 0) return false; // EOF
     if (r < 0) {
@@ -355,20 +355,62 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
 
     // Header complete — parse it
     const uint16_t len_words = (uint16_t)(cs.hdr[2] | ((uint16_t)cs.hdr[3] << 8));
-    if (len_words == 0) return false; // protocol error
 
-    const size_t total = (size_t)len_words * 4u;
-    if (total < 4u) return false;
+    if (len_words == 0) {
+      // BIG-REQUESTS: len_words==0 means next 4 bytes are the 32-bit length
+      if (cs.client && cs.client->bigReqEnabled()) {
+        cs.reading_ext_len = true;
+        cs.ext_len_have = 0;
+        // fall through to phase 0.5
+      } else {
+        return false; // protocol error — BIG-REQUESTS not enabled
+      }
+    } else {
+      const size_t total = (size_t)len_words * 4u;
+      if (total < 4u) return false;
 
-    cs.buf_need = total - 4u;
+      cs.buf_need = total - 4u;
+      cs.buf_have = 0;
+
+      if (cs.buf_need > 0) {
+        cs.buf.resize(cs.buf_need);
+        return true; // wait for payload on next poll
+      }
+
+      // No payload — fall through to dispatch
+    }
+  }
+
+  // Phase 0.5: read 4-byte extended length (BIG-REQUESTS)
+  if (cs.reading_ext_len && cs.ext_len_have < 4) {
+    ssize_t r = ::recv(fd, cs.ext_len + cs.ext_len_have, 4 - cs.ext_len_have, 0);
+    if (r == 0) return false;
+    if (r < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;
+      return false;
+    }
+    cs.ext_len_have += (size_t)r;
+    if (cs.ext_len_have < 4) return true; // need more bytes
+
+    // Parse 32-bit extended length in words (little-endian)
+    const uint32_t ext_words = (uint32_t)cs.ext_len[0]
+                             | ((uint32_t)cs.ext_len[1] << 8)
+                             | ((uint32_t)cs.ext_len[2] << 16)
+                             | ((uint32_t)cs.ext_len[3] << 24);
+
+    if (ext_words < 2) return false; // minimum is 2 words (8 bytes: 4 hdr + 4 ext_len)
+
+    // Total bytes = ext_words * 4, already consumed 4 (hdr) + 4 (ext_len) = 8
+    const size_t total = (size_t)ext_words * 4u;
+    cs.buf_need = total - 8u;
     cs.buf_have = 0;
+    cs.reading_ext_len = false;
 
     if (cs.buf_need > 0) {
       cs.buf.resize(cs.buf_need);
       return true; // wait for payload on next poll
     }
-
-    // No payload — fall through to dispatch
+    // No additional payload — fall through to dispatch
   }
 
   // Phase 1: read payload
@@ -407,6 +449,8 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   cs.hdr_have = 0;
   cs.buf_need = 0;
   cs.buf_have = 0;
+  cs.reading_ext_len = false;
+  cs.ext_len_have = 0;
 
   return true;
 }

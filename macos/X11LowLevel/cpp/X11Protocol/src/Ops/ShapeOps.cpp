@@ -400,6 +400,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
   x11::GCState gc{};
   (void)x11::GCTable::instance().find(gcXid, gc);
   const uint32_t fg = (gc.fg & 0x00FFFFFFu) | 0xFF000000u;
+  const uint8_t fn = (uint8_t)(gc.function & 0x0Fu);
+  const uint32_t pm = gc.plane_mask;
+  const bool fastFill = (fn == 3) && ((pm & 0x00FFFFFFu) == 0x00FFFFFFu);
 
   // Find bounding box
   int32_t minY = pts[0].y, maxY = pts[0].y;
@@ -441,7 +444,8 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
       uint32_t* row = dst.pixels32 + (size_t)scanY * (size_t)dst.stridePixels;
       for (int32_t xx = xL; xx <= xR; xx++) {
         if (gc.has_clip && !x11::gcPointVisible(gc, xx, scanY)) continue;
-        row[xx] = fg;
+        if (fastFill) row[xx] = fg;
+        else          row[xx] = x11_apply_rop_argb(row[xx], fg, fn, pm);
       }
     }
   }
@@ -617,6 +621,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     GCState gst{};
     uint32_t fg = 0xFF000000u;
     if (GCTable::instance().find(gc_id, gst)) fg = gst.fg | 0xFF000000u;
+    const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
+    const uint32_t pm = gst.plane_mask;
+    const bool fastFill = (fn == 3) && ((pm & 0x00FFFFFFu) == 0x00FFFFFFu);
 
     const int dstW = (int)dst.w;
     const int dstH = (int)dst.h;
@@ -664,7 +671,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
           }
 
           if (gst.has_clip && !x11::gcPointVisible(gst, px, py)) continue;
-          dstPixels[(size_t)py * (size_t)dstStride + (size_t)px] = fg;
+          uint32_t& d = dstPixels[(size_t)py * (size_t)dstStride + (size_t)px];
+          if (fastFill) d = fg;
+          else          d = x11_apply_rop_argb(d, fg, fn, pm);
         }
       }
     }
@@ -708,6 +717,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     GCState gst{};
     uint32_t fg = 0xFF000000u;
     if (GCTable::instance().find(gc_id, gst)) fg = gst.fg | 0xFF000000u;
+    const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
+    const uint32_t pm = gst.plane_mask;
+    const bool fastFill = (fn == 3) && ((pm & 0x00FFFFFFu) == 0x00FFFFFFu);
 
     const int dstW = (int)dst.w;
     const int dstH = (int)dst.h;
@@ -762,7 +774,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
           }
 
           if (gst.has_clip && !x11::gcPointVisible(gst, px, py)) continue;
-          dstPixels[(size_t)py * (size_t)dstStride + (size_t)px] = fg;
+          uint32_t& d = dstPixels[(size_t)py * (size_t)dstStride + (size_t)px];
+          if (fastFill) d = fg;
+          else          d = x11_apply_rop_argb(d, fg, fn, pm);
         }
       }
     }

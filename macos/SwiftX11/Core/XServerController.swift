@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 import X11LowLevel
 import QuartzCore
 
@@ -293,6 +294,30 @@ final class XServerController: ObservableObject {
       // The shared C++ damage accumulator carries the actual rect data.
       // This UI command just signals Swift to schedule a present.
       WindowRegistry.shared.noteDamage(xid: cmd.xid, x: cmd.x_u, y: cmd.y_u, w: cmd.w_u, h: cmd.h_u)
+
+    case X11_UI_WARP_POINTER:
+      let hostXid = cmd.xid
+      let x = CGFloat(cmd.x_u)
+      let y = CGFloat(cmd.y_u)
+
+      if hostXid == 0 {
+        // Relative warp: delta from current pointer position
+        let current = NSEvent.mouseLocation
+        // NSEvent.mouseLocation is bottom-left origin; CGWarpMouseCursorPosition is top-left
+        let screenH = NSScreen.main?.frame.height ?? 1080
+        let screenPt = CGPoint(x: current.x + x, y: screenH - current.y + y)
+        CGWarpMouseCursorPosition(screenPt)
+      } else if let view = WindowRegistry.shared.viewForHostXid(hostXid),
+                let window = view.window {
+        // Window-relative: convert host-local coords to screen coords
+        // X11 coords: origin at top-left; Cocoa: bottom-left
+        let contentRect = window.contentView?.frame ?? window.frame
+        let cocoaLocal = NSPoint(x: x, y: contentRect.height - y)
+        let screenPt = window.convertPoint(toScreen: cocoaLocal)
+        let screenH = NSScreen.main?.frame.height ?? 1080
+        let cgPt = CGPoint(x: screenPt.x, y: screenH - screenPt.y)
+        CGWarpMouseCursorPosition(cgPt)
+      }
 
     default:
       break

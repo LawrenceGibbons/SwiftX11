@@ -33,12 +33,17 @@ public:
   uint32_t ridBase() const { return rid_base_; }
   uint32_t ridMask() const { return rid_mask_; }
 
+  // BIG-REQUESTS extension: when enabled, len_words==0 means 4 extra bytes follow
+  bool bigReqEnabled() const { return big_req_enabled_; }
+  void setBigReqEnabled(bool v) { big_req_enabled_ = v; }
+
 private:
   int fd_;
   uint32_t rid_base_;
   uint32_t rid_mask_;
   XProtoTransport transport_;
   ReplyWriter reply_;
+  bool big_req_enabled_ = false;
 };
 
 } // namespace x11

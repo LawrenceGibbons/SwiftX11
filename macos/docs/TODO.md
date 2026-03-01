@@ -59,7 +59,7 @@ Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK r
 ### Drawing Operations
 - [x] All shape primitives: PolyPoint, PolyLine, PolySegment, PolyRectangle, PolyArc, FillPoly, PolyFillRectangle, PolyFillArc
 - [x] PutImage (ZPixmap depth 24/32), CopyArea, CopyPlane, ClearArea, GetImage
-- [x] Text: ImageText8, PolyText8 via BDF glyph bitmaps
+- [x] Text: ImageText8/16, PolyText8/16 via BDF glyph bitmaps (16-bit added v1.4.0)
 - [x] Cursor management: CreateCursor, CreateGlyphCursor, FreeCursor, cursor shape application
 
 ### Debug / Instrumentation
@@ -74,8 +74,8 @@ Vivado uses Java Swing (renders client-side via Java 2D, uploads via PutImage). 
 
 ### 1.1 GC Semantics (HIGH — affects all drawing)
 GC function, planemask, and clipping are used by every toolkit.
-- [ ] **GC function (GXcopy, GXxor, etc.)**: Apply in all draw paths (PolyFillRectangle, CopyArea, text ops, etc.). Currently everything is GXcopy-only.
-- [ ] **GC planemask**: Apply in all draw paths (currently ignored).
+- [x] **GC function (GXcopy, GXxor, etc.)**: Applied in all draw paths via `x11_apply_rop_argb()` with fast-path for GXcopy+full-planemask (v1.4.0). Ops updated: FillPoly, PolyFillArc, PolyArc, PolyText8/16, PutImage, CopyPlane.
+- [x] **GC planemask**: Applied in all draw paths alongside GC function (v1.4.0).
 - [x] **SetClipRectangles (opcode 59)**: GC clip region stored as vector of ClipRect in GCState. Parsed from wire format with clip-x-origin, clip-y-origin.
 - [x] **SetDashes (opcode 58)**: Dash offset and dash list stored in GCState (v1.2.0). Rendering with dashes not yet implemented.
 - [x] **GC clip enforcement**: All draw ops check GC clip rects (PolyFillRectangle uses rect-intersection, per-pixel ops use gcPointVisible). CreateGC/ChangeGC handle clip bits 17-19, CopyGC copies clip state.
@@ -96,8 +96,8 @@ Unhandled opcodes log warnings but don't send replies, causing XCB sequence desy
 
 ### 1.3 16-bit Text (MEDIUM — Unicode support)
 Java/GTK use 16-bit text for internationalized strings.
-- [ ] **PolyText16 (opcode 75)**: Draw 16-bit character strings. Map to existing BDF fonts (high byte selects font page).
-- [ ] **ImageText16 (opcode 77)**: Draw 16-bit text with opaque background.
+- [x] **PolyText16 (opcode 75)**: 16-bit character strings via CHAR2B encoding, supports font changes (v1.4.0).
+- [x] **ImageText16 (opcode 77)**: 16-bit text with opaque background fill (v1.4.0).
 - [ ] **QueryTextExtents**: Verify 16-bit character extent calculations work.
 
 ### 1.4 Selections / Clipboard (MEDIUM — copy/paste)
@@ -108,7 +108,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 - [ ] **macOS clipboard bridge**: Bridge NSPasteboard <-> X11 CLIPBOARD selection for cross-environment copy/paste.
 
 ### 1.5 WarpPointer (MEDIUM — stub upgrade)
-- [ ] **WarpPointer (opcode 41)**: Currently accepted but pointer not moved. Java tooltips and dialogs may use this. Implement via CGWarpMouseCursorPosition.
+- [x] **WarpPointer (opcode 41)**: Implemented via UICommandQueue → Swift → CGWarpMouseCursorPosition (v1.4.0). Supports root-relative, window-relative, and delta warps.
 
 ---
 
@@ -118,46 +118,53 @@ Java 2D, GTK/Cairo, and Pango all query for extensions. SwiftX11 currently retur
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
-- [ ] **QueryExtension("RENDER")**: Return present=1, major opcode for RENDER.
-- [ ] **RenderQueryVersion**: Negotiate version (0.11 is widely supported).
-- [ ] **RenderQueryPictFormats**: Return available picture formats (ARGB32, RGB24, A8, A1).
-- [ ] **CreatePicture / FreePicture**: Associate a Picture with a Drawable + PictFormat.
-- [ ] **Composite**: The core compositing operation. Combine src+mask -> dst with alpha blending. This is what Cairo uses for everything.
-- [ ] **FillRectangles**: Fill rectangles with a color on a Picture (used for solid fills with alpha).
+- [x] **QueryExtension("RENDER")**: Returns present=1, major opcode 139 (v1.4.0).
+- [x] **RenderQueryVersion**: Returns version 0.11 (v1.4.0).
+- [x] **RenderQueryPictFormats**: Returns ARGB32, RGB24, A8, A4, A1 formats + screen mapping to TrueColor visual (v1.4.0).
+- [x] **CreatePicture / FreePicture**: Picture table maps PID → drawable+format (v1.4.0).
+- [x] **Composite**: PictOpSrc, PictOpOver, PictOpAdd, PictOpClear implemented. Solid-fill and drawable-to-drawable paths (v1.4.0).
+- [x] **FillRectangles**: Solid color fill with compositing ops (v1.4.0).
+- [x] **CreateSolidFill**: Solid color source pictures (v1.4.0).
+- [x] **ChangePicture**: Parses CPRepeat attribute (v1.4.0).
+- [x] **QueryFilters**: Returns "nearest" and "bilinear" filter names (v1.4.0).
+- [x] **CreateGlyphSet / FreeGlyphSet / ReferenceGlyphSet**: GlyphSet table stubs (v1.4.0).
+- [x] **AddGlyphs / FreeGlyphs / CompositeGlyphs8/16/32**: Consume silently — no glyph rendering yet (v1.4.0).
+- [x] **SetPictureClipRectangles / SetPictureTransform / SetPictureFilter**: Consume silently (v1.4.0).
+- [x] **Gradient fills (CreateLinearGradient/Radial/Conical)**: Stub as transparent solid fills (v1.4.0).
 - [ ] **Trapezoids / Triangles**: Geometric fill operations (used by Cairo for vector paths).
-- [ ] **AddGlyphs / CompositeGlyphs8/16/32**: Server-side glyph caching + rendering. Pango/Cairo upload font glyphs once, then reference by ID for fast text drawing.
-- [ ] **CreateGlyphSet / FreeGlyphSet**: Glyph set management.
-- [ ] **SetPictureClipRectangles**: Clip region on Pictures.
+- [ ] **CompositeGlyphs rendering**: Actually render uploaded glyphs (currently stubs).
+- [ ] **Mask parameter in Composite**: Currently ignored; needed for complex alpha operations.
 
 ### 2.2 BIG-REQUESTS Extension (HIGH — large images)
 Vivado schematics and waveform views can be large. Without BIG-REQUESTS, maximum request size is 262140 bytes (~256KB), limiting PutImage to ~256KB per call.
-- [ ] **QueryExtension("BIG-REQUESTS")**: Return present=1.
-- [ ] **BigReqEnable**: Return maximum request size (e.g., 16MB). Changes wire format: 4-byte length field becomes 8-byte for oversized requests.
-- [ ] **Wire format**: Detect extended-length requests (length==0 in header → read 4-byte extended length).
+- [x] **QueryExtension("BIG-REQUESTS")**: Returns present=1, major opcode 133 (v1.4.0).
+- [x] **BigReqEnable**: Returns max request length 1M words (4MB). Sets per-client big_req_enabled flag (v1.4.0).
+- [x] **Wire format**: readAndDispatch() detects len_words==0 when big_req_enabled, reads 4-byte extended length (v1.4.0).
 
 ### 2.3 XFIXES Extension (MEDIUM — cursor, regions)
 GTK and Java use XFIXES for cursor visibility and region operations.
-- [ ] **QueryExtension("XFIXES")**: Return present=1.
-- [ ] **XFixesQueryVersion**: Negotiate version.
+- [x] **QueryExtension("XFIXES")**: Returns present=1, major opcode 134 (v1.4.0).
+- [x] **XFixesQueryVersion**: Returns version 5.0 (v1.4.0).
 - [ ] **XFixesShowCursor / HideCursor**: Cursor visibility control.
 - [ ] **XFixesCreateRegion / SetWindowShapeRegion**: Region operations.
 - [ ] **XFixesSelectCursorInput / GetCursorImage**: Cursor change notification.
 
 ### 2.4 SHAPE Extension (LOW — non-rectangular windows)
 Some splash screens and tooltips use shaped windows.
-- [ ] **QueryExtension("SHAPE")**: Return present=1.
+- [x] **QueryExtension("SHAPE")**: Returns present=1, major opcode 135 (v1.4.0).
+- [x] **ShapeQueryVersion**: Returns version 1.1 (v1.4.0).
 - [ ] **ShapeRectangles / ShapeMask**: Define non-rectangular window shape.
 - [ ] **ShapeQueryExtents**: Query window shape.
 
 ### 2.5 Other Extensions (LOW — query but don't need full impl)
 These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
 - [ ] **MIT-SHM**: Shared memory (not applicable over network/container — present=0 is correct).
-- [ ] **RANDR**: Screen configuration (single-screen stub).
-- [ ] **Xinerama**: Multi-monitor (single-screen stub).
+- [x] **RANDR**: Returns present=1, major 136, RRQueryVersion returns 1.5, single-screen stub (v1.4.0).
+- [x] **Xinerama**: Returns present=1, major 137, XineramaIsActive=1, QueryScreens returns 1 screen 1920×1080 (v1.4.0).
 - [ ] **XInput / XInput2**: Extended input (present=0 is fine initially).
 - [ ] **DPMS**: Display power management (present=0).
 - [ ] **SYNC**: Synchronization (present=0).
-- [ ] **Generic Event Extension (GE)**: Required by XInput2 (present=0 if XI2 not implemented).
+- [x] **Generic Event Extension (GE)**: Returns present=1, major 138, GEQueryVersion returns 1.0 (v1.4.0).
 
 ---
 

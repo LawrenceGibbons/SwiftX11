@@ -31,7 +31,9 @@ private:
   void handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, ByteReader& br);     // 72
   void handleGetImage(XProtoContext& ctx, uint16_t seq, uint8_t format, ByteReader& br);    // 73
   void handlePolyText8(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br);                // 74
+  void handlePolyText16(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br);               // 75
   void handleImageText8(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br);    // 76
+  void handleImageText16(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br);   // 77
   // Helpers
   static uint32_t computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits); // bitmapScanlinePad=32
 };

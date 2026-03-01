@@ -26,9 +26,15 @@ struct ClientSession {
 
   // Incremental request read state.
   // Phase 0: reading 4-byte header (hdr[0..3]).
+  // Phase 0.5: reading 4-byte extended length (ext_len[0..3]) when BIG-REQUESTS
+  //            is enabled and hdr len_words==0.
   // Phase 1: reading payload (buf[0..buf_need-1]).
   uint8_t hdr[4]{};
   size_t hdr_have = 0;          // bytes of header received (0–4)
+
+  uint8_t ext_len[4]{};         // BIG-REQUESTS extended length (4 bytes)
+  size_t ext_len_have = 0;      // bytes of extended length received (0–4)
+  bool reading_ext_len = false;  // true when in phase 0.5
 
   std::vector<uint8_t> buf;
   size_t buf_have = 0;          // payload bytes received so far

@@ -6,9 +6,12 @@
 //
 
 #include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
 
 #include "Ops/QueryOps.hpp"
+#include "Core/XClient.hpp"
 #include "Core/XProtoContext.hpp"
 #include "Core/WindowTable.hpp"
 #include "Ops/ReplyWriter.hpp"
@@ -17,9 +20,14 @@
 #include "Utils/WireLE.hpp"
 #include "Core/KeySyms.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/X11ExtOpcodes.hpp"
+
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
 
 namespace x11 {
-  
+
   QueryOps::QueryOps(XProtoRegistrar& reg) {
     reg.registerMajor(x11::opcode::QueryTree,          &QueryOps::onMajor, this); // QueryTree
     reg.registerMajor(x11::opcode::QueryPointer,       &QueryOps::onMajor, this); // QueryPointer
@@ -33,6 +41,9 @@ namespace x11 {
     reg.registerMajor(x11::opcode::SetInputFocus,      &QueryOps::onMajor, this); // 42
     reg.registerMajor(x11::opcode::GetMotionEvents,   &QueryOps::onMajor, this); // 39
     reg.registerMajor(x11::opcode::QueryKeymap,       &QueryOps::onMajor, this); // 44
+
+    // Extension opcodes
+    reg.registerMajor(ext::kBigReq, &QueryOps::onMajor, this); // BIG-REQUESTS Enable
   }
   
   void QueryOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -54,6 +65,7 @@ namespace x11 {
       case x11::opcode::SetInputFocus    : handleSetInputFocus(ctx, dc.seq, dc.minor, dc.br); return;
       case x11::opcode::GetMotionEvents : handleGetMotionEvents(ctx, dc.seq, dc.br); return;
       case x11::opcode::QueryKeymap     : handleQueryKeymap(ctx, dc.seq, dc.br); return;
+      case ext::kBigReq                 : handleBigReqEnable(ctx, dc.seq, dc.br); return;
       default:
         dc.br.skip(dc.br.remaining());
         ctx.tracef("[QueryOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -480,31 +492,52 @@ namespace x11 {
   //   CARD8 first_event
   //   CARD8 first_error
   //   length = 0 (no extra data)
-  //
-  // Bring-up: we report present=0 for all names (no extensions supported).
   void QueryOps::handleQueryExtension(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
-    
+
     const uint16_t nbytes = br.readU16();
     br.skip(2); // pad
-    
-    // Consume name bytes (if present) and 4-byte pad.
+
+    // Read the extension name
+    std::string name;
     const std::size_t avail = br.remaining();
     const std::size_t take  = std::min<std::size_t>(nbytes, avail);
-    br.skip(take);
-    // Skip any remaining padding (request is padded to 4-byte boundary).
-    const std::size_t rem = br.remaining();
-    const std::size_t pad = rem % 4u;
-    if (pad) br.skip(pad);
-    br.skip(br.remaining()); // defensive: consume rest
-    
+    if (take > 0) {
+      name.assign(reinterpret_cast<const char*>(br.ptr()), take);
+      br.skip(take);
+    }
+    br.skip(br.remaining()); // consume padding + rest
+
+    // Check supported extensions
+    uint8_t present = 0, major = 0, first_event = 0, first_error = 0;
+
+    if (name == "BIG-REQUESTS") {
+      present = 1; major = ext::kBigReq;
+    } else if (name == "XFIXES") {
+      present = 1; major = ext::kXFIXES; first_event = ext::kXFIXES_FirstEvent;
+    } else if (name == "SHAPE") {
+      present = 1; major = ext::kSHAPE; first_event = ext::kSHAPE_FirstEvent;
+    } else if (name == "RANDR") {
+      present = 1; major = ext::kRANDR; first_event = ext::kRANDR_FirstEvent;
+    } else if (name == "XINERAMA" || name == "PANORAMIX") {
+      present = 1; major = ext::kXinerama;
+    } else if (name == "Generic Event Extension") {
+      present = 1; major = ext::kGE; first_event = ext::kGE_FirstEvent;
+    } else if (name == "RENDER") {
+      present = 1; major = ext::kRENDER;
+    }
+
+#ifndef NDEBUG
+    fprintf(stderr, "[QueryExtension] \"%s\" -> present=%u major=%u\n",
+            name.c_str(), (unsigned)present, (unsigned)major);
+#endif
+
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      // length = 0 (bytes 4..7 already set by sendReply32, but make it explicit)
       wire::wr32_le(rep.data() + 4, 0);
-      rep[1]  = 0; // present
-      rep[8]  = 0; // major_opcode
-      rep[9]  = 0; // first_event
-      rep[10] = 0; // first_error
+      rep[1]  = present;
+      rep[8]  = major;
+      rep[9]  = first_event;
+      rep[10] = first_error;
     });
   }
   
@@ -512,19 +545,75 @@ namespace x11 {
   //
   // Reply:
   //   BYTE nExtensions (rep[1])
-  //   length = 0, and no payload list.
-  //
-  // Bring-up: no extensions.
+  //   length in 4-byte words of additional data
+  //   Payload: sequence of STR (1-byte length + name bytes), padded to 4 bytes
   void QueryOps::handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining()); // request has no extra fields we care about
-    
+
+    // List of supported extensions
+    static const char* extensions[] = {
+      "BIG-REQUESTS",
+      "XFIXES",
+      "SHAPE",
+      "RANDR",
+      "XINERAMA",
+      "Generic Event Extension",
+      "RENDER",
+    };
+    static constexpr uint8_t nExt = 7;
+
+    // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
+    std::vector<uint8_t> payload;
+    for (uint8_t i = 0; i < nExt; i++) {
+      const size_t len = std::strlen(extensions[i]);
+      payload.push_back((uint8_t)len);
+      payload.insert(payload.end(), extensions[i], extensions[i] + len);
+    }
+    // Pad to 4-byte boundary
+    while (payload.size() % 4u) payload.push_back(0);
+
+    const uint32_t lenWords = (uint32_t)(payload.size() / 4u);
+
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      wire::wr32_le(rep.data() + 4, 0); // length=0
-      rep[1] = 0; // nExtensions
+      wire::wr32_le(rep.data() + 4, lenWords);
+      rep[1] = nExt;
+    });
+    if (!payload.empty()) {
+      ctx.reply().sendBytes(payload.data(), payload.size());
+    }
+  }
+
+
+  // ---- 133: BigReqEnable (BIG-REQUESTS extension, opcode 0) ----
+  //
+  // Request: just the 4-byte header (no additional data)
+  // Reply:
+  //   CARD32 maximum-request-length (in 4-byte units)
+  //
+  // After this reply, the client can send requests with len_words==0
+  // followed by a 32-bit extended length.
+  void QueryOps::handleBigReqEnable(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+    br.skip(br.remaining());
+
+    // Enable BIG-REQUESTS for this client
+    if (ctx.hasClient() && ctx.client()) {
+      ctx.client()->setBigReqEnabled(true);
+    }
+
+    // Maximum request length: 1M words = 4MB
+    static constexpr uint32_t kMaxBigReqWords = 0x00100000u; // 1048576 words = 4MB
+
+#ifndef NDEBUG
+    fprintf(stderr, "[BigReqEnable] enabled, max_request_length=%u words\n",
+            (unsigned)kMaxBigReqWords);
+#endif
+
+    (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+      wire::wr32_le(rep.data() + 4, 0); // length=0 (no extra data)
+      wire::wr32_le(rep.data() + 8, kMaxBigReqWords);
     });
   }
-  
-  
+
   // ---- 101: GetKeyboardMapping ----
   void QueryOps::handleGetKeyboardMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br)
   {
@@ -611,9 +700,45 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
   });
 }
 
-// ---- 41: WarpPointer (stub) ----
-void QueryOps::handleWarpPointer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+// ---- 41: WarpPointer ----
+void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  // Body (20 bytes):
+  //   CARD32 srcWindow (0=None), CARD32 dstWindow (0=None)
+  //   INT16 srcX, srcY, CARD16 srcWidth, srcHeight
+  //   INT16 dstX, dstY
+  if (br.remaining() < 20) { br.skip(br.remaining()); return; }
+
+  const uint32_t srcWin  = br.readU32();
+  const uint32_t dstWin  = br.readU32();
+  /*srcX*/ br.readI16(); /*srcY*/ br.readI16();
+  /*srcW*/ br.readU16(); /*srcH*/ br.readU16();
+  const int16_t  dstX    = br.readI16();
+  const int16_t  dstY    = br.readI16();
   br.skip(br.remaining());
+
+  (void)srcWin; // TODO: honour src-window constraint
+
+  // UI queue convention:
+  //   xid == 0: relative warp (x_u/y_u are deltas from current pointer)
+  //   xid != 0: absolute warp in host-window-local coordinates
+  static constexpr uint32_t kRootXid = 0x00000029u;
+
+  if (dstWin == 0) {
+    // Relative warp
+    x11_ui_push_warp_pointer(0, (int32_t)dstX, (int32_t)dstY);
+  } else {
+    // Window-relative → host-local coordinates
+    uint32_t target = (dstWin == kRootXid) ? 0 : dstWin;
+    uint32_t host = 0;
+    int32_t offX = 0, offY = 0;
+    if (target != 0) {
+      host = ctx.windows().topLevelAncestorOf(target);
+      if (host == 0) host = target;
+      ctx.windows().absoluteOffsetInHost(host, target, offX, offY);
+    }
+    // host==0 means root-relative (treated as screen coordinates by Swift)
+    x11_ui_push_warp_pointer(host, (int32_t)dstX + offX, (int32_t)dstY + offY);
+  }
 }
 
 // ---- 42: SetInputFocus ----
