@@ -11,6 +11,7 @@
 #include "Core/WindowTable.hpp"
 #include "XProtoMotionRoute.hpp"
 #include "Core/CursorRouting.hpp"
+#include "Core/InputRouting.hpp"
 
 #include <atomic>
 
@@ -76,6 +77,30 @@ void postMotion(uint32_t host_xid,
   
   // Only deliver MotionNotify when inside (or dragging/grab)
   if (!deliver) return;
+
+  // ---- Child-to-child crossing events ----
+  // When not dragging, pick the deepest mapped child under the pointer
+  // and generate EnterNotify/LeaveNotify if the pointer moved to a
+  // different window.  Xaw Command widgets rely on these for hover
+  // highlighting (highlight on enter, unhighlight on leave).
+  // Without this, crossing events only fire on NSWindow enter/leave,
+  // leaving button highlighting stuck on the first button entered.
+  if (ctx->input().drag_xid == 0) {
+    uint32_t under = pickDeepestMappedWindowAtHostPoint(*ctx, host_xid,
+                                                        win_x, win_y);
+    if (!under) under = host_xid;
+
+    const uint32_t prev = ctx->input().pointer_xid;
+    if (under != prev) {
+      if (prev != 0) {
+        ev->sendCrossingEvent(*ctx, prev, /*is_enter=*/false,
+                              root_x, root_y, buttons, mods);
+      }
+      ev->sendCrossingEvent(*ctx, under, /*is_enter=*/true,
+                            root_x, root_y, buttons, mods);
+      ctx->input().pointer_xid = under;
+    }
+  }
 
   // During an active grab/drag, route motion to the grab owner.
   // This is essential for scrollbar drag: xterm's scrollbar installs a
