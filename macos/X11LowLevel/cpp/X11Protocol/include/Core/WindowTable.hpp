@@ -122,6 +122,12 @@ public:
   void setBorderWidth(uint32_t xid, uint16_t bw);
   void setBorderPixel(uint32_t xid, uint32_t pixel_argb);
 
+  // Stacking order manipulation (ConfigureWindow CWStackMode)
+  void raiseToTop(uint32_t xid);       // Above with no sibling
+  void lowerToBottom(uint32_t xid);    // Below with no sibling
+  void restackAbove(uint32_t xid, uint32_t sibling);  // place xid just above sibling
+  void restackBelow(uint32_t xid, uint32_t sibling);  // place xid just below sibling
+
   // Reparent: change parent and position
   bool reparent(uint32_t xid, uint32_t newParent, int16_t x, int16_t y);
 
