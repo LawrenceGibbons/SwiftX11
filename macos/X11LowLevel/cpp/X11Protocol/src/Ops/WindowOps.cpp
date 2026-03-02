@@ -98,13 +98,67 @@ static void fillWindowBorder(XProtoContext& ctx, uint32_t childXid) {
   const uint32_t bp = cv.border_pixel;
 
   // Border outer rect in parent drawable coords
-  const int32_t bx = (int32_t)cv.x;
-  const int32_t by = (int32_t)cv.y;
-  const int32_t totalW = (int32_t)cv.w + 2 * bw;
-  const int32_t totalH = (int32_t)cv.h + 2 * bw;
+  // (dv.x, dv.y) is the outer border corner.
+  int32_t bx = (int32_t)cv.x;
+  int32_t by = (int32_t)cv.y;
+  int32_t totalW = (int32_t)cv.w + 2 * bw;
+  int32_t totalH = (int32_t)cv.h + 2 * bw;
 
-  // Lambda to fill a rect clipped to parent drawable
+  // ---- Sibling occlusion for borders ----
+  // Clip the border's total rect against higher-stacking siblings' total rects,
+  // matching the same clipping logic used for content in resolveDrawableRW.
+  {
+    int32_t bx1 = bx + totalW;
+    int32_t by1 = by + totalH;
+
+    auto siblings = ctx.windows().childrenInStackOrder(cv.parent_xid);
+    bool foundSelf = false;
+    for (uint32_t sib : siblings) {
+      if (sib == childXid) { foundSelf = true; continue; }
+      if (!foundSelf) continue;
+
+      WindowView sv{};
+      if (!ctx.windows().snapshot(sib, sv)) continue;
+      if (!sv.mapped) continue;
+
+      // Sibling's total rect in parent coords
+      const int32_t sx0 = (int32_t)sv.x;
+      const int32_t sy0 = (int32_t)sv.y;
+      const int32_t sx1 = (int32_t)sv.x + (int32_t)sv.w + 2*(int32_t)sv.border_width;
+      const int32_t sy1 = (int32_t)sv.y + (int32_t)sv.h + 2*(int32_t)sv.border_width;
+
+      if (sx0 >= bx1 || sx1 <= bx || sy0 >= by1 || sy1 <= by) continue;
+
+      // Right clip
+      if (sx0 > bx && sx0 < bx1 && sy0 <= by && sy1 >= by1) { bx1 = sx0; }
+      // Left clip
+      if (sx1 < bx1 && sx1 > bx && sx0 <= bx && sy0 <= by && sy1 >= by1) { bx = sx1; }
+      // Bottom clip
+      if (sy0 > by && sy0 < by1 && sx0 <= bx && sx1 >= bx1) { by1 = sy0; }
+      // Top clip
+      if (sy1 < by1 && sy1 > by && sy0 <= by && sx0 <= bx && sx1 >= bx1) { by = sy1; }
+
+      if (bx >= bx1 || by >= by1) { totalW = 0; totalH = 0; break; }
+    }
+    totalW = bx1 - bx;
+    totalH = by1 - by;
+    if (totalW <= 0 || totalH <= 0) return; // fully occluded
+  }
+
+  // Recompute inner rect after clipping
+  const int32_t innerX = (int32_t)cv.x + bw;
+  const int32_t innerY = (int32_t)cv.y + bw;
+  const int32_t innerW = (int32_t)cv.w;
+  const int32_t innerH = (int32_t)cv.h;
+
+  // Lambda to fill a rect clipped to parent drawable AND to the visible total rect
   auto fillRect = [&](int32_t rx, int32_t ry, int32_t rw, int32_t rh) {
+    // Clip to visible total rect
+    if (rx < bx) { rw -= (bx - rx); rx = bx; }
+    if (ry < by) { rh -= (by - ry); ry = by; }
+    if (rx + rw > bx + totalW) rw = bx + totalW - rx;
+    if (ry + rh > by + totalH) rh = by + totalH - ry;
+    // Clip to parent drawable
     if (rx < 0) { rw += rx; rx = 0; }
     if (ry < 0) { rh += ry; ry = 0; }
     if (rx + rw > (int32_t)parentDst.w) rw = (int32_t)parentDst.w - rx;
@@ -119,14 +173,14 @@ static void fillWindowBorder(XProtoContext& ctx, uint32_t childXid) {
     }
   };
 
-  // Top border strip
-  fillRect(bx, by, totalW, bw);
+  // Top border strip (uses original child geometry for strip positions)
+  fillRect((int32_t)cv.x, (int32_t)cv.y, (int32_t)cv.w + 2*bw, bw);
   // Bottom border strip
-  fillRect(bx, by + bw + (int32_t)cv.h, totalW, bw);
+  fillRect((int32_t)cv.x, innerY + innerH, (int32_t)cv.w + 2*bw, bw);
   // Left border strip
-  fillRect(bx, by + bw, bw, (int32_t)cv.h);
+  fillRect((int32_t)cv.x, innerY, bw, innerH);
   // Right border strip
-  fillRect(bx + bw + (int32_t)cv.w, by + bw, bw, (int32_t)cv.h);
+  fillRect(innerX + innerW, innerY, bw, innerH);
 
   // Damage the border region on the host
   if (parentDst.isWindow) {
@@ -158,7 +212,82 @@ static inline void sendInitialExposeNow(x11::XProtoContext& ctx, uint32_t wid) {
 
   (void)ctx.transport().sendEvent32(wid, ev.data());
 }
-  
+
+// Erase a child window's pixels from the host surface after unmapping.
+// In X11, unmapping a child removes it from the display.  Since our children
+// share the host surface, we must repaint the child's area with the parent's
+// background and re-expose any overlapping siblings.
+static void eraseUnmappedChild(XProtoContext& ctx,
+                               uint32_t childXid,
+                               const WindowView& cv,
+                               uint32_t host) {
+  // Resolve the HOST surface directly (child is now unmapped, can't resolve it).
+  DrawableRW hostDst{};
+  if (!resolveDrawableRW(ctx, host, hostDst)) return;
+
+  // Compute child's content origin in host surface coords.
+  int32_t ox = 0, oy = 0;
+  if (!ctx.windows().absoluteOffsetInHost(host, childXid, ox, oy)) return;
+
+  // The child's total rect (border + content) in host surface coords.
+  // absoluteOffsetInHost returns the CONTENT origin (x + bw accumulated).
+  const int32_t bw = (int32_t)cv.border_width;
+  int32_t rx = ox - bw;
+  int32_t ry = oy - bw;
+  int32_t rw = (int32_t)cv.w + 2*bw;
+  int32_t rh = (int32_t)cv.h + 2*bw;
+
+  // Clip to host surface bounds
+  if (rx < 0) { rw += rx; rx = 0; }
+  if (ry < 0) { rh += ry; ry = 0; }
+  if (rx + rw > (int32_t)hostDst.w) rw = (int32_t)hostDst.w - rx;
+  if (ry + rh > (int32_t)hostDst.h) rh = (int32_t)hostDst.h - ry;
+  if (rw <= 0 || rh <= 0) return;
+
+  // Fill with parent's background
+  uint32_t parentBg = 0xFFFFFFFF; // default white
+  ctx.windows().resolveBackgroundForClear(cv.parent_xid, parentBg);
+
+  for (int32_t y = ry; y < ry + rh; y++) {
+    uint32_t* row = hostDst.pixels32 + (size_t)y * hostDst.stridePixels;
+    for (int32_t x = rx; x < rx + rw; x++) {
+      row[x] = parentBg;
+    }
+  }
+
+  // Damage the erased area
+  damageOrDirty(ctx, host, rx, ry, rw, rh);
+
+  // Re-expose mapped siblings that overlap the erased area.
+  // Their border, background, and content will be repainted on top.
+  auto siblings = ctx.windows().childrenInStackOrder(cv.parent_xid);
+  for (uint32_t sib : siblings) {
+    if (sib == childXid) continue;
+    WindowView sv{};
+    if (!ctx.windows().snapshot(sib, sv)) continue;
+    if (!sv.mapped) continue;
+
+    // Check overlap in parent coords
+    const int32_t childX = (int32_t)cv.x;
+    const int32_t childY = (int32_t)cv.y;
+    const int32_t childTW = (int32_t)cv.w + 2*(int32_t)cv.border_width;
+    const int32_t childTH = (int32_t)cv.h + 2*(int32_t)cv.border_width;
+
+    const int32_t sibX = (int32_t)sv.x;
+    const int32_t sibY = (int32_t)sv.y;
+    const int32_t sibTW = (int32_t)sv.w + 2*(int32_t)sv.border_width;
+    const int32_t sibTH = (int32_t)sv.h + 2*(int32_t)sv.border_width;
+
+    if (sibX + sibTW <= childX || sibX >= childX + childTW) continue;
+    if (sibY + sibTH <= childY || sibY >= childY + childTH) continue;
+
+    // Sibling overlaps erased area — repaint border, background, send Expose
+    fillWindowBorder(ctx, sib);
+    fillWindowBackground(ctx, sib);
+    sendInitialExposeNow(ctx, sib);
+  }
+}
+
 WindowOps::WindowOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::CreateWindow,      &WindowOps::onMajor, this);  // CreateWindow
   reg.registerMajor(x11::opcode::DestroyWindow,     &WindowOps::onMajor, this);  // DestroyWindow
@@ -601,6 +730,11 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   br.skip(br.remaining());
   if (wid == 0) return;
 
+  // Snapshot geometry BEFORE unmapping (geometry persists, but we need wasMapped).
+  WindowView cv{};
+  const bool hadSnap = ctx.windows().snapshot(wid, cv);
+  const bool wasMapped = hadSnap && cv.mapped;
+
   // 1) Update authoritative table
   ctx.windows().setMapped(wid, false);
 
@@ -609,18 +743,20 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   if (host != 0) {
     ctx.windows().markDirty(host);
   } else {
-    // fallback (shouldn't happen)
     ctx.windows().markDirty(wid);
   }
 
-  // 3) Swift/UI visibility: only top-level host should actually be hidden.
-  // If wid is a child, Cocoa window should remain; compositing will omit it.
+  // 3) Erase the child's pixels from the host surface.
+  //    In X11, unmapping a child removes it from the display.  Since our
+  //    children share the host surface, we must repaint the child's area
+  //    with the parent's background and re-expose overlapping siblings.
+  if (wasMapped && host != 0 && host != wid) {
+    eraseUnmappedChild(ctx, wid, cv, host);
+  }
+
+  // 4) Swift/UI visibility: only top-level host should actually be hidden.
   if (host == wid) {
     x11_ui_push_unmap(wid);
-  } else if (host != 0) {
-    // Optional: if you maintain per-xid Swift state, you may still want to tell Swift
-    // "child is unmapped" for hit-testing, but do NOT hide the NSWindow.
-    // For now, keep it simple: no Swift event for children.
   }
 }
   
@@ -638,22 +774,26 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, Byte
   auto desc = ctx.windows().descendantsOf(parent);
 
   for (uint32_t xid : desc) {
-    const WindowView* before = ctx.window(xid);
-    if (before && !before->mapped) continue; // already unmapped
+    WindowView cv{};
+    if (!ctx.windows().snapshot(xid, cv)) continue;
+    if (!cv.mapped) continue; // already unmapped
 
     // 1) Authoritative state
     ctx.windows().setMapped(xid, false);
 
     // 2) Rootless: ensure the host will repaint to reflect the child disappearing
     const uint32_t host = ctx.windows().topLevelAncestorOf(xid);
-    if (host != 0) ctx.windows().markDirty(host);
+    if (host != 0) {
+      ctx.windows().markDirty(host);
 
-    // 3) (Optional future) UnmapNotify to client if StructureNotifyMask selected.
-    // You probably don’t have UnmapNotify event wiring yet, so omit for now.
+      // 3) Erase child’s pixels from host surface
+      if (host != xid) {
+        eraseUnmappedChild(ctx, xid, cv, host);
+      }
+    }
   }
 
   // If the parent itself is a top-level host, you may optionally mark it dirty too
-  // (helpful if descendantsOf() missed something).
   const uint32_t hostP = ctx.windows().topLevelAncestorOf(parent);
   if (hostP != 0) ctx.windows().markDirty(hostP);
 }

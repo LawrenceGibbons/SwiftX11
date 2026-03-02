@@ -169,11 +169,14 @@ bool resolveDrawableRW(XProtoContext& ctx,
       // buttons 40-54 at (2,2) hidden beneath the display widget).
       const uint32_t parentXid = dv.parent_xid;
       if (parentXid != 0 && parentXid != 1 && effW > 0 && effH > 0) {
-        // Child's content rect in parent coords
-        int32_t cx0 = (int32_t)dv.x;
-        int32_t cy0 = (int32_t)dv.y;
-        int32_t cx1 = (int32_t)dv.x + (int32_t)effW;
-        int32_t cy1 = (int32_t)dv.y + (int32_t)effH;
+        // Child's CONTENT rect in parent coords.
+        // dv.x/dv.y is the outer border corner; content starts at +border_width.
+        const int32_t contentX = (int32_t)dv.x + (int32_t)dv.border_width;
+        const int32_t contentY = (int32_t)dv.y + (int32_t)dv.border_width;
+        int32_t cx0 = contentX;
+        int32_t cy0 = contentY;
+        int32_t cx1 = contentX + (int32_t)effW;
+        int32_t cy1 = contentY + (int32_t)effH;
 
         auto siblings = ctx.windows().childrenInStackOrder(parentXid);
         bool foundSelf = false;
@@ -185,11 +188,13 @@ bool resolveDrawableRW(XProtoContext& ctx,
           if (!ctx.windows().snapshot(sib, sv)) continue;
           if (!sv.mapped) continue;
 
-          // Sibling's total rect (content + border) in parent coords
-          const int32_t sx0 = (int32_t)sv.x - (int32_t)sv.border_width;
-          const int32_t sy0 = (int32_t)sv.y - (int32_t)sv.border_width;
-          const int32_t sx1 = (int32_t)sv.x + (int32_t)sv.w + (int32_t)sv.border_width;
-          const int32_t sy1 = (int32_t)sv.y + (int32_t)sv.h + (int32_t)sv.border_width;
+          // Sibling's TOTAL rect (border + content + border) in parent coords.
+          // sv.x/sv.y is the outer border corner; total footprint extends
+          // to sv.x + 2*bw + sv.w, sv.y + 2*bw + sv.h.
+          const int32_t sx0 = (int32_t)sv.x;
+          const int32_t sy0 = (int32_t)sv.y;
+          const int32_t sx1 = (int32_t)sv.x + (int32_t)sv.w + 2*(int32_t)sv.border_width;
+          const int32_t sy1 = (int32_t)sv.y + (int32_t)sv.h + 2*(int32_t)sv.border_width;
 
           // Check for overlap
           if (sx0 >= cx1 || sx1 <= cx0 || sy0 >= cy1 || sy1 <= cy0) continue;
@@ -218,9 +223,9 @@ bool resolveDrawableRW(XProtoContext& ctx,
           if (cx0 >= cx1 || cy0 >= cy1) break; // fully clipped
         }
 
-        // Apply clipping: adjust offset and dimensions
-        const int32_t clipDx = cx0 - (int32_t)dv.x;
-        const int32_t clipDy = cy0 - (int32_t)dv.y;
+        // Apply clipping: delta relative to content origin
+        const int32_t clipDx = cx0 - contentX;
+        const int32_t clipDy = cy0 - contentY;
         const int32_t newW = cx1 - cx0;
         const int32_t newH = cy1 - cy0;
 
