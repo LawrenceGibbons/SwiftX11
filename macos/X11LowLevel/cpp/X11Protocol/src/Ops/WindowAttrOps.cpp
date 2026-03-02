@@ -258,6 +258,12 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return (uint16_t)v;
     };
 
+    // CWSibling + CWStackMode (bits 5-6)
+    uint32_t sibling = 0;
+    uint8_t  stackMode = 0;  // Above=0, Below=1, TopIf=2, BottomIf=3, Opposite=4
+    bool     hasSibling   = false;
+    bool     hasStackMode = false;
+
     // Values are 32-bit units in bit order 0..15
     for (uint32_t bit = 0; bit < 16; bit++) {
       if ((vmask & (uint16_t)(1u << bit)) == 0) continue;
@@ -266,11 +272,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint32_t v = br.readU32();
 
       switch (bit) {
-        case 0: x32 = (int32_t)v; break; // X
-        case 1: y32 = (int32_t)v; break; // Y
-        case 2: w32 = v; break; // Width
-        case 3: h32 = v; break; // Height
-        case 4: borderW = (uint16_t)(v & 0xFFFF); break; // BorderWidth
+        case 0: x32 = (int32_t)v; break;               // CWX
+        case 1: y32 = (int32_t)v; break;               // CWY
+        case 2: w32 = v; break;                         // CWWidth
+        case 3: h32 = v; break;                         // CWHeight
+        case 4: borderW = (uint16_t)(v & 0xFFFF); break; // CWBorderWidth
+        case 5: sibling = v; hasSibling = true; break;  // CWSibling
+        case 6: stackMode = (uint8_t)(v & 0xFF);        // CWStackMode
+                hasStackMode = true; break;
         default:
           break;
       }
@@ -290,6 +299,41 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Apply border width if changed
     if (vmask & (1u << 4)) {
       ctx.windows().setBorderWidth(wid, borderW);
+    }
+
+    // ------------------------------------------------------------------
+    // 0.5) Stacking order (CWStackMode, optionally with CWSibling)
+    // ------------------------------------------------------------------
+    if (hasStackMode) {
+      switch (stackMode) {
+        case 0: // Above
+          if (hasSibling)
+            ctx.windows().restackAbove(wid, sibling);
+          else
+            ctx.windows().raiseToTop(wid);
+          break;
+        case 1: // Below
+          if (hasSibling)
+            ctx.windows().restackBelow(wid, sibling);
+          else
+            ctx.windows().lowerToBottom(wid);
+          break;
+        case 2: // TopIf — raise if any sibling obscures it
+          ctx.windows().raiseToTop(wid);
+          break;
+        case 3: // BottomIf — lower if it obscures any sibling
+          ctx.windows().lowerToBottom(wid);
+          break;
+        case 4: // Opposite — toggle
+          ctx.windows().raiseToTop(wid);
+          break;
+        default:
+          break;
+      }
+#ifndef NDEBUG
+      fprintf(stderr, "[RESTACK] wid=0x%08X stackMode=%u sibling=0x%08X\n",
+              wid, (unsigned)stackMode, sibling);
+#endif
     }
 
     // ------------------------------------------------------------------

@@ -781,6 +781,90 @@ uint32_t WindowTable::cursor(uint32_t xid) const {
   return 0;
 }
   
+// ---- Stacking order manipulation ----
+
+void WindowTable::raiseToTop(uint32_t xid) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  const uint32_t parent = st->parent;
+  if (parent == 0) return;
+
+  auto cit = children_order_.find(parent);
+  if (cit == children_order_.end()) return;
+  auto& list = cit->second;
+  list.erase(std::remove(list.begin(), list.end(), xid), list.end());
+  list.push_back(xid);  // top of stack (last = highest)
+  st->serial++;
+}
+
+void WindowTable::lowerToBottom(uint32_t xid) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  const uint32_t parent = st->parent;
+  if (parent == 0) return;
+
+  auto cit = children_order_.find(parent);
+  if (cit == children_order_.end()) return;
+  auto& list = cit->second;
+  list.erase(std::remove(list.begin(), list.end(), xid), list.end());
+  list.insert(list.begin(), xid);  // bottom of stack (first = lowest)
+  st->serial++;
+}
+
+void WindowTable::restackAbove(uint32_t xid, uint32_t sibling) {
+  if (xid == 0 || sibling == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  const uint32_t parent = st->parent;
+  if (parent == 0) return;
+
+  auto cit = children_order_.find(parent);
+  if (cit == children_order_.end()) return;
+  auto& list = cit->second;
+
+  // Remove xid first
+  list.erase(std::remove(list.begin(), list.end(), xid), list.end());
+
+  // Find sibling and insert just after it (= just above in stacking order)
+  auto it = std::find(list.begin(), list.end(), sibling);
+  if (it != list.end()) {
+    list.insert(it + 1, xid);
+  } else {
+    list.push_back(xid);  // sibling not found → place at top
+  }
+  st->serial++;
+}
+
+void WindowTable::restackBelow(uint32_t xid, uint32_t sibling) {
+  if (xid == 0 || sibling == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  const uint32_t parent = st->parent;
+  if (parent == 0) return;
+
+  auto cit = children_order_.find(parent);
+  if (cit == children_order_.end()) return;
+  auto& list = cit->second;
+
+  // Remove xid first
+  list.erase(std::remove(list.begin(), list.end(), xid), list.end());
+
+  // Find sibling and insert just before it (= just below in stacking order)
+  auto it = std::find(list.begin(), list.end(), sibling);
+  if (it != list.end()) {
+    list.insert(it, xid);
+  } else {
+    list.insert(list.begin(), xid);  // sibling not found → place at bottom
+  }
+  st->serial++;
+}
+
 bool WindowTable::reparent(uint32_t xid, uint32_t newParent, int16_t x, int16_t y) {
   if (xid == 0) return false;
   std::lock_guard<std::mutex> lock(mu_);
