@@ -125,9 +125,12 @@ extern "C" int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
 // at MapWindow time may have failed because the Swift surface wasn't yet
 // registered.
 static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
-  x11::WindowView vw{};
-  if (!ctx.windows().snapshot(wid, vw)) return;
-  if (!vw.has_background_pixel) return;
+  // Use dynamic resolution: if ParentRelative, walk parent chain at fill time.
+  uint32_t bg = 0;
+  if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
+    // No background defined — nothing to fill.
+    return;
+  }
 
   x11::DrawableRW dst{};
   if (!x11::resolveDrawableRW(ctx, wid, dst)) {
@@ -137,8 +140,6 @@ static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
-
-  const uint32_t bg = vw.background_pixel;
 
 #if X11_TRACE_PRESENT_ENABLED
   fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u off=(%d,%d)\n",

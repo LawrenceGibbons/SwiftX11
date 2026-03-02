@@ -104,10 +104,16 @@ public:
   // background pixel
   void setBackgroundPixel(uint32_t xid, uint32_t pixel_argb);
   void clearBackground(uint32_t xid); // CWBackPixmap=None: no server bg fill
+  void setParentRelative(uint32_t xid); // CWBackPixmap=ParentRelative
 
   // ParentRelative: walk parent chain, copy nearest ancestor's background_pixel.
   // Returns true if a parent with has_background_pixel was found and applied.
   bool resolveParentRelativeBackground(uint32_t xid);
+
+  // Dynamic background resolution for ClearArea / fillWindowBackground.
+  // If window has ParentRelative, walks parent chain at call time to find
+  // the current background pixel. Returns true if a background was found.
+  bool resolveBackgroundForClear(uint32_t xid, uint32_t& out_pixel) const;
 
   // border
   void setBorderWidth(uint32_t xid, uint16_t bw);
@@ -142,6 +148,7 @@ private:
     // X11 window background pixel (ARGB8888, alpha forced opaque).
     uint32_t background_pixel = 0;
     bool     has_background_pixel = false;
+    bool     is_parent_relative = false;  // CWBackPixmap=ParentRelative
 
     // Window border (server-drawn around child windows)
     uint16_t border_width = 0;

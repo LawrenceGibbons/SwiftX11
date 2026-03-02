@@ -33,9 +33,12 @@ namespace x11 {
 // This implements the X11 spec requirement: the server should paint the window's
 // background before delivering Expose events.
 static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
-  WindowView vw{};
-  if (!ctx.windows().snapshot(wid, vw)) return;
-  if (!vw.has_background_pixel) return;
+  // Use dynamic resolution: if ParentRelative, walk parent chain at fill time.
+  uint32_t bg = 0;
+  if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
+    // No background defined — nothing to fill.
+    return;
+  }
 
   DrawableRW dst{};
   if (!resolveDrawableRW(ctx, wid, dst)) {
@@ -45,8 +48,6 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
-
-  const uint32_t bg = vw.background_pixel;
 
 #if X11_TRACE_PRESENT_ENABLED
   fprintf(stderr, "[BG_FILL] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u\n",

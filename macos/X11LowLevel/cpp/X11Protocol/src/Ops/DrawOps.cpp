@@ -1042,14 +1042,22 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     if (x0 >= x1 || y0 >= y1) return;
 
-    // X11 spec: ClearArea clears to the window's background_pixel.
-    // Fall back to opaque white if no background was set (legacy bring-up behavior).
-    uint32_t bg = 0xFFFFFFFFu;
-    {
-      x11::WindowView wv{};
-      if (ctx.windows().snapshot(wid, wv) && wv.has_background_pixel) {
-        bg = wv.background_pixel;
+    // X11 spec: ClearArea clears to the window's background.
+    // If ParentRelative, dynamically walk parent chain for current background.
+    // If no background defined (CWBackPixmap=None), do NOT modify contents.
+    uint32_t bg = 0;
+    if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
+      // No background — per X11 spec, ClearArea has no effect on contents.
+      // Still send Expose if requested.
+      if (exposures && dst.isWindow) {
+        ctx.transport().queueExposeRect(
+          wid,
+          (uint16_t)x0, (uint16_t)y0,
+          (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
+          0
+        );
       }
+      return;
     }
 
     for (int yy = y0; yy < y1; yy++) {

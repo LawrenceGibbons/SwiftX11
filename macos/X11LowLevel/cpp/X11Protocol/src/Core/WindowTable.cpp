@@ -200,6 +200,7 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.event_mask = st->event_mask;
   out.background_pixel = st->background_pixel;
   out.has_background_pixel = st->has_background_pixel;
+  out.is_parent_relative = st->is_parent_relative;
   out.mapped = st->mapped;
   out.presentable = st->presentable;
   out.dirty = st->dirty;
@@ -216,6 +217,7 @@ void WindowTable::setBackgroundPixel(uint32_t xid, uint32_t pixel_argb) {
   if (!st) return;
   st->background_pixel = pixel_argb;
   st->has_background_pixel = true;
+  st->is_parent_relative = false;  // explicit pixel overrides ParentRelative
   st->serial++;
 }
 
@@ -226,6 +228,16 @@ void WindowTable::clearBackground(uint32_t xid) {
   if (!st) return;
   st->background_pixel = 0;
   st->has_background_pixel = false;
+  st->is_parent_relative = false;
+  st->serial++;
+}
+
+void WindowTable::setParentRelative(uint32_t xid) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->is_parent_relative = true;
   st->serial++;
 }
 
@@ -235,13 +247,24 @@ bool WindowTable::resolveParentRelativeBackground(uint32_t xid) {
   WindowState* st = findLocked(xid);
   if (!st) return false;
 
-  // Walk up parent chain to find nearest ancestor with has_background_pixel.
-  // Safety: cap iterations to prevent infinite loop on corrupted parent chain.
+  st->is_parent_relative = true;
+
+  // Walk up parent chain to find nearest ancestor with has_background_pixel
+  // that isn't itself ParentRelative. This gives us a cached value for the
+  // common case, but resolveBackgroundForClear() also does a live walk.
   uint32_t cur = st->parent;
   for (int depth = 0; depth < 64 && cur != 0 && cur != 1; depth++) {
     const WindowState* parent = findLocked(cur);
     if (!parent) break;
+    if (parent->has_background_pixel && !parent->is_parent_relative) {
+      st->background_pixel = parent->background_pixel;
+      st->has_background_pixel = true;
+      st->serial++;
+      return true;
+    }
+    // If parent is also ParentRelative, keep walking
     if (parent->has_background_pixel) {
+      // Parent resolved its ParentRelative — use that value
       st->background_pixel = parent->background_pixel;
       st->has_background_pixel = true;
       st->serial++;
@@ -249,6 +272,47 @@ bool WindowTable::resolveParentRelativeBackground(uint32_t xid) {
     }
     cur = parent->parent;
   }
+  return false;
+}
+
+bool WindowTable::resolveBackgroundForClear(uint32_t xid, uint32_t& out_pixel) const {
+  if (xid == 0) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  const WindowState* st = findLocked(xid);
+  if (!st) return false;
+
+  // If the window has an explicit background pixel (not from ParentRelative),
+  // use it directly.
+  if (st->has_background_pixel && !st->is_parent_relative) {
+    out_pixel = st->background_pixel;
+    return true;
+  }
+
+  // If ParentRelative, dynamically walk the parent chain to find the
+  // current background. This handles the case where the parent's background
+  // was set after this window was created.
+  if (st->is_parent_relative) {
+    uint32_t cur = st->parent;
+    for (int depth = 0; depth < 64 && cur != 0 && cur != 1; depth++) {
+      const WindowState* anc = findLocked(cur);
+      if (!anc) break;
+      if (anc->has_background_pixel) {
+        out_pixel = anc->background_pixel;
+        return true;
+      }
+      cur = anc->parent;
+    }
+    // ParentRelative but no ancestor has a background — fall through
+  }
+
+  // If the window has a cached background_pixel (from earlier resolution), use it.
+  if (st->has_background_pixel) {
+    out_pixel = st->background_pixel;
+    return true;
+  }
+
+  // No background defined (CWBackPixmap=None or never set).
+  // Per X11 spec, ClearArea should not modify window contents.
   return false;
 }
 

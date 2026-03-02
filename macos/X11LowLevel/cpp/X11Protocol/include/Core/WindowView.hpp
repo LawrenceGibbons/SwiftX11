@@ -31,6 +31,7 @@ struct WindowView {
   // Only valid when has_background_pixel is true.
   uint32_t background_pixel = 0;
   bool     has_background_pixel = false;
+  bool     is_parent_relative = false;  // CWBackPixmap=ParentRelative
 
   // Window border (server-drawn around child windows)
   uint16_t border_width = 0;
