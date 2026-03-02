@@ -61,6 +61,11 @@ final class XServerController: ObservableObject {
   func start() {
     guard !isRunning else { return }
 
+    // Ensure X11 clients can find app-defaults (e.g., XCalc, XTerm resources).
+    // The compiled-in libXt default (/usr/lib/X11/...) doesn't exist on macOS;
+    // app-defaults live in /opt/X11/share/X11/app-defaults/.
+    ensureXFilesSearchPath()
+
     let display = self.display // capture on MainActor
     append("SwiftX11 v\(Self.buildVersion) — starting on :\(display)…")
 
@@ -75,6 +80,28 @@ final class XServerController: ObservableObject {
       GlobalPointerTracker.shared.start()
       startDrainTimer()
       registerClipboardBridge()
+    }
+  }
+
+  /// Set XFILESEARCHPATH so X11 clients find app-defaults on macOS.
+  /// Also propagates to new terminal windows via launchctl setenv.
+  private func ensureXFilesSearchPath() {
+    let key = "XFILESEARCHPATH"
+    let path = "/opt/X11/share/X11/%T/%N%C%S:/opt/X11/share/X11/%T/%N%S"
+
+    // Set in our process (inherited by any child processes we spawn).
+    // 0 = don't overwrite if already set by the user.
+    setenv(key, path, 0)
+
+    // Propagate to new terminal windows opened after SwiftX11 starts.
+    // launchctl setenv makes the variable available to all new launchd children.
+    if ProcessInfo.processInfo.environment[key] == nil {
+      let task = Process()
+      task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+      task.arguments = ["setenv", key, path]
+      task.standardOutput = FileHandle.nullDevice
+      task.standardError = FileHandle.nullDevice
+      try? task.run()
     }
   }
 

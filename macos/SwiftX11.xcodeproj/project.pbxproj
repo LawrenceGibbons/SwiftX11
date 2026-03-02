@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		5225BDE32F05AF2B009E510B /* X11LowLevel.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; };
 		5225BDE42F05AF2B009E510B /* X11LowLevel.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-/* old standalone TODO.md build file removed — now in docs/ group */
 		52814ACB2F43662D003CF94A /* fonts in Resources */ = {isa = PBXBuildFile; fileRef = 52814ACA2F43662D003CF94A /* fonts */; };
 /* End PBXBuildFile section */
 

@@ -654,11 +654,13 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   // Rootless host for this subtree.
   const uint32_t host = ctx.windows().topLevelAncestorOf(parent);
 
-  // Map all descendants (not including the parent itself)
-  auto desc = ctx.windows().descendantsOf(parent);
+  // X11 spec: "equivalent to performing a MapWindow request on each unmapped child."
+  // Only direct children — NOT all descendants. Descendants' individual map states
+  // are preserved; they become viewable when their parent chain is all mapped.
+  auto desc = ctx.windows().childrenInStackOrder(parent);
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[LIFECYCLE] MapSubwindows parent=0x%08X host=0x%08X numDesc=%zu\n",
+  fprintf(stderr, "[LIFECYCLE] MapSubwindows parent=0x%08X host=0x%08X numChildren=%zu\n",
           (unsigned)parent, (unsigned)host, desc.size());
   for (uint32_t xid : desc) {
     WindowView dv{};
@@ -810,8 +812,10 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, Byte
   br.skip(br.remaining());
   if (parent == 0) return;
 
-  // Unmap all descendants (not including the parent itself)
-  auto desc = ctx.windows().descendantsOf(parent);
+  // X11 spec: "equivalent to performing an UnmapWindow request on each mapped child."
+  // Only direct children — NOT all descendants. Descendants keep their individual
+  // map state but become not-viewable when their parent is unmapped.
+  auto desc = ctx.windows().childrenInStackOrder(parent);
 
   for (uint32_t xid : desc) {
     WindowView cv{};

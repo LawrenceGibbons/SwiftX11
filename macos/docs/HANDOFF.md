@@ -166,7 +166,7 @@ Read these files to understand the codebase:
 
 ## Important Conventions
 
-- **All new code in C++** — no C files remain, no new C code
+- **All new code in C++ or swift** — no C files remain, no new C code
 - **Display :1** — SwiftX11 uses TCP port 6001 (display :1), set via `~/.profile`
 - **Version bump** — bump `SwiftX11Version.h` when making changes to verify correct build is running
 - **Reply-bearing opcodes** — always send reply via `ctx.reply().sendReply32()` or XCB will crash
