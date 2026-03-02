@@ -319,8 +319,23 @@ final class X11View: NSView {
     // same value) posts NSViewFrameDidChangeNotification, which can re-enter
     // layout() and trigger _NSDetectedLayoutRecursion.
     let b = bounds
-    if let il = imageLayer, il.frame != b { il.frame = b }
-    if let mv = mtkView, mv.frame != b { mv.frame = b }
+
+    // CALayer: suppress implicit animations that could re-trigger layout.
+    if let il = imageLayer, il.frame != b {
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      il.frame = b
+      CATransaction.commit()
+    }
+
+    // MTKView (NSView): suppress frame-change notifications to break the
+    // setFrame → NSViewFrameDidChangeNotification → layout() cycle that
+    // causes _NSDetectedLayoutRecursion on app launch.
+    if let mv = mtkView, mv.frame != b {
+      mv.postsFrameChangedNotifications = false
+      mv.frame = b
+      mv.postsFrameChangedNotifications = true
+    }
 
     if pendingEnableMetal, wantsMetal,
        self.window != nil,
@@ -335,20 +350,24 @@ final class X11View: NSView {
     // Software mode: resize the host surface when bounds change.
     // In Metal mode, the MTKViewDelegate callback (handleDrawableSize)
     // handles this; software mode has no equivalent, so we do it here.
+    // Defer surface registration out of layout() to avoid cross-boundary
+    // C++ calls (x11_surface_update, x11_post_window_presentable) that
+    // could re-enter layout through UI command dispatch.
     if !usingMetal, xid != 0, window != nil {
       let wX11 = Int32(max(1, Int(bounds.width.rounded(.down))))
       let hX11 = Int32(max(1, Int(bounds.height.rounded(.down))))
       if wX11 >= 16, hX11 >= 16,
          (wX11 != hostSurfaceW || hX11 != hostSurfaceH) {
-        ensureHostSurface(wPx: wX11, hPx: hX11)
-
-        // Match Metal's handleDrawableSize: after the surface is registered
-        // at the correct size, post presentable so the C++ side runs
-        // sendExposeSubtree with the full geometry.  Without this, the
-        // initial scheduleAttachSettle may have fired when the surface was
-        // still at a small default size, causing child windows at far
-        // offsets (e.g., xterm scrollbar) to be clipped and never drawn.
-        notifyPresentableOnce()
+        DispatchQueue.main.async { [weak self] in
+          guard let self else { return }
+          // Re-check conditions after async dispatch (bounds may have changed again).
+          let w = Int32(max(1, Int(self.bounds.width.rounded(.down))))
+          let h = Int32(max(1, Int(self.bounds.height.rounded(.down))))
+          guard w >= 16, h >= 16 else { return }
+          guard w != self.hostSurfaceW || h != self.hostSurfaceH else { return }
+          self.ensureHostSurface(wPx: w, hPx: h)
+          self.notifyPresentableOnce()
+        }
       }
     }
   }
@@ -1226,12 +1245,22 @@ final class X11Renderer: NSObject, MTKViewDelegate {
       print("[MTK] drawableSizeWillChange (pre guard) xid=\(String(xid, radix:16)) -> \(w)x\(h) window=\(String(describing: view.window)) frame=\(view.frame)")
     }
 #endif
-    
+
     let wPt = Int32(size.width.rounded(.down))
     let hPt = Int32(size.height.rounded(.down))
     guard wPt >= 1, hPt >= 1 else { return }
     guard size.width >= 1, size.height >= 1 else { return }
-    
+
+    // If called during a layout pass (e.g., MTKView internally fires this when
+    // its frame is set in X11View.layout()), defer to avoid cross-boundary C++
+    // calls that could interact with the layout engine.
+    if owner?.isInLayoutPass == true {
+      DispatchQueue.main.async { [weak self] in
+        self?.handleDrawableSize(size)
+      }
+      return
+    }
+
 #if DEBUG
     if h == 0 || w <= 4 || h <= 4 {
       print("[MTK] drawableSizeWillChange (post guard) xid=\(String(xid, radix:16)) -> \(w)x\(h) window=\(String(describing: view.window)) frame=\(view.frame)")
