@@ -671,6 +671,27 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   }
 #endif
 
+#ifndef NDEBUG
+  // Detailed hierarchy dump for windows with many children (like xcalc's Form).
+  // Shows stacking order, which helps identify misplaced/overlapping children.
+  if (desc.size() >= 10) {
+    auto siblings = ctx.windows().childrenInStackOrder(parent);
+    fprintf(stderr, "[HIERARCHY] parent=0x%08X numChildren=%zu (bottom-to-top stacking):\n",
+            (unsigned)parent, siblings.size());
+    int stackIdx = 0;
+    for (uint32_t sib : siblings) {
+      WindowView sv{};
+      bool ok = ctx.windows().snapshot(sib, sv);
+      fprintf(stderr, "[HIERARCHY]   [%2d] xid=0x%08X xy=(%4d,%4d) wh=%4ux%4u bw=%u bg=%s\n",
+              stackIdx++, (unsigned)sib,
+              ok ? (int)sv.x : 0, ok ? (int)sv.y : 0,
+              ok ? (unsigned)sv.w : 0u, ok ? (unsigned)sv.h : 0u,
+              ok ? (unsigned)sv.border_width : 0u,
+              (ok && sv.has_background_pixel) ? "yes" : "no");
+    }
+  }
+#endif
+
   // Track whether anything changed and whether we should flush host dirty once.
   bool anyMapped = false;
 
@@ -745,6 +766,14 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   WindowView cv{};
   const bool hadSnap = ctx.windows().snapshot(wid, cv);
   const bool wasMapped = hadSnap && cv.mapped;
+
+#ifndef NDEBUG
+  if (hadSnap && cv.parent_xid != 0 && cv.parent_xid != 1) {
+    fprintf(stderr, "[LABEL] UnmapWindow wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u wasMapped=%d\n",
+            (unsigned)wid, (unsigned)cv.parent_xid,
+            (int)cv.x, (int)cv.y, (unsigned)cv.w, (unsigned)cv.h, (int)wasMapped);
+  }
+#endif
 
   // 1) Update authoritative table
   ctx.windows().setMapped(wid, false);
