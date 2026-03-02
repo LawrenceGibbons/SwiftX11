@@ -1011,11 +1011,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
 
-#ifndef NDEBUG
-    fprintf(stderr, "[ClearArea] wid=0x%08X xy=(%d,%d) wh=(%u,%u) exp=%u\n",
-            (unsigned)wid, (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
-            (unsigned)exposures);
-#endif
+    ctx.tracef("[ClearArea] wid=0x%08X xy=(%d,%d) wh=(%u,%u) exp=%u\n",
+              wid, (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
+              (unsigned)exposures);
 
     if (wid == 0) return;
     if (!ctx.windows().exists(wid)) return;
@@ -1052,11 +1050,6 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       if (ctx.windows().snapshot(wid, wv) && wv.has_background_pixel) {
         bg = wv.background_pixel;
       }
-#ifndef NDEBUG
-      fprintf(stderr, "[ClearArea] wid=0x%08X has_bg=%d bg=0x%08X rect=(%d,%d %dx%d)\n",
-              (unsigned)wid, (int)wv.has_background_pixel, (unsigned)bg,
-              x0, y0, (x1 - x0), (y1 - y0));
-#endif
     }
 
     for (int yy = y0; yy < y1; yy++) {

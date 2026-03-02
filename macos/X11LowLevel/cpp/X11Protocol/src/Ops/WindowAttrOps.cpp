@@ -79,11 +79,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t wid   = br.readU32();
     const uint32_t vmask = br.readU32();
 
-#ifndef NDEBUG
-    fprintf(stderr, "[CWA] wid=0x%08X vmask=0x%08X bit0=%d bit1=%d\n",
-            (unsigned)wid, (unsigned)vmask,
-            (int)((vmask & 1) != 0), (int)((vmask & 2) != 0));
-#endif
+    ctx.tracef("[CWA] wid=0x%08X vmask=0x%08X\n", wid, vmask);
 
     // Snapshot current values so partial updates preserve unspecified fields.
     uint32_t old_mask = 0;
@@ -194,25 +190,13 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Handle ParentRelative first, then let explicit CWBackPixel override if both present.
     if (sawBackPixmap && !sawBgPixel) {
       if (parentRelative) {
-        bool resolved = ctx.windows().resolveParentRelativeBackground(wid);
-#ifndef NDEBUG
-        fprintf(stderr, "[CWA] ParentRelative wid=0x%08X resolved=%d\n",
-                (unsigned)wid, (int)resolved);
-#endif
-        (void)resolved;
+        ctx.windows().resolveParentRelativeBackground(wid);
       } else if (backPixmapNone) {
         ctx.windows().clearBackground(wid);
-#ifndef NDEBUG
-        fprintf(stderr, "[CWA] clearBackground(None) wid=0x%08X\n", (unsigned)wid);
-#endif
       }
     }
     if (sawBgPixel) {
       ctx.windows().setBackgroundPixel(wid, newBgPixel);
-#ifndef NDEBUG
-      fprintf(stderr, "[CWA] setBgPixel wid=0x%08X argb=0x%08X\n",
-              (unsigned)wid, (unsigned)newBgPixel);
-#endif
     }
 
     // ---- Apply border pixel if present ----
