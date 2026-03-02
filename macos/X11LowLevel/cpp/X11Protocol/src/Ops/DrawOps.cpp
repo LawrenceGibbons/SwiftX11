@@ -1060,9 +1060,20 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       return;
     }
 
-    for (int yy = y0; yy < y1; yy++) {
-      uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
-      for (int xx = x0; xx < x1; xx++) row[(size_t)xx] = bg;
+    if (dst.numOccluded > 0) {
+      // Occlusion-aware fill: skip pixels covered by higher-stacking siblings
+      for (int yy = y0; yy < y1; yy++) {
+        uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+        for (int xx = x0; xx < x1; xx++) {
+          if (!dst.isOccluded(xx, yy)) row[(size_t)xx] = bg;
+        }
+      }
+    } else {
+      // Fast path: no occlusion, fill entire rectangle
+      for (int yy = y0; yy < y1; yy++) {
+        uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+        for (int xx = x0; xx < x1; xx++) row[(size_t)xx] = bg;
+      }
     }
 
     // Damage -> present (only meaningful for windows)

@@ -238,6 +238,57 @@ bool resolveDrawableRW(XProtoContext& ctx,
           // Re-validate against surface bounds
           if (ox >= (int32_t)s.w || oy >= (int32_t)s.h) { effW = 0; effH = 0; }
         }
+
+        // ---- Occluded rect pass ----
+        // After edge-based clipping, compute remaining partial overlaps
+        // from higher-stacking siblings.  These become "forbidden zones"
+        // that drawing operations should skip.
+        if (effW > 0 && effH > 0) {
+          // Current drawable rect in parent coords (after edge clipping).
+          const int32_t dx0 = cx0;
+          const int32_t dy0 = cy0;
+          const int32_t dx1 = cx1;
+          const int32_t dy1 = cy1;
+
+          bool foundSelf2 = false;
+          for (uint32_t sib2 : siblings) {
+            if (sib2 == drawable) { foundSelf2 = true; continue; }
+            if (!foundSelf2) continue;
+
+            WindowView sv2{};
+            if (!ctx.windows().snapshot(sib2, sv2)) continue;
+            if (!sv2.mapped) continue;
+
+            const int32_t sx0_2 = (int32_t)sv2.x;
+            const int32_t sy0_2 = (int32_t)sv2.y;
+            const int32_t sx1_2 = sx0_2 + (int32_t)sv2.w + 2*(int32_t)sv2.border_width;
+            const int32_t sy1_2 = sy0_2 + (int32_t)sv2.h + 2*(int32_t)sv2.border_width;
+
+            // Intersection in parent coords
+            const int32_t ix0 = std::max(sx0_2, dx0);
+            const int32_t iy0 = std::max(sy0_2, dy0);
+            const int32_t ix1 = std::min(sx1_2, dx1);
+            const int32_t iy1 = std::min(sy1_2, dy1);
+
+            if (ix0 >= ix1 || iy0 >= iy1) continue; // no overlap
+
+            // Convert to drawable-local coords (relative to drawable's (0,0))
+            const int16_t lx = (int16_t)(ix0 - dx0);
+            const int16_t ly = (int16_t)(iy0 - dy0);
+            const uint16_t lw = (uint16_t)(ix1 - ix0);
+            const uint16_t lh = (uint16_t)(iy1 - iy0);
+
+            if (out.numOccluded < DrawableRW::kMaxOccluded) {
+              out.occluded[out.numOccluded++] = { lx, ly, lw, lh };
+#ifndef NDEBUG
+              fprintf(stderr, "[OCCLUDE] drawable=0x%08X occluded by sib=0x%08X "
+                      "local=(%d,%d %ux%u)\n",
+                      (unsigned)drawable, (unsigned)sib2,
+                      (int)lx, (int)ly, (unsigned)lw, (unsigned)lh);
+#endif
+            }
+          }
+        }
       }
     }
     if (effW == 0 || effH == 0) {

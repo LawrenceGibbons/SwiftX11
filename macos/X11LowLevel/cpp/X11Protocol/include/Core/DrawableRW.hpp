@@ -46,6 +46,28 @@ struct DrawableRW {
   // Drawable origin within backing (host coords). For pixmaps: 0,0.
   int32_t offsetX = 0;
   int32_t offsetY = 0;
+
+  // ---- Sibling occlusion: occluded zones (drawable-local coords) ----
+  // Rectangles covered by higher-stacking mapped siblings that drawing
+  // operations should NOT write into.  Edge-based clipping in
+  // resolveDrawableRW handles cases where a sibling spans a full edge;
+  // these rects capture remaining partial overlaps.
+  static constexpr int kMaxOccluded = 8;
+  struct OccRect { int16_t x, y; uint16_t w, h; };
+  OccRect occluded[kMaxOccluded] = {};
+  int numOccluded = 0;
+
+  // Fast per-pixel check: is point (px,py) inside any occluded zone?
+  // Returns false immediately when numOccluded==0 (common case, zero cost).
+  inline bool isOccluded(int32_t px, int32_t py) const {
+    for (int i = 0; i < numOccluded; i++) {
+      const auto& r = occluded[i];
+      if (px >= (int32_t)r.x && px < (int32_t)r.x + (int32_t)r.w &&
+          py >= (int32_t)r.y && py < (int32_t)r.y + (int32_t)r.h)
+        return true;
+    }
+    return false;
+  }
 };
   
 class XProtoContext;

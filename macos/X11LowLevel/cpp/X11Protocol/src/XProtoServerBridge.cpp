@@ -148,10 +148,19 @@ static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
           (int)dst.offsetX, (int)dst.offsetY);
 #endif
 
-  for (uint16_t y = 0; y < dst.h; y++) {
-    uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
-    for (uint16_t x = 0; x < dst.w; x++) {
-      row[x] = bg;
+  if (dst.numOccluded > 0) {
+    for (uint16_t y = 0; y < dst.h; y++) {
+      uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+      for (uint16_t x = 0; x < dst.w; x++) {
+        if (!dst.isOccluded((int32_t)x, (int32_t)y)) row[x] = bg;
+      }
+    }
+  } else {
+    for (uint16_t y = 0; y < dst.h; y++) {
+      uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+      for (uint16_t x = 0; x < dst.w; x++) {
+        row[x] = bg;
+      }
     }
   }
 }

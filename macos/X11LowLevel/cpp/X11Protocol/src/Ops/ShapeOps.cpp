@@ -577,7 +577,8 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
   }
 #endif
 
-      // Fill with GC clip enforcement
+      // Fill with GC clip enforcement + sibling occlusion
+      const bool hasOcc = (dst.numOccluded > 0);
       auto fillRect = [&](int32_t fx0, int32_t fy0, int32_t fx1, int32_t fy1) {
         wroteAnything = true;
         if (fx0 < bbX0) bbX0 = fx0;
@@ -588,14 +589,19 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
         for (int32_t y = fy0; y < fy1; y++) {
           uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
           if (solidFill && fastFill) {
-            for (int32_t x = fx0; x < fx1; x++) row[(size_t)x] = fgOpaque;
+            for (int32_t x = fx0; x < fx1; x++) {
+              if (hasOcc && dst.isOccluded(x, y)) continue;
+              row[(size_t)x] = fgOpaque;
+            }
           } else if (solidFill) {
             for (int32_t x = fx0; x < fx1; x++) {
+              if (hasOcc && dst.isOccluded(x, y)) continue;
               uint32_t out = x11_apply_rop_argb(row[(size_t)x], fgOpaque, gst.function, gst.plane_mask);
               row[(size_t)x] = (out & 0x00FFFFFFu) | 0xFF000000u;
             }
           } else {
             for (int32_t x = fx0; x < fx1; x++) {
+              if (hasOcc && dst.isOccluded(x, y)) continue;
               auto fr = x11::fillStyleResolve(fsc, x, y);
               if (!fr.draw) continue;
               if (fastFill) {
