@@ -188,13 +188,15 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Handle ParentRelative first, then let explicit CWBackPixel override if both present.
     if (sawBackPixmap && !sawBgPixel) {
       if (parentRelative) {
-        ctx.windows().resolveParentRelativeBackground(wid);
-#ifdef X11_TRACE_VERBOSE
-        fprintf(stderr, "[CWA] ParentRelative wid=0x%08X\n", (unsigned)wid);
+        bool resolved = ctx.windows().resolveParentRelativeBackground(wid);
+#ifndef NDEBUG
+        fprintf(stderr, "[CWA] ParentRelative wid=0x%08X resolved=%d\n",
+                (unsigned)wid, (int)resolved);
 #endif
+        (void)resolved;
       } else if (backPixmapNone) {
         ctx.windows().clearBackground(wid);
-#ifdef X11_TRACE_VERBOSE
+#ifndef NDEBUG
         fprintf(stderr, "[CWA] clearBackground(None) wid=0x%08X\n", (unsigned)wid);
 #endif
       }

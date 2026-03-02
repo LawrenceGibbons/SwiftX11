@@ -208,6 +208,12 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   (void)br.readU32(); // visual
   const uint32_t vmask = br.readU32();
 
+#ifndef NDEBUG
+  fprintf(stderr, "[CW] wid=0x%08X parent=0x%08X vmask=0x%08X bit0=%d bit1=%d\n",
+          (unsigned)wid, (unsigned)parent, (unsigned)vmask,
+          (int)((vmask & 1) != 0), (int)((vmask & 2) != 0));
+#endif
+
   uint32_t event_mask = 0;
   uint32_t bg_pixel = 0;
   bool     has_bg_pixel = false;
@@ -291,15 +297,15 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
   if (has_bg_pixel) {
     ctx.windows().setBackgroundPixel(wid, bg_pixel);
-#if X11_TRACE_LIFECYCLE_ENABLED
-    fprintf(stderr, "[CreateWindow] wid=0x%08X bg_pixel=0x%08X\n",
+#ifndef NDEBUG
+    fprintf(stderr, "[CW] wid=0x%08X bg_pixel=0x%08X\n",
             (unsigned)wid, (unsigned)bg_pixel);
 #endif
   } else if (parent_relative) {
     // CWBackPixmap=ParentRelative: inherit the nearest ancestor's background_pixel.
     bool resolved = ctx.windows().resolveParentRelativeBackground(wid);
-#if X11_TRACE_LIFECYCLE_ENABLED
-    fprintf(stderr, "[CreateWindow] wid=0x%08X ParentRelative resolved=%d\n",
+#ifndef NDEBUG
+    fprintf(stderr, "[CW] wid=0x%08X ParentRelative resolved=%d\n",
             (unsigned)wid, (int)resolved);
 #endif
     (void)resolved;

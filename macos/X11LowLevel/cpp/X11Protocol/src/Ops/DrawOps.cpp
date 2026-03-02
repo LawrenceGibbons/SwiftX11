@@ -1056,6 +1056,11 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       if (ctx.windows().snapshot(wid, wv) && wv.has_background_pixel) {
         bg = wv.background_pixel;
       }
+#ifndef NDEBUG
+      fprintf(stderr, "[ClearArea] wid=0x%08X has_bg=%d bg=0x%08X rect=(%d,%d %dx%d)\n",
+              (unsigned)wid, (int)wv.has_background_pixel, (unsigned)bg,
+              x0, y0, (x1 - x0), (y1 - y0));
+#endif
     }
 
     for (int yy = y0; yy < y1; yy++) {
