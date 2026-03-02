@@ -7,6 +7,7 @@
 
 #include <unordered_map>
 #include <algorithm>
+#include <deque>
 #include <functional>
 
 #include "Core/WindowTable.hpp"
@@ -67,6 +68,9 @@ void WindowTable::upsert(uint32_t xid, uint32_t parent,
   std::lock_guard<std::mutex> lock(mu_);
   WindowState& st = map_[xid]; // creates if missing
 
+  // Track old parent for children_order_ bookkeeping
+  const uint32_t oldParent = st.parent;
+
   st.xid = xid;
   st.parent = parent;
   st.x = x;
@@ -79,6 +83,21 @@ void WindowTable::upsert(uint32_t xid, uint32_t parent,
   st.owner_fd = owner_fd;
 
   st.serial++;
+
+  // Maintain children_order_: append to new parent's child list.
+  // (For a fresh insert, oldParent == 0 so no removal needed.)
+  if (parent != 0) {
+    if (oldParent != parent && oldParent != 0) {
+      // Remove from old parent's child list (reparent via upsert)
+      auto& oldList = children_order_[oldParent];
+      oldList.erase(std::remove(oldList.begin(), oldList.end(), xid), oldList.end());
+    }
+    auto& newList = children_order_[parent];
+    // Only append if not already present (avoid duplicates on upsert update)
+    if (std::find(newList.begin(), newList.end(), xid) == newList.end()) {
+      newList.push_back(xid);
+    }
+  }
 }
 
   
@@ -92,7 +111,23 @@ bool WindowTable::exists(uint32_t xid) const {
   
 bool WindowTable::erase(uint32_t xid) {
   std::lock_guard<std::mutex> lock(mu_);
-  return map_.erase(xid) != 0;
+  auto it = map_.find(xid);
+  if (it == map_.end()) return false;
+
+  // Remove from parent's children_order_ list
+  const uint32_t parent = it->second.parent;
+  if (parent != 0) {
+    auto pit = children_order_.find(parent);
+    if (pit != children_order_.end()) {
+      auto& list = pit->second;
+      list.erase(std::remove(list.begin(), list.end(), xid), list.end());
+    }
+  }
+  // Remove this window's own children list
+  children_order_.erase(xid);
+
+  map_.erase(it);
+  return true;
 }
 
 void WindowTable::setMapped(uint32_t xid, bool mapped) {
@@ -530,14 +565,15 @@ bool WindowTable::queryTree(uint32_t wid,
   }
   if (outParent) *outParent = st->parent;
 
-  // Children:
+  // Children: return in stacking order (bottom-to-top = creation order)
   uint32_t n = 0;
-  for (const auto& kv : map_) {
-    const WindowState& ch = kv.second;
-    if (ch.parent == wid) {
-      if (n < maxChildren) outChildren[n] = ch.xid;
+  auto cit = children_order_.find(wid);
+  if (cit != children_order_.end()) {
+    for (uint32_t child : cit->second) {
+      if (map_.find(child) == map_.end()) continue; // stale entry
+      if (n < maxChildren) outChildren[n] = child;
       n++;
-      if (n >= maxChildren) break; // cap like your old code
+      if (n >= maxChildren) break;
     }
   }
 
@@ -554,23 +590,41 @@ std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
   std::lock_guard<std::mutex> lock(mu_);
   if (map_.find(root) == map_.end()) return out;
 
-  // BFS over parent links
-  std::vector<uint32_t> queue;
+  // BFS using children_order_ for stacking-aware ordering (bottom-to-top).
+  // This ensures lower-stacking children appear before higher-stacking ones.
+  std::deque<uint32_t> queue;
   queue.push_back(root);
 
   while (!queue.empty()) {
-    uint32_t p = queue.back();
-    queue.pop_back();
+    uint32_t p = queue.front();
+    queue.pop_front();
 
-    for (const auto& kv : map_) {
-      const WindowState& st = kv.second;
-      if (st.parent == p) {
-        out.push_back(st.xid);
-        queue.push_back(st.xid);
+    auto cit = children_order_.find(p);
+    if (cit != children_order_.end()) {
+      for (uint32_t child : cit->second) {
+        // Verify child still exists in map
+        if (map_.find(child) != map_.end()) {
+          out.push_back(child);
+          queue.push_back(child);
+        }
       }
     }
   }
   return out;
+}
+
+std::vector<uint32_t> WindowTable::childrenInStackOrder(uint32_t parent) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto cit = children_order_.find(parent);
+  if (cit == children_order_.end()) return {};
+  // Return only children that still exist
+  std::vector<uint32_t> result;
+  for (uint32_t child : cit->second) {
+    if (map_.find(child) != map_.end()) {
+      result.push_back(child);
+    }
+  }
+  return result;
 }
   
   std::vector<uint32_t> WindowTable::eraseOwnedBy(int owner_fd)
@@ -593,6 +647,16 @@ std::vector<uint32_t> WindowTable::descendantsOf(uint32_t root) const {
       }
 
       for (uint32_t xid : xids) {
+        // Clean up children_order_: remove from parent's list and remove own list
+        auto pit = parentOf.find(xid);
+        if (pit != parentOf.end() && pit->second != 0) {
+          auto cit = children_order_.find(pit->second);
+          if (cit != children_order_.end()) {
+            auto& list = cit->second;
+            list.erase(std::remove(list.begin(), list.end(), xid), list.end());
+          }
+        }
+        children_order_.erase(xid);
         map_.erase(xid);
       }
     }
@@ -722,6 +786,24 @@ bool WindowTable::reparent(uint32_t xid, uint32_t newParent, int16_t x, int16_t 
   std::lock_guard<std::mutex> lock(mu_);
   auto it = map_.find(xid);
   if (it == map_.end()) return false;
+
+  const uint32_t oldParent = it->second.parent;
+
+  // Update children_order_: remove from old parent, add to new parent
+  if (oldParent != 0 && oldParent != newParent) {
+    auto pit = children_order_.find(oldParent);
+    if (pit != children_order_.end()) {
+      auto& list = pit->second;
+      list.erase(std::remove(list.begin(), list.end(), xid), list.end());
+    }
+  }
+  if (newParent != 0 && newParent != oldParent) {
+    auto& newList = children_order_[newParent];
+    if (std::find(newList.begin(), newList.end(), xid) == newList.end()) {
+      newList.push_back(xid); // append at top of stacking order
+    }
+  }
+
   it->second.parent = newParent;
   it->second.x = x;
   it->second.y = y;

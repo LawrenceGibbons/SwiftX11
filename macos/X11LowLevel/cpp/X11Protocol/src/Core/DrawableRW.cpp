@@ -75,6 +75,15 @@ bool resolveDrawableRW(XProtoContext& ctx,
       return false;
     }
 
+    // X11 correctness: draws to unmapped windows succeed but produce no
+    // visible output.  Since our children share the host surface, we must
+    // reject unmapped children here to prevent them from scribbling into
+    // the host surface where higher-stacking siblings should be visible.
+    // (Host windows are always "mapped" from our perspective once presentable.)
+    if (!dv.mapped && drawable != host) {
+      return false;
+    }
+
     // Resolve via Swift-owned surface registry (published per host).
     x11::SurfaceDesc s{};
     if (!ctx.surfaces().get(key, s) ||
