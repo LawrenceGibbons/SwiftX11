@@ -160,6 +160,80 @@ bool resolveDrawableRW(XProtoContext& ctx,
 
       effW = (uint16_t)std::min<uint32_t>(childW, maxW);
       effH = (uint16_t)std::min<uint32_t>(childH, maxH);
+
+      // ---- Sibling occlusion clipping ----
+      // In X11, higher-stacking siblings obscure lower ones.  Since our children
+      // share the host surface, we must clip each child's drawable to exclude
+      // regions covered by higher-stacking mapped siblings.  This prevents
+      // lower-stacking windows from scribbling over higher ones (e.g., xcalc
+      // buttons 40-54 at (2,2) hidden beneath the display widget).
+      const uint32_t parentXid = dv.parent_xid;
+      if (parentXid != 0 && parentXid != 1 && effW > 0 && effH > 0) {
+        // Child's content rect in parent coords
+        int32_t cx0 = (int32_t)dv.x;
+        int32_t cy0 = (int32_t)dv.y;
+        int32_t cx1 = (int32_t)dv.x + (int32_t)effW;
+        int32_t cy1 = (int32_t)dv.y + (int32_t)effH;
+
+        auto siblings = ctx.windows().childrenInStackOrder(parentXid);
+        bool foundSelf = false;
+        for (uint32_t sib : siblings) {
+          if (sib == drawable) { foundSelf = true; continue; }
+          if (!foundSelf) continue; // skip lower-stacking siblings
+
+          WindowView sv{};
+          if (!ctx.windows().snapshot(sib, sv)) continue;
+          if (!sv.mapped) continue;
+
+          // Sibling's total rect (content + border) in parent coords
+          const int32_t sx0 = (int32_t)sv.x - (int32_t)sv.border_width;
+          const int32_t sy0 = (int32_t)sv.y - (int32_t)sv.border_width;
+          const int32_t sx1 = (int32_t)sv.x + (int32_t)sv.w + (int32_t)sv.border_width;
+          const int32_t sy1 = (int32_t)sv.y + (int32_t)sv.h + (int32_t)sv.border_width;
+
+          // Check for overlap
+          if (sx0 >= cx1 || sx1 <= cx0 || sy0 >= cy1 || sy1 <= cy0) continue;
+
+          // Sibling overlaps child.  Clip from the edge that yields the
+          // largest reduction.  Only clip an edge if the sibling spans the
+          // full extent of the child on the perpendicular axis.
+
+          // Right clip (sibling covers right portion, full height)
+          if (sx0 > cx0 && sx0 < cx1 && sy0 <= cy0 && sy1 >= cy1) {
+            cx1 = sx0;
+          }
+          // Left clip (sibling covers left portion, full height)
+          if (sx1 < cx1 && sx1 > cx0 && sx0 <= cx0 && sy0 <= cy0 && sy1 >= cy1) {
+            cx0 = sx1;
+          }
+          // Bottom clip (sibling covers bottom portion, full width)
+          if (sy0 > cy0 && sy0 < cy1 && sx0 <= cx0 && sx1 >= cx1) {
+            cy1 = sy0;
+          }
+          // Top clip (sibling covers top portion, full width)
+          if (sy1 < cy1 && sy1 > cy0 && sy0 <= cy0 && sx0 <= cx0 && sx1 >= cx1) {
+            cy0 = sy1;
+          }
+
+          if (cx0 >= cx1 || cy0 >= cy1) break; // fully clipped
+        }
+
+        // Apply clipping: adjust offset and dimensions
+        const int32_t clipDx = cx0 - (int32_t)dv.x;
+        const int32_t clipDy = cy0 - (int32_t)dv.y;
+        const int32_t newW = cx1 - cx0;
+        const int32_t newH = cy1 - cy0;
+
+        if (clipDx > 0 || clipDy > 0 || newW < (int32_t)effW || newH < (int32_t)effH) {
+          ox += clipDx;
+          oy += clipDy;
+          effW = (uint16_t)std::max(0, std::min((int32_t)effW - clipDx, newW));
+          effH = (uint16_t)std::max(0, std::min((int32_t)effH - clipDy, newH));
+
+          // Re-validate against surface bounds
+          if (ox >= (int32_t)s.w || oy >= (int32_t)s.h) { effW = 0; effH = 0; }
+        }
+      }
     }
     if (effW == 0 || effH == 0) {
 #if X11_TRACE_RESOLVE_ENABLED
