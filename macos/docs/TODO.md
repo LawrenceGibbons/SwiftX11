@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-01
+Last updated: 2026-03-02
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -15,6 +15,8 @@ Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK r
 - [x] SurfaceResized re-expose mechanism for timing races
 - [x] bytesPerRow 64-byte aligned; all draw code uses stridePixels
 - [x] background_pixel stored in WindowTable, applied on MapWindow, used in ClearArea
+- [x] CWBackPixmap (bit 0): ParentRelative resolves nearest ancestor's background_pixel; None clears background (v1.5.2)
+- [x] clearBackground() and resolveParentRelativeBackground() in WindowTable (v1.5.2)
 
 ### Damage / Present Pipeline
 - [x] Shared damage accumulator (x11_shared_damage_union/consume) bypasses UI queue latency
@@ -106,6 +108,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 - [x] **CLIPBOARD atom**: Pre-registered as atom 69 along with TARGETS(70), UTF8_STRING(71), TIMESTAMP(72), TEXT(73), MULTIPLE(74), INCR(75), WM_PROTOCOLS(76), WM_DELETE_WINDOW(77) (v1.5.0).
 - [x] **TARGETS**: ConvertSelection for TARGETS returns list of supported types (UTF8_STRING, STRING, TEXT, TIMESTAMP) (v1.5.0).
 - [x] **macOS clipboard bridge**: Swift registers get/set callbacks via x11_clipboard_register(). C++ reads NSPasteboard for CLIPBOARD/PRIMARY ConvertSelection when no X11 owner. X11→macOS sync intercepts SelectionNotify in SendEvent (v1.5.0).
+- [x] **Bidirectional clipboard sync** (v1.5.1): X11→macOS: ClipboardCapture detects property writes with UTF8_STRING/STRING data, pushes to NSPasteboard. Root-proxy selection owner (XID 1) assigned after capture so subsequent ConvertSelection from other X11 clients routes through server (reads cached macOS clipboard). macOS→X11: Option-click paste in xterm triggers ConvertSelection → server serves from NSPasteboard. Sequence number stamping fix in handleSendEvent ensures correct event delivery.
 
 ### 1.5 WarpPointer (MEDIUM — stub upgrade)
 - [x] **WarpPointer (opcode 41)**: Implemented via UICommandQueue → Swift → CGWarpMouseCursorPosition (v1.4.0). Supports root-relative, window-relative, and delta warps.
@@ -353,6 +356,8 @@ xcalc &
 ~~5. **Extension stubs** — DONE (v1.4.0): handler code for RENDER, XFIXES, SHAPE, RANDR, Xinerama, GE (NOT yet advertised)~~
 ~~6. **Selections/clipboard** — DONE (v1.5.0): macOS ↔ X11 clipboard bridge, pre-registered atoms, TARGETS support~~
 ~~7. **GC fill-style rendering** — DONE (v1.5.0): Tiled/Stippled/OpaqueStippled fills in PolyFillRectangle/FillPoly/PolyFillArc~~
+~~8. **Bidirectional clipboard sync** — DONE (v1.5.1): X11→macOS via ClipboardCapture + root-proxy, macOS→X11 via ConvertSelection from NSPasteboard~~
+~~9. **CWBackPixmap/ParentRelative** — DONE (v1.5.2): clearBackground + resolveParentRelativeBackground in WindowTable, handled in CreateWindow + ChangeWindowAttributes~~
 1. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
 2. **Error handling** — Bad replies/missing errors confuse toolkits
 3. **Enable RENDER extension** — Complete Trapezoids + CompositeGlyphs, then advertise. Anti-aliased fonts make UI usable.

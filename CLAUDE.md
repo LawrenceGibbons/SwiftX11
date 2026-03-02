@@ -186,7 +186,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.5.0)
+### Current State (v1.5.2)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -218,6 +218,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **RENDER extension** (v1.4.0, major 139): Handler code for QueryPictFormats (ARGB32/RGB24/A8/A4/A1), CreatePicture/FreePicture, Composite (PictOpSrc/Over/Add/Clear), FillRectangles, CreateSolidFill, QueryFilters. Glyph ops are stubs (consume silently). Picture table tracks drawable/format/solid state. **NOT advertised to clients** — needs Trapezoids + CompositeGlyphs rendering before enabling.
 - **Selections/clipboard bridge** (v1.5.0): Pre-registered atoms 69-77 (CLIPBOARD, TARGETS, UTF8_STRING, TIMESTAMP, TEXT, MULTIPLE, INCR, WM_PROTOCOLS, WM_DELETE_WINDOW). PropertyTable extracted to shared header. Swift registers get/set callbacks via `x11_clipboard_register()`. ConvertSelection reads NSPasteboard when no X11 owner. SendEvent intercepts SelectionNotify for CLIPBOARD → NSPasteboard write. TARGETS returns supported types.
 - **GC fill-style rendering** (v1.5.0): FillSolid/FillTiled/FillStippled/FillOpaqueStippled implemented in PolyFillRectangle, FillPoly, PolyFillArc via `Utils/FillStyle.hpp` helper. Tile pixmaps sampled at `(px-ts_x_origin)%tile_w`. Stipple bitmaps bit-tested with proper modulo wrapping. Solid fill fast path preserved (zero overhead when fill_style==0).
+- **Bidirectional clipboard sync** (v1.5.1): X11→macOS direction completed. ClipboardCapture in PropOps detects UTF8_STRING/STRING property writes during selection transfer, pushes text to NSPasteboard via Swift callback. Root-proxy selection owner (XID 1) assigned after capture so subsequent X11 ConvertSelection routes through server (serves from cached macOS clipboard). Sequence number stamping fix in handleSendEvent ensures correct SelectionNotify delivery. macOS→X11: ConvertSelection from xterm triggers server to read NSPasteboard and serve directly.
+- **CWBackPixmap/ParentRelative** (v1.5.2): CreateWindow and ChangeWindowAttributes now handle CWBackPixmap (bit 0). Value 1 (ParentRelative) walks parent chain via `resolveParentRelativeBackground()` to copy nearest ancestor's background_pixel. Value 0 (None) calls `clearBackground()` to disable server background fill. Both methods added to WindowTable.
 - **Motion state**: `toX11State()` used everywhere (button bits at X11 positions 8-12)
 - **Key event modifiers** (v1.0.1): `sendKeyEvent()` uses `toX11State()` for correct modifier mapping (was previously using raw `buttons | mods` which mapped Option→Control, Control→Shift)
 - **GrabPointer reply** (v1.0.2): Re-enabled — uses same `sendReply32()` pattern as GrabKeyboard. Missing reply was causing XCB sequence desync on scrollbar use.
@@ -233,8 +235,9 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
   - Remaining globals: `g_daemon` (process-lifetime), `g_daemon_ptr` (bridge access), `g_ctx/g_ev/g_q` (NotifyBridge, set per-session)
 - **Display :1**: SwiftX11 runs on display :1 (TCP port 6001) to avoid conflict with XQuartz on :0. `~/.profile` sets `DISPLAY=127.0.0.1:1`.
 
-### Known Issues (v1.5.0)
-- **xcalc wrong characters**: sqrt sign and some other special characters display incorrectly — Phase 3 font/encoding issue.
+### Known Issues (v1.5.2)
+- **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Additionally, buttons 21-22 have `mappedWhenManaged: False` (should be invisible) but may appear if Xt widget handling is incomplete. **Workaround**: `XFILESEARCHPATH=/opt/X11/share/X11/%T/%N xcalc -rpn` loads app-defaults for correct labels on buttons 1-39. Without this env var, ALL buttons show default widget names.
+- **xcalc wrong characters**: sqrt sign (button1), division (button10), pi (button12) display incorrectly — these buttons use Adobe Symbol font encoding (`-adobe-symbol-*`) which our BDF font system doesn't support. Phase 3 font/encoding issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Phase 3 font infrastructure issue. Xlib's XCreateFontSet() expects multiple charset fonts; SwiftX11 has minimal BDF coverage.
 - **xterm occasional uncleared pixels at bottom**: Stale pixels visible at bottom of xterm window in some cases. May be a damage rect or ClearArea issue.
 - **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
