@@ -1107,6 +1107,19 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     int32_t penX            = (int16_t)br.readU16();
     const int32_t baseY     = (int16_t)br.readU16();
 
+#ifndef NDEBUG
+    {
+      x11::WindowView wv{};
+      bool isWin = ctx.windows().snapshot(drawable, wv);
+      if (isWin) {
+        fprintf(stderr, "[LABEL] PolyText8 drawable=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u at (%d,%d)\n",
+                (unsigned)drawable, (unsigned)wv.parent_xid,
+                (int)wv.x, (int)wv.y, (unsigned)wv.w, (unsigned)wv.h,
+                (int)penX, (int)baseY);
+      }
+    }
+#endif
+
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) { br.skip(br.remaining()); return; }
@@ -1185,6 +1198,17 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
       if (br.remaining() < len) { br.skip(br.remaining()); break; }
 
+#ifndef NDEBUG
+      {
+        const uint8_t* peek = br.peekBytes(len);
+        if (peek) {
+          std::string seg((const char*)peek, len);
+          fprintf(stderr, "[LABEL]   PolyText8 item drawable=0x%08X text=\"%s\"\n",
+                  (unsigned)drawable, seg.c_str());
+        }
+      }
+#endif
+
       for (uint8_t i = 0; i < len; i++) {
         const uint8_t ch = br.readU8();
 
@@ -1225,6 +1249,24 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     std::vector<uint8_t> text(n);
     for (uint8_t i = 0; i < n; i++) text[i] = br.readU8();
     br.skip(br.remaining());
+
+#ifndef NDEBUG
+    {
+      // Diagnostic: show text drawn into each drawable with window geometry
+      std::string txt(text.begin(), text.end());
+      x11::WindowView wv{};
+      bool isWin = ctx.windows().snapshot(drawable, wv);
+      if (isWin) {
+        fprintf(stderr, "[LABEL] ImageText8 drawable=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u text=\"%s\" at (%d,%d)\n",
+                (unsigned)drawable, (unsigned)wv.parent_xid,
+                (int)wv.x, (int)wv.y, (unsigned)wv.w, (unsigned)wv.h,
+                txt.c_str(), (int)x, (int)y);
+      } else {
+        fprintf(stderr, "[LABEL] ImageText8 drawable=0x%08X (pixmap) text=\"%s\" at (%d,%d)\n",
+                (unsigned)drawable, txt.c_str(), (int)x, (int)y);
+      }
+    }
+#endif
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) return;

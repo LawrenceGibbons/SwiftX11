@@ -321,6 +321,17 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
           (unsigned)event_mask,
           has_bg_pixel ? "yes" : "no");
 #endif
+
+#ifndef NDEBUG
+  // Diagnostic: log all child windows to help identify xcalc button placement
+  if (parent != 1) {
+    fprintf(stderr, "[LABEL] CreateWindow wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u bw=%u bg_pixel=%s\n",
+            (unsigned)wid, (unsigned)parent,
+            (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
+            (unsigned)borderWidth,
+            has_bg_pixel ? "yes" : "no");
+  }
+#endif
 }
 
 
@@ -436,6 +447,17 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteR
               (unsigned)wid, (unsigned)host, (int)(host == wid),
               (unsigned)mv.parent_xid,
               (int)mv.x, (int)mv.y, (unsigned)mv.w, (unsigned)mv.h);
+    }
+#endif
+
+#ifndef NDEBUG
+    if (host != wid) {
+      WindowView mv_dbg{};
+      ctx.windows().snapshot(wid, mv_dbg);
+      fprintf(stderr, "[LABEL] MapWindow child wid=0x%08X host=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u\n",
+              (unsigned)wid, (unsigned)host,
+              (unsigned)mv_dbg.parent_xid,
+              (int)mv_dbg.x, (int)mv_dbg.y, (unsigned)mv_dbg.w, (unsigned)mv_dbg.h);
     }
 #endif
 
