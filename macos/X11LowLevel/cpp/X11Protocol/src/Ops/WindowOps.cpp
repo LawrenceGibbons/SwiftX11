@@ -211,13 +211,22 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   uint32_t event_mask = 0;
   uint32_t bg_pixel = 0;
   bool     has_bg_pixel = false;
+  bool     parent_relative = false; // CWBackPixmap=1 (ParentRelative)
   uint32_t border_pixel_raw = 0;
   bool     has_border_pixel = false;
-  // Consume values for *all* bits set; record bit 1 (CWBackPixel), bit 3 (CWBorderPixel), bit 11 (CWEventMask).
+  // Consume values for *all* bits set; record bit 0 (CWBackPixmap), bit 1 (CWBackPixel),
+  // bit 3 (CWBorderPixel), bit 11 (CWEventMask).
   for (uint32_t bit = 0; bit < 32; bit++) {
     if (!(vmask & (1u << bit))) continue;
     if (br.remaining() < 4) break;
     const uint32_t val = br.readU32();
+    if (bit == 0) { // CWBackPixmap
+      if (val == 1) { // ParentRelative
+        parent_relative = true;
+      }
+      // val == 0 → None (no background, which is our default)
+      // val > 1  → pixmap ID (not supported yet)
+    }
     if (bit == 1) { // CWBackPixel
       // Map X11 pixel value to ARGB8888 (force alpha opaque)
       if (val == 0)       bg_pixel = 0xFF000000u;       // black
@@ -286,6 +295,14 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     fprintf(stderr, "[CreateWindow] wid=0x%08X bg_pixel=0x%08X\n",
             (unsigned)wid, (unsigned)bg_pixel);
 #endif
+  } else if (parent_relative) {
+    // CWBackPixmap=ParentRelative: inherit the nearest ancestor's background_pixel.
+    bool resolved = ctx.windows().resolveParentRelativeBackground(wid);
+#if X11_TRACE_LIFECYCLE_ENABLED
+    fprintf(stderr, "[CreateWindow] wid=0x%08X ParentRelative resolved=%d\n",
+            (unsigned)wid, (int)resolved);
+#endif
+    (void)resolved;
   }
   ctx.windows().setMapped(wid, false);
   ctx.windows().setPresentable(wid, false);

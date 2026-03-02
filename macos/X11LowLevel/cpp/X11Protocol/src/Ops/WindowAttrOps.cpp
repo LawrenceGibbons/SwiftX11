@@ -99,6 +99,10 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     uint32_t newBgPixel = 0;
     bool sawBgPixel = false;
 
+    bool sawBackPixmap = false;
+    bool parentRelative = false;
+    bool backPixmapNone = false;
+
     uint32_t newBorderPixel = 0;
     bool sawBorderPixel = false;
 
@@ -109,6 +113,18 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint32_t val = br.readU32();
 
       switch (bit) {
+        case 0: // CWBackPixmap
+          sawBackPixmap = true;
+          if (val == 1) {
+            parentRelative = true;
+          } else if (val == 0) {
+            backPixmapNone = true;
+          }
+          // val > 1 → pixmap ID (not supported yet)
+          ctx.tracef("[CWA] CWBackPixmap wid=0x%08X val=0x%08X parentRel=%d none=%d\n",
+                     wid, val, (int)parentRelative, (int)backPixmapNone);
+          break;
+
         case 1: // CWBackPixel
           // Map X11 pixel value to ARGB8888 (force alpha opaque)
           if (val == 0)       newBgPixel = 0xFF000000u;       // black
@@ -167,7 +183,22 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
     }
     
-    // ---- Apply background pixel if present ----
+    // ---- Apply background pixmap/pixel ----
+    // Per X11 spec: CWBackPixmap takes precedence over CWBackPixel when both specified.
+    // Handle ParentRelative first, then let explicit CWBackPixel override if both present.
+    if (sawBackPixmap && !sawBgPixel) {
+      if (parentRelative) {
+        ctx.windows().resolveParentRelativeBackground(wid);
+#ifdef X11_TRACE_VERBOSE
+        fprintf(stderr, "[CWA] ParentRelative wid=0x%08X\n", (unsigned)wid);
+#endif
+      } else if (backPixmapNone) {
+        ctx.windows().clearBackground(wid);
+#ifdef X11_TRACE_VERBOSE
+        fprintf(stderr, "[CWA] clearBackground(None) wid=0x%08X\n", (unsigned)wid);
+#endif
+      }
+    }
     if (sawBgPixel) {
       ctx.windows().setBackgroundPixel(wid, newBgPixel);
 #ifdef X11_TRACE_VERBOSE

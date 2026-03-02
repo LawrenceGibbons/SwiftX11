@@ -103,6 +103,11 @@ public:
   
   // background pixel
   void setBackgroundPixel(uint32_t xid, uint32_t pixel_argb);
+  void clearBackground(uint32_t xid); // CWBackPixmap=None: no server bg fill
+
+  // ParentRelative: walk parent chain, copy nearest ancestor's background_pixel.
+  // Returns true if a parent with has_background_pixel was found and applied.
+  bool resolveParentRelativeBackground(uint32_t xid);
 
   // border
   void setBorderWidth(uint32_t xid, uint16_t bw);

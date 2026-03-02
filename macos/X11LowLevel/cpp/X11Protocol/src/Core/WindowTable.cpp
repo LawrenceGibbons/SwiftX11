@@ -219,6 +219,39 @@ void WindowTable::setBackgroundPixel(uint32_t xid, uint32_t pixel_argb) {
   st->serial++;
 }
 
+void WindowTable::clearBackground(uint32_t xid) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->background_pixel = 0;
+  st->has_background_pixel = false;
+  st->serial++;
+}
+
+bool WindowTable::resolveParentRelativeBackground(uint32_t xid) {
+  if (xid == 0) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return false;
+
+  // Walk up parent chain to find nearest ancestor with has_background_pixel.
+  // Safety: cap iterations to prevent infinite loop on corrupted parent chain.
+  uint32_t cur = st->parent;
+  for (int depth = 0; depth < 64 && cur != 0 && cur != 1; depth++) {
+    const WindowState* parent = findLocked(cur);
+    if (!parent) break;
+    if (parent->has_background_pixel) {
+      st->background_pixel = parent->background_pixel;
+      st->has_background_pixel = true;
+      st->serial++;
+      return true;
+    }
+    cur = parent->parent;
+  }
+  return false;
+}
+
 void WindowTable::setBorderWidth(uint32_t xid, uint16_t bw) {
   if (xid == 0) return;
   std::lock_guard<std::mutex> lock(mu_);
