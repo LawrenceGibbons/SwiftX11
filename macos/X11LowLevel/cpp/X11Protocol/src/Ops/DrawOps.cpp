@@ -245,7 +245,8 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
   const bool dstIsWindow = ctx.windows().exists(drawable);
 
   // ============================================================================================
-  // WINDOW path: ZPixmap depth {24,32} -> SurfaceRegistry (keyed by host/top-level window)
+  // WINDOW path: ZPixmap depth {24,32} -> resolveDrawableRW (handles child→host offset,
+  // border_width, bounds clipping, sibling occlusion)
   // ============================================================================================
   if (dstIsWindow) {
     // Only accept ZPixmap for window surfaces right now.
@@ -255,35 +256,22 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
       return;
     }
 
-    // Route window drawing to top-level host (current rootless model).
-    const uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
-    const uint32_t key  = host ? host : drawable;
-
-    // Surface must exist (Swift-owned backing store).
-    x11::SurfaceDesc surf{};
-    if (!ctx.surfaces().get(key, surf) ||
-        !surf.ptr || surf.bytesPerRow == 0 || surf.w == 0 || surf.h == 0) {
-      // Transitional behavior: if surface isn't installed yet, drop quietly.
+    // Resolve drawable via resolveDrawableRW.  This correctly handles:
+    //  - child→host offset (including border_width at each level)
+    //  - negative offset clamping
+    //  - clipping to child window's own bounds (not just host surface bounds)
+    //  - sibling occlusion (edge-based + occluded rects)
+    // Previous code walked the parent chain manually but MISSED border_width,
+    // causing PutImage content to be misplaced by border_width pixels.
+    DrawableRW dst{};
+    if (!resolveDrawableRW(ctx, drawable, dst)) {
       br.skip(br.remaining());
       return;
     }
-
-    // Compute drawable's absolute offset within host by walking up the tree.
-    int32_t offX = 0;
-    int32_t offY = 0;
-    if (drawable != key) {
-      uint32_t cur = drawable;
-      for (int hop = 0; hop < 256 && cur && cur != key; hop++) {
-        x11::WindowView vw{};
-        if (!ctx.windows().snapshot(cur, vw)) break;
-        offX += (int32_t)vw.x;
-        offY += (int32_t)vw.y;
-        cur = vw.parent_xid;
-      }
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) {
+      br.skip(br.remaining());
+      return;
     }
-
-    const int32_t baseX = (int32_t)dstX + offX;
-    const int32_t baseY = (int32_t)dstY + offY;
 
     // For our advertised pixmap formats, depth=24 is still bpp=32 on the wire.
     // Treat both depth=24 and depth=32 as 4 bytes per pixel.
@@ -299,63 +287,48 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     const uint8_t* src = br.ptr();
     br.skip(br.remaining()); // consume rest (including request padding)
 
-    uint8_t* dstBase = static_cast<uint8_t*>(surf.ptr);
-
 #ifndef NDEBUG
-    ctx.tracef("[PutImage/WIN] drawable=0x%08X host=0x%08X off=%d,%d dst=%d,%d wh=%u,%u depth=%u fmt=%u surf=%ux%u bpr=%u\n",
-               (unsigned)drawable, (unsigned)key,
-               (int)offX, (int)offY,
+    ctx.tracef("[PutImage/WIN] drawable=0x%08X dst=%d,%d wh=%u,%u depth=%u fmt=%u dstWH=%ux%u stride=%u\n",
+               (unsigned)drawable,
                (int)dstX, (int)dstY,
                (unsigned)width, (unsigned)height,
                (unsigned)depth, (unsigned)format,
-               (unsigned)surf.w, (unsigned)surf.h, (unsigned)surf.bytesPerRow);
+               (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
 #endif
 
-    // Copy rows, clipped to surface bounds + GC clip rects.
-    // Compute drawable-bounds-clipped region first.
-    int32_t dbX0 = std::max<int32_t>(0, baseX);
-    int32_t dbY0 = std::max<int32_t>(0, baseY);
-    int32_t dbX1 = std::min<int32_t>((int32_t)surf.w, baseX + (int32_t)width);
-    int32_t dbY1 = std::min<int32_t>((int32_t)surf.h, baseY + (int32_t)height);
-
-    // Note: GC clip origin is in drawable-local coords (relative to the child window).
-    // PutImage's dstX/dstY are also in drawable-local coords.
-    // The clip rects from SetClipRectangles are in clip-mask coords (offset by clip_x_origin/y_origin).
-    // Since we're working in host-surface coords here (baseX/baseY includes the child offset),
-    // we need to translate: effective clip rect in host coords =
-    //   (clip_rect.x + gc.clip_x_origin + offX, clip_rect.y + gc.clip_y_origin + offY)
-    // But gcClipForEachRect expects drawable-local coords. Our draw region in drawable-local
-    // coords is (dstX, dstY) to (dstX+width, dstY+height). We'll clip in drawable-local space
-    // then translate to host coords.
+    // dstX/dstY are in drawable-local coords.
+    // dst.pixels32 is already shifted to the drawable's (0,0) in the host surface.
+    // dst.w/dst.h are the drawable's clipped dimensions.
+    // Clip the source region to the drawable bounds.
+    const int32_t dx0 = (int32_t)dstX;
+    const int32_t dy0 = (int32_t)dstY;
 
     auto copyRegion = [&](int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1) {
-      // cx0..cx1, cy0..cy1 are in drawable-local coords. Translate to host-surface coords.
-      const int32_t hx0 = cx0 + offX;
-      const int32_t hy0 = cy0 + offY;
-      const int32_t hx1 = cx1 + offX;
-      const int32_t hy1 = cy1 + offY;
-      // Clip to surface bounds
-      const int32_t fx0 = std::max<int32_t>(0, hx0);
-      const int32_t fy0 = std::max<int32_t>(0, hy0);
-      const int32_t fx1 = std::min<int32_t>((int32_t)surf.w, hx1);
-      const int32_t fy1 = std::min<int32_t>((int32_t)surf.h, hy1);
-      if (fx0 >= fx1 || fy0 >= fy1) return;
+      // cx0..cx1, cy0..cy1 are in drawable-local coords, already GC-clipped.
+      // Clip to drawable bounds.
+      cx0 = std::max<int32_t>(cx0, 0);
+      cy0 = std::max<int32_t>(cy0, 0);
+      cx1 = std::min<int32_t>(cx1, (int32_t)dst.w);
+      cy1 = std::min<int32_t>(cy1, (int32_t)dst.h);
+      if (cx0 >= cx1 || cy0 >= cy1) return;
 
-      for (int32_t dy = fy0; dy < fy1; dy++) {
-        const int32_t srcRow = dy - baseY;
+      for (int32_t dy = cy0; dy < cy1; dy++) {
+        const int32_t srcRow = dy - dy0;
         if (srcRow < 0 || srcRow >= (int32_t)height) continue;
         const uint8_t* srow = src + (size_t)srcRow * (size_t)srcStride;
-        uint8_t* drow = dstBase + (size_t)dy * (size_t)surf.bytesPerRow;
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
 
-        const int32_t srcX0 = fx0 - baseX;
-        const int32_t copyPx = fx1 - fx0;
+        const int32_t srcX0 = cx0 - dx0;
+        const int32_t copyPx = cx1 - cx0;
+        if (copyPx <= 0) continue;
+
+        const uint32_t* sp = reinterpret_cast<const uint32_t*>(srow) + srcX0;
+        uint32_t* dp = drow + cx0;
         if (piFast) {
-          std::memcpy(drow + (size_t)fx0 * 4u,
-                      srow + (size_t)srcX0 * 4u,
-                      (size_t)copyPx * 4u);
+          // GXcopy + full planemask: copy and force alpha opaque.
+          for (int32_t i = 0; i < copyPx; i++)
+            dp[i] = sp[i] | 0xFF000000u;
         } else {
-          const uint32_t* sp = reinterpret_cast<const uint32_t*>(srow) + srcX0;
-          uint32_t* dp = reinterpret_cast<uint32_t*>(drow) + fx0;
           for (int32_t i = 0; i < copyPx; i++)
             dp[i] = x11_apply_rop_argb(dp[i], sp[i] | 0xFF000000u, piFn, piPm);
         }
@@ -363,38 +336,19 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t forma
     };
 
     if (!piGC.has_clip) {
-      // No GC clip — copy full region
-      for (int32_t dy = dbY0; dy < dbY1; dy++) {
-        const int32_t srcRow = dy - baseY;
-        if (srcRow < 0 || srcRow >= (int32_t)height) continue;
-        const uint8_t* srow = src + (size_t)srcRow * (size_t)srcStride;
-        uint8_t* drow = dstBase + (size_t)dy * (size_t)surf.bytesPerRow;
-
-        const int32_t srcX0 = dbX0 - baseX;
-        const int32_t copyPx = dbX1 - dbX0;
-        if (copyPx <= 0) continue;
-        if (piFast) {
-          std::memcpy(drow + (size_t)dbX0 * 4u,
-                      srow + (size_t)srcX0 * 4u,
-                      (size_t)copyPx * 4u);
-        } else {
-          const uint32_t* sp = reinterpret_cast<const uint32_t*>(srow) + srcX0;
-          uint32_t* dp = reinterpret_cast<uint32_t*>(drow) + dbX0;
-          for (int32_t i = 0; i < copyPx; i++)
-            dp[i] = x11_apply_rop_argb(dp[i], sp[i] | 0xFF000000u, piFn, piPm);
-        }
-      }
+      // No GC clip — copy full region clipped to drawable bounds
+      copyRegion(dx0, dy0, dx0 + (int32_t)width, dy0 + (int32_t)height);
     } else {
-      // GC clip active — clip in drawable-local coords, then copy
+      // GC clip active — clip in drawable-local coords
       x11::gcClipForEachRect(piGC,
-                             (int32_t)dstX, (int32_t)dstY,
-                             (int32_t)dstX + (int32_t)width,
-                             (int32_t)dstY + (int32_t)height,
+                             dx0, dy0,
+                             dx0 + (int32_t)width,
+                             dy0 + (int32_t)height,
                              copyRegion);
     }
 
     // Damage the drawn region (drawable-local coords; damageOrDirty translates to host).
-    damageOrDirty(ctx, drawable, (int32_t)dstX, (int32_t)dstY, (int32_t)width, (int32_t)height);
+    damageOrDirty(ctx, drawable, dx0, dy0, (int32_t)width, (int32_t)height);
     return;
   }
 
