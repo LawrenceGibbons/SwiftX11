@@ -55,10 +55,21 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
           (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
 #endif
 
-  for (uint16_t y = 0; y < dst.h; y++) {
-    uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
-    for (uint16_t x = 0; x < dst.w; x++) {
-      row[x] = bg;
+  if (dst.numOccluded > 0) {
+    // Occlusion-aware fill: skip pixels covered by higher-stacking siblings
+    for (uint16_t y = 0; y < dst.h; y++) {
+      uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+      for (uint16_t x = 0; x < dst.w; x++) {
+        if (!dst.isOccluded((int32_t)x, (int32_t)y)) row[x] = bg;
+      }
+    }
+  } else {
+    // Fast path: no occlusion
+    for (uint16_t y = 0; y < dst.h; y++) {
+      uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+      for (uint16_t x = 0; x < dst.w; x++) {
+        row[x] = bg;
+      }
     }
   }
 
