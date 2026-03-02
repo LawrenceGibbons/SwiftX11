@@ -97,8 +97,11 @@ public:
                  uint32_t  maxChildren,
                  uint32_t* outNChildren) const;
 
-  // tracking subwindows
+  // tracking subwindows (returns children in bottom-to-top stacking order)
   std::vector<uint32_t> descendantsOf(uint32_t root) const;
+
+  // Direct children in stacking order (bottom-to-top = creation order)
+  std::vector<uint32_t> childrenInStackOrder(uint32_t parent) const;
   
   
   // background pixel
@@ -175,6 +178,10 @@ private:
 
   mutable std::mutex mu_;
   std::unordered_map<uint32_t, WindowState> map_;
+
+  // Children in stacking order (bottom-to-top = creation order).
+  // Key = parent XID, Value = ordered list of child XIDs.
+  std::unordered_map<uint32_t, std::vector<uint32_t>> children_order_;
 
   // Helpers (must be called with mu_ held)
   WindowState* findLocked(uint32_t xid);
