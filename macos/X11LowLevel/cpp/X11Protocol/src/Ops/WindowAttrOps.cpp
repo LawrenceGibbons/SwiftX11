@@ -79,6 +79,12 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t wid   = br.readU32();
     const uint32_t vmask = br.readU32();
 
+#ifndef NDEBUG
+    fprintf(stderr, "[CWA] wid=0x%08X vmask=0x%08X bit0=%d bit1=%d\n",
+            (unsigned)wid, (unsigned)vmask,
+            (int)((vmask & 1) != 0), (int)((vmask & 2) != 0));
+#endif
+
     // Snapshot current values so partial updates preserve unspecified fields.
     uint32_t old_mask = 0;
     bool wasMapped = false;
@@ -203,8 +209,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
     if (sawBgPixel) {
       ctx.windows().setBackgroundPixel(wid, newBgPixel);
-#ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[CWA] setBackgroundPixel wid=0x%08X argb=0x%08X\n",
+#ifndef NDEBUG
+      fprintf(stderr, "[CWA] setBgPixel wid=0x%08X argb=0x%08X\n",
               (unsigned)wid, (unsigned)newBgPixel);
 #endif
     }

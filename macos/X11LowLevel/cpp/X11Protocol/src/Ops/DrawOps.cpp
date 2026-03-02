@@ -1011,15 +1011,11 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
 
-  #ifdef X11_TRACE_VERBOSE
-    if (wid == 0x10000012u) {
-      fprintf(stderr,
-              "[ClearArea] wid=0x%08X x=%d y=%d w=%u h=%u exposures=%u\n",
-              (unsigned)wid,
-              (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
-              (unsigned)exposures);
-    }
-  #endif
+#ifndef NDEBUG
+    fprintf(stderr, "[ClearArea] wid=0x%08X xy=(%d,%d) wh=(%u,%u) exp=%u\n",
+            (unsigned)wid, (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
+            (unsigned)exposures);
+#endif
 
     if (wid == 0) return;
     if (!ctx.windows().exists(wid)) return;
