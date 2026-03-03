@@ -663,10 +663,20 @@ void FontOps::handleListFontsWithInfo(XProtoContext& ctx, uint16_t seq, ByteRead
     rep.length = lengthWords;
 
     const xCharInfo ciMin = toCI(f->minBounds);
-    rep.minBounds = ciMin;
+    rep.minBounds.leftSideBearing  = ciMin.leftSideBearing;
+    rep.minBounds.rightSideBearing = ciMin.rightSideBearing;
+    rep.minBounds.characterWidth   = ciMin.characterWidth;
+    rep.minBounds.ascent           = ciMin.ascent;
+    rep.minBounds.descent          = ciMin.descent;
+    rep.minBounds.attributes       = ciMin.attributes;
 
     const xCharInfo ciMax = toCI(f->maxBounds);
-    rep.maxBounds = ciMax;
+    rep.maxBounds.leftSideBearing  = ciMax.leftSideBearing;
+    rep.maxBounds.rightSideBearing = ciMax.rightSideBearing;
+    rep.maxBounds.characterWidth   = ciMax.characterWidth;
+    rep.maxBounds.ascent           = ciMax.ascent;
+    rep.maxBounds.descent          = ciMax.descent;
+    rep.maxBounds.attributes       = ciMax.attributes;
 
     rep.minCharOrByte2 = 0;
     rep.maxCharOrByte2 = 255;

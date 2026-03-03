@@ -47,6 +47,9 @@ public:
   void eraseOwnedBy(uint32_t clientBase, uint32_t clientMask);
 
 private:
+  // Load a PCF font on demand (lazy loading)
+  const x11::font::BdfFont* loadPcfOnDemand(const std::string& xlfdLower) const;
+
   // Built-in fonts by short name (e.g. "6x13")
   std::unordered_map<std::string, std::unique_ptr<x11::font::BdfFont>> builtins_;
 
@@ -56,6 +59,13 @@ private:
   // Alias name -> target font (e.g. "fixed" -> "-misc-fixed-...-iso8859-1")
   // Stores both system aliases (from fonts.alias) and our short-name aliases
   std::unordered_map<std::string, const x11::font::BdfFont*> aliases_;
+
+  // System font directory: XLFD (lowercase) -> PCF file path
+  // Populated from fonts.dir files; fonts are loaded lazily on first use.
+  std::unordered_map<std::string, std::string> pcfRegistry_;
+
+  // Lazily-loaded PCF fonts (mutable for const findByName)
+  mutable std::unordered_map<std::string, std::unique_ptr<x11::font::BdfFont>> pcfCache_;
 };
 
 } // namespace x11

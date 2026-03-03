@@ -612,6 +612,7 @@
 					CoreGraphics,
 					"-framework",
 					CoreFoundation,
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = RLAN.X11LowLevel;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
@@ -656,6 +657,7 @@
 					CoreGraphics,
 					"-framework",
 					CoreFoundation,
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = RLAN.X11LowLevel;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";

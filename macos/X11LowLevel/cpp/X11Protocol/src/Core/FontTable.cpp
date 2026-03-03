@@ -16,6 +16,7 @@
 
 #include "Core/FontTable.hpp"
 #include "Fonts/BDF.hpp"
+#include "Fonts/PCF.hpp"
 #include "Fonts/BundleResource.hpp"
 
 namespace x11 {
@@ -316,6 +317,56 @@ bool FontTable::loadBuiltins(std::string* err) {
   (void)loadBdf("9x18B",   "9x18B");
   (void)loadBdf("fixed",   "fixed");
 
+  // Scan system font directories (fonts.dir) for PCF font names
+  // This only registers XLFD names → file paths; actual fonts are loaded lazily.
+  const char* fontDirs[] = {
+    "/opt/X11/share/fonts/misc",
+    "/opt/X11/share/fonts/75dpi",
+    "/opt/X11/share/fonts/100dpi",
+  };
+
+  for (const char* dir : fontDirs) {
+    std::string dirPath(dir);
+    std::string fontsDir = dirPath + "/fonts.dir";
+    std::ifstream dirFile(fontsDir);
+    if (!dirFile.is_open()) continue;
+
+    std::string line;
+    // First line is the count — skip it
+    if (!std::getline(dirFile, line)) continue;
+
+    while (std::getline(dirFile, line)) {
+      if (line.empty()) continue;
+      // Format: "filename.pcf.gz -foundry-family-weight-slant-..."
+      size_t sp = line.find(' ');
+      if (sp == std::string::npos) continue;
+
+      std::string filename = line.substr(0, sp);
+      std::string xlfd = line.substr(sp + 1);
+      if (xlfd.empty() || xlfd[0] != '-') continue;
+
+      std::string fullPath = dirPath + "/" + filename;
+      std::string xlfdLower = lower(xlfd);
+
+      // Don't register if we already have this font as a builtin
+      bool alreadyBuiltin = false;
+      for (const auto& [key, font] : builtins_) {
+        if (font && lower(font->name) == xlfdLower) {
+          alreadyBuiltin = true;
+          break;
+        }
+      }
+      if (alreadyBuiltin) continue;
+
+      pcfRegistry_[xlfdLower] = fullPath;
+    }
+  }
+
+#ifndef NDEBUG
+  fprintf(stderr, "[FontTable] registered %zu PCF fonts from system directories\n",
+          pcfRegistry_.size());
+#endif
+
   // Load system font aliases (fonts.alias files)
   loadAliases();
 
@@ -454,14 +505,34 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
     }
   }
 
+  // Check PCF registry for exact XLFD match (lazy load)
+  if (auto it = pcfRegistry_.find(key); it != pcfRegistry_.end()) {
+    const auto* f = loadPcfOnDemand(key);
+    if (f) {
+      dbgFontResolve(name, "pcf", f);
+      return f;
+    }
+  }
+
   // XLFD glob matching: if the name contains wildcards, find the first match
   if (key.find('*') != std::string::npos || key.find('?') != std::string::npos) {
+    // First check builtins
     for (const auto& [shortKey, font] : builtins_) {
       if (!font) continue;
       std::string lName = lower(font->name);
       if (fontGlobMatch(key.c_str(), lName.c_str())) {
         dbgFontResolve(name, shortKey.c_str(), font.get());
         return font.get();
+      }
+    }
+    // Then check PCF registry
+    for (const auto& [xlfd, path] : pcfRegistry_) {
+      if (fontGlobMatch(key.c_str(), xlfd.c_str())) {
+        const auto* f = loadPcfOnDemand(xlfd);
+        if (f) {
+          dbgFontResolve(name, "pcf-glob", f);
+          return f;
+        }
       }
     }
   }
@@ -511,8 +582,50 @@ std::vector<std::string> FontTable::listNames() const {
     nameSet.insert(alias);
   }
 
+  // Add PCF registry XLFD names (system fonts)
+  for (const auto& [xlfd, _] : pcfRegistry_) {
+    nameSet.insert(xlfd);
+  }
+
   // Convert to sorted vector
   return std::vector<std::string>(nameSet.begin(), nameSet.end());
+}
+
+
+const x11::font::BdfFont* FontTable::loadPcfOnDemand(const std::string& xlfdLower) const {
+  // Check cache first
+  auto cacheIt = pcfCache_.find(xlfdLower);
+  if (cacheIt != pcfCache_.end()) {
+    return cacheIt->second.get();
+  }
+
+  // Find the path in the registry
+  auto regIt = pcfRegistry_.find(xlfdLower);
+  if (regIt == pcfRegistry_.end()) return nullptr;
+
+  const std::string& path = regIt->second;
+
+  auto font = std::make_unique<x11::font::BdfFont>();
+  auto res = x11::font::loadPcfGz(path, *font);
+  if (!res.ok) {
+#ifndef NDEBUG
+    fprintf(stderr, "[FontTable] PCF load failed: %s -> %s\n",
+            xlfdLower.c_str(), res.error.c_str());
+#endif
+    return nullptr;
+  }
+
+  if (!font->boundsValid) font->computeBounds();
+
+#ifndef NDEBUG
+  fprintf(stderr, "[FontTable] PCF loaded: \"%s\" bbx=%dx%d ascent=%d descent=%d glyphs=%zu\n",
+          font->name.c_str(), font->bbx_w, font->bbx_h,
+          font->ascent, font->descent, font->glyphs.size());
+#endif
+
+  const auto* ptr = font.get();
+  pcfCache_[xlfdLower] = std::move(font);
+  return ptr;
 }
 
 
