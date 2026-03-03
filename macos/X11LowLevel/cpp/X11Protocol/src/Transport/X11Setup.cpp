@@ -314,8 +314,8 @@ extern "C" void x11_send_setup_success_minimal_little_endian(int fd,
   // xWindowRoot (40 bytes)
   wr32_le(out + off +  0, root_xid);
   wr32_le(out + off +  4, root_cmap);
-  wr32_le(out + off +  8, 1);           // whitePixel
-  wr32_le(out + off + 12, 0);           // blackPixel
+  wr32_le(out + off +  8, 0x00FFFFFF);  // whitePixel (TrueColor: pixel IS the color)
+  wr32_le(out + off + 12, 0x00000000); // blackPixel
   wr32_le(out + off + 16, 0);           // currentInputMasks
   wr16_le(out + off + 20, screen_w_u);
   wr16_le(out + off + 22, screen_h_u);
