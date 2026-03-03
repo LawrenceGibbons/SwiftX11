@@ -486,32 +486,19 @@ void FontOps::handleListFonts(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
   }
   br.skip(br.remaining());
 
-  // Get all known font names
+  // Get all known font names (short names + XLFD names + aliases)
   std::vector<std::string> allNames = ctx.fonts().listNames();
 
-  // Simple glob matching: empty or "*" matches all.
-  // Leading/trailing "*" wildcards for basic patterns.
-  auto matches = [&](const std::string& name) -> bool {
-    if (pattern.empty() || pattern == "*") return true;
+  // Lowercase the pattern for case-insensitive matching
+  std::string lpat = pattern;
+  for (char& c : lpat) c = (char)std::tolower((unsigned char)c);
 
-    // "*foo*" — contains
-    if (pattern.size() >= 2 && pattern.front() == '*' && pattern.back() == '*') {
-      std::string sub = pattern.substr(1, pattern.size() - 2);
-      return name.find(sub) != std::string::npos;
-    }
-    // "*foo" — ends with
-    if (pattern.front() == '*') {
-      std::string suffix = pattern.substr(1);
-      if (name.size() < suffix.size()) return false;
-      return name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
-    }
-    // "foo*" — starts with
-    if (pattern.back() == '*') {
-      std::string prefix = pattern.substr(0, pattern.size() - 1);
-      return name.compare(0, prefix.size(), prefix) == 0;
-    }
-    // Exact match
-    return name == pattern;
+  // Full glob matching: supports * (any substring) and ? (single char)
+  // in any position, enabling proper XLFD wildcard patterns like
+  // "-*-fixed-*-*-*-*-*-*-*-*-*-*-*-*" or "-*-helvetica-bold-*"
+  auto matches = [&](const std::string& name) -> bool {
+    if (lpat.empty() || lpat == "*") return true;
+    return fontGlobMatch(lpat.c_str(), name.c_str());
   };
 
   std::vector<std::string> matched;
@@ -551,21 +538,178 @@ void FontOps::handleListFonts(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
 }
 
 // MARK: ---- 50: ListFontsWithInfo ----
+//
+// Reply format (xListFontsWithInfoReply, 60 bytes):
+//   type=1, nameLength=len, seq, length
+//   minBounds (xCharInfo 12B) + pad4
+//   maxBounds (xCharInfo 12B) + pad4
+//   minCharOrByte2, maxCharOrByte2, defaultChar, nFontProps
+//   drawDirection, minByte1, maxByte1, allCharsExist
+//   fontAscent, fontDescent, nReplies(hint)
+//   Then: nFontProps * xFontProp (8B each) + name (nameLength bytes, padded to 4)
+// Terminator: nameLength=0, length=7
+//
 void FontOps::handleListFontsWithInfo(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
 
   const uint16_t maxNames   = br.readU16();
   const uint16_t patternLen = br.readU16();
-  (void)maxNames;
-  (void)patternLen;
+
+  std::string pattern;
+  if (patternLen > 0 && br.remaining() >= patternLen) {
+    if (const uint8_t* p = br.peekBytes(patternLen)) {
+      pattern.assign(reinterpret_cast<const char*>(p), patternLen);
+    }
+  }
   br.skip(br.remaining());
 
+  // Lowercase pattern for matching
+  std::string lpat = pattern;
+  for (char& c : lpat) c = (char)std::tolower((unsigned char)c);
+
+  // Collect matching fonts
+  std::vector<std::string> allNames = ctx.fonts().listNames();
+
+  // Deduplicate: for each matching name, resolve to font pointer and
+  // track which fonts we've already sent (avoids sending the same font
+  // twice when it appears as both a short name and an XLFD name).
+  std::unordered_set<const x11::font::BdfFont*> sent;
+  uint32_t count = 0;
+
+  // First pass: count matches for the nReplies hint
+  uint32_t totalMatches = 0;
+  for (const auto& n : allNames) {
+    if (lpat.empty() || lpat == "*" || fontGlobMatch(lpat.c_str(), n.c_str())) {
+      totalMatches++;
+    }
+  }
+
 #ifndef NDEBUG
-  ctx.tracef("[FontOps] ListFontsWithInfo seq=%u -> terminator only (bring-up)\n",
-             (unsigned)seq);
+  ctx.tracef("[FontOps] ListFontsWithInfo seq=%u maxNames=%u pattern=\"%s\" totalMatches=%u\n",
+             (unsigned)seq, (unsigned)maxNames, pattern.c_str(), (unsigned)totalMatches);
 #endif
 
-  // Send empty terminator reply: nameLen=0, length=7 (28 bytes / 4)
+  auto toCI = [](const x11::font::CharInfo& ci) -> xCharInfo {
+    xCharInfo o{};
+    o.leftSideBearing  = (INT16)ci.lsb;
+    o.rightSideBearing = (INT16)ci.rsb;
+    o.characterWidth   = (INT16)ci.width;
+    o.ascent           = (INT16)ci.ascent;
+    o.descent          = (INT16)ci.descent;
+    o.attributes       = (CARD16)ci.attr;
+    return o;
+  };
+
+  for (const auto& n : allNames) {
+    if (count >= maxNames) break;
+
+    if (!lpat.empty() && lpat != "*" && !fontGlobMatch(lpat.c_str(), n.c_str()))
+      continue;
+
+    const x11::font::BdfFont* f = ctx.fonts().findByName(n);
+    if (!f) continue;
+
+    // Deduplicate by font pointer
+    if (sent.count(f)) continue;
+    sent.insert(f);
+
+    if (!f->boundsValid) {
+      const_cast<x11::font::BdfFont*>(f)->computeBounds();
+    }
+
+    // Build properties (same as QueryFont)
+    auto atom = [](const char* s) -> uint32_t {
+      return x11::AtomTable::instance().intern(s, std::strlen(s), false);
+    };
+
+    std::vector<xFontProp> props;
+    props.reserve(7);
+    auto pushProp = [&](const char* name, uint32_t value) {
+      xFontProp p{};
+      p.name  = (CARD32)atom(name);
+      p.value = (CARD32)value;
+      props.push_back(p);
+    };
+
+    pushProp("FONT_ASCENT",  (uint32_t)f->ascent);
+    pushProp("FONT_DESCENT", (uint32_t)f->descent);
+    { xFontProp p{}; p.name = (CARD32)atom("SPACING"); p.value = (CARD32)atom("C"); props.push_back(p); }
+    uint32_t avgW = (uint32_t)((f->maxBounds.width > 0) ? f->maxBounds.width : 6);
+    pushProp("AVERAGE_WIDTH", avgW * 10u);
+    uint32_t pt = (uint32_t)((f->pointSize > 0) ? f->pointSize : 13);
+    pushProp("POINT_SIZE", pt * 10u);
+    { xFontProp p{}; p.name = (CARD32)atom("CHARSET_REGISTRY"); p.value = (CARD32)atom("ISO10646"); props.push_back(p); }
+    { xFontProp p{}; p.name = (CARD32)atom("CHARSET_ENCODING"); p.value = (CARD32)atom("1"); props.push_back(p); }
+
+    // Use the XLFD name from the font as the reply name
+    const std::string& fontName = f->name.empty() ? n : f->name;
+    uint8_t nameLen = (uint8_t)std::min(fontName.size(), (size_t)255);
+
+    // Calculate length: 28 bytes fixed (after 32-byte header) + props + name padded
+    uint32_t propsBytes = (uint32_t)(props.size() * sizeof(xFontProp));
+    uint32_t namePadded = ((uint32_t)nameLen + 3u) & ~3u;
+    uint32_t lengthWords = (28u + propsBytes + namePadded) / 4u;
+
+    uint32_t repliesHint = totalMatches - count - 1; // approximate remaining
+
+    // Build 60-byte reply header
+    // Using xListFontsWithInfoReply which has the same layout as xQueryFontReply
+    // but with nameLength in byte 1 and nReplies at offset 56
+    xQueryFontReply rep{};
+    std::memset(&rep, 0, sizeof(rep));
+    rep.type = 1; // X_Reply
+    // rep.pad1 is at byte 1 — we'll overwrite it with nameLength below
+    rep.sequenceNumber = seq;
+    rep.length = lengthWords;
+
+    const xCharInfo ciMin = toCI(f->minBounds);
+    rep.minBounds = ciMin;
+
+    const xCharInfo ciMax = toCI(f->maxBounds);
+    rep.maxBounds = ciMax;
+
+    rep.minCharOrByte2 = 0;
+    rep.maxCharOrByte2 = 255;
+
+    int def = f->defaultChar;
+    if (!f->getGlyph(def)) def = (int)' ';
+    if (!f->getGlyph(def)) def = (int)'?';
+    rep.defaultChar = (CARD16)def;
+
+    rep.nFontProps = (CARD16)props.size();
+    rep.drawDirection = 0; // LeftToRight
+    rep.minByte1 = 0;
+    rep.maxByte1 = 0;
+    rep.allCharsExist = 1;
+    rep.fontAscent = (INT16)f->ascent;
+    rep.fontDescent = (INT16)f->descent;
+    // nCharInfos field is at same offset as nReplies in ListFontsWithInfo
+    rep.nCharInfos = (CARD32)repliesHint;
+
+    // Patch nameLength into byte 1 (pad1 in xQueryFontReply)
+    uint8_t* repBytes = reinterpret_cast<uint8_t*>(&rep);
+    repBytes[1] = nameLen;
+
+    // Send the 60-byte reply header
+    if (!ctx.reply().sendReplyRaw(repBytes, 32)) break;
+    if (!ctx.reply().sendReplyRaw(repBytes + 32, sizeof(rep) - 32)) break;
+
+    // Send properties
+    if (!props.empty()) {
+      if (!ctx.reply().sendReplyRaw(props.data(), props.size() * sizeof(xFontProp))) break;
+    }
+
+    // Send font name (padded to 4 bytes)
+    if (nameLen > 0) {
+      uint8_t nameBuf[256 + 3] = {};
+      std::memcpy(nameBuf, fontName.data(), nameLen);
+      if (!ctx.reply().sendReplyRaw(nameBuf, namePadded)) break;
+    }
+
+    count++;
+  }
+
+  // Send terminator reply: nameLen=0, length=7
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
     rep[1] = 0; // nameLen = 0 (terminator)
     wire::wr32_le(rep.data() + 4, 7); // length = 7 (28 bytes of fixed fields after header)
