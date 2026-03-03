@@ -259,7 +259,11 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
   - **Forceful disconnect**: If client doesn't support WM_DELETE_WINDOW (or as fallback), close the client socket (fd) to force disconnect. The server's eraseOwnedBy() cleanup handles resource teardown.
 - [ ] **Keyboard shortcut**: Cmd+W should also trigger window close with the same behavior.
 
-### 5.5 ICCCM / Window Manager Compliance (LOW)
+### 5.5 Window Menu Integration (MEDIUM — user experience)
+- [ ] **Window menu entries**: Each X11 client window should appear as an entry in SwiftX11's macOS "Window" menu. Selecting the entry should bring the window to the front and give it focus (makeKeyAndOrderFront).
+- [ ] **Dynamic updates**: Entries added on MapWindow, removed on DestroyWindow/UnmapWindow. Use WM_NAME property (or fallback to XID) as the menu item title.
+
+### 5.6 ICCCM / Window Manager Compliance (LOW)
 - [ ] **WM_HINTS**: Read and honor WM_HINTS property (icon, initial state, input model).
 - [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio).
 - [ ] **WM_PROTOCOLS**: Support WM_DELETE_WINDOW (send ClientMessage instead of destroying).
