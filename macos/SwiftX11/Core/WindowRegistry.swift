@@ -1065,20 +1065,16 @@ final class WindowRegistry {
       var sdX: Int32 = 0, sdY: Int32 = 0, sdW: Int32 = 0, sdH: Int32 = 0
       let hasShared = x11_shared_damage_consume(host, &sdX, &sdY, &sdW, &sdH)
 
-      // NOTE: We intentionally ignore the damage rect and always do full-frame
-      // uploads.  Partial Metal texture uploads leave pixels outside the damage
-      // rect stale — e.g., the bottom margin and scrollbar columns are rarely
-      // in the damage rect during character-by-character text draws, so the
-      // Metal texture retains old content there (black text from a previous
-      // scroll).  Full uploads cost ~1.6 MB per frame at 819×484, which is
-      // trivial for Metal.  If partial uploads are needed for larger surfaces,
-      // a periodic full-sync mechanism should be added.
-      if hasShared {
-        // Consume the damage to reset the accumulator, but don't use it.
+      let damage: DamageRect?
+      if hasShared && sdW > 0 && sdH > 0 {
+        damage = DamageRect(x: Int(sdX), y: Int(sdY),
+                            w: Int(sdW), h: Int(sdH))
+      } else {
+        damage = nil  // full-frame upload
       }
 
-      // Always snapshot/present the HOST with a full-frame upload.
-      self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: nil)
+      // Always snapshot/present the HOST. The C side composites children onto host.
+      self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: damage)
     }
   }
   

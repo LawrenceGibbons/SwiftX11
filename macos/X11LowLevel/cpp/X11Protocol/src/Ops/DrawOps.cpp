@@ -1326,11 +1326,20 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       }
     };
 
-    // Background fill: [x .. x+overallW) × [y-ascent .. y+descent)
+    // Background fill: [x .. x+overallW) × [y-ascent .. y+descent]
+    //
+    // The fill height is fontAscent + fontDescent + 1 to include the row at
+    // y + fontDescent.  Glyph bitmaps span [y - (fontAscent-1), y + fontDescent]
+    // (fontAscent + fontDescent rows) — because FONT_ASCENT includes the
+    // baseline row.  The +1 ensures the background fill covers the glyph's
+    // descent boundary, preventing stale pixels when the glyph bottom row
+    // (y + fontDescent) has foreground bits but no background was painted.
+    const int bgH = fontAscent + fontDescent + 1;
+
     fillRect32((int)x,
                (int)y - fontAscent,
                overallW,
-               fontAscent + fontDescent,
+               bgH,
                gc.bg);
 
     // Draw glyphs
@@ -1348,10 +1357,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     }
 
     if (dst.isWindow) {
-      // Background fill rect is the largest affected region.
       damageOrDirty(ctx, drawable,
                     (int32_t)x, (int32_t)y - fontAscent,
-                    (int32_t)overallW, (int32_t)(fontAscent + fontDescent));
+                    (int32_t)overallW, (int32_t)bgH);
     }
   }
 
@@ -1570,8 +1578,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       }
     };
 
-    // Background fill
-    fillRect32((int)x, (int)y - fontAscent, overallW, fontAscent + fontDescent, gc.bg);
+    // Background fill (+1 row to cover glyph descent boundary — see ImageText8)
+    const int bgH = fontAscent + fontDescent + 1;
+    fillRect32((int)x, (int)y - fontAscent, overallW, bgH, gc.bg);
 
     // Draw glyphs
     int penX = (int)x;
@@ -1592,7 +1601,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (dst.isWindow) {
       damageOrDirty(ctx, drawable,
                     (int32_t)x, (int32_t)y - fontAscent,
-                    (int32_t)overallW, (int32_t)(fontAscent + fontDescent));
+                    (int32_t)overallW, (int32_t)bgH);
     }
   }
 
