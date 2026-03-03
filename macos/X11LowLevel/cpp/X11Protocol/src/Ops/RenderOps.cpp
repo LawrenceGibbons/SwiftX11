@@ -594,11 +594,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Resolve source color (typically solid fill)
     uint32_t srcColor = 0xFF000000u;
-    bool srcFound = false;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* sps = findPicture(srcPid);
-      if (sps && sps->isSolid) { srcColor = sps->solidARGB; srcFound = true; }
+      if (sps && sps->isSolid) srcColor = sps->solidARGB;
     }
 
     // Resolve destination
@@ -608,28 +607,11 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       PictureState* dps = findPicture(dstPid);
       if (dps) dstDrawable = dps->drawable;
     }
-    if (dstDrawable == 0) {
-#ifndef NDEBUG
-      fprintf(stderr, "[TRAP] dst picture 0x%X not found, skip\n", dstPid);
-#endif
-      br.skip(br.remaining()); return;
-    }
+    if (dstDrawable == 0) { br.skip(br.remaining()); return; }
 
     DrawableRW dst{};
-    if (!resolveDrawableRW(ctx, dstDrawable, dst)) {
-#ifndef NDEBUG
-      fprintf(stderr, "[TRAP] resolve drawable 0x%X failed, skip\n", dstDrawable);
-#endif
-      br.skip(br.remaining()); return;
-    }
+    if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
-
-    size_t nTraps = (br.remaining()) / 40;
-#ifndef NDEBUG
-    fprintf(stderr, "[TRAP] op=%u src=0x%X(found=%d,color=0x%08X) dst=0x%X(drw=0x%X %ux%u stride=%u isWin=%d) nTraps=%zu\n",
-            (unsigned)op, srcPid, srcFound, srcColor,
-            dstPid, dstDrawable, dst.w, dst.h, dst.stridePixels, dst.isWindow, nTraps);
-#endif
 
     // Track damage bounding box
     int32_t dmgX0 = (int32_t)dst.w, dmgY0 = (int32_t)dst.h;
@@ -698,20 +680,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
     }
 
-    if (dmgX1 > dmgX0 && dmgY1 > dmgY0) {
-#ifndef NDEBUG
-      fprintf(stderr, "[TRAP] damage (%d,%d)-(%d,%d)\n", dmgX0, dmgY0, dmgX1, dmgY1);
-#endif
-      if (dst.isWindow) {
-        damageOrDirty(ctx, dstDrawable, (int16_t)dmgX0, (int16_t)dmgY0,
-                      dmgX1 - dmgX0, dmgY1 - dmgY0);
-      }
+    if (dmgX1 > dmgX0 && dmgY1 > dmgY0 && dst.isWindow) {
+      damageOrDirty(ctx, dstDrawable, (int16_t)dmgX0, (int16_t)dmgY0,
+                    dmgX1 - dmgX0, dmgY1 - dmgY0);
     }
-#ifndef NDEBUG
-    else {
-      fprintf(stderr, "[TRAP] NO PIXELS DRAWN (dmg empty)\n");
-    }
-#endif
     br.skip(br.remaining());
     return;
   }

@@ -143,8 +143,12 @@ final class X11View: NSView {
       // Allocate new (uninitialized contents are fine; we will paint deterministically)
       var newSurface = Data(count: needBytes)
 
-      // Copy overlap from old buffer first (preserves last frame; avoids flash)
-      if let old, oldW > 0, oldH > 0, oldBPR > 0 {
+      // During live resize, DON'T copy old content — displayFrame handles visual
+      // continuity while the client redraws.  Copying old pixels accumulates stale
+      // content (e.g., xeyes' eye outlines from previous sizes remain visible).
+      let inLiveResize = (self.window?.inLiveResize == true)
+      if !inLiveResize, let old, oldW > 0, oldH > 0, oldBPR > 0 {
+        // Copy overlap from old buffer (preserves last frame; avoids flash)
         let copyW = Int(min(oldW, wPx))
         let copyH = Int(min(oldH, hPx))
         if copyW > 0 && copyH > 0 {
@@ -164,12 +168,13 @@ final class X11View: NSView {
         }
       }
 
-      // Now clear areas NOT covered by the overlap to white (BGRA = FF FF FF FF)
+      // Clear areas NOT covered by the overlap to white (BGRA = FF FF FF FF).
+      // During live resize (no copy), clear the entire surface.
       newSurface.withUnsafeMutableBytes { raw in
         guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
 
-        // If no old surface, just clear everything.
-        if old == nil || oldW <= 0 || oldH <= 0 || oldBPR <= 0 {
+        // If no old surface or live resize (skipped copy), clear everything.
+        if inLiveResize || old == nil || oldW <= 0 || oldH <= 0 || oldBPR <= 0 {
           memset(base, 0xFF, needBytes)
           return
         }
