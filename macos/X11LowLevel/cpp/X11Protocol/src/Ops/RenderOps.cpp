@@ -10,6 +10,11 @@
 //            Trapezoids, all Porter-Duff blend modes.
 //
 
+// Define X11_TRACE_RENDER to enable RENDER extension debug tracing.
+// Separate from X11_TRACE_VERBOSE since RENDER debugging is often needed
+// independently. Undefine to silence all RENDER traces.
+#define X11_TRACE_RENDER 1
+
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -363,6 +368,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       std::lock_guard<std::mutex> lk(sPicMtx);
       sPictures[pid] = ps;
     }
+#ifdef X11_TRACE_RENDER
+    fprintf(stderr, "[RENDER CreatePicture] pid=0x%X drw=0x%X fmt=0x%X repeat=%d\n",
+            pid, drawable, format, ps.repeat);
+#endif
     return;
   }
 
@@ -423,6 +432,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Resolve source
     uint32_t srcColor = 0xFF000000u;
     bool srcIsSolid = false;
+    bool srcRepeat = false;
     uint32_t srcDrawable = 0;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
@@ -431,12 +441,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         srcIsSolid   = sps->isSolid;
         srcColor     = sps->solidARGB;
         srcDrawable  = sps->drawable;
+        srcRepeat    = sps->repeat;
       }
     }
 
     // Resolve mask picture
     bool hasMask = false;
     bool maskIsSolid = false;
+    bool maskRepeat = false;
     uint32_t maskSolidAlpha = 255;
     uint32_t maskDrawable = 0;
     if (mskPid != 0) {
@@ -445,6 +457,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (mps) {
         hasMask = true;
         maskIsSolid = mps->isSolid;
+        maskRepeat  = mps->repeat;
         if (maskIsSolid) {
           maskSolidAlpha = (mps->solidARGB >> 24) & 0xFF;
         }
@@ -458,13 +471,18 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       resolveDrawableRW(ctx, maskDrawable, maskDrw);
     }
 
-    // Lambda to get mask alpha at a given position
+    // Lambda to get mask alpha at a given position (handles Repeat)
     auto getMaskAlpha = [&](int32_t mx, int32_t my) -> uint8_t {
       if (!hasMask) return 255;
       if (maskIsSolid) return (uint8_t)maskSolidAlpha;
       if (!maskDrw.pixels32) return 255;
-      if (mx < 0 || mx >= (int32_t)maskDrw.w || my < 0 || my >= (int32_t)maskDrw.h)
-        return 0;
+      if (maskRepeat && maskDrw.w > 0 && maskDrw.h > 0) {
+        mx = ((mx % (int32_t)maskDrw.w) + (int32_t)maskDrw.w) % (int32_t)maskDrw.w;
+        my = ((my % (int32_t)maskDrw.h) + (int32_t)maskDrw.h) % (int32_t)maskDrw.h;
+      } else {
+        if (mx < 0 || mx >= (int32_t)maskDrw.w || my < 0 || my >= (int32_t)maskDrw.h)
+          return 0;
+      }
       return (uint8_t)((maskDrw.pixels32[(size_t)my * (size_t)maskDrw.stridePixels + (size_t)mx] >> 24) & 0xFF);
     };
 
@@ -481,8 +499,33 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) return;
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) return;
 
+#ifdef X11_TRACE_RENDER
+    fprintf(stderr, "[RENDER Composite] op=%u src=0x%X(solid=%d repeat=%d drw=0x%X) "
+            "msk=0x%X(has=%d solid=%d repeat=%d drw=0x%X) dst=0x%X(drw=0x%X win=%d) "
+            "src(%d,%d) msk(%d,%d) dst(%d,%d) %ux%u\n",
+            (unsigned)op, srcPid, srcIsSolid, srcRepeat, srcDrawable,
+            mskPid, hasMask, maskIsSolid, maskRepeat, maskDrawable,
+            dstPid, dstDrawable, dst.isWindow,
+            xSrc, ySrc, xMask, yMask, xDst, yDst, width, height);
+#endif
+
     // XRGB8888 window surfaces need alpha=0xFF for Metal rendering.
     const bool forceOpaque = dst.isWindow;
+
+    // Handle non-solid source with Repeat: if 1x1, treat as solid
+    if (!srcIsSolid && srcRepeat && srcDrawable != 0) {
+      DrawableRW srcDrw{};
+      if (resolveDrawableRW(ctx, srcDrawable, srcDrw) && srcDrw.pixels32) {
+        if (srcDrw.w == 1 && srcDrw.h == 1) {
+          srcIsSolid = true;
+          srcColor   = srcDrw.pixels32[0];
+#ifdef X11_TRACE_RENDER
+          fprintf(stderr, "[RENDER Composite] promoted 1x1 Repeat to solid=0x%08X\n",
+                  srcColor);
+#endif
+        }
+      }
+    }
 
     if (srcIsSolid) {
       for (int32_t row = 0; row < (int32_t)height; row++) {
@@ -505,19 +548,23 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (!src.pixels32) return;
 
       for (int32_t row = 0; row < (int32_t)height; row++) {
-        const int32_t sy = (int32_t)ySrc + row;
+        int32_t sy = (int32_t)ySrc + row;
         const int32_t dy = (int32_t)yDst + row;
         if (dy < 0 || dy >= (int32_t)dst.h) continue;
-        if (sy < 0 || sy >= (int32_t)src.h) continue;
+        if (srcRepeat && src.h > 0) {
+          sy = ((sy % (int32_t)src.h) + (int32_t)src.h) % (int32_t)src.h;
+        } else if (sy < 0 || sy >= (int32_t)src.h) continue;
 
         const uint32_t* srow = src.pixels32 + (size_t)sy * (size_t)src.stridePixels;
         uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
 
         for (int32_t col = 0; col < (int32_t)width; col++) {
-          const int32_t sx = (int32_t)xSrc + col;
+          int32_t sx = (int32_t)xSrc + col;
           const int32_t dx = (int32_t)xDst + col;
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
-          if (sx < 0 || sx >= (int32_t)src.w) continue;
+          if (srcRepeat && src.w > 0) {
+            sx = ((sx % (int32_t)src.w) + (int32_t)src.w) % (int32_t)src.w;
+          } else if (sx < 0 || sx >= (int32_t)src.w) continue;
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
           const uint32_t sc = modulateAlpha(srow[(size_t)sx], ma);
           uint32_t px = applyOp(op, drow[(size_t)dx], sc);
@@ -1138,6 +1185,11 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
+#ifdef X11_TRACE_RENDER
+    fprintf(stderr, "[RENDER FillRects] op=%u dst=0x%X(drw=0x%X win=%d) color=0x%08X\n",
+            (unsigned)op, dstPid, dstDrawable, dst.isWindow, fillColor);
+#endif
+
     while (br.remaining() >= 8) {
       const int16_t  rx = (int16_t)br.readU16();
       const int16_t  ry = (int16_t)br.readU16();
@@ -1238,6 +1290,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       std::lock_guard<std::mutex> lk(sPicMtx);
       sPictures[pid] = ps;
     }
+#ifdef X11_TRACE_RENDER
+    fprintf(stderr, "[RENDER CreateSolidFill] pid=0x%X argb=0x%08X\n",
+            pid, ps.solidARGB);
+#endif
     return;
   }
 
