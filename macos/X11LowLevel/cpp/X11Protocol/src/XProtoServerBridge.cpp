@@ -23,6 +23,7 @@
 //#include "x11_window_set_mapped.h"
 #include "Core/GCTable.hpp"
 #include "Core/HostResize.hpp"
+#include "Core/timestamp.hpp"
 #include "Transport/XProtoDaemon.hpp"
 #include "Core/WindowView.hpp"
 #include "Ops/EventOps.hpp"
@@ -1443,22 +1444,43 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
     std::memcpy(drow, srow, (size_t)tightBpr);
   }
 
-#ifdef X11_TRACE_VERBOSE
-  // Sample a few pixels from the source surface for debugging.
+#ifndef NDEBUG
+  // Diagnostic: sample bottom-right 4x4 pixels and last row to find stale pixels.
+  // Rate-limited to once per second to avoid spam.
   {
-    const uint32_t* px = (const uint32_t*)s.ptr;
-    const uint32_t mid = (uint32_t)((size_t)(hgt/2) * (size_t)(srcBpr/4) + (size_t)(w/2));
-    const uint32_t p0 = px[0];
-    const uint32_t pm = (mid < (uint32_t)((size_t)hgt * (size_t)(srcBpr/4))) ? px[mid] : 0;
-    // Count non-white pixels in first row.
-    uint32_t nonwhite = 0;
-    for (int32_t x = 0; x < w; x++) {
-      if ((px[x] & 0x00FFFFFFu) != 0x00FFFFFFu) nonwhite++;
+    static uint64_t last_dump_ns = 0;
+    uint64_t now_ns = x11_now_ns_monotonic();
+    if (now_ns - last_dump_ns > 1000000000ULL) {
+      last_dump_ns = now_ns;
+      const uint32_t* px = (const uint32_t*)s.ptr;
+      const uint32_t stride32 = srcBpr / 4;
+
+      // Count non-white pixels in the last row
+      uint32_t lastRowNonWhite = 0;
+      int32_t firstNW_x = -1;
+      if (hgt > 0) {
+        const uint32_t* lastRow = px + (size_t)(hgt - 1) * (size_t)stride32;
+        for (int32_t x = 0; x < w; x++) {
+          if ((lastRow[x] & 0x00FFFFFFu) != 0x00FFFFFFu) {
+            lastRowNonWhite++;
+            if (firstNW_x < 0) firstNW_x = x;
+          }
+        }
+      }
+
+      // Dump bottom-right 4x4 pixel block
+      fprintf(stderr, "[SURFACE_BOTTOM] xid=0x%08X %dx%d stride=%u lastRow_nonWhite=%u (first@x=%d)\n",
+              (unsigned)xid, (int)w, (int)hgt, stride32, lastRowNonWhite, firstNW_x);
+      if (hgt >= 4 && w >= 4) {
+        for (int32_t dy = 3; dy >= 0; dy--) {
+          int32_t y = hgt - 1 - dy;
+          const uint32_t* row = px + (size_t)y * (size_t)stride32;
+          fprintf(stderr, "  row[%d]: ...%08X %08X %08X %08X\n",
+                  (int)y,
+                  row[w-4], row[w-3], row[w-2], row[w-1]);
+        }
+      }
     }
-    fprintf(stderr, "[COPY_SURFACE] xid=0x%08X host=0x%08X wh=%dx%d bpr=%d "
-            "p0=0x%08X pmid=0x%08X row0_nonwhite=%u\n",
-            (unsigned)xid, (unsigned)host, (int)w, (int)hgt, (int)tightBpr,
-            (unsigned)p0, (unsigned)pm, (unsigned)nonwhite);
   }
 #endif
 
