@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-02
+Last updated: 2026-03-03
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -46,6 +46,14 @@ Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK r
 - [x] All 5 parent-chain offset computations account for border_width (drawable at x+bw, y+bw)
 - [x] Hit testing in pick functions includes border region
 - [x] ChangeWindowAttributes CWBorderPixel, ConfigureWindow CWBorderWidth, GetGeometry border_width
+
+### Window Management Enhancements
+- [x] Child-to-child crossing events (v1.5.5): EnterNotify/LeaveNotify when pointer moves between children within same host
+- [x] ConfigureWindow CWStackMode (v1.5.6): Above/Below/TopIf/BottomIf/Opposite sibling stacking operations
+- [x] Occluded rectangle support (v1.5.6): resolveDrawableRW computes occlusion from higher-stacking siblings; ClearArea, fillWindowBackground, PolyFillRectangle skip covered pixels
+- [x] PutImage resolveDrawableRW (v1.5.7): uses resolveDrawableRW for proper border_width offset and child-bounds clipping
+- [x] MapSubwindows/UnmapSubwindows direct-children fix (v1.5.8): uses childrenInStackOrder() not descendantsOf()
+- [x] XFILESEARCHPATH auto-setup (v1.5.8): sets env at startup so X11 clients find app-defaults
 
 ### Input / Events
 - [x] Button routing fix (v1.3.0): updateMotion no longer corrupts buttons field; drag logic resilient; button handler uses HostCmd coords
@@ -117,26 +125,29 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.4.0)**: Only **BIG-REQUESTS** is advertised as present. Handler code exists for RENDER, XFIXES, SHAPE, RANDR, Xinerama, and GE, but these are **NOT advertised** to clients — advertising an extension with incomplete operations causes clients to take broken code paths (e.g., xeyes uses SHAPE clipping when SHAPE is present, RENDER Composite instead of core drawing when RENDER is present). Extensions will be advertised one at a time as their core operations become complete.
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.6.0)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
 
-### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing)
+### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing) — ADVERTISED (v1.6.0)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
-- [x] **QueryExtension("RENDER")**: Handler code returns present=1, major opcode 139 — but **NOT advertised** to clients yet (v1.4.0).
+- [x] **QueryExtension("RENDER")**: Advertised as present=1, major opcode 139 (v1.6.0).
 - [x] **RenderQueryVersion**: Returns version 0.11 (v1.4.0).
 - [x] **RenderQueryPictFormats**: Returns ARGB32, RGB24, A8, A4, A1 formats + screen mapping to TrueColor visual (v1.4.0).
 - [x] **CreatePicture / FreePicture**: Picture table maps PID → drawable+format (v1.4.0).
-- [x] **Composite**: PictOpSrc, PictOpOver, PictOpAdd, PictOpClear implemented. Solid-fill and drawable-to-drawable paths (v1.4.0).
+- [x] **Composite**: All 12 Porter-Duff blend modes: Src, Over, Add, Clear, OverReverse, In, InReverse, Out, OutReverse, Atop, AtopReverse, Xor (v1.6.0). Solid-fill, drawable-to-drawable, and mask paths.
+- [x] **Mask parameter in Composite**: Solid masks (uniform alpha multiplier) and drawable masks (per-pixel alpha modulation) (v1.6.0).
 - [x] **FillRectangles**: Solid color fill with compositing ops (v1.4.0).
 - [x] **CreateSolidFill**: Solid color source pictures (v1.4.0).
 - [x] **ChangePicture**: Parses CPRepeat attribute (v1.4.0).
 - [x] **QueryFilters**: Returns "nearest" and "bilinear" filter names (v1.4.0).
-- [x] **CreateGlyphSet / FreeGlyphSet / ReferenceGlyphSet**: GlyphSet table stubs (v1.4.0).
-- [x] **AddGlyphs / FreeGlyphs / CompositeGlyphs8/16/32**: Consume silently — no glyph rendering yet (v1.4.0).
+- [x] **CreateGlyphSet / FreeGlyphSet / ReferenceGlyphSet**: GlyphSet table with format tracking (v1.6.0).
+- [x] **AddGlyphs**: Full glyph storage — parses wire format (12B glyph info + bitmap data), converts A1/A4/A8 to internal A8, stores in per-glyphset map (v1.6.0).
+- [x] **FreeGlyphs**: Removes glyphs from glyphset (v1.6.0).
+- [x] **CompositeGlyphs8/16/32**: Full rendering — parses GlyphElt wire format (len/dx/dy/glyph IDs, len=255 glyphset switch). maskFormat path accumulates into temp A8 buffer for single Composite pass; no-mask path composites each glyph directly. Source color modulation + compositing op applied (v1.6.0).
 - [x] **SetPictureClipRectangles / SetPictureTransform / SetPictureFilter**: Consume silently (v1.4.0).
 - [x] **Gradient fills (CreateLinearGradient/Radial/Conical)**: Stub as transparent solid fills (v1.4.0).
-- [ ] **Trapezoids / Triangles**: Geometric fill operations (used by Cairo for vector paths).
-- [ ] **CompositeGlyphs rendering**: Actually render uploaded glyphs (currently stubs).
-- [ ] **Mask parameter in Composite**: Currently ignored; needed for complex alpha operations.
+- [x] **Trapezoids (minor 10)**: Scanline rasterization of TRAPEZOID structs (40B each: top/bottom FIXED 16.16, left/right LINEFIX). Interpolates left/right x edges per scanline, fills with source color via compositing op (v1.6.0).
+- [ ] **Triangles / TriStrip / TriFan**: Geometric fill operations (minor 11/12/13). Stubs consume silently.
+- [ ] **Gradient rendering**: Linear/Radial/Conical gradients currently render as transparent. Implement actual gradient sampling for Cairo paths.
 
 ### 2.2 BIG-REQUESTS Extension (HIGH — large images)
 Vivado schematics and waveform views can be large. Without BIG-REQUESTS, maximum request size is 262140 bytes (~256KB), limiting PutImage to ~256KB per call.
@@ -144,20 +155,25 @@ Vivado schematics and waveform views can be large. Without BIG-REQUESTS, maximum
 - [x] **BigReqEnable**: Returns max request length 1M words (4MB). Sets per-client big_req_enabled flag (v1.4.0).
 - [x] **Wire format**: readAndDispatch() detects len_words==0 when big_req_enabled, reads 4-byte extended length (v1.4.0).
 
-### 2.3 XFIXES Extension (MEDIUM — cursor, regions)
+### 2.3 XFIXES Extension (MEDIUM — cursor, regions) — ADVERTISED (v1.6.0)
 GTK and Java use XFIXES for cursor visibility and region operations.
-- [x] **QueryExtension("XFIXES")**: Handler code returns present=1, major opcode 134 — but **NOT advertised** to clients yet (v1.4.0).
+- [x] **QueryExtension("XFIXES")**: Advertised as present=1, major opcode 134 (v1.6.0).
 - [x] **XFixesQueryVersion**: Returns version 5.0 (v1.4.0).
-- [ ] **XFixesShowCursor / HideCursor**: Cursor visibility control.
-- [ ] **XFixesCreateRegion / SetWindowShapeRegion**: Region operations.
-- [ ] **XFixesSelectCursorInput / GetCursorImage**: Cursor change notification.
+- [x] **XFixesShowCursor / HideCursor**: Consume silently (v1.6.0).
+- [x] **XFixesSelectCursorInput**: Consume silently — cursor event selection (v1.6.0).
+- [x] **XFixesGetCursorImage**: Returns 1x1 transparent cursor reply (v1.6.0).
+- [x] **XFixesCreateRegion / DestroyRegion**: Track XID existence silently. Also CreateRegionFromBitmap/Window/GC/Picture (v1.6.0).
+- [x] **XFixesSetWindowShapeRegion**: Consume silently (v1.6.0).
+- [x] **XFixesGetCursorImageAndName**: Returns 1x1 transparent cursor + empty name (v1.6.0).
 
-### 2.4 SHAPE Extension (LOW — non-rectangular windows)
-Some splash screens and tooltips use shaped windows.
-- [x] **QueryExtension("SHAPE")**: Handler code returns present=1, major opcode 135 — but **NOT advertised** to clients yet (v1.4.0).
+### 2.4 SHAPE Extension (LOW — non-rectangular windows) — stubs complete, NOT advertised
+Stub handlers exist for all core SHAPE operations, but SHAPE is deliberately NOT advertised because xeyes uses SHAPE for oval window clipping. Since our implementation silently consumes shape ops without actual pixel clipping, xeyes renders solid-black ovals instead of transparent eye shapes. SHAPE can be advertised once actual shape-based clipping is implemented (or if xeyes is not a priority).
+- [x] **QueryExtension("SHAPE")**: Handler returns present=1 internally, but NOT in QueryExtension/ListExtensions responses (v1.6.0).
 - [x] **ShapeQueryVersion**: Returns version 1.1 (v1.4.0).
-- [ ] **ShapeRectangles / ShapeMask**: Define non-rectangular window shape.
-- [ ] **ShapeQueryExtents**: Query window shape.
+- [x] **ShapeRectangles (sub-opcode 1)**: Consume silently — all windows remain rectangular (v1.6.0).
+- [x] **ShapeMask (sub-opcode 2)**: Consume silently (v1.6.0).
+- [x] **ShapeQueryExtents (sub-opcode 5)**: Returns window bounding rect (v1.6.0).
+- [ ] **Actual shape clipping**: Implement pixel-level clipping based on stored shape regions. Required before advertising SHAPE.
 
 ### 2.5 Other Extensions (LOW — query but don't need full impl)
 These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
@@ -205,7 +221,7 @@ If RENDER is implemented, client-side font rendering (Pango/FreeType) becomes th
 - [ ] **Request length validation**: Verify request body length matches expected size for each opcode.
 
 ### 4.3 Window Management Correctness (MEDIUM)
-- [ ] **ConfigureWindow stack mode**: Handle Above/Below/TopIf/BottomIf/Opposite sibling stacking.
+- [x] **ConfigureWindow stack mode**: Above/Below/TopIf/BottomIf/Opposite sibling stacking with CWSibling support (v1.5.6).
 - [x] **ConfigureWindow border width**: Tracked, stored, and rendered (v1.3.0).
 - [ ] **Override-redirect**: Honor override_redirect attribute (don't apply WM decoration/placement).
 - [ ] **Gravity**: Implement win_gravity and bit_gravity for resize behavior.
@@ -336,31 +352,48 @@ xev -event keyboard &         # event monitor
 xclock -analog &
 xcalc &
 
-# Phase 2+ (RENDER)
-# rendercheck               # run when RENDER is implemented
-# gtk3-demo &               # run when GTK works
+# Phase 2+ (RENDER — now advertised in v1.6.0)
+rendercheck                 # RENDER extension tests
+# gtk3-demo &               # run when GTK font infrastructure is ready
 ```
 
 ---
 
 ## Priority Order for Vivado/Vitis
 
+### Completed milestones
 ~~1. **GC clipping (SetClipRectangles)** — DONE (v1.1.0)~~
 ~~2. **Missing reply-bearing opcodes** — DONE (v1.2.0)~~
 ~~3. **ReparentWindow** — DONE (v1.2.0)~~
 ~~4. **xcalc button outlines + routing** — DONE (v1.3.0): server-drawn borders + button routing fix~~
-~~1. **GC function/planemask enforcement** — DONE (v1.4.0)~~
-~~2. **BIG-REQUESTS extension** — DONE (v1.4.0), advertised and functional~~
-~~3. **16-bit text** — DONE (v1.4.0): PolyText16, ImageText16~~
-~~4. **WarpPointer** — DONE (v1.4.0): opcode 41 via CGWarpMouseCursorPosition~~
-~~5. **Extension stubs** — DONE (v1.4.0): handler code for RENDER, XFIXES, SHAPE, RANDR, Xinerama, GE (NOT yet advertised)~~
-~~6. **Selections/clipboard** — DONE (v1.5.0): macOS ↔ X11 clipboard bridge, pre-registered atoms, TARGETS support~~
-~~7. **GC fill-style rendering** — DONE (v1.5.0): Tiled/Stippled/OpaqueStippled fills in PolyFillRectangle/FillPoly/PolyFillArc~~
-~~8. **Bidirectional clipboard sync** — DONE (v1.5.1): X11→macOS via ClipboardCapture + root-proxy, macOS→X11 via ConvertSelection from NSPasteboard~~
-~~9. **CWBackPixmap/ParentRelative** — DONE (v1.5.2): clearBackground + resolveParentRelativeBackground in WindowTable, handled in CreateWindow + ChangeWindowAttributes~~
-1. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
-2. **Error handling** — Bad replies/missing errors confuse toolkits
-3. **Enable RENDER extension** — Complete Trapezoids + CompositeGlyphs, then advertise. Anti-aliased fonts make UI usable.
-4. **Enable remaining extensions** — Complete core operations for SHAPE, XFIXES, RANDR, Xinerama, GE, then advertise one at a time.
-5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
-6. **Font infrastructure** — Broader font matching for toolkit defaults
+~~5. **GC function/planemask enforcement** — DONE (v1.4.0)~~
+~~6. **BIG-REQUESTS extension** — DONE (v1.4.0), advertised and functional~~
+~~7. **16-bit text** — DONE (v1.4.0): PolyText16, ImageText16~~
+~~8. **WarpPointer** — DONE (v1.4.0): opcode 41 via CGWarpMouseCursorPosition~~
+~~9. **Extension stubs** — DONE (v1.4.0): handler code for RENDER, XFIXES, SHAPE, RANDR, Xinerama, GE (NOT yet advertised)~~
+~~10. **Selections/clipboard** — DONE (v1.5.0): macOS ↔ X11 clipboard bridge~~
+~~11. **GC fill-style rendering** — DONE (v1.5.0): Tiled/Stippled/OpaqueStippled fills~~
+~~12. **Bidirectional clipboard sync** — DONE (v1.5.1): X11→macOS + macOS→X11~~
+~~13. **CWBackPixmap/ParentRelative** — DONE (v1.5.2)~~
+~~14. **ConfigureWindow CWStackMode** — DONE (v1.5.6): full sibling stacking~~
+~~15. **RENDER extension** — DONE (v1.6.0): glyph storage + CompositeGlyphs rendering + Trapezoids + all Porter-Duff blend modes + mask support. Advertised to clients.~~
+~~16. **XFIXES extension** — DONE (v1.6.0): cursor, region, shape stubs. Advertised to clients.~~
+~~17. **SHAPE extension stubs** — DONE (v1.6.0): ShapeRectangles/Mask/QueryExtents. NOT advertised (breaks xeyes).~~
+
+### Remaining priorities
+1. **Font infrastructure** — XLFD wildcard matching, PCF font support, font directory scanning (Phase 3)
+2. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
+3. **Error handling** — Bad replies/missing errors confuse toolkits
+4. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
+5. **Enable remaining extensions** — RANDR, Xinerama, GE advertised one at a time
+6. **Container networking** — TCP + Unix socket + xauth for Docker workflow
+
+### Phase 2 Status Assessment (v1.6.0)
+**Phase 2 is substantially complete.** The three highest-impact extensions (BIG-REQUESTS, RENDER, XFIXES) are all advertised and functional. SHAPE has full stub support but is intentionally held back to avoid breaking xeyes. RANDR, Xinerama, and GE have handler stubs but are not yet needed — GTK apps primarily depend on RENDER + XFIXES.
+
+The next bottleneck for modern toolkit support is **font infrastructure** (Phase 3), not additional extensions. GTK/Pango uses RENDER CompositeGlyphs for text rendering (now working), but still needs a richer font catalog (PCF fonts, XLFD wildcard matching) for proper font discovery.
+
+### Bug fixes (v1.6.0)
+- **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
+- **xeyes resize stale outlines**: Old eye outlines persisted after window resize. Fixed by clearing drawable in ClearArea before redraw.
+- **xterm stale bottom pixels**: Black pixels accumulated at bottom of text rows during scrolling. Root cause: ImageText8/16 background fill was 1 pixel too short (fontAscent + fontDescent covered [y-ascent, y+descent) exclusive, but glyphs with bbx_yoff=-fontDescent place their bottom pixel at exactly y+descent). Fixed by extending background fill to fontAscent + fontDescent + 1.
