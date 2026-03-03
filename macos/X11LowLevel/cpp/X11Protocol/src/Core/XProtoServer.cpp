@@ -10,6 +10,7 @@
 #include <exception>
 
 #include "Core/XProtoServer.hpp"
+#include "Core/XClient.hpp"
 #include "Core/SurfaceDesc.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
@@ -120,6 +121,15 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
     }
 #endif
   }
+
+  // Compact all-requests trace (debug builds, one line per request)
+#ifndef NDEBUG
+  {
+    int cfd = ctx_.hasClient() ? ctx_.client()->fd() : -1;
+    fprintf(stderr, "[REQ] fd=%d %u.%u seq=%u len=%zu\n",
+            cfd, (unsigned)major, (unsigned)minor, (unsigned)seq, remain);
+  }
+#endif
 
   const Entry& e = table_[major];
   // Track last request in the transport (if a client is connected).

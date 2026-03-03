@@ -470,6 +470,10 @@ bool XProtoTransport::sendError32(const uint8_t e[32]) {
 bool XProtoTransport::sendErrorCore(uint8_t errorCode, uint16_t seq,
                                     uint32_t resourceId, uint8_t majorCode)
 {
+#ifndef NDEBUG
+  fprintf(stderr, "[X11_ERROR] code=%u seq=%u rid=0x%X major=%u\n",
+          (unsigned)errorCode, (unsigned)seq, resourceId, (unsigned)majorCode);
+#endif
   const auto e = x11::wireerr::buildCoreError32(errorCode, seq, resourceId, majorCode);
   return sendAll(e.data(), e.size());
 }

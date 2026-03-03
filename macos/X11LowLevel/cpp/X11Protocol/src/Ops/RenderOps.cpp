@@ -13,7 +13,7 @@
 // Define X11_TRACE_RENDER to enable RENDER extension debug tracing.
 // Separate from X11_TRACE_VERBOSE since RENDER debugging is often needed
 // independently. Undefine to silence all RENDER traces.
-#define X11_TRACE_RENDER 1
+// #define X11_TRACE_RENDER 1  // disabled — using [REQ] all-requests trace instead
 
 #include <cstdio>
 #include <cstring>
