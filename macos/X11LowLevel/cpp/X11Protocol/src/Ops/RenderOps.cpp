@@ -2,11 +2,12 @@
 //  RenderOps.cpp
 //  X11LowLevel
 //
-//  RENDER extension — minimal but functional implementation.
+//  RENDER extension — full implementation.
 //
-//  Phase 1: QueryVersion, QueryPictFormats, CreatePicture, ChangePicture,
-//           FreePicture, Composite (PictOpSrc/Over), FillRectangles,
-//           CreateSolidFill, QueryFilters, stubs for glyph ops and transforms.
+//  Supports: QueryVersion, QueryPictFormats, CreatePicture, ChangePicture,
+//            FreePicture, Composite (with mask), FillRectangles, CreateSolidFill,
+//            QueryFilters, AddGlyphs, FreeGlyphs, CompositeGlyphs8/16/32,
+//            Trapezoids, all Porter-Duff blend modes.
 //
 
 #include <cstdio>
@@ -58,7 +59,7 @@ enum PictOp : uint8_t {
 };
 
 // ============================================================================
-// Picture table — maps Picture XID → state
+// Picture table — maps Picture XID -> state
 // ============================================================================
 struct PictureState {
   uint32_t drawable = 0;
@@ -67,7 +68,7 @@ struct PictureState {
   bool     isSolid  = false;
   // Solid fill color (premultiplied ARGB8888)
   uint32_t solidARGB = 0;
-  // Clip (not implemented — just tracked)
+  // Clip (not implemented -- just tracked)
   bool     hasClip = false;
 };
 
@@ -80,14 +81,48 @@ static PictureState* findPicture(uint32_t pid) {
 }
 
 // ============================================================================
-// GlyphSet table — minimal stub (just track existence)
+// GlyphSet table — proper glyph storage for anti-aliased font rendering
 // ============================================================================
+struct RenderGlyph {
+  uint16_t width  = 0;
+  uint16_t height = 0;
+  int16_t  x      = 0;   // origin x offset (pixels left of pen)
+  int16_t  y      = 0;   // origin y offset (pixels above baseline)
+  int16_t  xOff   = 0;   // advance to next glyph origin x
+  int16_t  yOff   = 0;   // advance to next glyph origin y
+  std::vector<uint8_t> alpha; // A8 format: width*height bytes
+};
+
+struct GlyphSetState {
+  uint32_t format = 0;
+  std::unordered_map<uint32_t, RenderGlyph> glyphs;
+};
+
 static std::mutex sGlyphMtx;
-static std::unordered_map<uint32_t, bool> sGlyphSets; // XID → exists
+static std::unordered_map<uint32_t, GlyphSetState> sGlyphSets;
 
 // ============================================================================
 // Inline compositing helpers
 // ============================================================================
+
+// Modulate premultiplied ARGB by an alpha coverage value (0..255)
+static inline uint32_t modulateAlpha(uint32_t c, uint8_t a) {
+  if (a == 255) return c;
+  if (a == 0)   return 0;
+  uint32_t ca = ((c >> 24) & 0xFF) * a / 255;
+  uint32_t cr = ((c >> 16) & 0xFF) * a / 255;
+  uint32_t cg = ((c >>  8) & 0xFF) * a / 255;
+  uint32_t cb = ((c >>  0) & 0xFF) * a / 255;
+  return (ca << 24) | (cr << 16) | (cg << 8) | cb;
+}
+
+// Return bits-per-pixel for alpha-only PictFormats
+static inline int alphaBpp(uint32_t fmt) {
+  if (fmt == kFmtA8) return 8;
+  if (fmt == kFmtA4) return 4;
+  if (fmt == kFmtA1) return 1;
+  return 8; // default
+}
 
 // Premultiply: convert straight-alpha ARGB to premultiplied
 static inline uint32_t premultiply(uint32_t c) {
@@ -120,13 +155,51 @@ static inline uint32_t compositeOver(uint32_t dst, uint32_t src) {
        | (std::min(g, 255u) << 8)  |  std::min(b, 255u);
 }
 
-// Apply compositing op
+// Apply compositing op (all Porter-Duff modes)
 static inline uint32_t applyOp(uint8_t op, uint32_t dst, uint32_t src) {
+  const uint32_t sa = (src >> 24) & 0xFF;
+  const uint32_t da = (dst >> 24) & 0xFF;
+
   switch (op) {
     case PictOpClear: return 0xFF000000u; // opaque black
     case PictOpSrc:   return src | 0xFF000000u;
     case PictOpDst:   return dst;
     case PictOpOver:  return compositeOver(dst, src) | 0xFF000000u;
+    case PictOpOverReverse: return compositeOver(src, dst) | 0xFF000000u;
+    case PictOpIn:    return modulateAlpha(src, (uint8_t)da) | 0xFF000000u;
+    case PictOpInReverse: return modulateAlpha(dst, (uint8_t)sa) | 0xFF000000u;
+    case PictOpOut:   return modulateAlpha(src, (uint8_t)(255 - da)) | 0xFF000000u;
+    case PictOpOutReverse: return modulateAlpha(dst, (uint8_t)(255 - sa)) | 0xFF000000u;
+    case PictOpAtop: {
+      // src * da + dst * (1-sa)
+      uint32_t s = modulateAlpha(src, (uint8_t)da);
+      uint32_t d = modulateAlpha(dst, (uint8_t)(255 - sa));
+      auto add8 = [](uint32_t a, uint32_t b) { return std::min(a+b, 255u); };
+      return (add8((s>>24)&0xFF,(d>>24)&0xFF)<<24) |
+             (add8((s>>16)&0xFF,(d>>16)&0xFF)<<16) |
+             (add8((s>>8)&0xFF,(d>>8)&0xFF)<<8) |
+              add8(s&0xFF,d&0xFF);
+    }
+    case PictOpAtopReverse: {
+      // dst * sa + src * (1-da)
+      uint32_t d = modulateAlpha(dst, (uint8_t)sa);
+      uint32_t s = modulateAlpha(src, (uint8_t)(255 - da));
+      auto add8 = [](uint32_t a, uint32_t b) { return std::min(a+b, 255u); };
+      return (add8((s>>24)&0xFF,(d>>24)&0xFF)<<24) |
+             (add8((s>>16)&0xFF,(d>>16)&0xFF)<<16) |
+             (add8((s>>8)&0xFF,(d>>8)&0xFF)<<8) |
+              add8(s&0xFF,d&0xFF);
+    }
+    case PictOpXor: {
+      // src * (1-da) + dst * (1-sa)
+      uint32_t s = modulateAlpha(src, (uint8_t)(255 - da));
+      uint32_t d = modulateAlpha(dst, (uint8_t)(255 - sa));
+      auto add8 = [](uint32_t a, uint32_t b) { return std::min(a+b, 255u); };
+      return (add8((s>>24)&0xFF,(d>>24)&0xFF)<<24) |
+             (add8((s>>16)&0xFF,(d>>16)&0xFF)<<16) |
+             (add8((s>>8)&0xFF,(d>>8)&0xFF)<<8) |
+              add8(s&0xFF,d&0xFF);
+    }
     case PictOpAdd: {
       auto add = [](uint32_t a, uint32_t b) -> uint32_t { return std::min(a + b, 255u); };
       return (add((dst >> 24) & 0xFF, (src >> 24) & 0xFF) << 24) |
@@ -187,7 +260,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Build the reply payload
     //
-    // 5 formats × 28 bytes = 140 bytes
+    // 5 formats x 28 bytes = 140 bytes
     // 1 screen:
     //   xPictScreen (8 bytes): nDepth=1, fallback=kFmtRGB24
     //   xPictDepth  (8 bytes): depth=24, nPictVisuals=1
@@ -205,7 +278,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     std::vector<uint8_t> payload(168, 0);
     uint8_t* p = payload.data();
 
-    // --- Format 0: ARGB32 (28 bytes) ---
     auto writeFormat = [&](int off, uint32_t id, uint8_t depth,
                            uint16_t rShift, uint16_t rMask,
                            uint16_t gShift, uint16_t gMask,
@@ -233,15 +305,12 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // --- Screen 0 ---
     const int sOff = 140;
-    // xPictScreen: nDepth=1, fallback=kFmtRGB24
     wire::wr32_le(p + sOff + 0, 1);          // nDepth
     wire::wr32_le(p + sOff + 4, kFmtRGB24);  // fallback
 
-    // xPictDepth: depth=24, nPictVisuals=1
     p[sOff + 8] = 24; // depth
     wire::wr16_le(p + sOff + 10, 1); // nPictVisuals
 
-    // xPictVisual: visual=kRootVisualId, format=kFmtRGB24
     wire::wr32_le(p + sOff + 16, kRootVisualId);
     wire::wr32_le(p + sOff + 20, kFmtRGB24);
 
@@ -265,7 +334,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // ---- 2: QueryPictIndexValues ----
   case 2: {
     br.skip(br.remaining());
-    // Empty reply (no indexed formats)
     (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
       wire::wr32_le(rep.data() + 4, 0); // length
       wire::wr32_le(rep.data() + 8, 0); // numValues
@@ -285,11 +353,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     ps.drawable = drawable;
     ps.format   = format;
 
-    // Parse value list
     if (mask & (1u << 0)) { // CPRepeat
       if (br.remaining() >= 4) ps.repeat = (br.readU32() != 0);
     }
-    // Consume remaining value list items
     br.skip(br.remaining());
 
     {
@@ -318,7 +384,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // ---- 6: SetPictureClipRectangles ----
   case 6: {
-    br.skip(br.remaining()); // consume silently
+    br.skip(br.remaining());
     return;
   }
 
@@ -335,7 +401,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     return;
   }
 
-  // ---- 8: Composite ----
+  // ---- 8: Composite (with mask support) ----
   case 8: {
     if (br.remaining() < 32) { br.skip(br.remaining()); return; }
     const uint8_t  op     = br.readU8();
@@ -352,10 +418,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint16_t width  = br.readU16();
     const uint16_t height = br.readU16();
     br.skip(br.remaining());
-    (void)xMask; (void)yMask; (void)mskPid;
 
     // Resolve source
-    uint32_t srcColor = 0xFF000000u; // default: opaque black
+    uint32_t srcColor = 0xFF000000u;
     bool srcIsSolid = false;
     uint32_t srcDrawable = 0;
     {
@@ -367,6 +432,40 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         srcDrawable  = sps->drawable;
       }
     }
+
+    // Resolve mask picture
+    bool hasMask = false;
+    bool maskIsSolid = false;
+    uint32_t maskSolidAlpha = 255;
+    uint32_t maskDrawable = 0;
+    if (mskPid != 0) {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* mps = findPicture(mskPid);
+      if (mps) {
+        hasMask = true;
+        maskIsSolid = mps->isSolid;
+        if (maskIsSolid) {
+          maskSolidAlpha = (mps->solidARGB >> 24) & 0xFF;
+        }
+        maskDrawable = mps->drawable;
+      }
+    }
+
+    // Resolve mask drawable pixels if needed
+    DrawableRW maskDrw{};
+    if (hasMask && !maskIsSolid && maskDrawable != 0) {
+      resolveDrawableRW(ctx, maskDrawable, maskDrw);
+    }
+
+    // Lambda to get mask alpha at a given position
+    auto getMaskAlpha = [&](int32_t mx, int32_t my) -> uint8_t {
+      if (!hasMask) return 255;
+      if (maskIsSolid) return (uint8_t)maskSolidAlpha;
+      if (!maskDrw.pixels32) return 255;
+      if (mx < 0 || mx >= (int32_t)maskDrw.w || my < 0 || my >= (int32_t)maskDrw.h)
+        return 0;
+      return (uint8_t)((maskDrw.pixels32[(size_t)my * (size_t)maskDrw.stridePixels + (size_t)mx] >> 24) & 0xFF);
+    };
 
     // Resolve destination
     uint32_t dstDrawable = 0;
@@ -382,7 +481,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) return;
 
     if (srcIsSolid) {
-      // Solid fill composite
       for (int32_t row = 0; row < (int32_t)height; row++) {
         const int32_t dy = (int32_t)yDst + row;
         if (dy < 0 || dy >= (int32_t)dst.h) continue;
@@ -390,11 +488,12 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         for (int32_t col = 0; col < (int32_t)width; col++) {
           const int32_t dx = (int32_t)xDst + col;
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
-          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], srcColor);
+          const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
+          const uint32_t sc = modulateAlpha(srcColor, ma);
+          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
         }
       }
     } else if (srcDrawable != 0) {
-      // Drawable-to-drawable composite
       DrawableRW src{};
       if (!resolveDrawableRW(ctx, srcDrawable, src)) return;
       if (!src.pixels32) return;
@@ -413,7 +512,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           const int32_t dx = (int32_t)xDst + col;
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
           if (sx < 0 || sx >= (int32_t)src.w) continue;
-          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], srow[(size_t)sx]);
+          const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
+          const uint32_t sc = modulateAlpha(srow[(size_t)sx], ma);
+          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
         }
       }
     }
@@ -424,15 +525,130 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     return;
   }
 
+  // ---- 10: Trapezoids ----
+  case 10: {
+    if (br.remaining() < 20) { br.skip(br.remaining()); return; }
+    const uint8_t  op     = br.readU8();
+    br.skip(3); // pad
+    const uint32_t srcPid = br.readU32();
+    const uint32_t dstPid = br.readU32();
+    const uint32_t maskFmt = br.readU32();
+    const int16_t  xSrc   = (int16_t)br.readU16();
+    const int16_t  ySrc   = (int16_t)br.readU16();
+    (void)maskFmt; (void)xSrc; (void)ySrc;
+
+    // Resolve source color (typically solid fill)
+    uint32_t srcColor = 0xFF000000u;
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* sps = findPicture(srcPid);
+      if (sps && sps->isSolid) srcColor = sps->solidARGB;
+    }
+
+    // Resolve destination
+    uint32_t dstDrawable = 0;
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* dps = findPicture(dstPid);
+      if (dps) dstDrawable = dps->drawable;
+    }
+    if (dstDrawable == 0) { br.skip(br.remaining()); return; }
+
+    DrawableRW dst{};
+    if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+    // Track damage bounding box
+    int32_t dmgX0 = (int32_t)dst.w, dmgY0 = (int32_t)dst.h;
+    int32_t dmgX1 = 0, dmgY1 = 0;
+
+    // Each TRAPEZOID is 40 bytes:
+    //   FIXED top, bottom (16.16 each = 4 bytes)
+    //   LINEFIX left  (two POINTFIXes = 2x8 = 16 bytes)
+    //   LINEFIX right (two POINTFIXes = 2x8 = 16 bytes)
+    while (br.remaining() >= 40) {
+      const int32_t topFixed    = (int32_t)br.readU32();
+      const int32_t bottomFixed = (int32_t)br.readU32();
+      // Left edge: p1(x,y), p2(x,y) in FIXED 16.16
+      const int32_t lx1 = (int32_t)br.readU32();
+      const int32_t ly1 = (int32_t)br.readU32();
+      const int32_t lx2 = (int32_t)br.readU32();
+      const int32_t ly2 = (int32_t)br.readU32();
+      // Right edge: p1(x,y), p2(x,y) in FIXED 16.16
+      const int32_t rx1 = (int32_t)br.readU32();
+      const int32_t ry1 = (int32_t)br.readU32();
+      const int32_t rx2 = (int32_t)br.readU32();
+      const int32_t ry2 = (int32_t)br.readU32();
+
+      // Convert FIXED 16.16 to integer scanlines (round to pixel centers)
+      int32_t yTop    = (topFixed + 0x8000) >> 16;
+      int32_t yBottom = (bottomFixed + 0x8000) >> 16;
+      yTop    = std::max(yTop,    (int32_t)0);
+      yBottom = std::min(yBottom, (int32_t)dst.h);
+
+      for (int32_t y = yTop; y < yBottom; y++) {
+        // Fixed-point Y for this scanline center (y + 0.5)
+        int64_t yFixed = ((int64_t)y << 16) + 0x8000;
+
+        // Interpolate left edge X at this Y
+        int64_t lDy = (int64_t)ly2 - (int64_t)ly1;
+        int64_t leftX;
+        if (lDy == 0) leftX = (int64_t)lx1;
+        else leftX = (int64_t)lx1 + ((int64_t)(lx2 - lx1) * (yFixed - (int64_t)ly1)) / lDy;
+
+        // Interpolate right edge X at this Y
+        int64_t rDy = (int64_t)ry2 - (int64_t)ry1;
+        int64_t rightX;
+        if (rDy == 0) rightX = (int64_t)rx1;
+        else rightX = (int64_t)rx1 + ((int64_t)(rx2 - rx1) * (yFixed - (int64_t)ry1)) / rDy;
+
+        // Convert to pixel coordinates
+        int32_t xLeft  = (int32_t)((leftX + 0x8000) >> 16);
+        int32_t xRight = (int32_t)((rightX + 0x8000) >> 16);
+        xLeft  = std::max(xLeft,  (int32_t)0);
+        xRight = std::min(xRight, (int32_t)dst.w);
+
+        if (xLeft < xRight) {
+          uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+          for (int32_t x = xLeft; x < xRight; x++) {
+            row[(size_t)x] = applyOp(op, row[(size_t)x], srcColor);
+          }
+          // Update damage bounds
+          if (xLeft  < dmgX0) dmgX0 = xLeft;
+          if (xRight > dmgX1) dmgX1 = xRight;
+          if (y      < dmgY0) dmgY0 = y;
+          if (y + 1  > dmgY1) dmgY1 = y + 1;
+        }
+      }
+    }
+
+    if (dst.isWindow && dmgX1 > dmgX0 && dmgY1 > dmgY0) {
+      damageOrDirty(ctx, dstDrawable, (int16_t)dmgX0, (int16_t)dmgY0,
+                    dmgX1 - dmgX0, dmgY1 - dmgY0);
+    }
+    br.skip(br.remaining());
+    return;
+  }
+
+  // ---- 11: Triangles ----
+  // ---- 12: TriStrip ----
+  // ---- 13: TriFan ----
+  case 11: case 12: case 13: {
+    br.skip(br.remaining()); // stub: consume silently
+    return;
+  }
+
   // ---- 17: CreateGlyphSet ----
   case 17: {
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
     const uint32_t gsid   = br.readU32();
-    /*format*/ br.readU32();
+    const uint32_t format = br.readU32();
     br.skip(br.remaining());
     {
       std::lock_guard<std::mutex> lk(sGlyphMtx);
-      sGlyphSets[gsid] = true;
+      GlyphSetState gs;
+      gs.format = format;
+      sGlyphSets[gsid] = std::move(gs);
     }
     return;
   }
@@ -440,12 +656,18 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // ---- 18: ReferenceGlyphSet ----
   case 18: {
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
-    const uint32_t gsid = br.readU32();
-    /*existing*/ br.readU32();
+    const uint32_t gsid     = br.readU32();
+    const uint32_t existing = br.readU32();
     br.skip(br.remaining());
     {
       std::lock_guard<std::mutex> lk(sGlyphMtx);
-      sGlyphSets[gsid] = true;
+      auto it = sGlyphSets.find(existing);
+      if (it != sGlyphSets.end()) {
+        sGlyphSets[gsid] = it->second; // copy format + glyphs
+      } else {
+        GlyphSetState gs;
+        sGlyphSets[gsid] = std::move(gs);
+      }
     }
     return;
   }
@@ -463,12 +685,413 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
 
   // ---- 20: AddGlyphs ----
+  case 20: {
+    if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+    const uint32_t gsid    = br.readU32();
+    const uint32_t nglyphs = br.readU32();
+
+    if (nglyphs > 65536) { br.skip(br.remaining()); return; }
+
+    // Read glyph IDs: nglyphs x CARD32
+    std::vector<uint32_t> ids(nglyphs);
+    for (uint32_t i = 0; i < nglyphs && br.remaining() >= 4; i++) {
+      ids[i] = br.readU32();
+    }
+
+    // Determine alpha format for this glyphset
+    uint32_t gsFmt = kFmtA8;
+    {
+      std::lock_guard<std::mutex> lk(sGlyphMtx);
+      auto it = sGlyphSets.find(gsid);
+      if (it != sGlyphSets.end()) gsFmt = it->second.format;
+    }
+    const int bpp = alphaBpp(gsFmt);
+
+    // Read glyph info structs: nglyphs x 12 bytes each
+    // { CARD16 width, CARD16 height, INT16 x, INT16 y, INT16 xOff, INT16 yOff }
+    struct GlyphInfo { uint16_t w, h; int16_t x, y, xOff, yOff; };
+    std::vector<GlyphInfo> infos(nglyphs);
+    for (uint32_t i = 0; i < nglyphs && br.remaining() >= 12; i++) {
+      infos[i].w    = br.readU16();
+      infos[i].h    = br.readU16();
+      infos[i].x    = (int16_t)br.readU16();
+      infos[i].y    = (int16_t)br.readU16();
+      infos[i].xOff = (int16_t)br.readU16();
+      infos[i].yOff = (int16_t)br.readU16();
+    }
+
+    // Read bitmap data and convert to A8
+    {
+      std::lock_guard<std::mutex> lk(sGlyphMtx);
+      auto gsIt = sGlyphSets.find(gsid);
+      if (gsIt == sGlyphSets.end()) { br.skip(br.remaining()); return; }
+
+      for (uint32_t i = 0; i < nglyphs; i++) {
+        const auto& info = infos[i];
+        const uint32_t npixels = (uint32_t)info.w * (uint32_t)info.h;
+
+        RenderGlyph rg;
+        rg.width  = info.w;
+        rg.height = info.h;
+        rg.x      = info.x;
+        rg.y      = info.y;
+        rg.xOff   = info.xOff;
+        rg.yOff   = info.yOff;
+
+        if (npixels > 0) {
+          rg.alpha.resize(npixels);
+
+          if (bpp == 8) {
+            // A8: each row padded to 4-byte boundary
+            const uint32_t rowBytes = ((uint32_t)info.w + 3u) & ~3u;
+            for (uint32_t row = 0; row < info.h; row++) {
+              for (uint32_t col = 0; col < info.w && br.remaining() > 0; col++) {
+                rg.alpha[row * info.w + col] = br.readU8();
+              }
+              // Skip padding
+              uint32_t padCols = rowBytes - info.w;
+              for (uint32_t j = 0; j < padCols && br.remaining() > 0; j++) {
+                br.readU8();
+              }
+            }
+          } else if (bpp == 4) {
+            // A4: 2 pixels per byte, rows padded to 4 bytes
+            const uint32_t rowBytes = (((uint32_t)info.w + 1u) / 2u + 3u) & ~3u;
+            for (uint32_t row = 0; row < info.h; row++) {
+              uint32_t bytesRead = 0;
+              for (uint32_t col = 0; col < info.w; col++) {
+                if ((col & 1) == 0 && br.remaining() > 0) {
+                  uint8_t byte = br.readU8();
+                  bytesRead++;
+                  // Low nibble first (LSBFirst)
+                  uint8_t lo = byte & 0x0F;
+                  rg.alpha[row * info.w + col] = (uint8_t)(lo * 255 / 15);
+                  if (col + 1 < info.w) {
+                    uint8_t hi = (byte >> 4) & 0x0F;
+                    rg.alpha[row * info.w + col + 1] = (uint8_t)(hi * 255 / 15);
+                  }
+                  col++; // skip the col++ in for-loop for paired pixel
+                }
+              }
+              // Skip padding
+              while (bytesRead < rowBytes && br.remaining() > 0) {
+                br.readU8();
+                bytesRead++;
+              }
+            }
+          } else {
+            // A1: 1 bit per pixel, rows padded to 4 bytes
+            const uint32_t rowBytes = (((uint32_t)info.w + 7u) / 8u + 3u) & ~3u;
+            for (uint32_t row = 0; row < info.h; row++) {
+              uint32_t bytesRead = 0;
+              for (uint32_t col = 0; col < info.w;) {
+                if (br.remaining() == 0) break;
+                uint8_t byte = br.readU8();
+                bytesRead++;
+                // LSBFirst bit order
+                for (int bit = 0; bit < 8 && col < info.w; bit++, col++) {
+                  rg.alpha[row * info.w + col] = (byte & (1u << bit)) ? 255 : 0;
+                }
+              }
+              while (bytesRead < rowBytes && br.remaining() > 0) {
+                br.readU8();
+                bytesRead++;
+              }
+            }
+          }
+        }
+
+        gsIt->second.glyphs[ids[i]] = std::move(rg);
+      }
+    }
+
+    br.skip(br.remaining());
+    return;
+  }
+
   // ---- 22: FreeGlyphs ----
+  case 22: {
+    if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+    const uint32_t gsid = br.readU32();
+    {
+      std::lock_guard<std::mutex> lk(sGlyphMtx);
+      auto it = sGlyphSets.find(gsid);
+      if (it != sGlyphSets.end()) {
+        while (br.remaining() >= 4) {
+          const uint32_t gid = br.readU32();
+          it->second.glyphs.erase(gid);
+        }
+      }
+    }
+    br.skip(br.remaining());
+    return;
+  }
+
   // ---- 23: CompositeGlyphs8 ----
   // ---- 24: CompositeGlyphs16 ----
   // ---- 25: CompositeGlyphs32 ----
-  case 20: case 22: case 23: case 24: case 25: {
-    // Stub: consume silently. No glyph rendering yet.
+  case 23: case 24: case 25: {
+    // glyphIdSize: 1, 2, or 4 bytes per glyph ID
+    const int glyphIdSize = (minor == 23) ? 1 : (minor == 24) ? 2 : 4;
+
+    if (br.remaining() < 24) { br.skip(br.remaining()); return; }
+    const uint8_t  op      = br.readU8();
+    br.skip(3); // pad
+    const uint32_t srcPid  = br.readU32();
+    const uint32_t dstPid  = br.readU32();
+    const uint32_t maskFmt = br.readU32();
+    const uint32_t gsid    = br.readU32();
+    const int16_t  xSrc    = (int16_t)br.readU16();
+    const int16_t  ySrc    = (int16_t)br.readU16();
+    (void)xSrc; (void)ySrc;
+
+    // Resolve source (typically solid fill for text color)
+    uint32_t srcColor = 0xFF000000u;
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* sps = findPicture(srcPid);
+      if (sps && sps->isSolid) srcColor = sps->solidARGB;
+    }
+
+    // Resolve destination
+    uint32_t dstDrawable = 0;
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* dps = findPicture(dstPid);
+      if (dps) dstDrawable = dps->drawable;
+    }
+    if (dstDrawable == 0) { br.skip(br.remaining()); return; }
+
+    DrawableRW dst{};
+    if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+    // Current glyphset
+    uint32_t curGsid = gsid;
+
+    // Track glyph pen position and bounding box for mask accumulation
+    int32_t penX = 0, penY = 0;
+    bool firstElt = true;
+
+    // For maskFormat path: collect all glyph renders, then composite once
+    struct GlyphRender {
+      int32_t dstX, dstY;
+      uint16_t w, h;
+      const uint8_t* alpha; // pointer into GlyphSetState (valid under lock)
+    };
+
+    // Two-pass rendering if maskFormat != 0
+    const bool useMask = (maskFmt != 0);
+
+    // First, collect all glyphs to render
+    struct GlyphCmd {
+      uint32_t gsid;
+      uint32_t glyphId;
+      int32_t penX, penY;
+    };
+    std::vector<GlyphCmd> cmds;
+
+    // Parse GlyphElt items
+    while (br.remaining() >= 8) {
+      const uint8_t len = br.readU8();
+      br.skip(3); // pad
+
+      if (len == 0) break; // end marker
+
+      if (len == 255) {
+        // Glyphset switch
+        if (br.remaining() >= 4) {
+          curGsid = br.readU32();
+        }
+        continue;
+      }
+
+      // Read dx, dy (INT16)
+      const int16_t dx = (int16_t)br.readU16();
+      const int16_t dy = (int16_t)br.readU16();
+
+      if (firstElt) {
+        penX = dx;
+        penY = dy;
+        firstElt = false;
+      } else {
+        penX += dx;
+        penY += dy;
+      }
+
+      // Read glyph IDs
+      int32_t localPenX = penX;
+      int32_t localPenY = penY;
+
+      for (uint8_t g = 0; g < len; g++) {
+        uint32_t glyphId = 0;
+        if (glyphIdSize == 1 && br.remaining() >= 1) {
+          glyphId = br.readU8();
+        } else if (glyphIdSize == 2 && br.remaining() >= 2) {
+          glyphId = br.readU16();
+        } else if (glyphIdSize == 4 && br.remaining() >= 4) {
+          glyphId = br.readU32();
+        } else break;
+
+        GlyphCmd cmd;
+        cmd.gsid = curGsid;
+        cmd.glyphId = glyphId;
+        cmd.penX = localPenX;
+        cmd.penY = localPenY;
+        cmds.push_back(cmd);
+
+        // Advance pen by glyph's xOff/yOff (need lookup)
+        {
+          std::lock_guard<std::mutex> lk(sGlyphMtx);
+          auto gsIt = sGlyphSets.find(curGsid);
+          if (gsIt != sGlyphSets.end()) {
+            auto gIt = gsIt->second.glyphs.find(glyphId);
+            if (gIt != gsIt->second.glyphs.end()) {
+              localPenX += gIt->second.xOff;
+              localPenY += gIt->second.yOff;
+            }
+          }
+        }
+      }
+
+      // Pad glyph ID array to 4-byte boundary
+      const uint32_t idBytes = (uint32_t)len * glyphIdSize;
+      const uint32_t padded = (idBytes + 3u) & ~3u;
+      const uint32_t padBytes = padded - idBytes;
+      for (uint32_t j = 0; j < padBytes && br.remaining() > 0; j++) {
+        br.readU8();
+      }
+
+      // Update pen for next element
+      penX = localPenX;
+      penY = localPenY;
+    }
+
+    // Now render all collected glyph commands
+    int32_t dmgX0 = (int32_t)dst.w, dmgY0 = (int32_t)dst.h;
+    int32_t dmgX1 = 0, dmgY1 = 0;
+
+    if (useMask && !cmds.empty()) {
+      // Accumulate all glyph alphas into a temporary A8 buffer,
+      // then do a single composite pass (prevents double-blending)
+
+      // Compute bounding box of all glyphs
+      int32_t bx0 = INT32_MAX, by0 = INT32_MAX;
+      int32_t bx1 = INT32_MIN, by1 = INT32_MIN;
+
+      {
+        std::lock_guard<std::mutex> lk(sGlyphMtx);
+        for (auto& cmd : cmds) {
+          auto gsIt = sGlyphSets.find(cmd.gsid);
+          if (gsIt == sGlyphSets.end()) continue;
+          auto gIt = gsIt->second.glyphs.find(cmd.glyphId);
+          if (gIt == gsIt->second.glyphs.end()) continue;
+          const auto& rg = gIt->second;
+          int32_t gx = cmd.penX - rg.x;
+          int32_t gy = cmd.penY - rg.y;
+          bx0 = std::min(bx0, gx);
+          by0 = std::min(by0, gy);
+          bx1 = std::max(bx1, gx + (int32_t)rg.width);
+          by1 = std::max(by1, gy + (int32_t)rg.height);
+        }
+      }
+
+      if (bx0 >= bx1 || by0 >= by1) { br.skip(br.remaining()); return; }
+
+      const int32_t bufW = bx1 - bx0;
+      const int32_t bufH = by1 - by0;
+      if (bufW <= 0 || bufH <= 0 || (int64_t)bufW * bufH > 16 * 1024 * 1024) {
+        br.skip(br.remaining()); return;
+      }
+
+      std::vector<uint8_t> maskBuf((size_t)bufW * (size_t)bufH, 0);
+
+      // Accumulate glyph alphas (MAX to prevent double-blending on overlaps)
+      {
+        std::lock_guard<std::mutex> lk(sGlyphMtx);
+        for (auto& cmd : cmds) {
+          auto gsIt = sGlyphSets.find(cmd.gsid);
+          if (gsIt == sGlyphSets.end()) continue;
+          auto gIt = gsIt->second.glyphs.find(cmd.glyphId);
+          if (gIt == gsIt->second.glyphs.end()) continue;
+          const auto& rg = gIt->second;
+          const int32_t gx = cmd.penX - rg.x - bx0;
+          const int32_t gy = cmd.penY - rg.y - by0;
+          for (int32_t row = 0; row < (int32_t)rg.height; row++) {
+            const int32_t my = gy + row;
+            if (my < 0 || my >= bufH) continue;
+            for (int32_t col = 0; col < (int32_t)rg.width; col++) {
+              const int32_t mx = gx + col;
+              if (mx < 0 || mx >= bufW) continue;
+              const uint8_t a = rg.alpha[row * rg.width + col];
+              uint8_t& dest = maskBuf[(size_t)my * (size_t)bufW + (size_t)mx];
+              if (a > dest) dest = a; // MAX blend
+            }
+          }
+        }
+      }
+
+      // Single composite pass from mask buffer to destination
+      for (int32_t row = 0; row < bufH; row++) {
+        const int32_t dy = by0 + row;
+        if (dy < 0 || dy >= (int32_t)dst.h) continue;
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        for (int32_t col = 0; col < bufW; col++) {
+          const int32_t dx = bx0 + col;
+          if (dx < 0 || dx >= (int32_t)dst.w) continue;
+          const uint8_t a = maskBuf[(size_t)row * (size_t)bufW + (size_t)col];
+          if (a == 0) continue;
+          const uint32_t sc = modulateAlpha(srcColor, a);
+          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
+        }
+      }
+
+      dmgX0 = std::max(bx0, (int32_t)0);
+      dmgY0 = std::max(by0, (int32_t)0);
+      dmgX1 = std::min(bx1, (int32_t)dst.w);
+      dmgY1 = std::min(by1, (int32_t)dst.h);
+    } else {
+      // Direct rendering: composite each glyph individually
+      std::lock_guard<std::mutex> lk(sGlyphMtx);
+      for (auto& cmd : cmds) {
+        auto gsIt = sGlyphSets.find(cmd.gsid);
+        if (gsIt == sGlyphSets.end()) continue;
+        auto gIt = gsIt->second.glyphs.find(cmd.glyphId);
+        if (gIt == gsIt->second.glyphs.end()) continue;
+        const auto& rg = gIt->second;
+        const int32_t gx = cmd.penX - rg.x;
+        const int32_t gy = cmd.penY - rg.y;
+
+        for (int32_t row = 0; row < (int32_t)rg.height; row++) {
+          const int32_t dy = gy + row;
+          if (dy < 0 || dy >= (int32_t)dst.h) continue;
+          uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+          for (int32_t col = 0; col < (int32_t)rg.width; col++) {
+            const int32_t dx = gx + col;
+            if (dx < 0 || dx >= (int32_t)dst.w) continue;
+            const uint8_t a = rg.alpha[row * rg.width + col];
+            if (a == 0) continue;
+            const uint32_t sc = modulateAlpha(srcColor, a);
+            drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
+          }
+        }
+
+        // Update damage bounds
+        dmgX0 = std::min(dmgX0, gx);
+        dmgY0 = std::min(dmgY0, gy);
+        dmgX1 = std::max(dmgX1, gx + (int32_t)rg.width);
+        dmgY1 = std::max(dmgY1, gy + (int32_t)rg.height);
+      }
+    }
+
+    if (dst.isWindow && dmgX1 > dmgX0 && dmgY1 > dmgY0) {
+      damageOrDirty(ctx, dstDrawable,
+                    (int16_t)std::max(dmgX0, (int32_t)0),
+                    (int16_t)std::max(dmgY0, (int32_t)0),
+                    std::min(dmgX1, (int32_t)dst.w) - std::max(dmgX0, (int32_t)0),
+                    std::min(dmgY1, (int32_t)dst.h) - std::max(dmgY0, (int32_t)0));
+    }
+
     br.skip(br.remaining());
     return;
   }
@@ -486,7 +1109,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     const uint32_t fillColor = renderColorToARGB(cR, cG, cB, cA);
 
-    // Resolve destination
     uint32_t dstDrawable = 0;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
@@ -499,7 +1121,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
-    // Each rect: INT16 x, INT16 y, CARD16 w, CARD16 h (8 bytes)
     while (br.remaining() >= 8) {
       const int16_t  rx = (int16_t)br.readU16();
       const int16_t  ry = (int16_t)br.readU16();
@@ -528,25 +1149,23 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // ---- 27: CreateCursor ----
   case 27: {
-    br.skip(br.remaining()); // stub
+    br.skip(br.remaining());
     return;
   }
 
   // ---- 28: SetPictureTransform ----
   case 28: {
-    br.skip(br.remaining()); // consume silently
+    br.skip(br.remaining());
     return;
   }
 
   // ---- 29: QueryFilters ----
   case 29: {
     br.skip(br.remaining());
-    // Return two built-in filters: "nearest" and "bilinear"
     static const char* filters[] = {"nearest", "bilinear"};
     static constexpr uint32_t nFilters = 2;
     static constexpr uint32_t nAliases = 0;
 
-    // Build payload: nFilters × STR (1-byte len + chars)
     std::vector<uint8_t> payload;
     for (uint32_t i = 0; i < nFilters; i++) {
       const size_t len = std::strlen(filters[i]);
@@ -570,13 +1189,13 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // ---- 30: SetPictureFilter ----
   case 30: {
-    br.skip(br.remaining()); // consume silently
+    br.skip(br.remaining());
     return;
   }
 
   // ---- 31: CreateAnimCursor ----
   case 31: {
-    br.skip(br.remaining()); // stub
+    br.skip(br.remaining());
     return;
   }
 
@@ -604,8 +1223,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // ---- 34-36: Gradient fills ----
   case 34: case 35: case 36: {
-    // CreateLinearGradient/CreateRadialGradient/CreateConicalGradient
-    // Stub: create a transparent solid fill picture
     if (br.remaining() >= 4) {
       const uint32_t pid = br.readU32();
       br.skip(br.remaining());

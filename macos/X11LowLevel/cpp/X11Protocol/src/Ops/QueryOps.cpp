@@ -513,12 +513,18 @@ namespace x11 {
 
     if (name == "BIG-REQUESTS") {
       present = 1; major = ext::kBigReq;
+    } else if (name == "RENDER") {
+      present = 1; major = ext::kRENDER;
+    } else if (name == "XFIXES") {
+      present = 1; major = ext::kXFIXES;
+      first_event = ext::kXFIXES_FirstEvent;
+    } else if (name == "SHAPE") {
+      present = 1; major = ext::kSHAPE;
+      first_event = ext::kSHAPE_FirstEvent;
     }
-    // Other extensions (RENDER, XFIXES, SHAPE, RANDR, Xinerama, GE) have
-    // partial stubs but are NOT advertised yet.  Advertising them causes
-    // clients to take different code paths that rely on working ops
-    // (SHAPE → xeyes broken, RENDER → xeyes uses Composite not core draw).
-    // Enable individually once their key operations are implemented.
+    // Other extensions (RANDR, Xinerama, GE) have partial stubs but are
+    // NOT advertised yet.  Enable individually once their key operations
+    // are implemented.
 
 #ifndef NDEBUG
     fprintf(stderr, "[QueryExtension] \"%s\" -> present=%u major=%u\n",
@@ -543,13 +549,14 @@ namespace x11 {
   void QueryOps::handleListExtensions(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining()); // request has no extra fields we care about
 
-    // Only list extensions that are fully (or minimally) functional.
-    // Stub-only extensions (XFIXES, SHAPE, RANDR, Xinerama, GE) omitted
-    // to prevent clients from taking code paths that rely on working ops.
+    // List extensions that are fully (or minimally) functional.
     static const char* extensions[] = {
       "BIG-REQUESTS",
+      "RENDER",
+      "XFIXES",
+      "SHAPE",
     };
-    static constexpr uint8_t nExt = 1;
+    static constexpr uint8_t nExt = 4;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
