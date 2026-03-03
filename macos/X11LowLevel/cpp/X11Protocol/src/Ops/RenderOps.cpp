@@ -155,21 +155,23 @@ static inline uint32_t compositeOver(uint32_t dst, uint32_t src) {
        | (std::min(g, 255u) << 8)  |  std::min(b, 255u);
 }
 
-// Apply compositing op (all Porter-Duff modes)
+// Apply compositing op (all Porter-Duff modes).
+// Returns correct premultiplied ARGB — callers force alpha opaque when
+// writing to XRGB8888 window surfaces.
 static inline uint32_t applyOp(uint8_t op, uint32_t dst, uint32_t src) {
   const uint32_t sa = (src >> 24) & 0xFF;
   const uint32_t da = (dst >> 24) & 0xFF;
 
   switch (op) {
-    case PictOpClear: return 0xFF000000u; // opaque black
-    case PictOpSrc:   return src | 0xFF000000u;
+    case PictOpClear: return 0;
+    case PictOpSrc:   return src;
     case PictOpDst:   return dst;
-    case PictOpOver:  return compositeOver(dst, src) | 0xFF000000u;
-    case PictOpOverReverse: return compositeOver(src, dst) | 0xFF000000u;
-    case PictOpIn:    return modulateAlpha(src, (uint8_t)da) | 0xFF000000u;
-    case PictOpInReverse: return modulateAlpha(dst, (uint8_t)sa) | 0xFF000000u;
-    case PictOpOut:   return modulateAlpha(src, (uint8_t)(255 - da)) | 0xFF000000u;
-    case PictOpOutReverse: return modulateAlpha(dst, (uint8_t)(255 - sa)) | 0xFF000000u;
+    case PictOpOver:  return compositeOver(dst, src);
+    case PictOpOverReverse: return compositeOver(src, dst);
+    case PictOpIn:    return modulateAlpha(src, (uint8_t)da);
+    case PictOpInReverse: return modulateAlpha(dst, (uint8_t)sa);
+    case PictOpOut:   return modulateAlpha(src, (uint8_t)(255 - da));
+    case PictOpOutReverse: return modulateAlpha(dst, (uint8_t)(255 - sa));
     case PictOpAtop: {
       // src * da + dst * (1-sa)
       uint32_t s = modulateAlpha(src, (uint8_t)da);
@@ -208,8 +210,7 @@ static inline uint32_t applyOp(uint8_t op, uint32_t dst, uint32_t src) {
               add((dst >>  0) & 0xFF, (src >>  0) & 0xFF);
     }
     default:
-      // Fallback: PictOpOver for unsupported ops
-      return compositeOver(dst, src) | 0xFF000000u;
+      return compositeOver(dst, src);
   }
 }
 
@@ -480,6 +481,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) return;
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) return;
 
+    // XRGB8888 window surfaces need alpha=0xFF for Metal rendering.
+    const bool forceOpaque = dst.isWindow;
+
     if (srcIsSolid) {
       for (int32_t row = 0; row < (int32_t)height; row++) {
         const int32_t dy = (int32_t)yDst + row;
@@ -490,7 +494,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
           const uint32_t sc = modulateAlpha(srcColor, ma);
-          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
+          uint32_t px = applyOp(op, drow[(size_t)dx], sc);
+          if (forceOpaque) px |= 0xFF000000u;
+          drow[(size_t)dx] = px;
         }
       }
     } else if (srcDrawable != 0) {
@@ -514,7 +520,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           if (sx < 0 || sx >= (int32_t)src.w) continue;
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
           const uint32_t sc = modulateAlpha(srow[(size_t)sx], ma);
-          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
+          uint32_t px = applyOp(op, drow[(size_t)dx], sc);
+          if (forceOpaque) px |= 0xFF000000u;
+          drow[(size_t)dx] = px;
         }
       }
     }
@@ -586,6 +594,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       yTop    = std::max(yTop,    (int32_t)0);
       yBottom = std::min(yBottom, (int32_t)dst.h);
 
+      const bool forceOpaque = dst.isWindow;
       for (int32_t y = yTop; y < yBottom; y++) {
         // Fixed-point Y for this scanline center (y + 0.5)
         int64_t yFixed = ((int64_t)y << 16) + 0x8000;
@@ -611,7 +620,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (xLeft < xRight) {
           uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
           for (int32_t x = xLeft; x < xRight; x++) {
-            row[(size_t)x] = applyOp(op, row[(size_t)x], srcColor);
+            uint32_t px = applyOp(op, row[(size_t)x], srcColor);
+            if (forceOpaque) px |= 0xFF000000u;
+            row[(size_t)x] = px;
           }
           // Update damage bounds
           if (xLeft  < dmgX0) dmgX0 = xLeft;
@@ -1032,6 +1043,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
 
       // Single composite pass from mask buffer to destination
+      const bool forceOpaque1 = dst.isWindow;
       for (int32_t row = 0; row < bufH; row++) {
         const int32_t dy = by0 + row;
         if (dy < 0 || dy >= (int32_t)dst.h) continue;
@@ -1042,7 +1054,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           const uint8_t a = maskBuf[(size_t)row * (size_t)bufW + (size_t)col];
           if (a == 0) continue;
           const uint32_t sc = modulateAlpha(srcColor, a);
-          drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
+          uint32_t px = applyOp(op, drow[(size_t)dx], sc);
+          if (forceOpaque1) px |= 0xFF000000u;
+          drow[(size_t)dx] = px;
         }
       }
 
@@ -1052,6 +1066,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       dmgY1 = std::min(by1, (int32_t)dst.h);
     } else {
       // Direct rendering: composite each glyph individually
+      const bool forceOpaque2 = dst.isWindow;
       std::lock_guard<std::mutex> lk(sGlyphMtx);
       for (auto& cmd : cmds) {
         auto gsIt = sGlyphSets.find(cmd.gsid);
@@ -1072,7 +1087,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             const uint8_t a = rg.alpha[row * rg.width + col];
             if (a == 0) continue;
             const uint32_t sc = modulateAlpha(srcColor, a);
-            drow[(size_t)dx] = applyOp(op, drow[(size_t)dx], sc);
+            uint32_t px = applyOp(op, drow[(size_t)dx], sc);
+            if (forceOpaque2) px |= 0xFF000000u;
+            drow[(size_t)dx] = px;
           }
         }
 
@@ -1132,10 +1149,13 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       int32_t x1 = std::min((int32_t)rx + (int32_t)rw, (int32_t)dst.w);
       int32_t y1 = std::min((int32_t)ry + (int32_t)rh, (int32_t)dst.h);
 
+      const bool forceOpaque = dst.isWindow;
       for (int32_t yy = y0; yy < y1; yy++) {
         uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
         for (int32_t xx = x0; xx < x1; xx++) {
-          row[(size_t)xx] = applyOp(op, row[(size_t)xx], fillColor);
+          uint32_t px = applyOp(op, row[(size_t)xx], fillColor);
+          if (forceOpaque) px |= 0xFF000000u;
+          row[(size_t)xx] = px;
         }
       }
 
