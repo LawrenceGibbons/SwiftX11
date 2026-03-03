@@ -1073,6 +1073,21 @@ final class WindowRegistry {
         damage = nil  // full-frame upload
       }
 
+      // Diagnostic: detect when damage rect doesn't cover the full surface.
+      #if DEBUG
+      if let dr = damage {
+        var qW: Int32 = 0, qH: Int32 = 0, qBpr: Int32 = 0
+        _ = x11_server_copy_window_bgra(host, nil, 0, &qW, &qH, &qBpr)
+        let bottom = dr.y + dr.h
+        let right  = dr.x + dr.w
+        if bottom < Int(qH) || right < Int(qW) {
+          print(String(format: "[DAMAGE_SHORT] host=0x%08X dr=(%d,%d %dx%d) surface=%dx%d gap_bottom=%d gap_right=%d",
+                       host, dr.x, dr.y, dr.w, dr.h, qW, qH,
+                       Int(qH) - bottom, Int(qW) - right))
+        }
+      }
+      #endif
+
       // Always snapshot/present the HOST. The C side composites children onto host.
       self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: damage)
     }
