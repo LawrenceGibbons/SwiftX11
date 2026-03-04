@@ -243,10 +243,14 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **Phase 3 font infrastructure** (v1.7.0): XLFD wildcard matching, PCF font support (.pcf.gz from system directories), font aliases, ListFontsWithInfo, Symbol font encoding. PCF parser handles MSB/LSB bit order with byte-level bit reversal. Lazy-loads fonts on demand from `/opt/X11/share/fonts/{misc,75dpi,100dpi}/`.
 - **xcalc Symbol characters fixed** (v1.7.0): sqrt (√), division (÷), pi (π) now render correctly from Symbol PCF font (`symb12.pcf.gz`, `adobe-fontspecific` encoding).
+- **App sandbox disabled** (v1.7.0): `ENABLE_APP_SANDBOX=NO` in Xcode build settings. The sandbox blocked `std::ifstream` from opening `/opt/X11/share/fonts/*/fonts.dir` (errno=1 EPERM), causing 0 PCF fonts to be registered. Root cause of Symbol font failure — all OpenFont requests fell through to the builtin "fixed" Latin-1 font.
+- **Font alias PCF resolution** (v1.7.0): `loadAliases()` now resolves alias targets against PCF registry (exact + glob match), not just builtins. Increased resolved aliases from 0 to 99.
+- **Categorical trace system** (v1.7.0): `TraceDefs.hpp` provides opt-in trace categories (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT) gated by `-DX11_TRACE_<CATEGORY>` flags. `X11_TRACE_VERBOSE` enables all. Font traces migrated from always-on `#ifndef NDEBUG` to `#if X11_TRACE_FONT_ENABLED`.
 
 ### Known Issues (v1.7.0)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple charset fonts; not all charsets covered.
+- **xterm scrollbar vanishes on resize**: With some window resizes in xterm, the scrollbar disappears. Under investigation.
 - **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
 
 ### Next Major Tasks (Vivado/Vitis Roadmap)
