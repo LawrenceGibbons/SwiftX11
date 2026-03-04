@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-03
+Last updated: 2026-03-03 (v1.7.0 — Phase 3 complete)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -187,23 +187,24 @@ These are frequently queried. Return present=0 with correct reply format, or min
 
 ---
 
-## Phase 3: Font Infrastructure (Required for Readable UI)
+## Phase 3: Font Infrastructure (Required for Readable UI) — DONE (v1.7.0)
 
-Vivado and Vitis need proper fonts. The current BDF-only system works for xterm but won't satisfy GTK/Java apps that expect a richer font ecosystem.
+~~Vivado and Vitis need proper fonts. The current BDF-only system works for xterm but won't satisfy GTK/Java apps that expect a richer font ecosystem.~~
 
-### 3.1 Font Matching and XLFD (HIGH)
-- [ ] **Wildcard XLFD matching**: ListFonts with wildcards like `-*-helvetica-*-*-*-*-12-*-*-*-*-*-*-*` must match correctly. Currently may not handle all wildcard positions.
-- [ ] **Font aliases**: Support standard alias files (e.g., "fixed" -> specific XLFD).
-- [ ] **Scaled fonts**: Return synthetic font names for requested pixel sizes (scale BDF glyphs or report closest available).
+### 3.1 Font Matching and XLFD — DONE (v1.7.0)
+- [x] **Wildcard XLFD matching**: Iterative glob matching with `*` and `?` support. Matches against both builtin BDF fonts and PCF registry XLFD names.
+- [x] **Font aliases**: System `fonts.alias` files loaded from `/opt/X11/share/fonts/{misc,75dpi,100dpi}/`. Maps aliases like "fixed" → specific XLFD.
+- [x] **Scaled fonts**: Closest-match by pixel size from available BDF fonts (picks closest bbx_h). PCF fonts provide native sizes for many standard sizes.
 
-### 3.2 Additional BDF Fonts (HIGH)
-- [ ] **Bundle standard X11 fonts**: misc/fixed, 100dpi, 75dpi collections (cursor, helvetica, times, courier).
-- [ ] **Font directory scanning**: Load all .bdf files from configured directories at startup.
-- [ ] **PCF font support**: Read PCF (Portable Compiled Font) format — more compact than BDF, same data.
+### 3.2 Additional Fonts — DONE (v1.7.0)
+- [x] **PCF font support**: Full PCF parser with TOC, metrics, bitmaps, encoding tables. Handles both MSB-first and LSB-first bit order (byte-level bit reversal for LSB). zlib decompression for .pcf.gz files.
+- [x] **Font directory scanning**: Scans `/opt/X11/share/fonts/{misc,75dpi,100dpi}/` at startup. Parses `fonts.dir` files for XLFD→filename mapping. Lazy-loads PCF fonts on first use.
+- [x] **Symbol font encoding**: Adobe Symbol font (`adobe-fontspecific` encoding) works correctly — xcalc √, ÷, π characters render from symb12.pcf.gz.
+- [x] **ListFontsWithInfo** (opcode 50): Full implementation returns per-font metrics + name, followed by correct 60-byte terminator reply.
 
-### 3.3 TrueType / CoreText Integration (MEDIUM — for RENDER extension)
-If RENDER is implemented, client-side font rendering (Pango/FreeType) becomes the primary path. Server-side fonts become less critical.
-- [ ] **Xft/fontconfig on client side**: Clients use their own FreeType + fontconfig to render glyphs, upload via RENDER CompositeGlyphs. Server just needs RENDER support.
+### 3.3 TrueType / CoreText Integration (MEDIUM — deferred)
+Client-side font rendering via RENDER CompositeGlyphs (Pango/FreeType) is the primary path for modern toolkits. Server-side PCF/BDF fonts cover legacy apps (xterm, xcalc, xclock).
+- [ ] **Xft/fontconfig on client side**: Clients use their own FreeType + fontconfig to render glyphs, upload via RENDER CompositeGlyphs. Server just needs RENDER support (done).
 - [ ] **CoreText bridge (optional)**: Map X11 font requests to macOS system fonts via CoreText for high-quality server-side rendering.
 
 ---
@@ -384,20 +385,26 @@ rendercheck                 # RENDER extension tests
 ~~16. **XFIXES extension** — DONE (v1.6.0): cursor, region, shape stubs. Advertised to clients.~~
 ~~17. **SHAPE extension stubs** — DONE (v1.6.0): ShapeRectangles/Mask/QueryExtents. NOT advertised (breaks xeyes).~~
 
+~~18. **Font infrastructure** — DONE (v1.7.0): XLFD wildcard matching, PCF font support, system directory scanning, ListFontsWithInfo, Symbol encoding~~
+
 ### Remaining priorities
-1. **Font infrastructure** — XLFD wildcard matching, PCF font support, font directory scanning (Phase 3)
-2. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
-3. **Error handling** — Bad replies/missing errors confuse toolkits
-4. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
-5. **Enable remaining extensions** — RANDR, Xinerama, GE advertised one at a time
-6. **Container networking** — TCP + Unix socket + xauth for Docker workflow
+1. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
+2. **Error handling** — Bad replies/missing errors confuse toolkits
+3. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
+4. **Enable remaining extensions** — RANDR, Xinerama, GE advertised one at a time
+5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
 
-### Phase 2 Status Assessment (v1.6.0)
-**Phase 2 is substantially complete.** The three highest-impact extensions (BIG-REQUESTS, RENDER, XFIXES) are all advertised and functional. SHAPE has full stub support but is intentionally held back to avoid breaking xeyes. RANDR, Xinerama, and GE have handler stubs but are not yet needed — GTK apps primarily depend on RENDER + XFIXES.
+### Phase 2+3 Status Assessment (v1.7.0)
+**Phases 2 and 3 are substantially complete.** Extensions: BIG-REQUESTS, RENDER, and XFIXES are advertised and functional. SHAPE has stub support but is held back to avoid breaking xeyes. Fonts: XLFD wildcard matching, PCF font loading from system directories, Symbol font encoding, and ListFontsWithInfo all work. Legacy apps (xterm, xcalc, xclock) use server-side PCF/BDF fonts; modern apps (GTK/Pango) use RENDER CompositeGlyphs with client-side FreeType rendering.
 
-The next bottleneck for modern toolkit support is **font infrastructure** (Phase 3), not additional extensions. GTK/Pango uses RENDER CompositeGlyphs for text rendering (now working), but still needs a richer font catalog (PCF fonts, XLFD wildcard matching) for proper font discovery.
+The next bottleneck is **window lifecycle** (window close → client kill) and **error handling** (Phase 4), not fonts or extensions.
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
 - **xeyes resize stale outlines**: Old eye outlines persisted after window resize. Fixed by clearing drawable in ClearArea before redraw.
 - **xterm stale bottom pixels**: Black pixels accumulated at bottom of text rows during scrolling. Root cause: ImageText8/16 background fill was 1 pixel too short (fontAscent + fontDescent covered [y-ascent, y+descent) exclusive, but glyphs with bbx_yoff=-fontDescent place their bottom pixel at exactly y+descent). Fixed by extending background fill to fontAscent + fontDescent + 1.
+
+### Bug fixes (v1.7.0)
+- **xcalc hang on ListFontsWithInfo**: Terminator reply used sendReply32 (32 bytes) but declared length=7 (28 more bytes expected). Client blocked forever waiting for the remaining 28 bytes. Fixed by using sendReplyRaw to send full 60-byte terminator.
+- **RENDER damage clamping**: Composite and FillRectangles reported damage using unclipped request coordinates while pixel writes were clamped to drawable bounds. Caused unnecessary full-frame Metal uploads. Fixed by clamping damage rects to match actual pixel-write regions.
+- **PCF LSB-first bit order**: Added byte-level bit reversal for PCF fonts with LSB-first bitmap bit order. Uses 256-entry lookup table with thread_local buffer.
