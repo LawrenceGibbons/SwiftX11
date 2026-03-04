@@ -115,6 +115,11 @@ private:
   uint16_t last_seq_  = 0;
   uint16_t event_seq_ = 0;
 
+  // Monotonic wire-sequence floor.  XCB requires that response sequences
+  // (events, replies, errors) never go backwards.  This tracks the highest
+  // sequence ever sent on the wire so sendAll() can bump stale sequences.
+  uint16_t max_wire_seq_ = 0;
+
   // True if a reply (byte[0]==1) or error (byte[0]==0) was sent since resetReplySent().
   bool reply_sent_ = false;
   

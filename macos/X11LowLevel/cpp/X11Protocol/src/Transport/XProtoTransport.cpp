@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "Core/XProtoNotifyQueue.hpp"
 #include "Transport/XProtoTransport.hpp"
@@ -40,6 +41,7 @@ XProtoTransport::XProtoTransport(XProtoContext& ctx, EventOps& evOps)
 
 void XProtoTransport::attachClientFd(int fd) {
   client_fd_ = fd;
+  max_wire_seq_ = 0;   // reset monotonic floor for new connection
 }
 
 void XProtoTransport::setXprotoThreadSelf() {
@@ -182,7 +184,70 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     if (b0 == 0 || b0 == 1) reply_sent_ = true;
   }
 
-  const uint8_t* p = static_cast<const uint8_t*>(buf);
+  // ── Monotonic wire-sequence floor ──────────────────────────────
+  // XCB widens 16-bit response sequences to 64-bit and requires they
+  // never go backwards across ANY response type (events included).
+  // When drainHostCommands() interleaves with readAndDispatch(), events
+  // can carry stale (older) sequences.  Fix: if bytes[2:3] of any
+  // response would regress below the highest previously sent, bump it
+  // up to that floor.
+  const void* sendBuf = buf;
+  uint8_t fixedPkt[32];
+
+  if (n >= 32) {
+    const uint8_t* bp = static_cast<const uint8_t*>(buf);
+    uint16_t pkt_seq = uint16_t(bp[2] | (uint16_t(bp[3]) << 8));
+
+    if (max_wire_seq_ != 0) {
+      int16_t delta = (int16_t)(pkt_seq - max_wire_seq_);
+      if (delta < 0) {
+        // Sequence would regress — bump to monotonic floor
+#ifndef NDEBUG
+        fprintf(stderr, "[SEQ_FLOOR] bumped seq %u → %u (type=%u)\n",
+                (unsigned)pkt_seq, (unsigned)max_wire_seq_, (unsigned)bp[0]);
+#endif
+        std::memcpy(fixedPkt, bp, 32);
+        wire::wr16_le(fixedPkt + 2, max_wire_seq_);
+        pkt_seq = max_wire_seq_;
+
+        if (n == 32) {
+          sendBuf = fixedPkt;
+        } else {
+          // Combined header+payload (rare for events, possible for replies).
+          // Send fixed 32-byte header, then original payload tail.
+          const uint8_t* hp = fixedPkt;
+          std::size_t hleft = 32;
+          while (hleft) {
+            ssize_t w = ::send(client_fd_, hp, hleft, MSG_NOSIGNAL);
+            if (w < 0) {
+              if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+              return false;
+            }
+            if (w == 0) return false;
+            hp += static_cast<std::size_t>(w);
+            hleft -= static_cast<std::size_t>(w);
+          }
+          const uint8_t* pp = static_cast<const uint8_t*>(buf) + 32;
+          std::size_t pleft = n - 32;
+          while (pleft) {
+            ssize_t w = ::send(client_fd_, pp, pleft, MSG_NOSIGNAL);
+            if (w < 0) {
+              if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+              return false;
+            }
+            if (w == 0) return false;
+            pp += static_cast<std::size_t>(w);
+            pleft -= static_cast<std::size_t>(w);
+          }
+          max_wire_seq_ = pkt_seq;
+          return true;
+        }
+      }
+    }
+    max_wire_seq_ = pkt_seq;
+  }
+
+  const uint8_t* p = static_cast<const uint8_t*>(sendBuf);
   std::size_t left = n;
 
   while (left) {
