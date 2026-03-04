@@ -241,18 +241,18 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
   - Remaining globals: `g_daemon` (process-lifetime), `g_daemon_ptr` (bridge access), `g_ctx/g_ev/g_q` (NotifyBridge, set per-session)
 - **Display :1**: SwiftX11 runs on display :1 (TCP port 6001) to avoid conflict with XQuartz on :0. `~/.profile` sets `DISPLAY=127.0.0.1:1`.
 
-### Known Issues (v1.5.8)
-- **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Buttons 40-54 appear at (0,0) with higher stacking order than the display widget; server correctly renders them on top. Same behavior on XQuartz — this is a client-side issue (no resources defined for buttons 40-54). Buttons 21-22 (`mappedWhenManaged: False`) are now correctly hidden (fixed in v1.5.8 via MapSubwindows direct-children fix). XFILESEARCHPATH is auto-set by SwiftX11 at startup.
-- **xcalc wrong characters**: sqrt sign (button1), division (button10), pi (button12) display incorrectly — these buttons use Adobe Symbol font encoding (`-adobe-symbol-*`) which our BDF font system doesn't support. Phase 3 font/encoding issue.
-- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Phase 3 font infrastructure issue. Xlib's XCreateFontSet() expects multiple charset fonts; SwiftX11 has minimal BDF coverage.
-- **xterm occasional uncleared pixels at bottom**: Stale pixels visible at bottom of xterm window in some cases. May be a damage rect or ClearArea issue.
+- **Phase 3 font infrastructure** (v1.7.0): XLFD wildcard matching, PCF font support (.pcf.gz from system directories), font aliases, ListFontsWithInfo, Symbol font encoding. PCF parser handles MSB/LSB bit order with byte-level bit reversal. Lazy-loads fonts on demand from `/opt/X11/share/fonts/{misc,75dpi,100dpi}/`.
+- **xcalc Symbol characters fixed** (v1.7.0): sqrt (√), division (÷), pi (π) now render correctly from Symbol PCF font (`symb12.pcf.gz`, `adobe-fontspecific` encoding).
+
+### Known Issues (v1.7.0)
+- **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
+- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple charset fonts; not all charsets covered.
 - **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
-- **RENDER glyph rendering**: CompositeGlyphs8/16/32 and AddGlyphs are stubs — need actual glyph bitmap storage/rendering for anti-aliased fonts.
 
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
 1. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
 2. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
-3. **Enable RENDER extension** — Complete Trapezoids + CompositeGlyphs, then advertise
-4. **Enable remaining extensions** — SHAPE, XFIXES, RANDR, Xinerama, GE one at a time
+3. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
+4. **Enable remaining extensions** — RANDR, Xinerama, GE one at a time
 5. **Container networking** — TCP + Unix socket for Docker workflow
