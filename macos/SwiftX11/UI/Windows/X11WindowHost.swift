@@ -686,6 +686,11 @@ final class X11View: NSView {
     let maxRects: Int32 = 4096
     var xywh = [Int16](repeating: 0, count: Int(maxRects) * 4)
     let nrects = x11_shape_get_rects(xid, &xywh, maxRects)
+    #if DEBUG
+    if nrects <= 0 {
+      print(String(format: "[SHAPE] applyShapeMask xid=0x%08X nrects=0 (no shape data!)", xid))
+    }
+    #endif
     if nrects <= 0 { return }
 
     data.withUnsafeMutableBytes { rawBuf in
@@ -732,8 +737,18 @@ final class X11View: NSView {
     win.backgroundColor = transparent ? .clear : .windowBackgroundColor
     win.hasShadow = !transparent
 
+    // MTKView and its CAMetalLayer must also be non-opaque for transparency
+    if let mv = mtkView {
+      mv.layer?.isOpaque = !transparent
+      (mv.layer as? CAMetalLayer)?.isOpaque = !transparent
+    }
+
     // Update Metal renderer if active
     renderer?.isShaped = transparent
+
+    #if DEBUG
+    print(String(format: "[SHAPE] setWindowTransparency xid=0x%08X shaped=%d", xid, transparent ? 1 : 0))
+    #endif
   }
 
   // MARK: - Software rendering
