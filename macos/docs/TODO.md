@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-04 (v1.7.2 — XCB sequence desync safety net)
+Last updated: 2026-03-04 (v1.7.3 — monotonic wire-sequence floor + resize border fix)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -125,7 +125,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.2)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.3)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path — needs actual shape clipping first). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing) — ADVERTISED (v1.6.0)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
@@ -186,7 +186,7 @@ These are frequently queried. Return present=0 with correct reply format, or min
 
 ---
 
-## Phase 3: Font Infrastructure (Required for Readable UI) — DONE (v1.7.0)
+## Phase 3: Font Infrastructure (Required for Readable UI)
 
 ~~Vivado and Vitis need proper fonts. The current BDF-only system works for xterm but won't satisfy GTK/Java apps that expect a richer font ecosystem.~~
 
@@ -387,18 +387,21 @@ rendercheck                 # RENDER extension tests
 ~~18. **Font infrastructure** — DONE (v1.7.0): XLFD wildcard matching, PCF font support, system directory scanning, ListFontsWithInfo, Symbol encoding~~
 
 ### Remaining priorities
-1. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
-2. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
-3. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
-4. **Enable remaining extensions** — RANDR, Xinerama, GE advertised one at a time
-5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
+1. **Complete Phase 2.4** — SHAPE actual clipping: implement pixel-level clipping from stored shape regions, then advertise
+2. **Complete Phase 2.5** — Enable remaining extensions: advertise RANDR, Xinerama, GE one at a time (handler stubs already exist)
+3. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering works via RENDER CompositeGlyphs; optional CoreText bridge
+4. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close) (Phase 5.4)
+5. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
+6. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
 
-### Phase 2+3 Status Assessment (v1.7.2)
-**Phases 2 and 3 are complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). Extensions: BIG-REQUESTS, RENDER, and XFIXES are advertised and functional. SHAPE has stub support but is held back to avoid breaking xeyes. Fonts: XLFD wildcard matching, PCF font loading from system directories, Symbol font encoding, and ListFontsWithInfo all work.
+### Phase 2+3 Status Assessment (v1.7.3)
+**Phases 2 and 3 are mostly complete, with remaining items in 2.4, 2.5, and 3.3.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). Extensions: BIG-REQUESTS, RENDER, and XFIXES are advertised and functional. SHAPE has stub support but is held back to avoid breaking xeyes — actual shape clipping (2.4) is still needed. Remaining extensions (2.5): RANDR, Xinerama, GE have handler stubs but are not yet advertised. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
 
 **v1.7.2 adds a reply-tracking safety net** that prevents XCB sequence desync crashes (the xcalc resize crash). Missing replies for reply-bearing opcodes now automatically get a BadImplementation error response.
 
-The next bottleneck is **window lifecycle** (window close → client kill) and **error handling** (Phase 4), not fonts or extensions.
+**v1.7.3 adds a monotonic wire-sequence floor** that prevents event sequence regression when drainHostCommands() interleaves with readAndDispatch(). Also fixes button borders disappearing after window resize.
+
+**Next priorities**: Complete 2.4, 2.5, and 3.3 before starting Phase 4 (window lifecycle, error handling).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
@@ -416,6 +419,10 @@ The next bottleneck is **window lifecycle** (window close → client kill) and *
 ### Features (v1.7.1)
 - **Triangles/TriStrip/TriFan**: RENDER geometric fill ops (minor 11/12/13). Scanline triangle rasterization with FIXED 16.16 edge interpolation.
 - **Gradient source pictures**: CreateLinearGradient, CreateRadialGradient, CreateConicalGradient now create real gradient Pictures. Composite samples gradient per-pixel with color stop interpolation.
+
+### Bug fixes (v1.7.3)
+- **xcalc resize crash — monotonic wire-sequence floor**: Even with v1.7.2's reply-tracking safety net, xcalc resize still triggered `[xcb] Unknown sequence number` crashes. Root cause: `drainHostCommands()` interleaves with `readAndDispatch()`, and host commands (resize → ConfigureNotify, Expose) carry stale sequences from `lastSeq()` that are behind sequences already sent during client request dispatch. XCB widens 16-bit sequences to 64-bit monotonically — any backwards sequence causes crash. Fixed by tracking `max_wire_seq_` (highest sequence ever sent) in `XProtoTransport::sendAll()` and bumping any stale sequence forward. Payload-aware: `payload_remaining_` counter distinguishes reply payload chunks (bytes[2:3] are arbitrary data) from response headers (bytes[2:3] are sequence numbers).
+- **Button borders missing after resize**: After window resize, button outlines (server-drawn borders) disappeared — only text labels rendered. Root cause: `ExposeChildren` handler was "non-destructive" (only sent Expose events), but after resize the surface is cleared to white, so server-drawn borders and backgrounds were lost. Fixed by adding `fillWindowBorderIfReady()` and `fillWindowBackgroundIfReady()` calls in `ExposeChildren`, matching `sendExposeSubtree` behavior.
 
 ### Bug fixes (v1.7.2)
 - **xcalc resize crash (XCB sequence desync)**: Resizing xcalc triggered `[xcb] Unknown sequence number while processing queue` → abort. Root cause: a reply-bearing request was dispatched to a handler that didn't send a reply, causing XCB's internal sequence tracking to desync. Fixed with three-layer defense:

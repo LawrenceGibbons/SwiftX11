@@ -247,16 +247,21 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Font alias PCF resolution** (v1.7.0): `loadAliases()` now resolves alias targets against PCF registry (exact + glob match), not just builtins. Increased resolved aliases from 0 to 99.
 - **Categorical trace system** (v1.7.0): `TraceDefs.hpp` provides opt-in trace categories (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT) gated by `-DX11_TRACE_<CATEGORY>` flags. `X11_TRACE_VERBOSE` enables all. Font traces migrated from always-on `#ifndef NDEBUG` to `#if X11_TRACE_FONT_ENABLED`.
 
-### Known Issues (v1.7.0)
+- **RENDER Triangles + Gradients** (v1.7.1): Triangles/TriStrip/TriFan (minor 11/12/13) with scanline rasterization. Gradient source pictures (CreateLinearGradient/Radial/Conical) with per-pixel sampling. All RENDER Phase 2.1 items complete.
+- **XCB sequence desync safety net** (v1.7.2): Reply-sent tracking (`reply_sent_` flag), core opcode safety net (`isReplyBearingCore()` 128-entry table sends `BadImplementation` if reply-bearing opcode handler doesn't send a reply), extension error replies (all `default` cases send `BadRequest` instead of silently consuming bytes).
+- **Monotonic wire-sequence floor** (v1.7.3): `XProtoTransport::sendAll()` enforces that response sequences never go backwards on the wire. Tracks `max_wire_seq_` and bumps stale sequences forward. Payload-aware: `payload_remaining_` counter distinguishes reply payload chunks from response headers. Fixes xcalc resize crash caused by `drainHostCommands()` interleaving with `readAndDispatch()`.
+- **ExposeChildren border/background fix** (v1.7.3): `ExposeChildren` handler now calls `fillWindowBorderIfReady()` and `fillWindowBackgroundIfReady()` for each child, matching `sendExposeSubtree` behavior. Fixes button borders disappearing after window resize.
+
+### Known Issues (v1.7.3)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple charset fonts; not all charsets covered.
 - **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
 
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
-1. **Complete RENDER gaps** — Triangles/TriStrip/TriFan (minor 11/12/13) + gradient rendering (Linear/Radial/Conical)
-2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
-3. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
-3. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
-4. **Enable remaining extensions** — RANDR, Xinerama, GE one at a time
-5. **Container networking** — TCP + Unix socket for Docker workflow
+1. **Complete Phase 2.4** — SHAPE actual clipping (implement pixel-level clipping, then advertise)
+2. **Complete Phase 2.5** — Enable remaining extensions (RANDR, Xinerama, GE — stubs exist)
+3. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering; optional CoreText bridge
+4. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
+5. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
+6. **Container networking** — TCP + Unix socket for Docker workflow

@@ -1,7 +1,7 @@
 # SwiftX11 — Session Handoff Prompt
 
 **Date**: 2026-03-04
-**Version**: v1.7.2
+**Version**: v1.7.3
 **Branch**: `develop++`
 
 ---
@@ -28,7 +28,12 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 
 ---
 
-## What Was Accomplished (v1.7.0 → v1.7.2)
+## What Was Accomplished (v1.7.0 → v1.7.3)
+
+### v1.7.3: Monotonic Wire-Sequence Floor + Resize Border Fix
+- **Monotonic wire-sequence floor**: `XProtoTransport::sendAll()` now enforces that response sequences (events, replies, errors) never go backwards on the wire. Tracks `max_wire_seq_` (highest sequence ever sent) and bumps any stale sequence forward. Uses signed 16-bit delta for correct wrapping. Handles payload-aware tracking: `payload_remaining_` counter distinguishes reply payload chunks (where bytes[2:3] are arbitrary data) from response headers (where bytes[2:3] are sequence numbers). Skips floor logic during connection setup and reply payload data.
+- **Root cause of xcalc resize crash**: `drainHostCommands()` interleaves with `readAndDispatch()`. Host commands (resize → ConfigureNotify, Expose) carry stale sequences from `lastSeq()` that are behind sequences already sent during client request dispatch. XCB widens 16-bit sequences to 64-bit monotonically — any backwards sequence causes "Unknown sequence number" crash. The floor prevents this regardless of interleaving order.
+- **ExposeChildren border/background fix**: `ExposeChildren` handler (used during post-resize re-expose) now calls `fillWindowBorderIfReady()` and `fillWindowBackgroundIfReady()` for each child before sending Expose events, matching `sendExposeSubtree` behavior. Previously, ExposeChildren was "non-destructive" — after resize, surface is cleared to white, so server-drawn borders and backgrounds were lost.
 
 ### v1.7.2: XCB Sequence Desync Safety Net
 - **Reply-sent tracking**: `XProtoTransport` tracks whether a reply or error was sent during each dispatch via `reply_sent_` flag. Detection in `sendAll()`: byte[0]==0 (Error) or byte[0]==1 (Reply) sets the flag.
@@ -69,21 +74,25 @@ Closing the Cocoa window hides the NSWindow but the X11 client keeps running. Ne
 
 ## Next Tasks (Priority Order)
 
-### 1. Window Close → Client Kill
+### 1. Complete Remaining Phase 2 Items (2.4, 2.5)
+Phase 2 is mostly complete but has remaining items:
+- **2.4 SHAPE actual clipping**: Implement pixel-level clipping based on stored shape regions. Required before advertising SHAPE extension. Currently stubs consume shape ops silently but don't clip. (SHAPE breaks xeyes without real clipping.)
+- **2.5 Enable remaining extensions**: Advertise RANDR, Xinerama, GE one at a time. Handler stubs already exist but are NOT advertised yet.
+
+### 2. Complete Remaining Phase 3 Item (3.3)
+Phase 3 font infrastructure is mostly done (PCF, XLFD, aliases all work) but 3.3 has remaining items:
+- **Xft/fontconfig on client side**: Verify that clients using FreeType + fontconfig render glyphs client-side and upload via RENDER CompositeGlyphs. Server just needs RENDER support (done).
+- **CoreText bridge (optional)**: Map X11 font requests to macOS system fonts via CoreText for high-quality server-side rendering.
+
+### 3. Window Close → Client Kill
 Red close button should terminate the X11 client. Two approaches:
 - **WM_DELETE_WINDOW** (ICCCM-compliant): Check if client's WM_PROTOCOLS property includes WM_DELETE_WINDOW atom. If so, send a ClientMessage event with the WM_DELETE_WINDOW atom. Well-behaved clients (xterm, xcalc) will exit gracefully.
 - **Forceful disconnect**: If client doesn't support WM_DELETE_WINDOW (or as fallback after timeout), close the client socket (fd) to force disconnect. Server's `eraseOwnedBy()` handles resource cleanup.
 - Cmd+W should also trigger window close with the same behavior.
 - Key files: `SwiftX11/UI/Windows/X11WindowHost.swift` (Cocoa windowWillClose), `X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp` (DestroyWindow), `X11LowLevel/cpp/X11Protocol/include/Core/ClipboardAtoms.hpp` (WM_PROTOCOLS and WM_DELETE_WINDOW atom constants already defined)
 
-### 2. Error Handling
+### 4. Error Handling (Phase 4)
 Proper X11 error generation (BadWindow, BadDrawable, BadGC, etc.) with correct error reply format. Currently, requests referencing destroyed XIDs silently fail. Java/GTK toolkits may depend on error responses for resource management.
-
-### 3. Enable SHAPE Extension
-Implement actual shape-based pixel clipping, then advertise. Current stubs consume shape ops silently but don't clip.
-
-### 4. Enable Remaining Extensions
-Advertise RANDR, Xinerama, GE one at a time. Handler stubs already exist.
 
 ### 5. Container Networking
 TCP + Unix socket + xauth for Docker workflow. Verify `DISPLAY=host.docker.internal:1` works from Docker container.
@@ -103,7 +112,7 @@ xeyes                      # pointer tracking, multi-client
 xcalc -rpn                 # calculator (XFILESEARCHPATH auto-set by SwiftX11)
 xclock -analog             # Xaw widgets, arcs, timer events
 
-# Verify version banner in console: "SwiftX11 v1.7.2"
+# Verify version banner in console: "SwiftX11 v1.7.3"
 
 # Test clipboard:
 # 1. Select text in xterm → Cmd+V in macOS app (X11→macOS)
