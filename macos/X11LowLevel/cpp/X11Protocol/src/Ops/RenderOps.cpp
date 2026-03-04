@@ -575,7 +575,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     if (dst.isWindow) {
-      damageOrDirty(ctx, dstDrawable, xDst, yDst, (int32_t)width, (int32_t)height);
+      // Clamp damage rect to actual pixel-write region (matching per-pixel clipping above)
+      int32_t dmgX0 = std::max((int32_t)xDst, (int32_t)0);
+      int32_t dmgY0 = std::max((int32_t)yDst, (int32_t)0);
+      int32_t dmgX1 = std::min((int32_t)xDst + (int32_t)width,  (int32_t)dst.w);
+      int32_t dmgY1 = std::min((int32_t)yDst + (int32_t)height, (int32_t)dst.h);
+      if (dmgX0 < dmgX1 && dmgY0 < dmgY1) {
+        damageOrDirty(ctx, dstDrawable, dmgX0, dmgY0, dmgX1 - dmgX0, dmgY1 - dmgY0);
+      }
     }
     return;
   }
@@ -1211,8 +1218,8 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         }
       }
 
-      if (dst.isWindow) {
-        damageOrDirty(ctx, dstDrawable, rx, ry, (int32_t)rw, (int32_t)rh);
+      if (dst.isWindow && x0 < x1 && y0 < y1) {
+        damageOrDirty(ctx, dstDrawable, x0, y0, x1 - x0, y1 - y0);
       }
     }
     br.skip(br.remaining());
