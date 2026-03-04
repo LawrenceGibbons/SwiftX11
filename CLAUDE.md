@@ -250,13 +250,13 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 ### Known Issues (v1.7.0)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple charset fonts; not all charsets covered.
-- **xterm scrollbar vanishes on resize**: With some window resizes in xterm, the scrollbar disappears. Under investigation.
 - **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
 
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
-1. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
-2. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
+1. **Complete RENDER gaps** — Triangles/TriStrip/TriFan (minor 11/12/13) + gradient rendering (Linear/Radial/Conical)
+2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
+3. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
 3. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
 4. **Enable remaining extensions** — RANDR, Xinerama, GE one at a time
 5. **Container networking** — TCP + Unix socket for Docker workflow
