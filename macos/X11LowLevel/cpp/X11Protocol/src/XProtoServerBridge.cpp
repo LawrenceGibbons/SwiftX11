@@ -397,18 +397,25 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
         // ------------------- ExposeChildren
         // Sent at end of live resize to re-expose children whose content may
-        // have been lost during surface reallocation.  Does NOT fill backgrounds
-        // (non-destructive) — just sends Expose events so clients redraw.
+        // have been lost during surface reallocation.  Fills borders and
+        // backgrounds (matching sendExposeSubtree behaviour) because the
+        // surface was memset to white during resize — server-drawn borders
+        // and backgrounds must be repainted before sending Expose events.
         case HostCmdType::ExposeChildren: {
+          // Fill + Expose the host itself first.
+          fillWindowBackgroundIfReady(ctx, c.xid);
+          sendExposeNow(ctx, srv->eventOps(), c.xid);
+
+          // Fill borders + backgrounds + Expose every mapped descendant.
           auto kids = ctx.windows().descendantsOf(c.xid);
           for (uint32_t kid : kids) {
             x11::WindowView kv{};
             if (!ctx.windows().snapshot(kid, kv)) continue;
             if (!kv.mapped) continue;
+            fillWindowBorderIfReady(ctx, kid);
+            fillWindowBackgroundIfReady(ctx, kid);
             sendExposeNow(ctx, srv->eventOps(), kid);
           }
-          // Also expose the host itself and report damage to trigger a present.
-          sendExposeNow(ctx, srv->eventOps(), c.xid);
           {
             x11::WindowView sv{};
             if (ctx.windows().snapshot(c.xid, sv)) {
