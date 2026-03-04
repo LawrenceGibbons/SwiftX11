@@ -1,7 +1,7 @@
 # SwiftX11 — Session Handoff Prompt
 
-**Date**: 2026-03-02
-**Version**: v1.5.2
+**Date**: 2026-03-04
+**Version**: v1.7.1
 **Branch**: `develop++`
 
 ---
@@ -20,83 +20,44 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 - **Swift** (`SwiftX11/`): UI owner — AppKit, Metal/software rendering, surface allocation, networking
 - **C++** (`X11LowLevel/cpp/X11Protocol/`): Protocol core — request parsing, reply/event framing, raster ops, resource tables. `SwiftBridge.cpp` provides the `extern "C"` functions that Swift calls.
 
-**Working clients**: xterm (with scrollbar, cursor blink, modifier keys, scrollbar thumb drag via Option+click, bidirectional clipboard), xeyes, xcalc (mostly — needs `XFILESEARCHPATH`, wrong Symbol font chars), xclock (partially — FontSet warnings), multi-client (xterm + xeyes simultaneously)
+**Working clients**: xterm (scrollbar, cursor blink, modifier keys, Option+click thumb drag, bidirectional clipboard), xeyes, xcalc (with XFILESEARCHPATH auto-setup, Symbol font √÷π), xclock, multi-client (xterm + xeyes simultaneously)
+
+**Advertised extensions**: BIG-REQUESTS (133), RENDER (139), XFIXES (134). SHAPE (135) has full stubs but is NOT advertised (breaks xeyes).
 
 **Display**: SwiftX11 listens on display :1 (TCP port 6001) to avoid XQuartz conflict. `~/.profile` sets `DISPLAY=127.0.0.1:1`.
 
 ---
 
-## What Was Accomplished (v1.5.0 → v1.5.2)
+## What Was Accomplished (v1.7.0 → v1.7.1)
 
-### v1.5.1: Bidirectional Clipboard Sync
+### v1.7.0: Phase 3 Font Infrastructure
+- **PCF font support**: Full parser with TOC, metrics, bitmaps, encoding tables. MSB/LSB bit order handling. zlib decompression for .pcf.gz. Scans `/opt/X11/share/fonts/{misc,75dpi,100dpi}/`.
+- **XLFD wildcard matching**: Iterative glob with `*` and `?`. Matches against PCF registry and builtin BDF fonts.
+- **Font aliases**: System `fonts.alias` files loaded; alias targets resolved against PCF registry (99 aliases resolved).
+- **Symbol font encoding**: Adobe Symbol font (symb12.pcf.gz, `adobe-fontspecific`) works — xcalc √÷π render correctly.
+- **App sandbox disabled**: `ENABLE_APP_SANDBOX=NO` — sandbox blocked PCF font loading.
+- **Categorical trace system**: `TraceDefs.hpp` with opt-in categories (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT).
+- **ListFontsWithInfo**: Full implementation with per-font metrics + correct 60-byte terminator reply.
+- **Scrollbar resize fix**: Second ExposeChildren after promoteDisplaySurface (150ms post-resize) ensures scrollbar redraws after xterm reconfigures children.
 
-**X11→macOS clipboard** (completed the other half of clipboard bridge):
-- ClipboardCapture in PropOps detects UTF8_STRING/STRING property writes during selection transfer
-- Pushes captured text to NSPasteboard via Swift `x11_clipboard_set()` callback
-- Root-proxy selection owner: after capture, selection owner set to XID 1 (root window) so subsequent ConvertSelection from other X11 clients routes through server (serves from cached macOS clipboard)
-- Sequence number stamping fix in `handleSendEvent` ensures correct SelectionNotify delivery
-- Flow: Select text in xterm → xterm writes to property → ClipboardCapture → NSPasteboard → Cmd+V works in macOS apps
-- Reverse: Copy in macOS → Option-click in xterm paste position → Xt sends ConvertSelection (owner=root) → server serves from NSPasteboard
-
-### v1.5.2: CWBackPixmap/ParentRelative + xcalc Investigation
-
-**CWBackPixmap (bit 0) handling**:
-- CreateWindow: value 0 (None) = no change; value 1 (ParentRelative) = walk parent chain to inherit background
-- ChangeWindowAttributes: same handling with additional None case to clear background
-- `WindowTable::clearBackground(xid)` — sets `has_background_pixel=false` (server won't fill on ClearArea)
-- `WindowTable::resolveParentRelativeBackground(xid)` — walks parent chain (max 64 depth), copies nearest ancestor's `background_pixel`
-
-**xcalc -rpn investigation** (root cause found, partial workaround):
-- Traced through all CreateWindow/ChangeWindowAttributes/ClearArea calls for xcalc — no CWBackPixel changes after creation, no ClearArea usage
-- Root cause: xcalc's Xt app-defaults file (`/opt/X11/share/X11/app-defaults/XCalc`) was NOT being loaded — `XFILESEARCHPATH` env var not set
-- **Workaround**: `XFILESEARCHPATH=/opt/X11/share/X11/%T/%N xcalc -rpn` loads app-defaults, fixing most button labels
-- **Remaining issue**: xcalc creates 54 buttons in HP/RPN mode via `create_keypad()`, but app-defaults only define resources for buttons 1-39. Buttons 40-54 have no labels in app-defaults, so they show widget names ("button40", etc.)
-- Buttons 21-22 have `mappedWhenManaged: False` in app-defaults (should be invisible in RPN mode) — Xt client-side concept
-- Buttons 1, 10, 12 use Adobe Symbol font (`-adobe-symbol-*`) for special chars (sqrt, division, pi) — wrong characters is a font encoding issue
-
----
-
-## xcalc Investigation Findings — Read Before Debugging xcalc
-
-**IMPORTANT**: The previous session spent significant effort on a wrong hypothesis before finding the real cause. Save yourself time by reading this first.
-
-### What Was Tried (and failed)
-1. **Hypothesis: CWBackPixmap/ParentRelative causing white backgrounds**. We thought xcalc child widgets used CWBackPixmap=1 (ParentRelative), leaving `has_background_pixel=false`, so backgrounds stayed white and widget-name text was visible. We implemented ParentRelative support (which IS correct code for other apps). But **xcalc never uses ParentRelative** — 3 rounds of traces proved ALL xcalc windows are created with explicit CWBackPixel (bit0=0, bit1=1), bg_pixel=0xFFFFFFFF (white). Zero ClearArea calls, zero ChangeWindowAttributes with CWBackPixel.
-
-### What the Real Problem Is
-2. **Missing XFILESEARCHPATH**: Without `export XFILESEARCHPATH=/opt/X11/share/X11/%T/%N`, Xt can't find `/opt/X11/share/X11/app-defaults/XCalc`. Without this file, ALL 54 buttons display their widget names ("button1"..."button54") because Xaw Command widgets use the widget name as the default label. All backgrounds stay white because no color resources are loaded.
-
-3. **54 buttons, not 39**: xcalc's `create_keypad()` creates 54 Command widgets (button1-button54) for HP/RPN mode. The app-defaults file (`/opt/X11/share/X11/app-defaults/XCalc`) only defines resources for buttons 1-39. Buttons 40-54 have **no label, no translation, no font** in the app-defaults, so even with XFILESEARCHPATH they show their widget names. This is an xcalc/app-defaults coverage gap, NOT a server bug.
-
-4. **`mappedWhenManaged: False`**: Buttons 21 and 22 have this set in app-defaults (no labels defined for them either). This is a pure Xt client-side concept — Xt simply doesn't call XMapWindow for those widgets. If they appear, it's Xt behavior, not our server.
-
-5. **Adobe Symbol font encoding**: Buttons 1 (sqrt: `\326\140`), 10 (division: `\270`), 12 (pi: `\160`) request `-adobe-symbol-*-*-*-*-*-120-*-*-*-*-*-*`. Our font table doesn't have this font, falls back to 9x15. Symbol encoding maps different codepoints than Latin-1 (e.g., octal 326 = 0xD6 = sqrt in Symbol but "O with diaeresis" in Latin-1). Fix is either bundle the Adobe Symbol BDF font or add an encoding translation layer.
-
-### Diagnostic Technique Notes
-- **Trace tier gotcha**: `X11_TRACE_LIFECYCLE_ENABLED` requires explicit `-DX11_TRACE_LIFECYCLE` compiler flag — it is NOT enabled in standard debug builds. Only `#ifndef NDEBUG` traces appear by default. See `TraceDefs.hpp` for all categories.
-- **TrueColor pixel mapping**: WhitePixel=1, BlackPixel=0 with special-casing in `X11Setup.cpp`. Pixel 0→0xFF000000 (black), pixel 1→0xFFFFFFFF (white), others→0xFF000000|(val&0x00FFFFFF). This is technically wrong for TrueColor (WhitePixel should be 0x00FFFFFF) but works via the special-casing.
+### v1.7.1: RENDER Triangles + Gradients
+- **Triangles/TriStrip/TriFan (minor 11/12/13)**: Full scanline triangle rasterization. Sort vertices by Y, walk edges with FIXED 16.16 interpolation. Triangles = independent 3-vertex groups, TriStrip = sliding window, TriFan = shared pivot.
+- **Gradient source pictures**: CreateLinearGradient (34), CreateRadialGradient (35), CreateConicalGradient (36) now create real gradient Pictures with per-pixel sampling. Linear: dot-product projection. Radial: concentric circle distance. Conical: atan2 angle. Color stop interpolation with Pad (clamp) mode.
+- **Composite gradient support**: Composite (minor 8) now handles gradient sources alongside solid and drawable sources.
+- All RENDER Phase 2.1 items are now complete.
 
 ---
 
 ## Known Issues (deferred)
 
 ### xcalc -rpn Extra Button Labels
-**Symptom**: 3+ buttons show default widget name labels even with app-defaults loaded.
-**Root cause**: xcalc creates 54 buttons but app-defaults only cover 1-39. Buttons 40-54 show as default. Buttons 21-22 should be invisible (`mappedWhenManaged: False`).
-**Workaround**: `XFILESEARCHPATH=/opt/X11/share/X11/%T/%N xcalc -rpn`
-**NOT a server bug** — app-defaults coverage gap in the XCalc resource file.
+**Symptom**: Buttons 40-54 show widget names. **NOT a server bug** — app-defaults only cover buttons 1-39.
 
-### xcalc Wrong Symbol Characters (Phase 3)
-**Symptom**: sqrt (button1), division (button10), pi (button12) display incorrectly.
-**Root cause**: These buttons request `-adobe-symbol-*` font. Our BDF font system doesn't have Adobe Symbol; falls back to 9x15. Symbol encoding uses different codepoints than Latin-1.
-**Fix needed**: Bundle Adobe Symbol BDF font or implement Symbol encoding mapping.
+### xclock/xcalc FontSet Warnings
+**Symptom**: "Missing charsets in String to FontSet conversion" — XCreateFontSet() expects multiple charset fonts.
 
-### xterm Uncleared Pixels at Bottom (LOW)
-**Symptom**: Occasional stale/uncleared pixels visible at bottom edge of xterm window.
-
-### xclock/xcalc FontSet Warnings (Phase 3)
-**Symptom**: "Missing charsets in String to FontSet conversion"
-Requires additional BDF/PCF font bundling.
+### Window close does not kill client
+Closing the Cocoa window hides the NSWindow but the X11 client keeps running. Need WM_DELETE_WINDOW or socket close.
 
 ---
 
@@ -112,11 +73,11 @@ Red close button should terminate the X11 client. Two approaches:
 ### 2. Error Handling
 Proper X11 error generation (BadWindow, BadDrawable, BadGC, etc.) with correct error reply format. Currently, requests referencing destroyed XIDs silently fail. Java/GTK toolkits may depend on error responses for resource management.
 
-### 3. Enable RENDER Extension
-Complete missing operations (Trapezoids, CompositeGlyphs rendering, Composite mask), then advertise RENDER=present via QueryExtension. Test with `rendercheck` and xeyes. This is the single most impactful extension for modern toolkit support.
+### 3. Enable SHAPE Extension
+Implement actual shape-based pixel clipping, then advertise. Current stubs consume shape ops silently but don't clip.
 
 ### 4. Enable Remaining Extensions
-Complete and advertise one at a time: SHAPE (ShapeRectangles/ShapeMask), XFIXES (cursor visibility), RANDR, Xinerama, GE. Test each with xeyes/xterm before advertising the next.
+Advertise RANDR, Xinerama, GE one at a time. Handler stubs already exist.
 
 ### 5. Container Networking
 TCP + Unix socket + xauth for Docker workflow. Verify `DISPLAY=host.docker.internal:1` works from Docker container.
@@ -133,10 +94,10 @@ open macos/SwiftX11.xcodeproj
 # Test clients (in separate terminal):
 xterm -sb -rightbar -bc    # scrollbar + cursor blink (DISPLAY set in ~/.profile)
 xeyes                      # pointer tracking, multi-client
-XFILESEARCHPATH=/opt/X11/share/X11/%T/%N xcalc -rpn   # calculator (needs XFILESEARCHPATH)
+xcalc -rpn                 # calculator (XFILESEARCHPATH auto-set by SwiftX11)
 xclock -analog             # Xaw widgets, arcs, timer events
 
-# Verify version banner in console: "SwiftX11 v1.5.2"
+# Verify version banner in console: "SwiftX11 v1.7.1"
 
 # Test clipboard:
 # 1. Select text in xterm → Cmd+V in macOS app (X11→macOS)
@@ -156,7 +117,7 @@ Read these files to understand the codebase:
 - `X11LowLevel/cpp/X11Protocol/src/Ops/ShapeOps.cpp` — PolyRectangle, PolyLine, PolyArc draw ops
 - `X11LowLevel/cpp/X11Protocol/include/Core/GCTable.hpp` — GCState struct with all GC fields
 - `X11LowLevel/cpp/X11Protocol/src/Ops/GCOps.cpp` — CreateGC/ChangeGC/CopyGC/SetDashes
-- `X11LowLevel/cpp/X11Protocol/src/Ops/RenderOps.cpp` — RENDER extension implementation
+- `X11LowLevel/cpp/X11Protocol/src/Ops/RenderOps.cpp` — RENDER extension (full: Composite, Trapezoids, Triangles, Glyphs, Gradients)
 - `X11LowLevel/cpp/X11Protocol/src/Ops/ExtensionOps.cpp` — Extension stubs (XFIXES, SHAPE, RANDR, etc.)
 - `X11LowLevel/cpp/X11Protocol/src/Ops/SelectionOps.cpp` — Selection protocol + clipboard bridge
 - `X11LowLevel/cpp/X11Protocol/src/Ops/PropOps.cpp` — Property operations + ClipboardCapture
@@ -166,7 +127,7 @@ Read these files to understand the codebase:
 
 ## Important Conventions
 
-- **All new code in C++ or swift** — no C files remain, no new C code
+- **All new code in C++ or Swift** — no C files remain, no new C code
 - **Display :1** — SwiftX11 uses TCP port 6001 (display :1), set via `~/.profile`
 - **Version bump** — bump `SwiftX11Version.h` when making changes to verify correct build is running
 - **Reply-bearing opcodes** — always send reply via `ctx.reply().sendReply32()` or XCB will crash
@@ -178,4 +139,4 @@ Read these files to understand the codebase:
 - **Opcode dispatch**: Modules register via `reg.registerMajor(opcode, &Class::onMajor, this)` in constructors
 - **Wire helpers**: `wire::wr16_le`, `wire::wr32_le`, `wire::rd16_le`, `wire::rd32_le` for little-endian encoding
 - **ByteReader**: `br.readU32()`, `br.readU16()`, `br.readU8()`, `br.readI16()`, `br.skip(n)`, `br.remaining()`
-- **Trace tiers**: `#ifndef NDEBUG` for lifecycle traces always in debug; `X11_TRACE_<CATEGORY>` for categorical traces (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE); `X11_TRACE_VERBOSE` enables ALL categories. See `TraceDefs.hpp`.
+- **Trace tiers**: `#ifndef NDEBUG` for lifecycle traces always in debug; `X11_TRACE_<CATEGORY>` for categorical traces (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT); `X11_TRACE_VERBOSE` enables ALL categories. See `TraceDefs.hpp`.

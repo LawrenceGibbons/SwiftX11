@@ -5,9 +5,12 @@
 //  RENDER extension — full implementation.
 //
 //  Supports: QueryVersion, QueryPictFormats, CreatePicture, ChangePicture,
-//            FreePicture, Composite (with mask), FillRectangles, CreateSolidFill,
-//            QueryFilters, AddGlyphs, FreeGlyphs, CompositeGlyphs8/16/32,
-//            Trapezoids, all Porter-Duff blend modes.
+//            FreePicture, Composite (with mask + gradient sources),
+//            FillRectangles, CreateSolidFill, QueryFilters,
+//            AddGlyphs, FreeGlyphs, CompositeGlyphs8/16/32,
+//            Trapezoids, Triangles/TriStrip/TriFan,
+//            CreateLinearGradient, CreateRadialGradient, CreateConicalGradient,
+//            all Porter-Duff blend modes.
 //
 
 // Define X11_TRACE_RENDER to enable RENDER extension debug tracing.
@@ -17,8 +20,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <algorithm>
 #include <vector>
+#include <memory>
 #include <unordered_map>
 #include <mutex>
 
@@ -64,6 +69,92 @@ enum PictOp : uint8_t {
 };
 
 // ============================================================================
+// Gradient data — stored in Picture for gradient fill sources
+// ============================================================================
+enum GradientType : uint8_t { GradLinear = 1, GradRadial = 2, GradConical = 3 };
+
+struct GradientStop {
+  float    position; // 0.0 to 1.0 (from FIXED 16.16)
+  uint32_t color;    // premultiplied ARGB8888
+};
+
+struct GradientData {
+  GradientType type = GradLinear;
+  // Linear: p1→p2.  Radial: inner center, outer center.  Conical: center in p1.
+  float p1x = 0, p1y = 0;
+  float p2x = 0, p2y = 0;
+  float r1 = 0, r2 = 0;   // radial inner/outer radius
+  float angle = 0;          // conical start angle (radians)
+  std::vector<GradientStop> stops;
+};
+
+// Interpolate between two ARGB8888 colors
+static inline uint32_t lerpColor(uint32_t c0, uint32_t c1, float frac) {
+  if (frac <= 0.0f) return c0;
+  if (frac >= 1.0f) return c1;
+  auto l = [frac](uint32_t a, uint32_t b) -> uint32_t {
+    return (uint32_t)((float)a + frac * ((float)b - (float)a) + 0.5f);
+  };
+  return (l((c0>>24)&0xFF, (c1>>24)&0xFF) << 24)
+       | (l((c0>>16)&0xFF, (c1>>16)&0xFF) << 16)
+       | (l((c0>>8)&0xFF,  (c1>>8)&0xFF)  <<  8)
+       |  l( c0    &0xFF,   c1    &0xFF);
+}
+
+// Sample gradient at parameter t, with Pad (clamp) behaviour
+static uint32_t sampleGradientStops(const std::vector<GradientStop>& stops, float t) {
+  if (stops.empty()) return 0xFF000000u;
+  if (stops.size() == 1) return stops[0].color;
+  t = std::max(0.0f, std::min(1.0f, t));
+  if (t <= stops.front().position) return stops.front().color;
+  if (t >= stops.back().position)  return stops.back().color;
+  for (size_t i = 0; i + 1 < stops.size(); i++) {
+    if (t >= stops[i].position && t <= stops[i+1].position) {
+      float range = stops[i+1].position - stops[i].position;
+      if (range < 1e-6f) return stops[i].color;
+      return lerpColor(stops[i].color, stops[i+1].color,
+                       (t - stops[i].position) / range);
+    }
+  }
+  return stops.back().color;
+}
+
+// Sample a gradient at source-coordinate (sx, sy)
+static uint32_t sampleGradient(const GradientData& grad, float sx, float sy) {
+  float t = 0.0f;
+  switch (grad.type) {
+    case GradLinear: {
+      float dx = grad.p2x - grad.p1x;
+      float dy = grad.p2y - grad.p1y;
+      float len2 = dx*dx + dy*dy;
+      if (len2 < 1e-6f) t = 0.0f;
+      else t = ((sx - grad.p1x)*dx + (sy - grad.p1y)*dy) / len2;
+      break;
+    }
+    case GradRadial: {
+      // Simplified: if inner center == outer center, concentric circles
+      // Otherwise, linear interpolation between inner and outer circles
+      float dx = sx - grad.p1x;
+      float dy = sy - grad.p1y;
+      float dist = sqrtf(dx*dx + dy*dy);
+      float dr = grad.r2 - grad.r1;
+      if (fabsf(dr) < 1e-6f) t = (dist < grad.r1) ? 0.0f : 1.0f;
+      else t = (dist - grad.r1) / dr;
+      break;
+    }
+    case GradConical: {
+      float dx = sx - grad.p1x;
+      float dy = sy - grad.p1y;
+      float a = atan2f(dy, dx) - grad.angle;
+      t = a / (2.0f * (float)M_PI);
+      t = t - floorf(t); // normalize to [0, 1)
+      break;
+    }
+  }
+  return sampleGradientStops(grad.stops, t);
+}
+
+// ============================================================================
 // Picture table — maps Picture XID -> state
 // ============================================================================
 struct PictureState {
@@ -75,6 +166,8 @@ struct PictureState {
   uint32_t solidARGB = 0;
   // Clip (not implemented -- just tracked)
   bool     hasClip = false;
+  // Gradient source (non-null when this picture is a gradient fill)
+  std::shared_ptr<GradientData> gradient;
 };
 
 static std::mutex sPicMtx;
@@ -434,6 +527,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     bool srcIsSolid = false;
     bool srcRepeat = false;
     uint32_t srcDrawable = 0;
+    std::shared_ptr<GradientData> srcGrad;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* sps = findPicture(srcPid);
@@ -442,6 +536,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         srcColor     = sps->solidARGB;
         srcDrawable  = sps->drawable;
         srcRepeat    = sps->repeat;
+        srcGrad      = sps->gradient;
       }
     }
 
@@ -537,6 +632,25 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
           const uint32_t sc = modulateAlpha(srcColor, ma);
+          uint32_t px = applyOp(op, drow[(size_t)dx], sc);
+          if (forceOpaque) px |= 0xFF000000u;
+          drow[(size_t)dx] = px;
+        }
+      }
+    } else if (srcGrad) {
+      // Gradient source: sample per-pixel
+      for (int32_t row = 0; row < (int32_t)height; row++) {
+        const int32_t dy = (int32_t)yDst + row;
+        if (dy < 0 || dy >= (int32_t)dst.h) continue;
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const float sy = (float)(ySrc + row);
+        for (int32_t col = 0; col < (int32_t)width; col++) {
+          const int32_t dx = (int32_t)xDst + col;
+          if (dx < 0 || dx >= (int32_t)dst.w) continue;
+          const float sx = (float)(xSrc + col);
+          uint32_t gradColor = sampleGradient(*srcGrad, sx, sy);
+          const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
+          const uint32_t sc = modulateAlpha(gradColor, ma);
           uint32_t px = applyOp(op, drow[(size_t)dx], sc);
           if (forceOpaque) px |= 0xFF000000u;
           drow[(size_t)dx] = px;
@@ -699,7 +813,137 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // ---- 12: TriStrip ----
   // ---- 13: TriFan ----
   case 11: case 12: case 13: {
-    br.skip(br.remaining()); // stub: consume silently
+    if (br.remaining() < 20) { br.skip(br.remaining()); return; }
+    const uint8_t  triOp   = br.readU8();
+    br.skip(3); // pad
+    const uint32_t triSrcPid = br.readU32();
+    const uint32_t triDstPid = br.readU32();
+    const uint32_t triMaskFmt = br.readU32();
+    const int16_t  triXSrc   = (int16_t)br.readU16();
+    const int16_t  triYSrc   = (int16_t)br.readU16();
+    (void)triMaskFmt; (void)triXSrc; (void)triYSrc;
+
+    // Resolve source color (solid fill)
+    uint32_t triSrcColor = 0xFF000000u;
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* sps = findPicture(triSrcPid);
+      if (sps && sps->isSolid) triSrcColor = sps->solidARGB;
+    }
+
+    // Resolve destination
+    uint32_t triDstDrawable = 0;
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* dps = findPicture(triDstPid);
+      if (dps) triDstDrawable = dps->drawable;
+    }
+    if (triDstDrawable == 0) { br.skip(br.remaining()); return; }
+
+    DrawableRW triDst{};
+    if (!resolveDrawableRW(ctx, triDstDrawable, triDst)) { br.skip(br.remaining()); return; }
+    if (!triDst.pixels32 || triDst.w == 0 || triDst.h == 0) { br.skip(br.remaining()); return; }
+
+    int32_t tdmgX0 = (int32_t)triDst.w, tdmgY0 = (int32_t)triDst.h;
+    int32_t tdmgX1 = 0, tdmgY1 = 0;
+    const bool triForceOpaque = triDst.isWindow;
+
+    // Read all POINTFIX values (each is 8 bytes: FIXED x, FIXED y)
+    std::vector<std::pair<int32_t, int32_t>> triPts;
+    triPts.reserve(br.remaining() / 8);
+    while (br.remaining() >= 8) {
+      int32_t px = (int32_t)br.readU32();
+      int32_t py = (int32_t)br.readU32();
+      triPts.push_back({px, py});
+    }
+
+    // Scanline-rasterize a single triangle (vertices in FIXED 16.16)
+    auto rasterTri = [&](int32_t ax, int32_t ay, int32_t bx, int32_t by,
+                         int32_t cx, int32_t cy) {
+      // Sort vertices by Y (ascending)
+      if (ay > by) { std::swap(ax, bx); std::swap(ay, by); }
+      if (ay > cy) { std::swap(ax, cx); std::swap(ay, cy); }
+      if (by > cy) { std::swap(bx, cx); std::swap(by, cy); }
+
+      // Convert FIXED 16.16 to integer scanlines
+      int32_t yTop = (ay + 0x8000) >> 16;
+      int32_t yMid = (by + 0x8000) >> 16;
+      int32_t yBot = (cy + 0x8000) >> 16;
+      yTop = std::max(yTop, (int32_t)0);
+      yBot = std::min(yBot, (int32_t)triDst.h);
+      yMid = std::clamp(yMid, yTop, yBot);
+
+      int64_t acDy = (int64_t)cy - (int64_t)ay;
+      int64_t abDy = (int64_t)by - (int64_t)ay;
+      int64_t bcDy = (int64_t)cy - (int64_t)by;
+
+      for (int32_t y = yTop; y < yBot; y++) {
+        int64_t yFixed = ((int64_t)y << 16) + 0x8000;
+
+        // Long edge a→c
+        int64_t xAC;
+        if (acDy == 0) xAC = (int64_t)ax;
+        else xAC = (int64_t)ax + ((int64_t)(cx - ax) * (yFixed - (int64_t)ay)) / acDy;
+
+        // Short edge: a→b (upper) or b→c (lower)
+        int64_t xOther;
+        if (y < yMid || (abDy > 0 && yFixed < (int64_t)by)) {
+          if (abDy == 0) xOther = (int64_t)ax;
+          else xOther = (int64_t)ax + ((int64_t)(bx - ax) * (yFixed - (int64_t)ay)) / abDy;
+        } else {
+          if (bcDy == 0) xOther = (int64_t)bx;
+          else xOther = (int64_t)bx + ((int64_t)(cx - bx) * (yFixed - (int64_t)by)) / bcDy;
+        }
+
+        int32_t xLeft  = (int32_t)((std::min(xAC, xOther) + 0x8000) >> 16);
+        int32_t xRight = (int32_t)((std::max(xAC, xOther) + 0x8000) >> 16);
+        xLeft  = std::max(xLeft,  (int32_t)0);
+        xRight = std::min(xRight, (int32_t)triDst.w);
+
+        if (xLeft < xRight) {
+          uint32_t* row = triDst.pixels32 + (size_t)y * (size_t)triDst.stridePixels;
+          for (int32_t x = xLeft; x < xRight; x++) {
+            uint32_t px = applyOp(triOp, row[(size_t)x], triSrcColor);
+            if (triForceOpaque) px |= 0xFF000000u;
+            row[(size_t)x] = px;
+          }
+          if (xLeft  < tdmgX0) tdmgX0 = xLeft;
+          if (xRight > tdmgX1) tdmgX1 = xRight;
+          if (y      < tdmgY0) tdmgY0 = y;
+          if (y + 1  > tdmgY1) tdmgY1 = y + 1;
+        }
+      }
+    };
+
+    // Generate triangles based on minor opcode
+    if (minor == 11) {
+      // Triangles: every 3 points form an independent triangle
+      for (size_t i = 0; i + 2 < triPts.size(); i += 3) {
+        rasterTri(triPts[i].first, triPts[i].second,
+                  triPts[i+1].first, triPts[i+1].second,
+                  triPts[i+2].first, triPts[i+2].second);
+      }
+    } else if (minor == 12) {
+      // TriStrip: each new point adds a triangle with previous two
+      for (size_t i = 0; i + 2 < triPts.size(); i++) {
+        rasterTri(triPts[i].first, triPts[i].second,
+                  triPts[i+1].first, triPts[i+1].second,
+                  triPts[i+2].first, triPts[i+2].second);
+      }
+    } else { // minor == 13
+      // TriFan: all triangles share the first point
+      for (size_t i = 1; i + 1 < triPts.size(); i++) {
+        rasterTri(triPts[0].first, triPts[0].second,
+                  triPts[i].first, triPts[i].second,
+                  triPts[i+1].first, triPts[i+1].second);
+      }
+    }
+
+    if (tdmgX1 > tdmgX0 && tdmgY1 > tdmgY0 && triDst.isWindow) {
+      damageOrDirty(ctx, triDstDrawable, (int16_t)tdmgX0, (int16_t)tdmgY0,
+                    tdmgX1 - tdmgX0, tdmgY1 - tdmgY0);
+    }
+    br.skip(br.remaining());
     return;
   }
 
@@ -1304,24 +1548,185 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     return;
   }
 
-  // ---- 34-36: Gradient fills ----
-  case 34: case 35: case 36: {
-    if (br.remaining() >= 4) {
-      const uint32_t pid = br.readU32();
-      br.skip(br.remaining());
+  // ---- 34: CreateLinearGradient ----
+  case 34: {
+    // Wire: pid(4), p1(POINTFIX=8), p2(POINTFIX=8), nStops(4) = 24 header
+    //       stops[n](FIXED=4 each), colors[n](COLOR=8 each: r,g,b,a × uint16)
+    if (br.remaining() < 24) { br.skip(br.remaining()); return; }
+    const uint32_t pid = br.readU32();
+    const int32_t p1x  = (int32_t)br.readU32();
+    const int32_t p1y  = (int32_t)br.readU32();
+    const int32_t p2x  = (int32_t)br.readU32();
+    const int32_t p2y  = (int32_t)br.readU32();
+    const uint32_t nStops = br.readU32();
 
-      PictureState ps;
-      ps.isSolid   = true;
-      ps.solidARGB = 0x00000000u; // transparent
-      ps.format    = kFmtARGB32;
+    auto gd = std::make_shared<GradientData>();
+    gd->type = GradLinear;
+    gd->p1x = (float)p1x / 65536.0f;
+    gd->p1y = (float)p1y / 65536.0f;
+    gd->p2x = (float)p2x / 65536.0f;
+    gd->p2y = (float)p2y / 65536.0f;
 
-      {
-        std::lock_guard<std::mutex> lk(sPicMtx);
-        sPictures[pid] = ps;
-      }
-    } else {
-      br.skip(br.remaining());
+    // Read stop positions (FIXED 16.16 each)
+    std::vector<float> positions;
+    positions.reserve(nStops);
+    for (uint32_t i = 0; i < nStops && br.remaining() >= 4; i++) {
+      int32_t fixed = (int32_t)br.readU32();
+      positions.push_back((float)fixed / 65536.0f);
     }
+    // Read stop colors (COLOR: r,g,b,a × uint16 = 8 bytes each)
+    gd->stops.reserve(nStops);
+    for (uint32_t i = 0; i < nStops && br.remaining() >= 8; i++) {
+      uint16_t cr = br.readU16();
+      uint16_t cg = br.readU16();
+      uint16_t cb = br.readU16();
+      uint16_t ca = br.readU16();
+      GradientStop gs;
+      gs.position = (i < positions.size()) ? positions[i] : 0.0f;
+      gs.color = renderColorToARGB(cr, cg, cb, ca);
+      gd->stops.push_back(gs);
+    }
+    br.skip(br.remaining());
+
+    PictureState ps;
+    ps.format   = kFmtARGB32;
+    ps.gradient = gd;
+    // If only 1 stop, optimize to solid
+    if (gd->stops.size() == 1) {
+      ps.isSolid   = true;
+      ps.solidARGB = gd->stops[0].color;
+      ps.gradient.reset();
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      sPictures[pid] = std::move(ps);
+    }
+#ifndef NDEBUG
+    fprintf(stderr, "[RENDER CreateLinearGradient] pid=0x%X nStops=%u "
+            "p1=(%.1f,%.1f) p2=(%.1f,%.1f)\n",
+            pid, nStops, gd->p1x, gd->p1y, gd->p2x, gd->p2y);
+#endif
+    return;
+  }
+
+  // ---- 35: CreateRadialGradient ----
+  case 35: {
+    // Wire: pid(4), inner_center(POINTFIX=8), outer_center(POINTFIX=8),
+    //       inner_radius(FIXED=4), outer_radius(FIXED=4), nStops(4) = 32 header
+    if (br.remaining() < 32) { br.skip(br.remaining()); return; }
+    const uint32_t pid = br.readU32();
+    const int32_t icx  = (int32_t)br.readU32();
+    const int32_t icy  = (int32_t)br.readU32();
+    const int32_t ocx  = (int32_t)br.readU32();
+    const int32_t ocy  = (int32_t)br.readU32();
+    const int32_t ir   = (int32_t)br.readU32();
+    const int32_t or_  = (int32_t)br.readU32();
+    const uint32_t nStops = br.readU32();
+
+    auto gd = std::make_shared<GradientData>();
+    gd->type = GradRadial;
+    gd->p1x = (float)icx / 65536.0f;
+    gd->p1y = (float)icy / 65536.0f;
+    gd->p2x = (float)ocx / 65536.0f;
+    gd->p2y = (float)ocy / 65536.0f;
+    gd->r1  = (float)ir  / 65536.0f;
+    gd->r2  = (float)or_ / 65536.0f;
+
+    std::vector<float> positions;
+    positions.reserve(nStops);
+    for (uint32_t i = 0; i < nStops && br.remaining() >= 4; i++) {
+      int32_t fixed = (int32_t)br.readU32();
+      positions.push_back((float)fixed / 65536.0f);
+    }
+    gd->stops.reserve(nStops);
+    for (uint32_t i = 0; i < nStops && br.remaining() >= 8; i++) {
+      uint16_t cr = br.readU16();
+      uint16_t cg = br.readU16();
+      uint16_t cb = br.readU16();
+      uint16_t ca = br.readU16();
+      GradientStop gs;
+      gs.position = (i < positions.size()) ? positions[i] : 0.0f;
+      gs.color = renderColorToARGB(cr, cg, cb, ca);
+      gd->stops.push_back(gs);
+    }
+    br.skip(br.remaining());
+
+    PictureState ps;
+    ps.format   = kFmtARGB32;
+    ps.gradient = gd;
+    if (gd->stops.size() == 1) {
+      ps.isSolid   = true;
+      ps.solidARGB = gd->stops[0].color;
+      ps.gradient.reset();
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      sPictures[pid] = std::move(ps);
+    }
+#ifndef NDEBUG
+    fprintf(stderr, "[RENDER CreateRadialGradient] pid=0x%X nStops=%u "
+            "inner=(%.1f,%.1f r=%.1f) outer=(%.1f,%.1f r=%.1f)\n",
+            pid, nStops, gd->p1x, gd->p1y, gd->r1, gd->p2x, gd->p2y, gd->r2);
+#endif
+    return;
+  }
+
+  // ---- 36: CreateConicalGradient ----
+  case 36: {
+    // Wire: pid(4), center(POINTFIX=8), angle(FIXED=4), nStops(4) = 20 header
+    if (br.remaining() < 20) { br.skip(br.remaining()); return; }
+    const uint32_t pid = br.readU32();
+    const int32_t cx   = (int32_t)br.readU32();
+    const int32_t cy   = (int32_t)br.readU32();
+    const int32_t ang  = (int32_t)br.readU32();
+    const uint32_t nStops = br.readU32();
+
+    auto gd = std::make_shared<GradientData>();
+    gd->type  = GradConical;
+    gd->p1x   = (float)cx / 65536.0f;
+    gd->p1y   = (float)cy / 65536.0f;
+    // RENDER angle is in degrees * 65536 (FIXED 16.16), convert to radians
+    gd->angle = ((float)ang / 65536.0f) * (float)M_PI / 180.0f;
+
+    std::vector<float> positions;
+    positions.reserve(nStops);
+    for (uint32_t i = 0; i < nStops && br.remaining() >= 4; i++) {
+      int32_t fixed = (int32_t)br.readU32();
+      positions.push_back((float)fixed / 65536.0f);
+    }
+    gd->stops.reserve(nStops);
+    for (uint32_t i = 0; i < nStops && br.remaining() >= 8; i++) {
+      uint16_t cr = br.readU16();
+      uint16_t cg = br.readU16();
+      uint16_t cb = br.readU16();
+      uint16_t ca = br.readU16();
+      GradientStop gs;
+      gs.position = (i < positions.size()) ? positions[i] : 0.0f;
+      gs.color = renderColorToARGB(cr, cg, cb, ca);
+      gd->stops.push_back(gs);
+    }
+    br.skip(br.remaining());
+
+    PictureState ps;
+    ps.format   = kFmtARGB32;
+    ps.gradient = gd;
+    if (gd->stops.size() == 1) {
+      ps.isSolid   = true;
+      ps.solidARGB = gd->stops[0].color;
+      ps.gradient.reset();
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      sPictures[pid] = std::move(ps);
+    }
+#ifndef NDEBUG
+    fprintf(stderr, "[RENDER CreateConicalGradient] pid=0x%X nStops=%u "
+            "center=(%.1f,%.1f) angle=%.1f°\n",
+            pid, nStops, gd->p1x, gd->p1y, (float)ang / 65536.0f);
+#endif
     return;
   }
 

@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-03 (v1.7.0 — Phase 3 complete)
+Last updated: 2026-03-04 (v1.7.1 — Phase 2.1 RENDER complete)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -125,7 +125,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.6.0)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.1)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing) — ADVERTISED (v1.6.0)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
@@ -144,10 +144,9 @@ The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's ren
 - [x] **FreeGlyphs**: Removes glyphs from glyphset (v1.6.0).
 - [x] **CompositeGlyphs8/16/32**: Full rendering — parses GlyphElt wire format (len/dx/dy/glyph IDs, len=255 glyphset switch). maskFormat path accumulates into temp A8 buffer for single Composite pass; no-mask path composites each glyph directly. Source color modulation + compositing op applied (v1.6.0).
 - [x] **SetPictureClipRectangles / SetPictureTransform / SetPictureFilter**: Consume silently (v1.4.0).
-- [x] **Gradient fills (CreateLinearGradient/Radial/Conical)**: Stub as transparent solid fills (v1.4.0).
 - [x] **Trapezoids (minor 10)**: Scanline rasterization of TRAPEZOID structs (40B each: top/bottom FIXED 16.16, left/right LINEFIX). Interpolates left/right x edges per scanline, fills with source color via compositing op (v1.6.0).
-- [ ] **Triangles / TriStrip / TriFan**: Geometric fill operations (minor 11/12/13). Stubs consume silently.
-- [ ] **Gradient rendering**: Linear/Radial/Conical gradients currently render as transparent. Implement actual gradient sampling for Cairo paths.
+- [x] **Triangles / TriStrip / TriFan (minor 11/12/13)**: Scanline triangle rasterization. Triangles: independent triangles (3 POINTFIXes each). TriStrip: each new point adds triangle with previous two. TriFan: all triangles share first point. Sort vertices by Y, walk edges with FIXED 16.16 interpolation (v1.7.1).
+- [x] **Gradient fills (CreateLinearGradient/Radial/Conical)**: Full gradient source pictures with per-pixel sampling in Composite. Linear: dot-product projection onto gradient axis. Radial: concentric circle distance. Conical: atan2 angle. Color stop interpolation with Pad (clamp) mode. Single-stop gradients optimized to solid fills (v1.7.1).
 
 ### 2.2 BIG-REQUESTS Extension (HIGH — large images)
 Vivado schematics and waveform views can be large. Without BIG-REQUESTS, maximum request size is 262140 bytes (~256KB), limiting PutImage to ~256KB per call.
@@ -388,14 +387,14 @@ rendercheck                 # RENDER extension tests
 ~~18. **Font infrastructure** — DONE (v1.7.0): XLFD wildcard matching, PCF font support, system directory scanning, ListFontsWithInfo, Symbol encoding~~
 
 ### Remaining priorities
-1. **Window close → client kill** — Red button should terminate the X11 client (WM_DELETE_WINDOW or socket close)
-2. **Error handling** — Bad replies/missing errors confuse toolkits
+1. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
+2. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
 3. **Enable SHAPE extension** — Implement actual shape clipping, then advertise
 4. **Enable remaining extensions** — RANDR, Xinerama, GE advertised one at a time
 5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
 
-### Phase 2+3 Status Assessment (v1.7.0)
-**Phases 2 and 3 are substantially complete.** Extensions: BIG-REQUESTS, RENDER, and XFIXES are advertised and functional. SHAPE has stub support but is held back to avoid breaking xeyes. Fonts: XLFD wildcard matching, PCF font loading from system directories, Symbol font encoding, and ListFontsWithInfo all work. Legacy apps (xterm, xcalc, xclock) use server-side PCF/BDF fonts; modern apps (GTK/Pango) use RENDER CompositeGlyphs with client-side FreeType rendering.
+### Phase 2+3 Status Assessment (v1.7.1)
+**Phases 2 and 3 are complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). Extensions: BIG-REQUESTS, RENDER, and XFIXES are advertised and functional. SHAPE has stub support but is held back to avoid breaking xeyes. Fonts: XLFD wildcard matching, PCF font loading from system directories, Symbol font encoding, and ListFontsWithInfo all work.
 
 The next bottleneck is **window lifecycle** (window close → client kill) and **error handling** (Phase 4), not fonts or extensions.
 
@@ -410,3 +409,8 @@ The next bottleneck is **window lifecycle** (window close → client kill) and *
 - **PCF LSB-first bit order**: Added byte-level bit reversal for PCF fonts with LSB-first bitmap bit order. Uses 256-entry lookup table with thread_local buffer.
 - **App sandbox blocked PCF font loading**: `ENABLE_APP_SANDBOX=YES` in Xcode injected sandbox entitlements at code signing, blocking `std::ifstream` from opening `/opt/X11/share/fonts/*/fonts.dir` (errno=1 EPERM). Result: 0 PCF fonts registered, all OpenFont fell through to builtin "fixed" Latin-1 font. Fixed by setting `ENABLE_APP_SANDBOX=NO`.
 - **Font aliases not resolving**: `loadAliases()` only checked builtin BDF fonts for alias targets. Most alias targets in fonts.alias point to PCF fonts. Fixed by adding PCF registry lookup (exact + glob match). Aliases resolved: 0 → 99.
+- **xterm scrollbar vanishes on resize**: First ExposeChildren at windowDidEndLiveResize fired before xterm reconfigured children. Right-side scrollbar at old x exceeded new surface width → resolveDrawableRW failed silently (effW=0). Fixed by adding second ExposeChildren after promoteDisplaySurface (150ms post-resize).
+
+### Features (v1.7.1)
+- **Triangles/TriStrip/TriFan**: RENDER geometric fill ops (minor 11/12/13). Scanline triangle rasterization with FIXED 16.16 edge interpolation.
+- **Gradient source pictures**: CreateLinearGradient, CreateRadialGradient, CreateConicalGradient now create real gradient Pictures. Composite samples gradient per-pixel with color stop interpolation.
