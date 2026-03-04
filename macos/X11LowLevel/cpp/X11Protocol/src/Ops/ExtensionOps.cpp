@@ -281,26 +281,208 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
 
   // -------------------------------------------------------------------
-  // RANDR — minor 0 = RRQueryVersion, minor 5 = RRGetScreenInfo
-  //         minor 8 = RRGetScreenResources, etc.
+  // RANDR — single-screen stubs (version 1.3)
+  //
+  // Fake resource IDs for our single output/crtc/mode:
+  //   Output  = 0x00100000
+  //   CRTC    = 0x00100001
+  //   Mode    = 0x00100010
+  // Screen dimensions hardcoded to 1920×1080 (matches Xinerama stub).
   // -------------------------------------------------------------------
+  static constexpr uint32_t kRR_Output = 0x00100000;
+  static constexpr uint32_t kRR_Crtc   = 0x00100001;
+  static constexpr uint32_t kRR_ModeId = 0x00100010;
+  static constexpr uint16_t kRR_W      = 1920;
+  static constexpr uint16_t kRR_H      = 1080;
+  static constexpr uint16_t kRR_Wmm    = 508;  // ~25.4 * 1920 / 96
+  static constexpr uint16_t kRR_Hmm    = 285;  // ~25.4 * 1080 / 96
+
   if (major == ext::kRANDR) {
-    if (minor == 0) {
-      // RRQueryVersion: CARD32 client_major, CARD32 client_minor
+    switch (minor) {
+
+    case 0: {
+      // RRQueryVersion — reply: 1.3
       br.skip(br.remaining());
-      // Reply: major=1, minor=5
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0);  // length
-        wire::wr32_le(rep.data() + 8, 1);  // server major
-        wire::wr32_le(rep.data() + 12, 5); // server minor
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr32_le(rep.data() + 8, 1);  // major
+        wire::wr32_le(rep.data() + 12, 3); // minor
       });
       return;
     }
-    fprintf(stderr, "[RANDR] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
-    br.skip(br.remaining());
-    // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
-    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
-    return;
+
+    case 4: // RRSelectInput — void (event mask selection)
+      br.skip(br.remaining());
+      return;
+
+    case 6: {
+      // RRGetScreenSizeRange — reply min/max sizes
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr16_le(rep.data() + 8,  1);    // min_width
+        wire::wr16_le(rep.data() + 10, 1);    // min_height
+        wire::wr16_le(rep.data() + 12, 8192); // max_width
+        wire::wr16_le(rep.data() + 14, 8192); // max_height
+      });
+      return;
+    }
+
+    case 8:  // RRGetScreenResources      (1.2)
+    case 19: // RRGetScreenResourcesCurrent (1.3)
+    {
+      // Reply: 1 CRTC, 1 output, 1 mode
+      br.skip(br.remaining());
+
+      // Mode name "1920x1080" (9 chars)
+      static const char modeName[] = "1920x1080";
+      static constexpr uint16_t modeNameLen = 9;
+
+      // Build ModeInfo (32 bytes)
+      uint8_t modeInfo[32] = {};
+      wire::wr32_le(modeInfo + 0,  kRR_ModeId);
+      wire::wr16_le(modeInfo + 4,  kRR_W);       // width
+      wire::wr16_le(modeInfo + 6,  kRR_H);       // height
+      wire::wr32_le(modeInfo + 8,  148500000);    // dotClock (148.5 MHz, 1080p60)
+      wire::wr16_le(modeInfo + 12, 2008);         // hSyncStart
+      wire::wr16_le(modeInfo + 14, 2052);         // hSyncEnd
+      wire::wr16_le(modeInfo + 16, 2200);         // hTotal
+      wire::wr16_le(modeInfo + 18, 0);            // hSkew
+      wire::wr16_le(modeInfo + 20, 1084);         // vSyncStart
+      wire::wr16_le(modeInfo + 22, 1089);         // vSyncEnd
+      wire::wr16_le(modeInfo + 24, 1125);         // vTotal
+      wire::wr16_le(modeInfo + 26, modeNameLen);  // nameLen
+      wire::wr32_le(modeInfo + 28, 0);            // modeFlags
+
+      // Payload: crtcIds(4) + outputIds(4) + ModeInfo(32) + name(9) + pad(3) = 52 bytes
+      uint8_t payload[52] = {};
+      wire::wr32_le(payload + 0, kRR_Crtc);       // crtc[0]
+      wire::wr32_le(payload + 4, kRR_Output);     // output[0]
+      std::memcpy(payload + 8, modeInfo, 32);      // modes[0]
+      std::memcpy(payload + 40, modeName, modeNameLen); // name bytes
+
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 13);  // length = 52/4
+        wire::wr32_le(rep.data() + 8,  0);  // timestamp
+        wire::wr32_le(rep.data() + 12, 0);  // configTimestamp
+        wire::wr16_le(rep.data() + 16, 1);  // num_crtcs
+        wire::wr16_le(rep.data() + 18, 1);  // num_outputs
+        wire::wr16_le(rep.data() + 20, 1);  // num_modes
+        wire::wr16_le(rep.data() + 22, modeNameLen); // names_len
+      });
+      ctx.reply().sendBytes(payload, sizeof(payload));
+      return;
+    }
+
+    case 9: {
+      // RRGetOutputInfo — single connected output
+      br.skip(br.remaining());
+
+      // Output name "Virtual-1" (9 chars)
+      static const char outputName[] = "Virtual-1";
+      static constexpr uint16_t nameLen = 9;
+
+      // Payload after 32-byte header:
+      //   nClones(2) + nameLength(2) + crtcs(4) + modes(4) + clones(0) + name(9) + pad(3) = 24
+      uint8_t payload[24] = {};
+      wire::wr16_le(payload + 0, 0);          // num_clones
+      wire::wr16_le(payload + 2, nameLen);    // name_length
+      wire::wr32_le(payload + 4, kRR_Crtc);  // crtcs[0]
+      wire::wr32_le(payload + 8, kRR_ModeId);// modes[0]
+      // no clones
+      std::memcpy(payload + 12, outputName, nameLen); // name
+
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 0; // status = RRSetConfigSuccess
+        wire::wr32_le(rep.data() + 4, 6);       // length = 24/4
+        wire::wr32_le(rep.data() + 8, 0);       // timestamp
+        wire::wr32_le(rep.data() + 12, kRR_Crtc);  // crtc
+        wire::wr32_le(rep.data() + 16, kRR_Wmm);   // mm_width
+        wire::wr32_le(rep.data() + 20, kRR_Hmm);   // mm_height
+        rep[24] = 0; // connection = Connected
+        rep[25] = 0; // subpixel_order = Unknown
+        wire::wr16_le(rep.data() + 26, 1); // num_crtcs
+        wire::wr16_le(rep.data() + 28, 1); // num_modes
+        wire::wr16_le(rep.data() + 30, 1); // num_preferred
+      });
+      ctx.reply().sendBytes(payload, sizeof(payload));
+      return;
+    }
+
+    case 10: {
+      // RRListOutputProperties — empty list
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr16_le(rep.data() + 8, 0); // num_atoms
+      });
+      return;
+    }
+
+    case 13: {
+      // RRGetCrtcInfo — single CRTC at 0,0
+      br.skip(br.remaining());
+
+      // Payload: outputs(4) + possible_outputs(4) = 8 bytes
+      uint8_t payload[8] = {};
+      wire::wr32_le(payload + 0, kRR_Output); // outputs[0]
+      wire::wr32_le(payload + 4, kRR_Output); // possible[0]
+
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 0; // status
+        wire::wr32_le(rep.data() + 4, 2);        // length = 8/4
+        wire::wr32_le(rep.data() + 8, 0);        // timestamp
+        wire::wr16_le(rep.data() + 12, 0);       // x
+        wire::wr16_le(rep.data() + 14, 0);       // y
+        wire::wr16_le(rep.data() + 16, kRR_W);   // width
+        wire::wr16_le(rep.data() + 18, kRR_H);   // height
+        wire::wr32_le(rep.data() + 20, kRR_ModeId); // mode
+        wire::wr16_le(rep.data() + 24, 1);       // rotation = Rotate_0
+        wire::wr16_le(rep.data() + 26, 1);       // rotations = Rotate_0
+        wire::wr16_le(rep.data() + 28, 1);       // num_outputs
+        wire::wr16_le(rep.data() + 30, 1);       // num_possible
+      });
+      ctx.reply().sendBytes(payload, sizeof(payload));
+      return;
+    }
+
+    case 14: {
+      // RRSetCrtcConfig — reply success
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 0; // status = RRSetConfigSuccess
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr32_le(rep.data() + 8, 0); // timestamp
+      });
+      return;
+    }
+
+    case 15: {
+      // RRGetCrtcGammaSize — reply size=0
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr16_le(rep.data() + 8, 0); // size
+      });
+      return;
+    }
+
+    case 31: {
+      // RRGetOutputPrimary — reply with our output XID
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr32_le(rep.data() + 8, kRR_Output); // output
+      });
+      return;
+    }
+
+    default:
+      fprintf(stderr, "[RANDR] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+      return;
+    }
   }
 
   // -------------------------------------------------------------------

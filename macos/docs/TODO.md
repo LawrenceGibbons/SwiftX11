@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-04 (v1.7.3 — monotonic wire-sequence floor + resize border fix)
+Last updated: 2026-03-04 (v1.7.4 — advertise RANDR, Xinerama, GE extensions)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -125,7 +125,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.3)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path — needs actual shape clipping first). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.4)**: **BIG-REQUESTS**, **RENDER**, **XFIXES**, **RANDR**, **XINERAMA**, and **Generic Event Extension (GE)** are all advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. RANDR reports single-screen configuration (1 output, 1 CRTC, 1 mode). Xinerama reports single screen. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path — needs actual shape clipping first).
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing) — ADVERTISED (v1.6.0)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
@@ -177,12 +177,12 @@ Stub handlers exist for all core SHAPE operations, but SHAPE is deliberately NOT
 ### 2.5 Other Extensions (LOW — query but don't need full impl)
 These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
 - [ ] **MIT-SHM**: Shared memory (not applicable over network/container — present=0 is correct).
-- [x] **RANDR**: Handler code returns present=1, major 136, RRQueryVersion returns 1.5, single-screen stub — but **NOT advertised** yet (v1.4.0).
-- [x] **Xinerama**: Handler code returns present=1, major 137, XineramaIsActive=1, QueryScreens returns 1 screen 1920×1080 — but **NOT advertised** yet (v1.4.0).
+- [x] **RANDR**: Advertised (v1.7.4). RRQueryVersion returns 1.3. Single-screen stubs: GetScreenResources/Current (1 CRTC, 1 output, 1 mode 1920×1080), GetOutputInfo (Connected, "Virtual-1"), GetCrtcInfo (position 0,0), GetScreenSizeRange, GetOutputPrimary, ListOutputProperties, SelectInput, SetCrtcConfig, GetCrtcGammaSize.
+- [x] **Xinerama**: Advertised (v1.7.4). QueryVersion returns 1.1, IsActive=1, QueryScreens returns 1 screen 1920×1080.
 - [ ] **XInput / XInput2**: Extended input (present=0 is fine initially).
 - [ ] **DPMS**: Display power management (present=0).
 - [ ] **SYNC**: Synchronization (present=0).
-- [x] **Generic Event Extension (GE)**: Handler code returns present=1, major 138, GEQueryVersion returns 1.0 — but **NOT advertised** yet (v1.4.0).
+- [x] **Generic Event Extension (GE)**: Advertised (v1.7.4). GEQueryVersion returns 1.0.
 
 ---
 
@@ -386,22 +386,25 @@ rendercheck                 # RENDER extension tests
 
 ~~18. **Font infrastructure** — DONE (v1.7.0): XLFD wildcard matching, PCF font support, system directory scanning, ListFontsWithInfo, Symbol encoding~~
 
+~~19. **RANDR, Xinerama, GE extensions** — DONE (v1.7.4): All three advertised. RANDR v1.3 single-screen stubs (GetScreenResources, GetOutputInfo, GetCrtcInfo, etc.). Xinerama single-screen. GE v1.0 QueryVersion.~~
+
 ### Remaining priorities
 1. **Complete Phase 2.4** — SHAPE actual clipping: implement pixel-level clipping from stored shape regions, then advertise
-2. **Complete Phase 2.5** — Enable remaining extensions: advertise RANDR, Xinerama, GE one at a time (handler stubs already exist)
-3. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering works via RENDER CompositeGlyphs; optional CoreText bridge
-4. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close) (Phase 5.4)
-5. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
-6. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
+2. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering works via RENDER CompositeGlyphs; optional CoreText bridge
+3. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close) (Phase 5.4)
+4. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
+5. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
 
-### Phase 2+3 Status Assessment (v1.7.3)
-**Phases 2 and 3 are mostly complete, with remaining items in 2.4, 2.5, and 3.3.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). Extensions: BIG-REQUESTS, RENDER, and XFIXES are advertised and functional. SHAPE has stub support but is held back to avoid breaking xeyes — actual shape clipping (2.4) is still needed. Remaining extensions (2.5): RANDR, Xinerama, GE have handler stubs but are not yet advertised. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
+### Phase 2+3 Status Assessment (v1.7.4)
+**Phase 2 is nearly complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Six extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), and GE (v1.0). SHAPE has stub support but is held back to avoid breaking xeyes — actual shape clipping (2.4) is the only remaining Phase 2 item. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
 
 **v1.7.2 adds a reply-tracking safety net** that prevents XCB sequence desync crashes (the xcalc resize crash). Missing replies for reply-bearing opcodes now automatically get a BadImplementation error response.
 
 **v1.7.3 adds a monotonic wire-sequence floor** that prevents event sequence regression when drainHostCommands() interleaves with readAndDispatch(). Also fixes button borders disappearing after window resize.
 
-**Next priorities**: Complete 2.4, 2.5, and 3.3 before starting Phase 4 (window lifecycle, error handling).
+**v1.7.4 enables RANDR, Xinerama, GE** — Phase 2.5 complete. RANDR stubs report single-screen configuration with 1 output/CRTC/mode. All commonly-queried RANDR sub-opcodes handled.
+
+**Next priorities**: Complete 2.4 (SHAPE), then 3.3, then Phase 4+ (window lifecycle, error handling).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
@@ -419,6 +422,12 @@ rendercheck                 # RENDER extension tests
 ### Features (v1.7.1)
 - **Triangles/TriStrip/TriFan**: RENDER geometric fill ops (minor 11/12/13). Scanline triangle rasterization with FIXED 16.16 edge interpolation.
 - **Gradient source pictures**: CreateLinearGradient, CreateRadialGradient, CreateConicalGradient now create real gradient Pictures. Composite samples gradient per-pixel with color stop interpolation.
+
+### Features (v1.7.4)
+- **RANDR extension advertised**: QueryExtension("RANDR") now returns present=1, major opcode 136. RRQueryVersion returns 1.3 (downgraded from 1.5 to limit surface area). Single-screen stubs: RRGetScreenResources/Current (1 CRTC, 1 output "Virtual-1", 1 mode 1920×1080@60Hz), RRGetOutputInfo (Connected), RRGetCrtcInfo (position 0,0), RRGetScreenSizeRange (1×1 to 8192×8192), RRGetOutputPrimary, RRListOutputProperties (empty), RRSelectInput (void), RRSetCrtcConfig (success), RRGetCrtcGammaSize (0). Unhandled RANDR sub-opcodes still send BadRequest error (safety net).
+- **Xinerama extension advertised**: QueryExtension("XINERAMA") and alias "PANORAMIX" now return present=1, major opcode 137. XineramaQueryVersion returns 1.1, IsActive=1, QueryScreens returns 1 screen 1920×1080.
+- **Generic Event Extension (GE) advertised**: QueryExtension("Generic Event Extension") now returns present=1, major opcode 138. GEQueryVersion returns 1.0.
+- **Total advertised extensions**: 6 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE).
 
 ### Bug fixes (v1.7.3)
 - **xcalc resize crash — monotonic wire-sequence floor**: Even with v1.7.2's reply-tracking safety net, xcalc resize still triggered `[xcb] Unknown sequence number` crashes. Root cause: `drainHostCommands()` interleaves with `readAndDispatch()`, and host commands (resize → ConfigureNotify, Expose) carry stale sequences from `lastSeq()` that are behind sequences already sent during client request dispatch. XCB widens 16-bit sequences to 64-bit monotonically — any backwards sequence causes crash. Fixed by tracking `max_wire_seq_` (highest sequence ever sent) in `XProtoTransport::sendAll()` and bumping any stale sequence forward. Payload-aware: `payload_remaining_` counter distinguishes reply payload chunks (bytes[2:3] are arbitrary data) from response headers (bytes[2:3] are sequence numbers).

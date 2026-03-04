@@ -518,13 +518,18 @@ namespace x11 {
     } else if (name == "XFIXES") {
       present = 1; major = ext::kXFIXES;
       first_event = ext::kXFIXES_FirstEvent;
+    } else if (name == "RANDR") {
+      present = 1; major = ext::kRANDR;
+      first_event = ext::kRANDR_FirstEvent;
+    } else if (name == "XINERAMA" || name == "PANORAMIX") {
+      present = 1; major = ext::kXinerama;
+    } else if (name == "Generic Event Extension") {
+      present = 1; major = ext::kGE;
+      first_event = ext::kGE_FirstEvent;
     }
     // SHAPE not advertised: xeyes uses SHAPE for oval windows but our
     // implementation silently consumes shape ops without actual clipping,
     // causing solid-black rendering. Handler stubs remain for future use.
-    // Other extensions (RANDR, Xinerama, GE) have partial stubs but are
-    // NOT advertised yet.  Enable individually once their key operations
-    // are implemented.
 
 #ifndef NDEBUG
     fprintf(stderr, "[QueryExtension] \"%s\" -> present=%u major=%u\n",
@@ -555,8 +560,11 @@ namespace x11 {
       "BIG-REQUESTS",
       "RENDER",
       "XFIXES",
+      "RANDR",
+      "XINERAMA",
+      "Generic Event Extension",
     };
-    static constexpr uint8_t nExt = 3;
+    static constexpr uint8_t nExt = 6;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
