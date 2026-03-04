@@ -278,15 +278,27 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       } else {
         // Look up depth-1 pixmap
         PixmapView pm{};
-        if (ctx.pixmaps().snapshot(pixmap_id, pm) && pm.depth == 1 && pm.bits) {
+        bool found = ctx.pixmaps().snapshot(pixmap_id, pm);
+#ifndef NDEBUG
+        fprintf(stderr, "[SHAPE] ShapeMask lookup pixmap=0x%X found=%d depth=%u w=%u h=%u bits=%p stride=%u\n",
+                pixmap_id, found, pm.depth, pm.w, pm.h, (const void*)pm.bits, pm.stride_bytes);
+#endif
+        if (found && pm.depth == 1 && pm.bits) {
           if (op != 0) {
             if (kind == 0)      region = ctx.windows().shapeBounding(wid);
             else if (kind == 2) region = ctx.windows().shapeInput(wid);
           }
           region.setFromBitmap(pm.bits, pm.w, pm.h, (int)pm.stride_bytes,
                                x_off, y_off, ww, wh, op);
+#ifndef NDEBUG
+          fprintf(stderr, "[SHAPE] ShapeMask result: shaped=%d nrects=%zu\n",
+                  region.shaped, region.rects.size());
+#endif
         } else {
           // Unknown pixmap — treat as unshaped
+#ifndef NDEBUG
+          fprintf(stderr, "[SHAPE] ShapeMask FAILED: pixmap not found or wrong depth/bits\n");
+#endif
           region.reset();
         }
       }
@@ -300,8 +312,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       x11_ui_push_shape_changed(host);
 
 #ifndef NDEBUG
-      fprintf(stderr, "[SHAPE] ShapeMask wid=0x%X kind=%u op=%u pixmap=0x%X\n",
-              wid, kind, op, pixmap_id);
+      fprintf(stderr, "[SHAPE] ShapeMask wid=0x%X kind=%u op=%u pixmap=0x%X host=0x%X\n",
+              wid, kind, op, pixmap_id, host);
 #endif
       return;
     }
