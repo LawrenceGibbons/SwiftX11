@@ -719,12 +719,19 @@ void FontOps::handleListFontsWithInfo(XProtoContext& ctx, uint16_t seq, ByteRead
     count++;
   }
 
-  // Send terminator reply: nameLen=0, length=7
-  (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-    rep[1] = 0; // nameLen = 0 (terminator)
-    wire::wr32_le(rep.data() + 4, 7); // length = 7 (28 bytes of fixed fields after header)
-    // All other fields zero (already zeroed by sendReply32)
-  });
+  // Send terminator reply: nameLen=0, total 60 bytes (32-byte header + 28 bytes fixed fields)
+  // The length=7 field tells the client there are 28 bytes after the 32-byte header.
+  // We MUST send all 60 bytes or the client will hang waiting for the remaining data.
+  {
+    uint8_t term[60] = {};
+    term[0] = 1;  // type = X_Reply
+    term[1] = 0;  // nameLen = 0 (terminator)
+    wire::wr16_le(term + 2, seq);
+    wire::wr32_le(term + 4, 7); // length = 7 (28 bytes after 32-byte header)
+    // All remaining 52 bytes are zero (already initialized)
+    if (!ctx.reply().sendReplyRaw(term, 32)) return;
+    (void)ctx.reply().sendReplyRaw(term + 32, 28);
+  }
 }
 
 
