@@ -113,6 +113,61 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
 #endif
 #ifndef NDEBUG
   dbg_require_xproto_thread("XProtoTransport::sendAll");
+
+  // Sequence-regression detector: catch when a reply/error/event has a
+  // sequence that goes BACKWARDS compared to the last sent response.
+  // This is the root cause of XCB "Unknown sequence number" crashes.
+  if (n == 32) {
+    const uint8_t* bb = static_cast<const uint8_t*>(buf);
+    const uint8_t b0 = bb[0];
+    const uint16_t seq = uint16_t(bb[2] | (uint16_t(bb[3]) << 8));
+
+    // Track the last few sends for context on regression.
+    static thread_local uint16_t last_sent_seq = 0;
+    static thread_local uint8_t  last_sent_type = 0;
+    static thread_local unsigned send_count = 0;
+    send_count++;
+
+    const char* kind = (b0 == 0) ? "ERROR" : (b0 == 1) ? "REPLY" : "EVENT";
+
+    // Detect regression: a reply or error with seq < previous reply/error seq.
+    // Events are allowed to have older sequences, but replies/errors must not
+    // go backwards relative to each other (that causes XCB desync).
+    if ((b0 == 0 || b0 == 1) && last_sent_seq != 0) {
+      // Check if this reply/error seq is LESS than the last one sent
+      int16_t delta = (int16_t)(seq - last_sent_seq);
+      if (delta < 0) {
+        fprintf(stderr,
+                "[SEQ_REGRESS] *** SEQUENCE WENT BACKWARDS *** "
+                "%s seq=%u < prev_seq=%u (delta=%d) type=%u send#=%u\n",
+                kind, (unsigned)seq, (unsigned)last_sent_seq,
+                (int)delta, (unsigned)b0, send_count);
+      }
+    }
+
+    // Update tracking for replies and errors only (they advance XCB's request_read).
+    if (b0 == 0 || b0 == 1) {
+      last_sent_seq = seq;
+    }
+
+    last_sent_type = b0;
+    (void)last_sent_type; // suppress unused warning
+
+    // Always log the wire send (compact format for debugging).
+    if (b0 == 0) {
+      fprintf(stderr, "[WIRE] #%u ERROR seq=%u code=%u major=%u\n",
+              send_count, (unsigned)seq, (unsigned)bb[1], (unsigned)bb[11]);
+    } else if (b0 == 1) {
+      const uint32_t lenw =
+        uint32_t(bb[4]) | (uint32_t(bb[5])<<8) |
+        (uint32_t(bb[6])<<16) | (uint32_t(bb[7])<<24);
+      fprintf(stderr, "[WIRE] #%u REPLY seq=%u lenw=%u rep1=%u\n",
+              send_count, (unsigned)seq, (unsigned)lenw, (unsigned)bb[1]);
+    } else {
+      fprintf(stderr, "[WIRE] #%u EVENT type=%u seq=%u\n",
+              send_count, (unsigned)b0, (unsigned)seq);
+    }
+  }
 #endif
   if (!xproto_thread_valid_ || !pthread_equal(pthread_self(), xproto_thread_)) {
     ctx_.tracef("[XProtoTransport] sendAll called from non-xproto thread\n");
