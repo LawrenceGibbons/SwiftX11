@@ -35,6 +35,7 @@ typedef enum {
   X11_UI_DAMAGE,
   X11_UI_SET_CURSOR,
   X11_UI_WARP_POINTER,
+  X11_UI_SHAPE_CHANGED,
 } x11_ui_cmd_type_t;
 
 // SwiftX11Bridge.h
@@ -86,6 +87,12 @@ void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, 
 void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape);
 // WarpPointer: host_xid=0 means root-relative (screen coords); otherwise host-window-local.
 void x11_ui_push_warp_pointer(uint32_t host_xid, int32_t x, int32_t y);
+void x11_ui_push_shape_changed(uint32_t host_xid);
+
+// SHAPE extension — query shape data from C++ (called by Swift at present time)
+bool x11_shape_is_shaped(uint32_t xid);
+// Returns number of rects written. Each rect = 4 int16_t (x,y,w,h).
+int32_t x11_shape_get_rects(uint32_t xid, int16_t* out_xywh, int32_t max_rects);
 
 // -------------------------------------------------------------------------------------
 // Input injection

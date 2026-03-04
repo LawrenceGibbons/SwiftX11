@@ -13,6 +13,11 @@ extern "C" {
 #include "SwiftX11Bridge.h"
 }
 
+#include "Core/XProtoServer.hpp"
+
+// Forward: get the server instance (defined in XProtoServerBridge.cpp)
+extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
+
 // ---- C++ bridge functions (defined in XProtoServerBridge.cpp) ----
 extern "C" int  x11_proto_start_daemon(int display);
 extern "C" void x11_proto_stop_daemon(void);
@@ -293,4 +298,30 @@ extern "C" int64_t x11_clipboard_get_change_count(void)
 {
   if (!g_clip_cc) return -1;
   return g_clip_cc();
+}
+
+// -------------------------------------------------------------------------------------
+// SHAPE extension bridge
+// -------------------------------------------------------------------------------------
+extern "C" bool x11_shape_is_shaped(uint32_t xid) {
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return false;
+  return srv->windows().isShapedBounding(xid);
+}
+
+extern "C" int32_t x11_shape_get_rects(uint32_t xid, int16_t* out_xywh, int32_t max_rects) {
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv || !out_xywh || max_rects <= 0) return 0;
+
+  x11::ShapeRegion region = srv->windows().shapeBounding(xid);
+  if (!region.shaped) return 0;
+
+  int32_t n = 0;
+  for (size_t i = 0; i < region.rects.size() && n < max_rects; i++, n++) {
+    out_xywh[n * 4 + 0] = region.rects[i].x;
+    out_xywh[n * 4 + 1] = region.rects[i].y;
+    out_xywh[n * 4 + 2] = (int16_t)region.rects[i].w;
+    out_xywh[n * 4 + 3] = (int16_t)region.rects[i].h;
+  }
+  return n;
 }

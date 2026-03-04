@@ -31,6 +31,9 @@ final class X11MetalRenderer {
   private var inFlight: Bool = false
   private var pendingDraw: Bool = false
 
+  // SHAPE extension: when true, alpha blending is active and clear color uses alpha=0
+  var isShaped: Bool = false
+
   // Quad pipeline resources
   private var pipeline: MTLRenderPipelineState!
   private var sampler: MTLSamplerState!
@@ -106,6 +109,15 @@ final class X11MetalRenderer {
     pd.vertexFunction = vfn
     pd.fragmentFunction = ffn
     pd.colorAttachments[0].pixelFormat = pixelFormat
+
+    // Enable alpha blending for SHAPE extension transparency.
+    // When isShaped=false, all pixels have alpha=0xFF so blending is a no-op.
+    let ca = pd.colorAttachments[0]!
+    ca.isBlendingEnabled = true
+    ca.sourceRGBBlendFactor = .sourceAlpha
+    ca.destinationRGBBlendFactor = .oneMinusSourceAlpha
+    ca.sourceAlphaBlendFactor = .one
+    ca.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 
     // Vertex layout: float2 pos, float2 uv
     let vdesc = MTLVertexDescriptor()
@@ -231,7 +243,7 @@ final class X11MetalRenderer {
     if let ca = rpd.colorAttachments[0] {
       ca.loadAction = .clear
       ca.storeAction = .store
-      ca.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+      ca.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: isShaped ? 0 : 1)
     }
 
     guard let enc = cmdBuf.makeRenderCommandEncoder(descriptor: rpd) else {

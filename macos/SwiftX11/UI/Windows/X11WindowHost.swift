@@ -82,7 +82,10 @@ final class X11View: NSView {
   private var scrollAccumY: CGFloat = 0
   private var lastModifierFlags: NSEvent.ModifierFlags = []
   
-  // MARK: -- be authoritative for the tracking events 
+  // MARK: -- SHAPE extension
+  var isShaped: Bool = false
+
+  // MARK: -- be authoritative for the tracking events
   private var lastInsideForSyntheticCrossing: Bool = false
   private var isPointerInside: Bool = false
   
@@ -645,7 +648,12 @@ final class X11View: NSView {
     guard byteCount > 0 else { return }
 
     // Copy bytes so the backing memory remains valid after C returns/frees.
-    let data = Data(bytes: framebuffer, count: byteCount)
+    var data = Data(bytes: framebuffer, count: byteCount)
+
+    // SHAPE extension: clear alpha for pixels outside the shape region
+    if isShaped {
+      applyShapeMask(to: &data, width: width, height: height, bytesPerRow: bytesPerRow)
+    }
 
     if usingMetal {
       // Metal path: upload texture now; actual present happens in MTKViewDelegate.draw(in:)
@@ -670,6 +678,64 @@ final class X11View: NSView {
     }
   }
   
+  // MARK: - SHAPE extension alpha masking
+
+  /// Clear alpha channel for all pixels, then set alpha=0xFF for pixels inside shape rects.
+  /// This makes pixels outside the shape region transparent.
+  private func applyShapeMask(to data: inout Data, width: Int, height: Int, bytesPerRow: Int) {
+    let maxRects: Int32 = 4096
+    var xywh = [Int16](repeating: 0, count: Int(maxRects) * 4)
+    let nrects = x11_shape_get_rects(xid, &xywh, maxRects)
+    if nrects <= 0 { return }
+
+    data.withUnsafeMutableBytes { rawBuf in
+      guard let base = rawBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+      let stridePixels = bytesPerRow / 4
+
+      // Step 1: Clear all alpha bytes to 0 (transparent)
+      for row in 0..<height {
+        let rowBase = base + row * bytesPerRow
+        for col in 0..<width {
+          // BGRA little-endian: byte 3 is alpha
+          rowBase[col * 4 + 3] = 0
+        }
+      }
+
+      // Step 2: Set alpha=0xFF for pixels inside each shape rect
+      for i in 0..<Int(nrects) {
+        let rx = Int(xywh[i * 4 + 0])
+        let ry = Int(xywh[i * 4 + 1])
+        let rw = Int(xywh[i * 4 + 2])
+        let rh = Int(xywh[i * 4 + 3])
+
+        // Clip to surface bounds
+        let x0 = max(0, rx)
+        let y0 = max(0, ry)
+        let x1 = min(width, rx + rw)
+        let y1 = min(height, ry + rh)
+
+        for row in y0..<y1 {
+          let rowBase = base + row * bytesPerRow
+          for col in x0..<x1 {
+            rowBase[col * 4 + 3] = 0xFF
+          }
+        }
+      }
+    }
+  }
+
+  /// Enable or disable window transparency for SHAPE extension.
+  func setWindowTransparency(_ transparent: Bool) {
+    guard let win = self.window else { return }
+    isShaped = transparent
+    win.isOpaque = !transparent
+    win.backgroundColor = transparent ? .clear : .windowBackgroundColor
+    win.hasShadow = !transparent
+
+    // Update Metal renderer if active
+    renderer?.isShaped = transparent
+  }
+
   // MARK: - Software rendering
   private func setupSoftwareLayer() {
     let layer = CALayer()

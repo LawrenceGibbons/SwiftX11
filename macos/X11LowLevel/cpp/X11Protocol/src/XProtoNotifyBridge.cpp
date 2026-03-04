@@ -247,7 +247,11 @@ namespace x11 {
       int32_t lx = 0, ly = 0;
       int depth = 0;
       if (!contains(xid, vw, lx, ly, depth)) continue;
-      
+
+      // SHAPE extension: check input/bounding shape containment
+      if ((vw.input_shaped || vw.bounding_shaped) &&
+          !ctx.windows().isInShapeRegion(xid, (int16_t)lx, (int16_t)ly)) continue;
+
       // Prefer deepest window.
       if (depth > bestDepth) {
         best = xid;

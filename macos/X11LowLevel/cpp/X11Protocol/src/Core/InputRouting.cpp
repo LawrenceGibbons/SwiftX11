@@ -67,6 +67,10 @@ uint32_t pickDeepestMappedWindowAtHostPoint(XProtoContext& ctx, uint32_t host_xi
     const int32_t bw_i = (int32_t)vw.border_width;
     if (lx < -bw_i || ly < -bw_i || lx >= (int32_t)vw.w + bw_i || ly >= (int32_t)vw.h + bw_i) continue;
 
+    // SHAPE extension: check input/bounding shape containment
+    if ((vw.input_shaped || vw.bounding_shaped) &&
+        !ctx.windows().isInShapeRegion(xid, (int16_t)lx, (int16_t)ly)) continue;
+
     if (depth > bestDepth) {
       best = xid;
       bestDepth = depth;

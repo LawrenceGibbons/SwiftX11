@@ -526,10 +526,10 @@ namespace x11 {
     } else if (name == "Generic Event Extension") {
       present = 1; major = ext::kGE;
       first_event = ext::kGE_FirstEvent;
+    } else if (name == "SHAPE") {
+      present = 1; major = ext::kSHAPE;
+      first_event = ext::kSHAPE_FirstEvent;
     }
-    // SHAPE not advertised: xeyes uses SHAPE for oval windows but our
-    // implementation silently consumes shape ops without actual clipping,
-    // causing solid-black rendering. Handler stubs remain for future use.
 
 #ifndef NDEBUG
     fprintf(stderr, "[QueryExtension] \"%s\" -> present=%u major=%u\n",
@@ -555,7 +555,6 @@ namespace x11 {
     br.skip(br.remaining()); // request has no extra fields we care about
 
     // List extensions that are fully (or minimally) functional.
-    // SHAPE omitted: causes xeyes to take broken code path (oval windows).
     static const char* extensions[] = {
       "BIG-REQUESTS",
       "RENDER",
@@ -563,8 +562,9 @@ namespace x11 {
       "RANDR",
       "XINERAMA",
       "Generic Event Extension",
+      "SHAPE",
     };
-    static constexpr uint8_t nExt = 6;
+    static constexpr uint8_t nExt = 7;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;

@@ -384,6 +384,13 @@ final class XServerController: ObservableObject {
         CGWarpMouseCursorPosition(cgPt)
       }
 
+    case X11_UI_SHAPE_CHANGED:
+      let hostXid = cmd.xid
+      let shaped = x11_shape_is_shaped(hostXid)
+      if let view = WindowRegistry.shared.viewForHostXid(hostXid) {
+        view.setWindowTransparency(shaped)
+      }
+
     default:
       break
     }

@@ -44,6 +44,11 @@ struct WindowView {
 
   // client socket for this window
   int  owner_fd = -1;
+
+  // SHAPE extension: non-rectangular window flags
+  bool bounding_shaped = false;
+  bool clip_shaped = false;
+  bool input_shaped = false;
 };
   
 }

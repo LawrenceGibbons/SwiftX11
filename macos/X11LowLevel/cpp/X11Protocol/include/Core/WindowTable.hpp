@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <vector>
+#include <Core/ShapeRegion.hpp>
 
 namespace x11 {
 
@@ -135,10 +136,21 @@ public:
   void setCursor(uint32_t xid, uint32_t cursor_xid);
   uint32_t cursor(uint32_t xid) const; // optional
   
-  // Bring-up behavior: keep each descendant's x/y (relative to parent) unchanged,
+  // Bring-up behavior: keep each descendant’s x/y (relative to parent) unchanged,
   // but clamp w/h so the child fits within its *direct* parent’s bounds.
-  // Marks dirty when a child's size changes.
+  // Marks dirty when a child’s size changes.
   void clampDescendantsToParent(uint32_t rootXid);
+
+  // SHAPE extension
+  void setShapeBounding(uint32_t xid, ShapeRegion region);
+  void setShapeClip(uint32_t xid, ShapeRegion region);
+  void setShapeInput(uint32_t xid, ShapeRegion region);
+  ShapeRegion shapeBounding(uint32_t xid) const;
+  ShapeRegion shapeInput(uint32_t xid) const;
+  bool isShapedBounding(uint32_t xid) const;
+  // Check if point is inside the window’s effective input shape.
+  // Falls back to bounding shape if no input shape is set.
+  bool isInShapeRegion(uint32_t xid, int16_t lx, int16_t ly) const;
   
 
 private:
@@ -162,6 +174,11 @@ private:
     // Window border (server-drawn around child windows)
     uint16_t border_width = 0;
     uint32_t border_pixel = 0xFF000000u; // ARGB, default black
+
+    // SHAPE extension regions
+    ShapeRegion shape_bounding;  // visual clipping
+    ShapeRegion shape_clip;      // rendering clipping (subset of bounding)
+    ShapeRegion shape_input;     // hit testing
 
     bool mapped = false;
     bool presentable = false;

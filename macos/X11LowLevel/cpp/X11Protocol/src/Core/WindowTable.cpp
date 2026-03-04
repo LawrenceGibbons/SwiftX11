@@ -242,6 +242,9 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.owner_fd = st->owner_fd;
   out.border_width = st->border_width;
   out.border_pixel = st->border_pixel;
+  out.bounding_shaped = st->shape_bounding.shaped;
+  out.clip_shaped = st->shape_clip.shaped;
+  out.input_shaped = st->shape_input.shaped;
   return true;
 }
 
@@ -893,6 +896,59 @@ bool WindowTable::reparent(uint32_t xid, uint32_t newParent, int16_t x, int16_t 
   it->second.y = y;
   it->second.serial++;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// SHAPE extension
+// ---------------------------------------------------------------------------
+void WindowTable::setShapeBounding(uint32_t xid, ShapeRegion region) {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto* st = findLocked(xid);
+  if (st) st->shape_bounding = std::move(region);
+}
+
+void WindowTable::setShapeClip(uint32_t xid, ShapeRegion region) {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto* st = findLocked(xid);
+  if (st) st->shape_clip = std::move(region);
+}
+
+void WindowTable::setShapeInput(uint32_t xid, ShapeRegion region) {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto* st = findLocked(xid);
+  if (st) st->shape_input = std::move(region);
+}
+
+ShapeRegion WindowTable::shapeBounding(uint32_t xid) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto* st = findLocked(xid);
+  if (!st) return {};
+  return st->shape_bounding;
+}
+
+ShapeRegion WindowTable::shapeInput(uint32_t xid) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto* st = findLocked(xid);
+  if (!st) return {};
+  return st->shape_input;
+}
+
+bool WindowTable::isShapedBounding(uint32_t xid) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto* st = findLocked(xid);
+  return st && st->shape_bounding.shaped;
+}
+
+bool WindowTable::isInShapeRegion(uint32_t xid, int16_t lx, int16_t ly) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto* st = findLocked(xid);
+  if (!st) return true;  // unknown window — treat as unshaped
+  // Prefer input shape, fall back to bounding shape
+  if (st->shape_input.shaped)
+    return st->shape_input.contains(lx, ly);
+  if (st->shape_bounding.shaped)
+    return st->shape_bounding.contains(lx, ly);
+  return true;  // unshaped
 }
 
 } // namespace x11

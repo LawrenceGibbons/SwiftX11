@@ -18,11 +18,16 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/WindowTable.hpp"
 #include "Core/WindowView.hpp"
+#include "Core/PixmapTable.hpp"
+#include "Core/ShapeRegion.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11ExtOpcodes.hpp"
+
+// Bridge function (defined in UICommandQueue.cpp)
+extern "C" void x11_ui_push_shape_changed(uint32_t host_xid);
 
 namespace x11 {
 
@@ -193,82 +198,280 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       });
       return;
     }
-    case 1: // ShapeRectangles — consume silently (all windows remain rectangular)
-    case 2: // ShapeMask — consume silently
-    case 3: // ShapeCombine — consume silently
-    case 4: // ShapeOffset — consume silently
+    case 1: {
+      // ShapeRectangles
+      // Body after 4-byte header: op(1B), kind(1B), ordering(2B),
+      //   window(4B), x_off(2B), y_off(2B), rects...
+      if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+      const uint8_t  op   = br.readU8();   // Set=0, Union=1, Intersect=2, Subtract=3, Invert=4
+      const uint8_t  kind = br.readU8();   // Bounding=0, Clip=1, Input=2
+      br.skip(2); // ordering
+      const uint32_t wid  = br.readU32();
+      const int16_t  x_off = (int16_t)br.readU16();
+      const int16_t  y_off = (int16_t)br.readU16();
+
+      // Parse rectangle list
+      const size_t nrects = br.remaining() / 8;
+      std::vector<ShapeRegion::Rect> shapeRects;
+      shapeRects.reserve(nrects);
+      for (size_t i = 0; i < nrects; i++) {
+        ShapeRegion::Rect r;
+        r.x = (int16_t)br.readU16();
+        r.y = (int16_t)br.readU16();
+        r.w = br.readU16();
+        r.h = br.readU16();
+        shapeRects.push_back(r);
+      }
       br.skip(br.remaining());
+
+      // Get window dimensions for shape ops
+      WindowView vw{};
+      uint16_t ww = 1, wh = 1;
+      if (ctx.windows().snapshot(wid, vw)) { ww = vw.w; wh = vw.h; }
+
+      // Build shape region (get existing for non-Set ops)
+      ShapeRegion region;
+      if (op != 0) { // non-Set ops need existing region
+        if (kind == 0)      region = ctx.windows().shapeBounding(wid);
+        else if (kind == 1) region = ctx.windows().shapeBounding(wid);
+        else if (kind == 2) region = ctx.windows().shapeInput(wid);
+      }
+      region.setFromRects(shapeRects.data(), shapeRects.size(), x_off, y_off, ww, wh, op);
+
+      // Store
+      if (kind == 0)      ctx.windows().setShapeBounding(wid, std::move(region));
+      else if (kind == 1) ctx.windows().setShapeClip(wid, std::move(region));
+      else if (kind == 2) ctx.windows().setShapeInput(wid, std::move(region));
+
+      // Notify Swift that shape changed (for visual clipping)
+      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+      if (host == 0) host = wid;
+      x11_ui_push_shape_changed(host);
+
+#ifndef NDEBUG
+      fprintf(stderr, "[SHAPE] ShapeRectangles wid=0x%X kind=%u op=%u nrects=%zu host=0x%X\n",
+              wid, kind, op, nrects, host);
+#endif
       return;
+    }
+    case 2: {
+      // ShapeMask
+      // Body: op(1B), kind(1B), unused(2B), window(4B), x_off(2B), y_off(2B), source_bitmap(4B)
+      if (br.remaining() < 16) { br.skip(br.remaining()); return; }
+      const uint8_t  op   = br.readU8();
+      const uint8_t  kind = br.readU8();
+      br.skip(2); // unused
+      const uint32_t wid  = br.readU32();
+      const int16_t  x_off = (int16_t)br.readU16();
+      const int16_t  y_off = (int16_t)br.readU16();
+      const uint32_t pixmap_id = br.readU32();
+      br.skip(br.remaining());
+
+      WindowView vw{};
+      uint16_t ww = 1, wh = 1;
+      if (ctx.windows().snapshot(wid, vw)) { ww = vw.w; wh = vw.h; }
+
+      ShapeRegion region;
+      if (pixmap_id == 0) {
+        // None — reset to unshaped
+        region.reset();
+      } else {
+        // Look up depth-1 pixmap
+        PixmapView pm{};
+        if (ctx.pixmaps().snapshot(pixmap_id, pm) && pm.depth == 1 && pm.bits) {
+          if (op != 0) {
+            if (kind == 0)      region = ctx.windows().shapeBounding(wid);
+            else if (kind == 2) region = ctx.windows().shapeInput(wid);
+          }
+          region.setFromBitmap(pm.bits, pm.w, pm.h, (int)pm.stride_bytes,
+                               x_off, y_off, ww, wh, op);
+        } else {
+          // Unknown pixmap — treat as unshaped
+          region.reset();
+        }
+      }
+
+      if (kind == 0)      ctx.windows().setShapeBounding(wid, std::move(region));
+      else if (kind == 1) ctx.windows().setShapeClip(wid, std::move(region));
+      else if (kind == 2) ctx.windows().setShapeInput(wid, std::move(region));
+
+      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+      if (host == 0) host = wid;
+      x11_ui_push_shape_changed(host);
+
+#ifndef NDEBUG
+      fprintf(stderr, "[SHAPE] ShapeMask wid=0x%X kind=%u op=%u pixmap=0x%X\n",
+              wid, kind, op, pixmap_id);
+#endif
+      return;
+    }
+    case 3: {
+      // ShapeCombine
+      // Body: op(1B), destKind(1B), srcKind(1B), unused(1B),
+      //       dest(4B), x_off(2B), y_off(2B), src(4B)
+      if (br.remaining() < 16) { br.skip(br.remaining()); return; }
+      const uint8_t  op       = br.readU8();
+      const uint8_t  destKind = br.readU8();
+      const uint8_t  srcKind  = br.readU8();
+      br.skip(1); // unused
+      const uint32_t destWid  = br.readU32();
+      const int16_t  x_off    = (int16_t)br.readU16();
+      const int16_t  y_off    = (int16_t)br.readU16();
+      const uint32_t srcWid   = br.readU32();
+      br.skip(br.remaining());
+
+      WindowView vw{};
+      uint16_t ww = 1, wh = 1;
+      if (ctx.windows().snapshot(destWid, vw)) { ww = vw.w; wh = vw.h; }
+
+      // Get source shape
+      ShapeRegion srcRegion;
+      if (srcKind == 0)      srcRegion = ctx.windows().shapeBounding(srcWid);
+      else if (srcKind == 2) srcRegion = ctx.windows().shapeInput(srcWid);
+
+      // Get dest shape and combine
+      ShapeRegion destRegion;
+      if (destKind == 0)      destRegion = ctx.windows().shapeBounding(destWid);
+      else if (destKind == 1) destRegion = ctx.windows().shapeBounding(destWid);
+      else if (destKind == 2) destRegion = ctx.windows().shapeInput(destWid);
+
+      destRegion.combine(srcRegion, op, x_off, y_off, ww, wh);
+
+      if (destKind == 0)      ctx.windows().setShapeBounding(destWid, std::move(destRegion));
+      else if (destKind == 1) ctx.windows().setShapeClip(destWid, std::move(destRegion));
+      else if (destKind == 2) ctx.windows().setShapeInput(destWid, std::move(destRegion));
+
+      uint32_t host = ctx.windows().topLevelAncestorOf(destWid);
+      if (host == 0) host = destWid;
+      x11_ui_push_shape_changed(host);
+      return;
+    }
+    case 4: {
+      // ShapeOffset
+      // Body: kind(1B), unused(1B), unused(2B), window(4B), x_off(2B), y_off(2B)
+      if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+      const uint8_t  kind = br.readU8();
+      br.skip(3); // unused
+      const uint32_t wid  = br.readU32();
+      const int16_t  dx   = (int16_t)br.readU16();
+      const int16_t  dy   = (int16_t)br.readU16();
+      br.skip(br.remaining());
+
+      ShapeRegion region;
+      if (kind == 0)      region = ctx.windows().shapeBounding(wid);
+      else if (kind == 1) region = ctx.windows().shapeBounding(wid);
+      else if (kind == 2) region = ctx.windows().shapeInput(wid);
+
+      region.offset(dx, dy);
+
+      if (kind == 0)      ctx.windows().setShapeBounding(wid, std::move(region));
+      else if (kind == 1) ctx.windows().setShapeClip(wid, std::move(region));
+      else if (kind == 2) ctx.windows().setShapeInput(wid, std::move(region));
+
+      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+      if (host == 0) host = wid;
+      x11_ui_push_shape_changed(host);
+      return;
+    }
     case 5: {
-      // ShapeQueryExtents — reply with window bounding rect
+      // ShapeQueryExtents — return actual shape data
       if (br.remaining() < 4) { br.skip(br.remaining()); return; }
       const uint32_t wid = br.readU32();
       br.skip(br.remaining());
 
-      // Look up window geometry
-      uint16_t ww = 0, wh = 0;
       WindowView vw{};
+      uint16_t ww = 0, wh = 0;
       if (ctx.windows().snapshot(wid, vw)) {
-        ww = vw.w;
-        wh = vw.h;
+        ww = vw.w; wh = vw.h;
       }
+
+      ShapeRegion bounding = ctx.windows().shapeBounding(wid);
+      ShapeRegion::Rect bext = bounding.shaped ? bounding.extents() : ShapeRegion::Rect{0, 0, ww, wh};
+
+      const bool bShaped = vw.bounding_shaped;
+      const bool cShaped = vw.clip_shaped;
 
       (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, 0); // length
-        rep[8]  = 0; // boundingShaped = false
-        rep[9]  = 0; // clipShaped = false
-        // Bounding extents: x=0, y=0, w, h
-        wire::wr16_le(rep.data() + 12, 0);  // bounding x
-        wire::wr16_le(rep.data() + 14, 0);  // bounding y
-        wire::wr16_le(rep.data() + 16, ww); // bounding width
-        wire::wr16_le(rep.data() + 18, wh); // bounding height
-        // Clip extents: same as bounding
-        wire::wr16_le(rep.data() + 20, 0);  // clip x
-        wire::wr16_le(rep.data() + 22, 0);  // clip y
-        wire::wr16_le(rep.data() + 24, ww); // clip width
-        wire::wr16_le(rep.data() + 26, wh); // clip height
+        rep[8]  = bShaped ? 1 : 0;
+        rep[9]  = cShaped ? 1 : 0;
+        wire::wr16_le(rep.data() + 12, (uint16_t)bext.x);
+        wire::wr16_le(rep.data() + 14, (uint16_t)bext.y);
+        wire::wr16_le(rep.data() + 16, bext.w);
+        wire::wr16_le(rep.data() + 18, bext.h);
+        // Clip extents: use bounding if no separate clip
+        wire::wr16_le(rep.data() + 20, (uint16_t)bext.x);
+        wire::wr16_le(rep.data() + 22, (uint16_t)bext.y);
+        wire::wr16_le(rep.data() + 24, bext.w);
+        wire::wr16_le(rep.data() + 26, bext.h);
       });
       return;
     }
-    case 6: // ShapeSelectInput — consume silently
+    case 6: // ShapeSelectInput — consume silently (we don't track per-window shape event selection)
       br.skip(br.remaining());
       return;
     case 7: {
-      // ShapeInputSelected — reply with enabled=false
+      // ShapeInputSelected — reply with enabled=false (we don't track selection)
       br.skip(br.remaining());
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0); // length
+        wire::wr32_le(rep.data() + 4, 0);
         rep[1] = 0; // enabled = false
       });
       return;
     }
     case 8: {
-      // ShapeGetRectangles — reply with single bounding rect
+      // ShapeGetRectangles — return actual shape rectangles
       if (br.remaining() < 8) { br.skip(br.remaining()); return; }
       const uint32_t wid = br.readU32();
-      /*kind*/ br.readU8();
+      const uint8_t kind = br.readU8(); // Bounding=0, Clip=1, Input=2
       br.skip(br.remaining());
 
-      uint16_t ww = 0, wh = 0;
       WindowView vw{};
-      if (ctx.windows().snapshot(wid, vw)) {
-        ww = vw.w;
-        wh = vw.h;
+      uint16_t ww = 0, wh = 0;
+      if (ctx.windows().snapshot(wid, vw)) { ww = vw.w; wh = vw.h; }
+
+      ShapeRegion region;
+      if (kind == 0)      region = ctx.windows().shapeBounding(wid);
+      else if (kind == 2) region = ctx.windows().shapeInput(wid);
+
+      // If unshaped, return single full-window rect
+      if (!region.shaped) {
+        uint8_t rectPayload[8] = {};
+        wire::wr16_le(rectPayload + 0, 0);
+        wire::wr16_le(rectPayload + 2, 0);
+        wire::wr16_le(rectPayload + 4, ww);
+        wire::wr16_le(rectPayload + 6, wh);
+        (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+          rep[1] = 0; // ordering = UnSorted
+          wire::wr32_le(rep.data() + 4, 2); // length = 8/4 = 2 words
+          wire::wr32_le(rep.data() + 8, 1); // nrects = 1
+        });
+        ctx.reply().sendBytes(rectPayload, sizeof(rectPayload));
+      } else {
+        const uint32_t nrects = (uint32_t)region.rects.size();
+        const uint32_t payloadBytes = nrects * 8;
+        const uint32_t payloadWords = (payloadBytes + 3) / 4;
+
+        (void)ctx.reply().sendReply32(seq, [nrects, payloadWords](std::array<uint8_t, 32>& rep) {
+          rep[1] = 0; // ordering = UnSorted
+          wire::wr32_le(rep.data() + 4, payloadWords);
+          wire::wr32_le(rep.data() + 8, nrects);
+        });
+        // Send each rectangle
+        for (auto& r : region.rects) {
+          uint8_t buf[8] = {};
+          wire::wr16_le(buf + 0, (uint16_t)r.x);
+          wire::wr16_le(buf + 2, (uint16_t)r.y);
+          wire::wr16_le(buf + 4, r.w);
+          wire::wr16_le(buf + 6, r.h);
+          ctx.reply().sendBytes(buf, 8);
+        }
+        // Pad to 4-byte boundary if needed
+        if (payloadBytes % 4 != 0) {
+          uint8_t pad[4] = {};
+          ctx.reply().sendBytes(pad, 4 - (payloadBytes % 4));
+        }
       }
-
-      // Reply: 1 rectangle (8 bytes)
-      uint8_t rectPayload[8] = {};
-      wire::wr16_le(rectPayload + 0, 0);  // x
-      wire::wr16_le(rectPayload + 2, 0);  // y
-      wire::wr16_le(rectPayload + 4, ww); // width
-      wire::wr16_le(rectPayload + 6, wh); // height
-
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        rep[1] = 0; // ordering = UnSorted
-        wire::wr32_le(rep.data() + 4, 2); // length = 8 bytes / 4 = 2 words
-        wire::wr32_le(rep.data() + 8, 1); // nrects = 1
-      });
-      ctx.reply().sendBytes(rectPayload, sizeof(rectPayload));
       return;
     }
     default:
