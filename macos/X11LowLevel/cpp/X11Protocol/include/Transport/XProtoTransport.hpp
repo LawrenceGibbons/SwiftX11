@@ -120,6 +120,11 @@ private:
   // sequence ever sent on the wire so sendAll() can bump stale sequences.
   uint16_t max_wire_seq_ = 0;
 
+  // Reply-payload tracking.  After a reply header (b0==1) with lenw > 0,
+  // this counts remaining payload bytes.  sendAll() skips the monotonic
+  // floor for payload data (bytes[2:3] are arbitrary payload, not sequences).
+  uint32_t payload_remaining_ = 0;
+
   // True if a reply (byte[0]==1) or error (byte[0]==0) was sent since resetReplySent().
   bool reply_sent_ = false;
   

@@ -41,7 +41,8 @@ XProtoTransport::XProtoTransport(XProtoContext& ctx, EventOps& evOps)
 
 void XProtoTransport::attachClientFd(int fd) {
   client_fd_ = fd;
-  max_wire_seq_ = 0;   // reset monotonic floor for new connection
+  max_wire_seq_ = 0;       // reset monotonic floor for new connection
+  payload_remaining_ = 0;  // reset payload tracking
 }
 
 void XProtoTransport::setXprotoThreadSelf() {
@@ -179,7 +180,8 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
 
   // Track reply/error sends: byte[0]==1 (Reply) or byte[0]==0 (Error)
   // for the sequence-desync safety net in XProtoServer::dispatch().
-  if (n >= 32) {
+  // Only check when not in payload (payload bytes are arbitrary).
+  if (n >= 32 && payload_remaining_ == 0) {
     const uint8_t b0 = static_cast<const uint8_t*>(buf)[0];
     if (b0 == 0 || b0 == 1) reply_sent_ = true;
   }
@@ -189,15 +191,29 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   // never go backwards across ANY response type (events included).
   // When drainHostCommands() interleaves with readAndDispatch(), events
   // can carry stale (older) sequences.  Fix: if bytes[2:3] of any
-  // response would regress below the highest previously sent, bump it
-  // up to that floor.
+  // response HEADER would regress below the highest previously sent,
+  // bump it up to that floor.
+  //
+  // CRITICAL: reply payload chunks also flow through sendAll().  Their
+  // bytes[2:3] are arbitrary data, NOT sequence numbers.  We must NOT
+  // read or modify those bytes.  payload_remaining_ tracks how many
+  // payload bytes are still expected after a reply header.
   const void* sendBuf = buf;
   uint8_t fixedPkt[32];
 
-  if (n >= 32) {
+  if (payload_remaining_ > 0) {
+    // We are in the middle of reply payload — skip floor logic entirely.
+    uint32_t consumed = (n < static_cast<std::size_t>(payload_remaining_))
+                          ? static_cast<uint32_t>(n)
+                          : payload_remaining_;
+    payload_remaining_ -= consumed;
+  } else if (n >= 32 && last_request_seq_ != 0) {
+    // This is a new response header (event/reply/error), past setup phase.
     const uint8_t* bp = static_cast<const uint8_t*>(buf);
+    const uint8_t b0 = bp[0];
     uint16_t pkt_seq = uint16_t(bp[2] | (uint16_t(bp[3]) << 8));
 
+    // Apply monotonic floor
     if (max_wire_seq_ != 0) {
       int16_t delta = (int16_t)(pkt_seq - max_wire_seq_);
       if (delta < 0) {
@@ -213,8 +229,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
         if (n == 32) {
           sendBuf = fixedPkt;
         } else {
-          // Combined header+payload (rare for events, possible for replies).
-          // Send fixed 32-byte header, then original payload tail.
+          // Combined header+payload: send fixed header, then original tail.
           const uint8_t* hp = fixedPkt;
           std::size_t hleft = 32;
           while (hleft) {
@@ -239,12 +254,29 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
             pp += static_cast<std::size_t>(w);
             pleft -= static_cast<std::size_t>(w);
           }
+          // Track payload for this combined reply
+          if (b0 == 1) {
+            uint32_t lenw = uint32_t(bp[4]) | (uint32_t(bp[5])<<8) |
+                            (uint32_t(bp[6])<<16) | (uint32_t(bp[7])<<24);
+            uint32_t total = lenw * 4u;
+            uint32_t included = static_cast<uint32_t>(n - 32);
+            payload_remaining_ = (total > included) ? (total - included) : 0;
+          }
           max_wire_seq_ = pkt_seq;
           return true;
         }
       }
     }
     max_wire_seq_ = pkt_seq;
+
+    // If this is a reply header with payload, track remaining bytes.
+    if (b0 == 1) {
+      uint32_t lenw = uint32_t(bp[4]) | (uint32_t(bp[5])<<8) |
+                      (uint32_t(bp[6])<<16) | (uint32_t(bp[7])<<24);
+      uint32_t total = lenw * 4u;
+      uint32_t included = (n > 32) ? static_cast<uint32_t>(n - 32) : 0;
+      payload_remaining_ = (total > included) ? (total - included) : 0;
+    }
   }
 
   const uint8_t* p = static_cast<const uint8_t*>(sendBuf);
