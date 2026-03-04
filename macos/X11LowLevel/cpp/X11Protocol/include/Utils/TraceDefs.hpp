@@ -53,3 +53,11 @@
 #else
   #define X11_TRACE_RESOLVE_ENABLED 0
 #endif
+
+// Font ops: OpenFont, ListFonts, ListFontsWithInfo, XLFD matching,
+//           PCF loading, LABEL (text draw diagnostics)
+#if defined(X11_TRACE_FONT) || defined(X11_TRACE_VERBOSE)
+  #define X11_TRACE_FONT_ENABLED 1
+#else
+  #define X11_TRACE_FONT_ENABLED 0
+#endif

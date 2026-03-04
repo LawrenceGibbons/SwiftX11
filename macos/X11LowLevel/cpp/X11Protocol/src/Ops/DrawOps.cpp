@@ -39,6 +39,7 @@
 // util
 #include "Damage.hpp"
 #include "Utils/GCClip.hpp"
+#include "Utils/TraceDefs.hpp"
 
 namespace x11 {
 
@@ -1072,7 +1073,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     int32_t penX            = (int16_t)br.readU16();
     const int32_t baseY     = (int16_t)br.readU16();
 
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
     {
       x11::WindowView wv{};
       bool isWin = ctx.windows().snapshot(drawable, wv);
@@ -1163,7 +1164,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
       if (br.remaining() < len) { br.skip(br.remaining()); break; }
 
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
       {
         const uint8_t* peek = br.peekBytes(len);
         if (peek) {
@@ -1215,7 +1216,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     for (uint8_t i = 0; i < n; i++) text[i] = br.readU8();
     br.skip(br.remaining());
 
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
     {
       // Diagnostic: show text drawn into each drawable with window geometry
       std::string txt(text.begin(), text.end());

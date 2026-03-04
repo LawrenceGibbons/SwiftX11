@@ -25,6 +25,7 @@
 #include <cstring>   // strlen
 #include <unordered_set>
 #include <vector>
+#include "Utils/TraceDefs.hpp"
 
 namespace x11 {
 
@@ -132,9 +133,9 @@ void FontOps::handleOpenFont(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& b
   // Wire to FontTable (server-owned)
   const bool ok = ctx.fonts().open(fid, name);
 
-#ifndef NDEBUG
-  ctx.tracef("[FontOps] OpenFont fid=0x%08X name=\"%s\" -> %s\n",
-             (unsigned)fid, name.c_str(), ok ? "OK" : "FAIL");
+#if X11_TRACE_FONT_ENABLED
+  fprintf(stderr, "[FontOps] OpenFont fid=0x%08X name=\"%s\" -> %s\n",
+          (unsigned)fid, name.c_str(), ok ? "OK" : "FAIL");
 #endif
 
   // If you want to be ultra-forgiving during bring-up, you can force OK by

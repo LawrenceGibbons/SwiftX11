@@ -18,6 +18,7 @@
 #include "Fonts/BDF.hpp"
 #include "Fonts/PCF.hpp"
 #include "Fonts/BundleResource.hpp"
+#include "Utils/TraceDefs.hpp"
 
 namespace x11 {
 
@@ -159,7 +160,7 @@ static void dbgFontResolve(const std::string& req,
                            const char* resolvedKey,
                            const x11::font::BdfFont* f)
 {
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
   if (!f) {
     fprintf(stderr, "[FontTable] resolve req=\"%s\" -> %s (NULL)\n",
             req.c_str(), resolvedKey ? resolvedKey : "<null>");
@@ -329,11 +330,26 @@ bool FontTable::loadBuiltins(std::string* err) {
     std::string dirPath(dir);
     std::string fontsDir = dirPath + "/fonts.dir";
     std::ifstream dirFile(fontsDir);
-    if (!dirFile.is_open()) continue;
+    if (!dirFile.is_open()) {
+#if X11_TRACE_FONT_ENABLED
+      fprintf(stderr, "[FontTable] FAILED to open: %s (errno=%d)\n",
+              fontsDir.c_str(), errno);
+#endif
+      continue;
+    }
 
     std::string line;
     // First line is the count — skip it
-    if (!std::getline(dirFile, line)) continue;
+    if (!std::getline(dirFile, line)) {
+#if X11_TRACE_FONT_ENABLED
+      fprintf(stderr, "[FontTable] empty fonts.dir: %s\n", fontsDir.c_str());
+#endif
+      continue;
+    }
+#if X11_TRACE_FONT_ENABLED
+    fprintf(stderr, "[FontTable] scanning: %s (count line: \"%s\")\n",
+            fontsDir.c_str(), line.c_str());
+#endif
 
     while (std::getline(dirFile, line)) {
       if (line.empty()) continue;
@@ -363,7 +379,7 @@ bool FontTable::loadBuiltins(std::string* err) {
   }
 
 #ifndef NDEBUG
-  fprintf(stderr, "[FontTable] registered %zu PCF fonts from system directories\n",
+  fprintf(stderr, "[FontTable] registered %zu PCF fonts, ",
           pcfRegistry_.size());
 #endif
 
@@ -402,28 +418,44 @@ void FontTable::loadAliases() {
       if (alias.front() == '"' && alias.back() == '"' && alias.size() >= 2)
         alias = alias.substr(1, alias.size() - 2);
 
-      // Try to find a builtin font that matches the target XLFD
+      // Try to find a font that matches the target XLFD
+      // First check builtins, then PCF registry (lazy load)
       std::string lTarget = lower(target);
       const x11::font::BdfFont* match = nullptr;
 
+      // Check builtins (exact match first, then glob)
       for (const auto& [key, font] : builtins_) {
         if (!font) continue;
-        // Match against the font's XLFD name
         std::string lName = lower(font->name);
         if (lName == lTarget) {
           match = font.get();
           break;
         }
-        // Also try glob matching (target may contain wildcards in alias files)
         if (fontGlobMatch(lTarget.c_str(), lName.c_str())) {
           match = font.get();
           // Don't break — keep looking for exact match
         }
       }
 
+      // If no builtin match, try PCF registry (exact then glob)
+      if (!match) {
+        auto pcfIt = pcfRegistry_.find(lTarget);
+        if (pcfIt != pcfRegistry_.end()) {
+          match = loadPcfOnDemand(lTarget);
+        } else {
+          // Glob match against PCF registry
+          for (const auto& [xlfd, path] : pcfRegistry_) {
+            if (fontGlobMatch(lTarget.c_str(), xlfd.c_str())) {
+              match = loadPcfOnDemand(xlfd);
+              if (match) break;
+            }
+          }
+        }
+      }
+
       if (match) {
         aliases_[lower(alias)] = match;
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
         fprintf(stderr, "[FontTable] alias \"%s\" -> \"%s\"\n",
                 alias.c_str(), match->name.c_str());
 #endif
@@ -432,7 +464,7 @@ void FontTable::loadAliases() {
   }
 
 #ifndef NDEBUG
-  fprintf(stderr, "[FontTable] loaded %zu aliases\n", aliases_.size());
+  fprintf(stderr, "%zu aliases\n", aliases_.size());
 #endif
 }
 
@@ -516,25 +548,45 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
 
   // XLFD glob matching: if the name contains wildcards, find the first match
   if (key.find('*') != std::string::npos || key.find('?') != std::string::npos) {
+#if X11_TRACE_FONT_ENABLED
+    fprintf(stderr, "[FontTable] GLOB search for \"%s\" (pcfRegistry_=%zu entries)\n",
+            key.c_str(), pcfRegistry_.size());
+#endif
     // First check builtins
     for (const auto& [shortKey, font] : builtins_) {
       if (!font) continue;
       std::string lName = lower(font->name);
       if (fontGlobMatch(key.c_str(), lName.c_str())) {
+#if X11_TRACE_FONT_ENABLED
+        fprintf(stderr, "[FontTable] GLOB matched BUILTIN \"%s\" (xlfd=\"%s\")\n",
+                shortKey.c_str(), lName.c_str());
+#endif
         dbgFontResolve(name, shortKey.c_str(), font.get());
         return font.get();
       }
     }
     // Then check PCF registry
+    int pcfChecked = 0;
     for (const auto& [xlfd, path] : pcfRegistry_) {
       if (fontGlobMatch(key.c_str(), xlfd.c_str())) {
+#if X11_TRACE_FONT_ENABLED
+        fprintf(stderr, "[FontTable] GLOB matched PCF \"%s\" (checked %d entries)\n",
+                xlfd.c_str(), pcfChecked);
+#endif
         const auto* f = loadPcfOnDemand(xlfd);
         if (f) {
           dbgFontResolve(name, "pcf-glob", f);
           return f;
         }
+#if X11_TRACE_FONT_ENABLED
+        fprintf(stderr, "[FontTable] GLOB PCF load FAILED for \"%s\"\n", xlfd.c_str());
+#endif
       }
+      pcfChecked++;
     }
+#if X11_TRACE_FONT_ENABLED
+    fprintf(stderr, "[FontTable] GLOB no match found after checking %d PCF entries\n", pcfChecked);
+#endif
   }
 
   // Minimal XLFD handling: extract pixel size and pick closest font
@@ -543,7 +595,7 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
     int scaledPx = applyFontScale(px);
     const x11::font::BdfFont* f = pickClosestByBbxHeight(builtins_, scaledPx, "fixed");
 
-  #ifndef NDEBUG
+  #if X11_TRACE_FONT_ENABLED
     fprintf(stderr, "[FontTable] XLFD px=%d scaled=%d -> \"%s\" (bbx_h=%d)\n",
             px, scaledPx, f ? f->name.c_str() : "<null>", f ? f->bbx_h : -1);
   #endif
@@ -552,7 +604,7 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
     // fall through to default
   }
 
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
   fprintf(stderr, "[FontTable] unknown font \"%s\" -> default\n", name.c_str());
 #endif
   auto [rk, f] = defaultFont();
@@ -608,7 +660,7 @@ const x11::font::BdfFont* FontTable::loadPcfOnDemand(const std::string& xlfdLowe
   auto font = std::make_unique<x11::font::BdfFont>();
   auto res = x11::font::loadPcfGz(path, *font);
   if (!res.ok) {
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
     fprintf(stderr, "[FontTable] PCF load failed: %s -> %s\n",
             xlfdLower.c_str(), res.error.c_str());
 #endif
@@ -617,7 +669,7 @@ const x11::font::BdfFont* FontTable::loadPcfOnDemand(const std::string& xlfdLowe
 
   if (!font->boundsValid) font->computeBounds();
 
-#ifndef NDEBUG
+#if X11_TRACE_FONT_ENABLED
   fprintf(stderr, "[FontTable] PCF loaded: \"%s\" bbx=%dx%d ascent=%d descent=%d glyphs=%zu\n",
           font->name.c_str(), font->bbx_w, font->bbx_h,
           font->ascent, font->descent, font->glyphs.size());
