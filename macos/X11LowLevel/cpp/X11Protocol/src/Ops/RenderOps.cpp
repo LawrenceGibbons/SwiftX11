@@ -29,7 +29,9 @@
 
 #include "Ops/RenderOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 #include "Ops/ReplyWriter.hpp"
+#include "Transport/XProtoTransport.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11ExtOpcodes.hpp"
@@ -1731,11 +1733,11 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
 
   default:
-#ifndef NDEBUG
-    fprintf(stderr, "[RENDER] unhandled minor=%u seq=%u remain=%zu\n",
+    fprintf(stderr, "[RENDER] unhandled minor=%u seq=%u remain=%zu — sending BadRequest\n",
             (unsigned)minor, (unsigned)seq, br.remaining());
-#endif
     br.skip(br.remaining());
+    // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, ext::kRENDER);
     return;
   }
 }

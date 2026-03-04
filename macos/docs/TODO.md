@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-04 (v1.7.1 — Phase 2.1 RENDER complete)
+Last updated: 2026-03-04 (v1.7.2 — XCB sequence desync safety net)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -125,7 +125,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.1)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.2)**: **BIG-REQUESTS**, **RENDER**, and **XFIXES** are advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path). Handler code also exists for RANDR, Xinerama, and GE (NOT advertised yet).
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing) — ADVERTISED (v1.6.0)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
@@ -393,8 +393,10 @@ rendercheck                 # RENDER extension tests
 4. **Enable remaining extensions** — RANDR, Xinerama, GE advertised one at a time
 5. **Container networking** — TCP + Unix socket + xauth for Docker workflow
 
-### Phase 2+3 Status Assessment (v1.7.1)
+### Phase 2+3 Status Assessment (v1.7.2)
 **Phases 2 and 3 are complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). Extensions: BIG-REQUESTS, RENDER, and XFIXES are advertised and functional. SHAPE has stub support but is held back to avoid breaking xeyes. Fonts: XLFD wildcard matching, PCF font loading from system directories, Symbol font encoding, and ListFontsWithInfo all work.
+
+**v1.7.2 adds a reply-tracking safety net** that prevents XCB sequence desync crashes (the xcalc resize crash). Missing replies for reply-bearing opcodes now automatically get a BadImplementation error response.
 
 The next bottleneck is **window lifecycle** (window close → client kill) and **error handling** (Phase 4), not fonts or extensions.
 
@@ -414,3 +416,9 @@ The next bottleneck is **window lifecycle** (window close → client kill) and *
 ### Features (v1.7.1)
 - **Triangles/TriStrip/TriFan**: RENDER geometric fill ops (minor 11/12/13). Scanline triangle rasterization with FIXED 16.16 edge interpolation.
 - **Gradient source pictures**: CreateLinearGradient, CreateRadialGradient, CreateConicalGradient now create real gradient Pictures. Composite samples gradient per-pixel with color stop interpolation.
+
+### Bug fixes (v1.7.2)
+- **xcalc resize crash (XCB sequence desync)**: Resizing xcalc triggered `[xcb] Unknown sequence number while processing queue` → abort. Root cause: a reply-bearing request was dispatched to a handler that didn't send a reply, causing XCB's internal sequence tracking to desync. Fixed with three-layer defense:
+  1. **Reply-sent tracking**: `XProtoTransport::reply_sent_` flag set in `sendAll()` when sending a reply (byte[0]==1) or error (byte[0]==0). Reset before each dispatch.
+  2. **Core opcode safety net**: `isReplyBearingCore()` 128-entry static table in `XProtoServer::dispatch()`. After dispatch, if reply-bearing and no reply sent, sends `BadImplementation` error. Covers: unregistered handlers, handler exceptions, and normal dispatch without reply.
+  3. **Extension error replies**: All extension `default` switch cases (XFIXES, SHAPE, RANDR, Xinerama, GE, RENDER) now send `BadRequest` error instead of silently consuming bytes.

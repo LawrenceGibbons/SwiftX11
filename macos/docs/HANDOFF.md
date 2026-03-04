@@ -1,7 +1,7 @@
 # SwiftX11 — Session Handoff Prompt
 
 **Date**: 2026-03-04
-**Version**: v1.7.1
+**Version**: v1.7.2
 **Branch**: `develop++`
 
 ---
@@ -28,7 +28,13 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 
 ---
 
-## What Was Accomplished (v1.7.0 → v1.7.1)
+## What Was Accomplished (v1.7.0 → v1.7.2)
+
+### v1.7.2: XCB Sequence Desync Safety Net
+- **Reply-sent tracking**: `XProtoTransport` tracks whether a reply or error was sent during each dispatch via `reply_sent_` flag. Detection in `sendAll()`: byte[0]==0 (Error) or byte[0]==1 (Reply) sets the flag.
+- **Core opcode safety net**: `XProtoServer::dispatch()` uses a 128-entry `isReplyBearingCore()` table. After each dispatch, if a reply-bearing core opcode handler didn't send a reply/error, a `BadImplementation` error is automatically sent. Covers three failure paths: unregistered handlers, handler early-returns/exceptions, and normal dispatch without reply.
+- **Extension error replies**: All extension `default` switch cases (XFIXES, SHAPE, RANDR, Xinerama, GE, RENDER) now send `BadRequest` errors instead of silently consuming bytes. Previously, an unrecognized sub-opcode that happened to be reply-bearing would cause XCB sequence desync.
+- **Root cause**: xcalc resize crash (`[xcb] Unknown sequence number while processing queue`) was caused by a missing reply for a reply-bearing request. The safety net prevents this class of crash regardless of which specific handler is missing the reply.
 
 ### v1.7.0: Phase 3 Font Infrastructure
 - **PCF font support**: Full parser with TOC, metrics, bitmaps, encoding tables. MSB/LSB bit order handling. zlib decompression for .pcf.gz. Scans `/opt/X11/share/fonts/{misc,75dpi,100dpi}/`.
@@ -97,7 +103,7 @@ xeyes                      # pointer tracking, multi-client
 xcalc -rpn                 # calculator (XFILESEARCHPATH auto-set by SwiftX11)
 xclock -analog             # Xaw widgets, arcs, timer events
 
-# Verify version banner in console: "SwiftX11 v1.7.1"
+# Verify version banner in console: "SwiftX11 v1.7.2"
 
 # Test clipboard:
 # 1. Select text in xterm → Cmd+V in macOS app (X11→macOS)

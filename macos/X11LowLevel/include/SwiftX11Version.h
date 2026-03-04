@@ -9,4 +9,4 @@
 
 #pragma once
 
-#define SWIFTX11_VERSION "1.7.1"
+#define SWIFTX11_VERSION "1.7.2"

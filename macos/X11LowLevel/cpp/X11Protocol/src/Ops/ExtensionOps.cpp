@@ -15,9 +15,11 @@
 
 #include "Ops/ExtensionOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 #include "Core/WindowTable.hpp"
 #include "Core/WindowView.hpp"
 #include "Ops/ReplyWriter.hpp"
+#include "Transport/XProtoTransport.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11ExtOpcodes.hpp"
@@ -167,10 +169,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining());
       return;
     default:
-#ifndef NDEBUG
-      fprintf(stderr, "[XFIXES] unhandled minor=%u seq=%u\n", (unsigned)minor, (unsigned)seq);
-#endif
+      fprintf(stderr, "[XFIXES] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
       br.skip(br.remaining());
+      // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
+      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
       return;
     }
   }
@@ -270,10 +272,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
     default:
-#ifndef NDEBUG
-      fprintf(stderr, "[SHAPE] unhandled minor=%u seq=%u\n", (unsigned)minor, (unsigned)seq);
-#endif
+      fprintf(stderr, "[SHAPE] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
       br.skip(br.remaining());
+      // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
+      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
       return;
     }
   }
@@ -294,10 +296,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       });
       return;
     }
-#ifndef NDEBUG
-    fprintf(stderr, "[RANDR] unhandled minor=%u seq=%u\n", (unsigned)minor, (unsigned)seq);
-#endif
+    fprintf(stderr, "[RANDR] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
     br.skip(br.remaining());
+    // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;
   }
 
@@ -344,10 +346,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       ctx.reply().sendBytes(payload, sizeof(payload));
       return;
     }
-#ifndef NDEBUG
-    fprintf(stderr, "[Xinerama] unhandled minor=%u seq=%u\n", (unsigned)minor, (unsigned)seq);
-#endif
+    fprintf(stderr, "[Xinerama] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
     br.skip(br.remaining());
+    // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;
   }
 
@@ -366,10 +368,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       });
       return;
     }
-#ifndef NDEBUG
-    fprintf(stderr, "[GE] unhandled minor=%u seq=%u\n", (unsigned)minor, (unsigned)seq);
-#endif
+    fprintf(stderr, "[GE] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
     br.skip(br.remaining());
+    // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;
   }
 

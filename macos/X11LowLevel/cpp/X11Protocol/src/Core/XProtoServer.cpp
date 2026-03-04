@@ -12,6 +12,7 @@
 #include "Core/XProtoServer.hpp"
 #include "Core/XClient.hpp"
 #include "Core/SurfaceDesc.hpp"
+#include "Core/X11CoreOpcodes.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
 #include "Core/timestamp.hpp"
@@ -70,6 +71,88 @@ XProtoServer::XProtoServer()
 
 x11::XProtoServer::~XProtoServer() = default;
 
+
+// Reply-bearing core opcode table (X11 protocol spec).
+// If a core opcode generates a reply, it MUST be sent — missing replies
+// cause XCB sequence number desync ("Unknown sequence number" crash).
+static bool isReplyBearingCore(uint8_t major) {
+  static const bool kTable[128] = {
+    // 0: unused
+    false,
+    // 1-13: window ops (all void except 3=GetWindowAttributes)
+    false, false, true, false, false, false, false,
+    false, false, false, false, false, false,
+    // 14-15: GetGeometry(R), QueryTree(R)
+    true, true,
+    // 16-17: InternAtom(R), GetAtomName(R)
+    true, true,
+    // 18-19: ChangeProperty(V), DeleteProperty(V)
+    false, false,
+    // 20-21: GetProperty(R), ListProperties(R)
+    true, true,
+    // 22-24: SetSelectionOwner(V), GetSelectionOwner(R), ConvertSelection(V)
+    false, true, false,
+    // 25: SendEvent(V)
+    false,
+    // 26-27: GrabPointer(R), UngrabPointer(V)
+    true, false,
+    // 28-30: GrabButton(V), UngrabButton(V), ChangeActivePointerGrab(V)
+    false, false, false,
+    // 31-32: GrabKeyboard(R), UngrabKeyboard(V)
+    true, false,
+    // 33-37: GrabKey(V), UngrabKey(V), AllowEvents(V), GrabServer(V), UngrabServer(V)
+    false, false, false, false, false,
+    // 38-44: QueryPointer(R), GetMotionEvents(R), TranslateCoords(R),
+    //        WarpPointer(V), SetInputFocus(V), GetInputFocus(R), QueryKeymap(R)
+    true, true, true, false, false, true, true,
+    // 45-46: OpenFont(V), CloseFont(V)
+    false, false,
+    // 47-50: QueryFont(R), QueryTextExtents(R), ListFonts(R), ListFontsWithInfo(R)
+    true, true, true, true,
+    // 51-52: SetFontPath(V), GetFontPath(R)
+    false, true,
+    // 53-72: Pixmap/GC/draw ops (all void except 73=GetImage)
+    false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false,
+    false, false, false, false,
+    // 73: GetImage(R)
+    true,
+    // 74-77: PolyText8/16, ImageText8/16 (all void)
+    false, false, false, false,
+    // 78-82: Colormap ops (all void)
+    false, false, false, false, false,
+    // 83-87: ListInstalledColormaps(R), AllocColor(R), AllocNamedColor(R),
+    //        AllocColorCells(R), AllocColorPlanes(R)
+    true, true, true, true, true,
+    // 88-90: FreeColors(V), StoreColors(V), StoreNamedColor(V)
+    false, false, false,
+    // 91-92: QueryColors(R), LookupColor(R)
+    true, true,
+    // 93-96: CreateCursor(V), CreateGlyphCursor(V), FreeCursor(V), RecolorCursor(V)
+    false, false, false, false,
+    // 97-99: QueryBestSize(R), QueryExtension(R), ListExtensions(R)
+    true, true, true,
+    // 100-102: ChangeKeyboardMapping(V), GetKeyboardMapping(R), ChangeKeyboardControl(V)
+    false, true, false,
+    // 103-105: GetKeyboardControl(R), Bell(V), ChangePointerControl(V)
+    true, false, false,
+    // 106-107: GetPointerControl(R), SetScreenSaver(V)
+    true, false,
+    // 108-109: GetScreenSaver(R), ChangeHosts(V)
+    true, false,
+    // 110-115: ListHosts(R), SetAccessControl(V), SetCloseDownMode(V),
+    //          KillClient(V), RotateProperties(V), ForceScreenSaver(V)
+    true, false, false, false, false, false,
+    // 116-119: SetPointerMapping(R!), GetPointerMapping(R),
+    //          SetModifierMapping(R!), GetModifierMapping(R)
+    true, true, true, true,
+    // 120-126: unused / reserved
+    false, false, false, false, false, false, false,
+    // 127: NoOperation(V)
+    false,
+  };
+  return (major < 128) ? kTable[major] : false;
+}
 
 // ----------------------------------------------
 int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
@@ -130,19 +213,27 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
     ctx_.transport().last_request_minor_ = minor;
     ctx_.transport().last_request_seq_   = seq;
   }
+  // Reset reply-sent tracking before dispatch so we can detect missing replies.
+  if (ctx_.hasClient()) {
+    ctx_.transport().resetReplySent();
+  }
+
   if (!e.fn) {
 #ifndef NDEBUG
-    static uint64_t last_warn_ns = 0;
-    uint64_t now = x11_now_ns_monotonic();
-    if (now - last_warn_ns > 500000000ULL) {
-      last_warn_ns = now;
-      fprintf(stderr,
-              "[DISPATCH] UNHANDLED major=%u minor=%u seq=%u (no C++ handler)\n",
-              (unsigned)major,
-              (unsigned)minor,
-              (unsigned)seq);
-    }
+    fprintf(stderr,
+            "[DISPATCH] UNHANDLED major=%u minor=%u seq=%u (no C++ handler)\n",
+            (unsigned)major,
+            (unsigned)minor,
+            (unsigned)seq);
 #endif
+    // Safety net: if this was a reply-bearing opcode, send an error reply
+    // to prevent XCB sequence desync crash.
+    if (ctx_.hasClient() && isReplyBearingCore(major)) {
+      fprintf(stderr,
+              "[DISPATCH] MISSING REPLY — sending BadImplementation for major=%u seq=%u\n",
+              (unsigned)major, (unsigned)seq);
+      ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
+    }
     return 0;
   }
 
@@ -160,18 +251,42 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
       dc.br.skip(dc.br.remaining());
     }
 
+    // Safety net: if opcode is reply-bearing and no reply was sent, send error.
+    // This catches handlers that early-return without sending a reply (e.g.,
+    // when br.remaining() < required bytes), preventing XCB sequence desync.
+    if (ctx_.hasClient() && isReplyBearingCore(major) && !ctx_.transport().wasReplySent()) {
+      fprintf(stderr,
+              "[DISPATCH] MISSING REPLY — sending BadImplementation for major=%u minor=%u seq=%u\n",
+              (unsigned)major, (unsigned)minor, (unsigned)seq);
+      ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
+    }
+
     return 1;
   } catch (const std::exception& ex) {
 #ifndef NDEBUG
     ctx_.tracef("[XProtoServer] dispatch EXCEPTION major=%u minor=%u seq=%u remain=%zu: %s\n",
                 (unsigned)major, (unsigned)minor, (unsigned)seq, remain, ex.what());
 #endif
+    // Safety net: if reply-bearing and no reply sent before exception, send error.
+    if (ctx_.hasClient() && isReplyBearingCore(major) && !ctx_.transport().wasReplySent()) {
+      fprintf(stderr,
+              "[DISPATCH] EXCEPTION — sending BadImplementation for major=%u seq=%u\n",
+              (unsigned)major, (unsigned)seq);
+      ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
+    }
     return 1;
   } catch (...) {
 #ifndef NDEBUG
     ctx_.tracef("[XProtoServer] dispatch UNKNOWN EXCEPTION major=%u minor=%u seq=%u remain=%zu\n",
                 (unsigned)major, (unsigned)minor, (unsigned)seq, remain);
 #endif
+    // Safety net: if reply-bearing and no reply sent before exception, send error.
+    if (ctx_.hasClient() && isReplyBearingCore(major) && !ctx_.transport().wasReplySent()) {
+      fprintf(stderr,
+              "[DISPATCH] UNKNOWN EXCEPTION — sending BadImplementation for major=%u seq=%u\n",
+              (unsigned)major, (unsigned)seq);
+      ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
+    }
     return 1;
   }
 }

@@ -120,6 +120,13 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   }
   if (client_fd_ < 0) return false;
 
+  // Track reply/error sends: byte[0]==1 (Reply) or byte[0]==0 (Error)
+  // for the sequence-desync safety net in XProtoServer::dispatch().
+  if (n >= 32) {
+    const uint8_t b0 = static_cast<const uint8_t*>(buf)[0];
+    if (b0 == 0 || b0 == 1) reply_sent_ = true;
+  }
+
   const uint8_t* p = static_cast<const uint8_t*>(buf);
   std::size_t left = n;
 

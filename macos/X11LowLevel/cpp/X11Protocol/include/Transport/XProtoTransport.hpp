@@ -91,8 +91,13 @@ public:
   // handle error replies
   bool sendError32(const uint8_t e[32]); // raw
   bool sendErrorCore(uint8_t errorCode, uint16_t seq, uint32_t resourceId, uint8_t majorCode);
-  
+
   void debugResetReplyTracker(); // call on begin/end session
+
+  // Reply-sent tracking for sequence desync safety net.
+  // Reset before each dispatch; set when a reply or error is sent.
+  void resetReplySent() { reply_sent_ = false; }
+  bool wasReplySent() const { return reply_sent_; }
 
 private:
   
@@ -109,6 +114,9 @@ private:
   // Last request sequence
   uint16_t last_seq_  = 0;
   uint16_t event_seq_ = 0;
+
+  // True if a reply (byte[0]==1) or error (byte[0]==0) was sent since resetReplySent().
+  bool reply_sent_ = false;
   
   XProtoNotifyQueue notifyQueue_;
 
