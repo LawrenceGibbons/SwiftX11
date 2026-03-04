@@ -487,12 +487,44 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 #endif
     
     if (nRects == 0) { br.skip(br.remaining()); return; }
-    
+
+    // ---- Depth-1 pixmap path (SHAPE mask bitmaps) ----
+    {
+      uint16_t pw = 0, ph = 0;
+      uint32_t stride = 0;
+      uint8_t* bits = ctx.pixmaps().mutableBits(drawable, &pw, &ph, &stride);
+      if (bits && pw > 0 && ph > 0 && stride > 0) {
+        x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
+        const bool setbit = (gst.fg & 1u) != 0;
+        for (std::size_t i = 0; i < nRects; i++) {
+          if (br.remaining() < 8) break;
+          const int16_t  rx = br.readI16();
+          const int16_t  ry = br.readI16();
+          const uint16_t rw = br.readU16();
+          const uint16_t rh = br.readU16();
+          int x0 = std::max(0, (int)rx);
+          int y0 = std::max(0, (int)ry);
+          int x1 = std::min((int)pw, (int)rx + (int)rw);
+          int y1 = std::min((int)ph, (int)ry + (int)rh);
+          for (int py = y0; py < y1; py++) {
+            uint8_t* row = bits + (size_t)py * (size_t)stride;
+            for (int px = x0; px < x1; px++) {
+              const uint32_t byteIdx = (uint32_t)px >> 3;
+              const uint8_t  mask    = (uint8_t)(1u << ((uint32_t)px & 7u));
+              if (setbit) row[byteIdx] |= mask;
+              else        row[byteIdx] &= ~mask;
+            }
+          }
+        }
+        br.skip(br.remaining());
+        return;
+      }
+    }
+
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
-    
-    //uint32_t fg = 0xFF000000u;
+
     // Resolve GC once.
     x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
     const uint32_t fg = gst.fg;
@@ -643,6 +675,76 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
             (unsigned)drawable, (unsigned)gc_id, narcs);
 #endif
 
+    // ---- Depth-1 pixmap path (SHAPE mask bitmaps) ----
+    {
+      uint16_t pw = 0, ph = 0;
+      uint32_t stride = 0;
+      uint8_t* bits = ctx.pixmaps().mutableBits(drawable, &pw, &ph, &stride);
+      if (bits && pw > 0 && ph > 0 && stride > 0) {
+        // GC fg bit value: fg&1 determines set or clear
+        GCState gst{};
+        GCTable::instance().find(gc_id, gst);
+        const bool setbit = (gst.fg & 1u) != 0;
+        const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
+
+        for (std::size_t i = 0; i < narcs; i++) {
+          const int16_t  ax = br.readI16();
+          const int16_t  ay = br.readI16();
+          const uint16_t aw = br.readU16();
+          const uint16_t ah = br.readU16();
+          const int16_t  a1 = br.readI16();
+          const int16_t  a2 = br.readI16();
+          if (aw == 0 || ah == 0) continue;
+
+          const float start  = (float)a1 / 64.0f;
+          const float extent = (float)a2 / 64.0f;
+          const bool full = std::fabs(extent) >= (360.0f - (1.0f / 64.0f));
+
+          const float rx = (float)aw * 0.5f;
+          const float ry = (float)ah * 0.5f;
+          if (rx <= 0.0f || ry <= 0.0f) continue;
+
+          const float cx = (float)ax + rx;
+          const float cy = (float)ay + ry;
+
+          int x0 = std::max(0, (int)ax);
+          int y0 = std::max(0, (int)ay);
+          int x1 = std::min((int)pw, (int)ax + (int)aw);
+          int y1 = std::min((int)ph, (int)ay + (int)ah);
+          if (x0 >= x1 || y0 >= y1) continue;
+
+          for (int py = y0; py < y1; py++) {
+            const float ny = (((float)py + 0.5f) - cy) / ry;
+            uint8_t* row = bits + (size_t)py * (size_t)stride;
+            for (int px = x0; px < x1; px++) {
+              const float nx = (((float)px + 0.5f) - cx) / rx;
+              if (nx*nx + ny*ny > 1.0f) continue;
+              if (!full) {
+                const float dx = ((float)px + 0.5f) - cx;
+                const float dy = ((float)py + 0.5f) - cy;
+                const float theta = norm360(std::atan2(-dy, dx) * (180.0f / (float)M_PI));
+                if (!angle_in_arc(theta, start, extent)) continue;
+              }
+              const uint32_t byteIdx = (uint32_t)px >> 3;
+              const uint8_t  mask    = (uint8_t)(1u << ((uint32_t)px & 7u)); // LSBFirst
+              // For GXcopy (fn=3) and GXset (fn=15): write the fg bit
+              // For GXclear (fn=0): clear the bit
+              if (fn == 0) {
+                row[byteIdx] &= ~mask;
+              } else if (setbit) {
+                row[byteIdx] |= mask;
+              } else {
+                row[byteIdx] &= ~mask;
+              }
+            }
+          }
+        }
+        br.skip(br.remaining());
+        return;  // depth-1 pixmap: no damage/present needed
+      }
+    }
+
+    // ---- Standard 32bpp path ----
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
 #ifdef X11_TRACE_VERBOSE
