@@ -655,6 +655,12 @@ final class X11View: NSView {
     if isShaped {
       applyShapeMask(to: &data, width: width, height: height, bytesPerRow: bytesPerRow)
 
+      // Ensure renderer and layer stay in sync (MTKView may reset layer properties)
+      renderer?.isShaped = true
+      if let metalLayer = mtkView?.layer as? CAMetalLayer, metalLayer.isOpaque {
+        metalLayer.isOpaque = false
+      }
+
       // One-shot layer hierarchy diagnostic
       if !shapeDebugDumped {
         shapeDebugDumped = true
@@ -760,18 +766,34 @@ final class X11View: NSView {
         view.layer?.backgroundColor = CGColor.clear
         v = view.superview
       }
-      // Also set the contentView directly
       win.contentView?.layer?.isOpaque = false
       win.contentView?.layer?.backgroundColor = CGColor.clear
     } else {
-      // Restore defaults
       if let mv = mtkView {
         mv.layer?.isOpaque = true
       }
     }
 
+    // MTKView's CAMetalLayer needs special handling — MTKView may reset
+    // its layer's isOpaque. Access the CAMetalLayer directly.
+    if let mv = mtkView, let metalLayer = mv.layer as? CAMetalLayer {
+      metalLayer.isOpaque = !transparent
+      #if DEBUG
+      print("[SHAPE] CAMetalLayer.isOpaque set to \(!transparent), readback=\(metalLayer.isOpaque)")
+      #endif
+    }
+
     // Update Metal renderer if active
-    renderer?.isShaped = transparent
+    if let r = renderer {
+      r.isShaped = transparent
+      #if DEBUG
+      print("[SHAPE] renderer.isShaped set to \(transparent), readback=\(r.isShaped)")
+      #endif
+    } else {
+      #if DEBUG
+      print("[SHAPE] WARNING: renderer is nil! Cannot set isShaped")
+      #endif
+    }
 
     // Force a full-frame redraw so the alpha mask takes effect
     if let mv = mtkView {
