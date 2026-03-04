@@ -84,6 +84,7 @@ final class X11View: NSView {
   
   // MARK: -- SHAPE extension
   var isShaped: Bool = false
+  private var shapeDebugDumped: Bool = false
 
   // MARK: -- be authoritative for the tracking events
   private var lastInsideForSyntheticCrossing: Bool = false
@@ -653,6 +654,12 @@ final class X11View: NSView {
     // SHAPE extension: clear alpha for pixels outside the shape region
     if isShaped {
       applyShapeMask(to: &data, width: width, height: height, bytesPerRow: bytesPerRow)
+
+      // One-shot layer hierarchy diagnostic
+      if !shapeDebugDumped {
+        shapeDebugDumped = true
+        dumpLayerHierarchy()
+      }
     }
 
     if usingMetal {
@@ -774,6 +781,34 @@ final class X11View: NSView {
     #if DEBUG
     print(String(format: "[SHAPE] setWindowTransparency xid=0x%08X shaped=%d", xid, transparent ? 1 : 0))
     #endif
+  }
+
+  /// Dump the entire view/layer hierarchy for SHAPE transparency debugging.
+  private func dumpLayerHierarchy() {
+    guard let win = self.window else {
+      print("[SHAPE_DBG] no window!")
+      return
+    }
+    print("[SHAPE_DBG] === Layer hierarchy for xid=0x\(String(xid, radix:16)) ===")
+    print("[SHAPE_DBG] NSWindow.isOpaque=\(win.isOpaque) bg=\(String(describing: win.backgroundColor))")
+    print("[SHAPE_DBG] NSWindow.contentView type=\(type(of: win.contentView as Any))")
+
+    // Walk from MTKView up to window
+    var depth = 0
+    var v: NSView? = mtkView ?? self
+    while let view = v {
+      let layerInfo: String
+      if let layer = view.layer {
+        layerInfo = "isOpaque=\(layer.isOpaque) bg=\(String(describing: layer.backgroundColor)) type=\(type(of: layer))"
+      } else {
+        layerInfo = "NO LAYER"
+      }
+      print("[SHAPE_DBG] [\(depth)] \(type(of: view)) frame=\(view.frame) wantsLayer=\(view.wantsLayer) \(layerInfo)")
+      v = view.superview
+      depth += 1
+    }
+    print("[SHAPE_DBG] isShaped=\(isShaped) renderer.isShaped=\(renderer?.isShaped ?? false)")
+    print("[SHAPE_DBG] === end ===")
   }
 
   // MARK: - Software rendering
