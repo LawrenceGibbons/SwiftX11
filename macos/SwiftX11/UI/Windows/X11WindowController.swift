@@ -108,6 +108,13 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
         if let view = WindowRegistry.shared.viewForHostXid(self.xid) {
           view.promoteDisplaySurface()
         }
+        // Second ExposeChildren after promote: by now all ConfigureWindow
+        // requests from xterm have been processed and child geometries are
+        // final.  The first ExposeChildren (above) can arrive before xterm
+        // reconfigures children — e.g., a right-side scrollbar at its OLD x
+        // position may be beyond the new (narrower) surface, causing
+        // resolveDrawableRW to fail silently.  This second pass catches it.
+        x11_post_expose_children(self.xid)
         // Force a present from the new surface.  While the display frame
         // was active, all damage was consumed and discarded by schedulePresent;
         // without this kick, the redrawn surface never gets presented.
