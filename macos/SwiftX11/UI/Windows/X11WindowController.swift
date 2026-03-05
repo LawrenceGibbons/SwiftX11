@@ -1,49 +1,42 @@
 import AppKit
-import SwiftUI
 import X11LowLevel
 
 final class X11WindowController: NSWindowController, NSWindowDelegate {
   private(set) var x11View: X11View?
   private let xid: UInt32
-  private let viewHolder = X11ViewHolder()
   
   var logAppend: ((String) -> Void)?
   var shouldLogQueueStats: (() -> Bool)?
 
   init(xid: UInt32, title: String, width: Int, height: Int, useMetal: Bool) {
     self.xid = xid
-    
-    let holder = viewHolder
-    
-    let host = X11WindowHost(useMetal: useMetal) { view in
-      view.xid = xid
-      holder.view = view
-    }
-    let hosting = NSHostingController(rootView: host)
-    
-    let window = NSWindow(contentViewController: hosting)
+
+    // Create X11View directly as the window's contentView — NO SwiftUI hosting.
+    // NSHostingController wraps content in NSHostingView which uses Auto Layout
+    // constraints.  When the system sends FBSScene updates (Stage Manager,
+    // display wake, etc.), those constraints can trigger a layout → frame change
+    // notification → window resize → layout cycle (_NSDetectedLayoutRecursion).
+    // Bypassing SwiftUI eliminates the Auto Layout constraint chain entirely.
+    let contentRect = NSRect(x: 0, y: 0, width: width, height: height)
+    let window = NSWindow(contentRect: contentRect,
+                          styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                          backing: .buffered,
+                          defer: false)
     window.isRestorable = false
     window.title = title.isEmpty ? "SwiftX11 Window" : title
-    //window.setContentSize(NSSize(width: width, height: height))
-    window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
     window.isReleasedWhenClosed = false
-    
+
+    let view = X11View(frame: contentRect)
+    view.xid = xid
+    view.wantsMetal = useMetal
+    view.autoresizingMask = [.width, .height]
+    window.contentView = view
+
     super.init(window: window)
-    
-    // SwiftUI creates the NSView later (makeNSView). Capture it when it becomes available.
-    viewHolder.onReady = { [weak self] v in
-      self?.x11View = v
-    }
 
-    //window.setContentSize(NSSize(width: width, height: height))
-    DispatchQueue.main.async { [weak self, weak window] in
-      guard let self, let window else { return }
+    self.x11View = view
+    view.setUseMetal(useMetal)
 
-      self.x11View?.logIfInLayout("About to setContentSize(\(width)x\(height)) for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self.x11View)
-      if X11Trace.lifecycle { print("[WIN] setContentSize about to run in X11WindowController xid=0x\(String(xid, radix:16)) size=\(width)x\(height)") }
-      window.setContentSize(NSSize(width: width, height: height))
-      self.x11View?.logIfInLayout("Did setContentSize(\(width)x\(height)) for xid=0x\(String(self.xid, radix: 16).uppercased())", view: self.x11View)
-    }
     window.acceptsMouseMovedEvents = true
     window.delegate = self
   }
@@ -245,7 +238,7 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   
   /// Present a BGRA8888 little-endian framebuffer for this X11 window.
   ///
-  /// This routes to the SwiftUI-created `X11View` (captured as `x11View`).
+  /// This routes to the `X11View` (the window's contentView).
   /// The buffer is provided as `Data` so callers can safely own/copy bytes.
   @MainActor
   func presentBGRA(data: Data, width: Int, height: Int, bytesPerRow: Int) {
@@ -260,26 +253,3 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   
 }
 
-final class X11ViewHolder {
-  private var _onReady: ((X11View) -> Void)?
-
-  /// Called when the SwiftUI-created X11View becomes available.
-  /// If the view is already set, this delivers immediately.
-  var onReady: ((X11View) -> Void)? {
-    get { _onReady }
-    set {
-      _onReady = newValue
-      if let v = view {
-        _onReady?(v)
-      }
-    }
-  }
-
-  var view: X11View? {
-    didSet {
-      if let v = view {
-        _onReady?(v)
-      }
-    }
-  }
-}

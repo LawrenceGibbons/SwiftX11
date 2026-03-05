@@ -1381,24 +1381,6 @@ final class X11View: NSView {
   
 }
 
-struct X11WindowHost: NSViewRepresentable {
-  let useMetal: Bool
-  let onViewReady: (X11View) -> Void
-  
-  func makeNSView(context: Context) -> X11View {
-    let v = X11View(frame: .zero)
-    v.wantsMetal = useMetal
-    v.setUseMetal(useMetal)
-    onViewReady(v)
-    return v
-  }
-  
-  func updateNSView(_ nsView: X11View, context: Context) {
-    nsView.wantsMetal = useMetal
-    nsView.setUseMetal(useMetal)
-  }
-  
-}
 
 
 final class X11Renderer: NSObject, MTKViewDelegate {
