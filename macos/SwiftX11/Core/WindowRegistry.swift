@@ -487,7 +487,11 @@ final class WindowRegistry {
     // If the view has a retained display frame (from a recent resize), present
     // that instead of copying from the C++ drawing surface.  The display frame
     // is the last complete frame before reallocation — no white strips.
+    // EXCEPTION: shaped windows — the retained frame is at the old size and
+    // the shape mask won't match, causing distorted transparency during resize.
+    // Better to let the client redraw at the new size immediately.
     if let view = controller.x11View,
+       !view.isShaped,
        let df = view.retainedDisplayFrame() {
       // Force full upload (damage rect is stale for the display frame)
       presentBGRA(xid: presentXid, data: df.data,

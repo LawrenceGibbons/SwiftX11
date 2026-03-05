@@ -178,8 +178,10 @@ final class X11View: NSView {
         guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
 
         // If no old surface or live resize (skipped copy), clear everything.
+        // Shaped windows: fill with transparent black (0x00) so uncovered pixels
+        // during resize don't flash white through the shape mask.
         if inLiveResize || old == nil || oldW <= 0 || oldH <= 0 || oldBPR <= 0 {
-          memset(base, 0xFF, needBytes)
+          memset(base, isShaped ? 0x00 : 0xFF, needBytes)
           return
         }
 
