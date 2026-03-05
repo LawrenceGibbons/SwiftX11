@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-04 (v1.7.4 — advertise RANDR, Xinerama, GE extensions)
+Last updated: 2026-03-05 (v1.7.5 — SHAPE extension with actual clipping)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -125,7 +125,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.4)**: **BIG-REQUESTS**, **RENDER**, **XFIXES**, **RANDR**, **XINERAMA**, and **Generic Event Extension (GE)** are all advertised as present. All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. RANDR reports single-screen configuration (1 output, 1 CRTC, 1 mode). Xinerama reports single screen. **SHAPE** has full stub support but is NOT advertised (causes xeyes to take a broken oval-window code path — needs actual shape clipping first).
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.5)**: **BIG-REQUESTS**, **RENDER**, **XFIXES**, **RANDR**, **XINERAMA**, **Generic Event Extension (GE)**, and **SHAPE** are all advertised as present (7 total). All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. RANDR reports single-screen configuration (1 output, 1 CRTC, 1 mode). Xinerama reports single screen. SHAPE fully implemented with actual pixel-level clipping, transparent backgrounds, and hit testing.
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing) — ADVERTISED (v1.6.0)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
@@ -165,14 +165,21 @@ GTK and Java use XFIXES for cursor visibility and region operations.
 - [x] **XFixesSetWindowShapeRegion**: Consume silently (v1.6.0).
 - [x] **XFixesGetCursorImageAndName**: Returns 1x1 transparent cursor + empty name (v1.6.0).
 
-### 2.4 SHAPE Extension (LOW — non-rectangular windows) — stubs complete, NOT advertised
-Stub handlers exist for all core SHAPE operations, but SHAPE is deliberately NOT advertised because xeyes uses SHAPE for oval window clipping. Since our implementation silently consumes shape ops without actual pixel clipping, xeyes renders solid-black ovals instead of transparent eye shapes. SHAPE can be advertised once actual shape-based clipping is implemented (or if xeyes is not a priority).
-- [x] **QueryExtension("SHAPE")**: Handler returns present=1 internally, but NOT in QueryExtension/ListExtensions responses (v1.6.0).
+### 2.4 SHAPE Extension (non-rectangular windows) — DONE, ADVERTISED (v1.7.5)
+Full SHAPE implementation with actual pixel-level clipping, transparent backgrounds, and hit testing. xeyes displays with transparent eye-shaped windows.
+- [x] **QueryExtension("SHAPE")**: Advertised as present=1, major opcode 135 (v1.7.5).
 - [x] **ShapeQueryVersion**: Returns version 1.1 (v1.4.0).
-- [x] **ShapeRectangles (sub-opcode 1)**: Consume silently — all windows remain rectangular (v1.6.0).
-- [x] **ShapeMask (sub-opcode 2)**: Consume silently (v1.6.0).
-- [x] **ShapeQueryExtents (sub-opcode 5)**: Returns window bounding rect (v1.6.0).
-- [ ] **Actual shape clipping**: Implement pixel-level clipping based on stored shape regions. Required before advertising SHAPE.
+- [x] **ShapeRectangles (sub-opcode 1)**: Parses wire format (op, kind, window, x/y offset, rects), stores in ShapeRegion per window (v1.7.5).
+- [x] **ShapeMask (sub-opcode 2)**: Reads depth-1 pixmap from PixmapTable, converts bitmap to rectangles via run-length encoding (v1.7.5).
+- [x] **ShapeCombine (sub-opcode 3)**: Combines source window shape into dest window shape with offset (v1.7.5).
+- [x] **ShapeOffset (sub-opcode 4)**: Offsets shape region by dx/dy (v1.7.5).
+- [x] **ShapeQueryExtents (sub-opcode 5)**: Returns actual shaped booleans and extents from stored ShapeRegion (v1.7.5).
+- [x] **ShapeGetRectangles (sub-opcode 8)**: Returns actual rectangle list from stored ShapeRegion (v1.7.5).
+- [x] **ShapeRegion data structure**: Stores bounding/clip/input regions per window. Supports Set/Union/Intersect/Subtract/Invert operations. setFromBitmap scans rows with LSBFirst bit order, run-length encodes set bits (v1.7.5).
+- [x] **Depth-1 pixmap drawing**: PolyFillArc and PolyFillRectangle now handle depth-1 pixmap targets (bit manipulation with LSBFirst order). Required because xeyes creates elliptical masks via XFillArc on depth-1 bitmaps (v1.7.5).
+- [x] **Hit testing**: InputRouting.cpp and XProtoNotifyBridge.cpp check shape containment after rectangular bounds check. Input shape checked first, falls back to bounding shape (v1.7.5).
+- [x] **Visual clipping**: Present-time alpha masking in Swift — premultiplied alpha (transparent=0x00000000), shape rects queried via C++ bridge. NSWindow/CAMetalLayer/SwiftUI layers all set non-opaque. Metal pipeline uses alpha blending (v1.7.5).
+- [x] **Shaped window resize**: Retained display buffer skipped for shaped windows, new surfaces filled with transparent black (v1.7.5).
 
 ### 2.5 Other Extensions (LOW — query but don't need full impl)
 These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
@@ -388,15 +395,16 @@ rendercheck                 # RENDER extension tests
 
 ~~19. **RANDR, Xinerama, GE extensions** — DONE (v1.7.4): All three advertised. RANDR v1.3 single-screen stubs (GetScreenResources, GetOutputInfo, GetCrtcInfo, etc.). Xinerama single-screen. GE v1.0 QueryVersion.~~
 
-### Remaining priorities
-1. **Complete Phase 2.4** — SHAPE actual clipping: implement pixel-level clipping from stored shape regions, then advertise
-2. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering works via RENDER CompositeGlyphs; optional CoreText bridge
-3. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close) (Phase 5.4)
-4. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
-5. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
+~~20. **SHAPE extension actual clipping** — DONE (v1.7.5): Full SHAPE implementation with ShapeRegion storage, wire protocol parsing (ShapeRectangles/Mask/Combine/Offset), depth-1 pixmap drawing (PolyFillArc/PolyFillRectangle), hit testing, present-time alpha masking, Metal transparency. xeyes displays with transparent eye-shaped windows. 7 extensions now advertised.~~
 
-### Phase 2+3 Status Assessment (v1.7.4)
-**Phase 2 is nearly complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Six extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), and GE (v1.0). SHAPE has stub support but is held back to avoid breaking xeyes — actual shape clipping (2.4) is the only remaining Phase 2 item. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
+### Remaining priorities
+1. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering works via RENDER CompositeGlyphs; optional CoreText bridge
+2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close) (Phase 5.4)
+3. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
+4. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
+
+### Phase 2+3 Status Assessment (v1.7.5)
+**Phase 2 is complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Seven extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), GE (v1.0), and SHAPE (v1.1 with actual clipping). SHAPE is fully implemented with ShapeRegion storage, depth-1 pixmap drawing, hit testing, and present-time alpha masking — xeyes displays with transparent eye-shaped windows. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
 
 **v1.7.2 adds a reply-tracking safety net** that prevents XCB sequence desync crashes (the xcalc resize crash). Missing replies for reply-bearing opcodes now automatically get a BadImplementation error response.
 
@@ -404,7 +412,9 @@ rendercheck                 # RENDER extension tests
 
 **v1.7.4 enables RANDR, Xinerama, GE** — Phase 2.5 complete. RANDR stubs report single-screen configuration with 1 output/CRTC/mode. All commonly-queried RANDR sub-opcodes handled.
 
-**Next priorities**: Complete 2.4 (SHAPE), then 3.3, then Phase 4+ (window lifecycle, error handling).
+**v1.7.5 enables SHAPE with actual clipping** — Phase 2.4 complete. Full SHAPE wire protocol parsing (ShapeRectangles/Mask/Combine/Offset), ShapeRegion storage with Set/Union/Intersect/Subtract/Invert operations, depth-1 pixmap drawing for PolyFillArc/PolyFillRectangle, hit testing in InputRouting and XProtoNotifyBridge, present-time alpha masking with premultiplied alpha, Metal transparency with layer hierarchy management, shaped window resize handling.
+
+**Next priorities**: Complete 3.3 (Xft/fontconfig verification), then Phase 4+ (window lifecycle, error handling, container networking).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
@@ -427,7 +437,18 @@ rendercheck                 # RENDER extension tests
 - **RANDR extension advertised**: QueryExtension("RANDR") now returns present=1, major opcode 136. RRQueryVersion returns 1.3 (downgraded from 1.5 to limit surface area). Single-screen stubs: RRGetScreenResources/Current (1 CRTC, 1 output "Virtual-1", 1 mode 1920×1080@60Hz), RRGetOutputInfo (Connected), RRGetCrtcInfo (position 0,0), RRGetScreenSizeRange (1×1 to 8192×8192), RRGetOutputPrimary, RRListOutputProperties (empty), RRSelectInput (void), RRSetCrtcConfig (success), RRGetCrtcGammaSize (0). Unhandled RANDR sub-opcodes still send BadRequest error (safety net).
 - **Xinerama extension advertised**: QueryExtension("XINERAMA") and alias "PANORAMIX" now return present=1, major opcode 137. XineramaQueryVersion returns 1.1, IsActive=1, QueryScreens returns 1 screen 1920×1080.
 - **Generic Event Extension (GE) advertised**: QueryExtension("Generic Event Extension") now returns present=1, major opcode 138. GEQueryVersion returns 1.0.
-- **Total advertised extensions**: 6 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE).
+- **Total advertised extensions**: 6 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE). Updated to 7 in v1.7.5 (adds SHAPE).
+
+### Features (v1.7.5)
+- **SHAPE extension actual clipping**: Full SHAPE implementation enabling non-rectangular windows with transparent backgrounds. xeyes now displays with transparent eye-shaped windows on macOS.
+  - **ShapeRegion data structure**: Per-window bounding/clip/input shape storage with Set/Union/Intersect/Subtract/Invert operations. Bitmap→rectangles via run-length encoding with LSBFirst bit order.
+  - **Wire protocol parsing**: ShapeRectangles (minor 1), ShapeMask (minor 2), ShapeCombine (minor 3), ShapeOffset (minor 4) all parse and store shape data. ShapeQueryExtents (minor 5) and ShapeGetRectangles (minor 8) return real data.
+  - **Depth-1 pixmap drawing**: PolyFillArc and PolyFillRectangle handle depth-1 pixmap targets with per-bit manipulation. Required because xeyes creates elliptical masks via XFillArc on depth-1 bitmaps.
+  - **Hit testing**: InputRouting.cpp and XProtoNotifyBridge.cpp check shape containment after rectangular bounds check. Input shape checked first, falls back to bounding shape.
+  - **Present-time alpha masking**: Swift applies shape mask at present time — saves original data, zeros all pixels (premultiplied transparent), copies back shape-interior pixels with forced alpha.
+  - **Metal transparency**: NSWindow.isOpaque=false, entire view hierarchy set non-opaque (SwiftUI NSHostingView inserts intermediate layers), CAMetalLayer.isOpaque enforced at present time, Metal pipeline uses alpha blending (sourceAlpha/oneMinusSourceAlpha).
+  - **Shaped window resize**: Retained display buffer skipped for shaped windows (old-size frame + old-size mask = distortion), new surfaces filled with transparent black.
+  - **Known issue**: Eyes occasionally flash black during live resize.
 
 ### Bug fixes (v1.7.3)
 - **xcalc resize crash — monotonic wire-sequence floor**: Even with v1.7.2's reply-tracking safety net, xcalc resize still triggered `[xcb] Unknown sequence number` crashes. Root cause: `drainHostCommands()` interleaves with `readAndDispatch()`, and host commands (resize → ConfigureNotify, Expose) carry stale sequences from `lastSeq()` that are behind sequences already sent during client request dispatch. XCB widens 16-bit sequences to 64-bit monotonically — any backwards sequence causes crash. Fixed by tracking `max_wire_seq_` (highest sequence ever sent) in `XProtoTransport::sendAll()` and bumping any stale sequence forward. Payload-aware: `payload_remaining_` counter distinguishes reply payload chunks (bytes[2:3] are arbitrary data) from response headers (bytes[2:3] are sequence numbers).

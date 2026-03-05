@@ -133,6 +133,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `SwiftX11/UI/Windows/X11MetalRenderer.swift` | Metal texture management, partial sub-rect uploads |
 | `X11LowLevel/include/SwiftX11Version.h` | Single source of truth for version string |
 | `X11LowLevel/cpp/X11Protocol/include/Utils/FillStyle.hpp` | GC fill-style helper (Solid/Tiled/Stippled/OpaqueStippled) |
+| `X11LowLevel/cpp/X11Protocol/include/Core/ShapeRegion.hpp` | SHAPE extension region storage (bounding/clip/input shape rects) |
 | `X11LowLevel/cpp/X11Protocol/include/Core/PropertyTable.hpp` | Shared property storage (used by PropOps + SelectionOps) |
 | `X11LowLevel/cpp/X11Protocol/include/Core/ClipboardAtoms.hpp` | Well-known atom constants (CLIPBOARD, TARGETS, UTF8_STRING, etc.) |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/SelectionOps.cpp` | Selection protocol + macOS clipboard bridge |
@@ -214,7 +215,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **WarpPointer** (v1.4.0, opcode 41): Routes via UICommandQueue → Swift → CGWarpMouseCursorPosition. Translates X11 coordinates to screen coordinates.
 - **BIG-REQUESTS** (v1.4.0): Per-client `big_req_enabled_` flag. Extended-length parsing in readAndDispatch (phase 0.5: len_words==0 → read 4 extra bytes as 32-bit length). BigReqEnable (opcode 133) replies with max_request_length=1M words (4MB).
 - **16-bit text** (v1.4.0): PolyText16 (opcode 75) and ImageText16 (opcode 77) with CHAR2B encoding (byte1 high, byte2 low).
-- **Extension stubs** (v1.4.0→v1.7.4): Handler code for XFIXES (134, v5.0), SHAPE (135, v1.1), RANDR (136, v1.3), Xinerama (137, v1.1 + IsActive + QueryScreens), GE (138, v1.0). Opcodes defined in X11ExtOpcodes.hpp. **RANDR, Xinerama, GE now advertised** (v1.7.4). RANDR reports single-screen configuration (1 output "Virtual-1", 1 CRTC, 1 mode 1920×1080). SHAPE stubs remain NOT advertised (breaks xeyes without real clipping).
+- **Extension stubs** (v1.4.0→v1.7.5): Handler code for XFIXES (134, v5.0), SHAPE (135, v1.1), RANDR (136, v1.3), Xinerama (137, v1.1 + IsActive + QueryScreens), GE (138, v1.0). Opcodes defined in X11ExtOpcodes.hpp. **All now advertised** (v1.7.4–v1.7.5). RANDR reports single-screen configuration (1 output "Virtual-1", 1 CRTC, 1 mode 1920×1080). SHAPE fully implemented with actual clipping (v1.7.5).
 - **RENDER extension** (v1.4.0→v1.7.1, major 139): Full implementation — QueryPictFormats (ARGB32/RGB24/A8/A4/A1), CreatePicture/FreePicture, Composite (all Porter-Duff modes + mask + gradient sources), FillRectangles, CreateSolidFill, QueryFilters, AddGlyphs/FreeGlyphs, CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan (scanline rasterization), CreateLinearGradient/CreateRadialGradient/CreateConicalGradient (per-pixel gradient sampling with color stop interpolation). **Advertised to clients** (v1.6.0+).
 - **Selections/clipboard bridge** (v1.5.0): Pre-registered atoms 69-77 (CLIPBOARD, TARGETS, UTF8_STRING, TIMESTAMP, TEXT, MULTIPLE, INCR, WM_PROTOCOLS, WM_DELETE_WINDOW). PropertyTable extracted to shared header. Swift registers get/set callbacks via `x11_clipboard_register()`. ConvertSelection reads NSPasteboard when no X11 owner. SendEvent intercepts SelectionNotify for CLIPBOARD → NSPasteboard write. TARGETS returns supported types.
 - **GC fill-style rendering** (v1.5.0): FillSolid/FillTiled/FillStippled/FillOpaqueStippled implemented in PolyFillRectangle, FillPoly, PolyFillArc via `Utils/FillStyle.hpp` helper. Tile pixmaps sampled at `(px-ts_x_origin)%tile_w`. Stipple bitmaps bit-tested with proper modulo wrapping. Solid fill fast path preserved (zero overhead when fill_style==0).
@@ -254,16 +255,18 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **RANDR/Xinerama/GE advertised** (v1.7.4): RANDR (RRQueryVersion 1.3, GetScreenResources, GetOutputInfo, GetCrtcInfo, GetOutputPrimary, SelectInput, SetCrtcConfig, GetScreenSizeRange, ListOutputProperties, GetCrtcGammaSize), Xinerama (QueryVersion, IsActive, QueryScreens), and GE (QueryVersion) now return present=1 in QueryExtension and are listed in ListExtensions. Total advertised: 6 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE).
 
-### Known Issues (v1.7.4)
+- **SHAPE extension with actual clipping** (v1.7.5): Full SHAPE implementation — non-rectangular windows with real visual clipping and transparent backgrounds. ShapeRegion data structure stores bounding/clip/input regions per window. Wire protocol parsing for ShapeRectangles (minor 1), ShapeMask (minor 2), ShapeCombine (minor 3), ShapeOffset (minor 4). ShapeQueryExtents (minor 5) and ShapeGetRectangles (minor 8) return real data. Depth-1 pixmap drawing added to PolyFillArc and PolyFillRectangle (xeyes creates elliptical masks via XFillArc on depth-1 bitmaps). Hit testing respects shape regions (InputRouting + XProtoNotifyBridge). Present-time alpha masking in Swift: premultiplied alpha (transparent pixels = 0x00000000), shape rects queried via bridge. NSWindow + CAMetalLayer + SwiftUI layer hierarchy all set non-opaque for shaped windows. Metal pipeline uses alpha blending (sourceAlpha/oneMinusSourceAlpha). Retained display buffer skipped for shaped windows during resize. Total advertised extensions: 7 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE).
+
+### Known Issues (v1.7.5)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple charset fonts; not all charsets covered.
 - **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
 
+- **xeyes shaped window occasional black flash on resize**: During live resize, eyes may briefly flash black as the shape mask is reapplied to the new surface size. Minor cosmetic issue.
+
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
-1. **Complete Phase 2.4** — SHAPE actual clipping (implement pixel-level clipping, then advertise)
-2. **Complete Phase 2.5** — Enable remaining extensions (RANDR, Xinerama, GE — stubs exist)
-3. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering; optional CoreText bridge
-4. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
-5. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
-6. **Container networking** — TCP + Unix socket for Docker workflow
+1. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering; optional CoreText bridge
+2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
+3. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
+4. **Container networking** — TCP + Unix socket for Docker workflow
