@@ -324,6 +324,23 @@ final class X11View: NSView {
   override func layout() {
     Self.layoutDepthTLS.value += 1
     defer { Self.layoutDepthTLS.value -= 1 }
+
+    // Suppress frame-change notifications on self AND subviews for the ENTIRE
+    // layout pass.  super.layout() triggers the Auto Layout engine which may
+    // set view frames (via autoresizingMask → NSViewActuallyUpdateFrameFromLayoutEngine)
+    // BEFORE our code runs.  That posts NSViewFrameDidChangeNotification, which
+    // the SwiftUI hosting layer observes and reacts to by calling
+    // _setFrameCommon:display:fromServer: on the window — triggering another
+    // layout pass and _NSDetectedLayoutRecursion.
+    let savedSelfPosts = self.postsFrameChangedNotifications
+    self.postsFrameChangedNotifications = false
+    let mv = mtkView
+    mv?.postsFrameChangedNotifications = false
+    defer {
+      mv?.postsFrameChangedNotifications = true
+      self.postsFrameChangedNotifications = savedSelfPosts
+    }
+
     super.layout()
 
     // Only set frames when they actually change — setting a frame (even to the
@@ -339,13 +356,9 @@ final class X11View: NSView {
       CATransaction.commit()
     }
 
-    // MTKView (NSView): suppress frame-change notifications to break the
-    // setFrame → NSViewFrameDidChangeNotification → layout() cycle that
-    // causes _NSDetectedLayoutRecursion on app launch.
-    if let mv = mtkView, mv.frame != b {
-      mv.postsFrameChangedNotifications = false
+    // MTKView frame — notifications already suppressed above.
+    if let mv, mv.frame != b {
       mv.frame = b
-      mv.postsFrameChangedNotifications = true
     }
 
     if pendingEnableMetal, wantsMetal,
