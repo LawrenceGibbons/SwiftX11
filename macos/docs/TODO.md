@@ -183,12 +183,10 @@ Full SHAPE implementation with actual pixel-level clipping, transparent backgrou
 
 ### 2.5 Other Extensions (LOW — query but don't need full impl)
 These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
-- [ ] **MIT-SHM**: Shared memory (not applicable over network/container — present=0 is correct).
+- [x] **MIT-SHM**: Not applicable over network/container — returns present=0 (intentional, v1.4.0).
 - [x] **RANDR**: Advertised (v1.7.4). RRQueryVersion returns 1.3. Single-screen stubs: GetScreenResources/Current (1 CRTC, 1 output, 1 mode 1920×1080), GetOutputInfo (Connected, "Virtual-1"), GetCrtcInfo (position 0,0), GetScreenSizeRange, GetOutputPrimary, ListOutputProperties, SelectInput, SetCrtcConfig, GetCrtcGammaSize.
 - [x] **Xinerama**: Advertised (v1.7.4). QueryVersion returns 1.1, IsActive=1, QueryScreens returns 1 screen 1920×1080.
-- [ ] **XInput / XInput2**: Extended input (present=0 is fine initially).
-- [ ] **DPMS**: Display power management (present=0).
-- [ ] **SYNC**: Synchronization (present=0).
+- [x] **DPMS**: Display power management — returns present=0 (intentional, not applicable on macOS, v1.4.0).
 - [x] **Generic Event Extension (GE)**: Advertised (v1.7.4). GEQueryVersion returns 1.0.
 
 ---
@@ -275,6 +273,23 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio).
 - [ ] **WM_PROTOCOLS**: Support WM_DELETE_WINDOW (send ClientMessage instead of destroying).
 - [ ] **_NET_WM_* (EWMH)**: Basic Extended Window Manager Hints support.
+
+---
+
+## Phase 7: Additional Extensions (LOW — broader app compatibility)
+
+These extensions are not needed for the Vivado/Vitis target but may be required by other X11 applications colleagues might use.
+
+### 7.1 XInput / XInput2 (MEDIUM)
+Extended input devices (tablets, multi-touch). Some GTK apps query for XInput2.
+- [ ] **XInput2 QueryVersion**: Return version or present=0. Assess whether GTK hard-requires XI2 or falls back gracefully.
+- [ ] **XIQueryDevice**: List input devices (keyboard + pointer minimum).
+- [ ] **XISelectEvents**: Accept and track event selections.
+
+### 7.2 SYNC Extension (LOW)
+Synchronization primitives. Some compositors and toolkits use SYNC for frame synchronization.
+- [ ] **SYNC QueryVersion**: Return present=0 initially, implement if needed.
+- [ ] **SYNC counters/fences**: Full implementation if required by specific apps.
 
 ---
 
@@ -404,7 +419,7 @@ rendercheck                 # RENDER extension tests
 4. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
 
 ### Phase 2+3 Status Assessment (v1.7.5)
-**Phase 2 is complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Seven extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), GE (v1.0), and SHAPE (v1.1 with actual clipping). SHAPE is fully implemented with ShapeRegion storage, depth-1 pixmap drawing, hit testing, and present-time alpha masking — xeyes displays with transparent eye-shaped windows. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
+**Phase 2 is nearly complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Seven extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), GE (v1.0), and SHAPE (v1.1 with actual clipping). SHAPE is fully implemented with ShapeRegion storage, depth-1 pixmap drawing, hit testing, and present-time alpha masking — xeyes displays with transparent eye-shaped windows. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
 
 **v1.7.2 adds a reply-tracking safety net** that prevents XCB sequence desync crashes (the xcalc resize crash). Missing replies for reply-bearing opcodes now automatically get a BadImplementation error response.
 
