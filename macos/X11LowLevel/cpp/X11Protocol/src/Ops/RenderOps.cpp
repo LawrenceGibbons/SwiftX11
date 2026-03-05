@@ -1070,18 +1070,16 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             const uint32_t rowBytes = (((uint32_t)info.w + 1u) / 2u + 3u) & ~3u;
             for (uint32_t row = 0; row < info.h; row++) {
               uint32_t bytesRead = 0;
-              for (uint32_t col = 0; col < info.w; col++) {
-                if ((col & 1) == 0 && br.remaining() > 0) {
-                  uint8_t byte = br.readU8();
-                  bytesRead++;
-                  // Low nibble first (LSBFirst)
-                  uint8_t lo = byte & 0x0F;
-                  rg.alpha[row * info.w + col] = (uint8_t)(lo * 255 / 15);
-                  if (col + 1 < info.w) {
-                    uint8_t hi = (byte >> 4) & 0x0F;
-                    rg.alpha[row * info.w + col + 1] = (uint8_t)(hi * 255 / 15);
-                  }
-                  col++; // skip the col++ in for-loop for paired pixel
+              for (uint32_t col = 0; col < info.w; col += 2) {
+                if (br.remaining() == 0) break;
+                uint8_t byte = br.readU8();
+                bytesRead++;
+                // Low nibble first (LSBFirst)
+                uint8_t lo = byte & 0x0F;
+                rg.alpha[row * info.w + col] = (uint8_t)(lo * 255 / 15);
+                if (col + 1 < info.w) {
+                  uint8_t hi = (byte >> 4) & 0x0F;
+                  rg.alpha[row * info.w + col + 1] = (uint8_t)(hi * 255 / 15);
                 }
               }
               // Skip padding

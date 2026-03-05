@@ -368,13 +368,30 @@ std::unique_ptr<BdfFont> createCoreTextFont(const std::string& xlfdOrName,
 
   // Rasterize Latin-1 glyphs (0-255)
   int maxWidth = 0;
+  int maxGlyphDescent = 0;
   for (int ch = 0; ch < 256; ch++) {
     Glyph g;
     if (rasterizeGlyph(ctFont, (UniChar)ch, g)) {
       if (g.dwidth > maxWidth) maxWidth = g.dwidth;
+      // Track the deepest glyph descent (-bbx_yoff = pixels below baseline)
+      int d = -g.bbx_yoff;
+      if (d > maxGlyphDescent) maxGlyphDescent = d;
       font->glyphs[ch] = std::move(g);
     }
   }
+
+  // Ensure font descent covers all actual glyph extents.
+  // CoreText's descent metric sometimes equals the deepest glyph extent
+  // exactly, but X11 line spacing (ascent + descent) means the next line's
+  // background clear starts at baseline + descent, overwriting the bottom
+  // row of descenders if descent == maxGlyphDescent.  Add 1 pixel margin.
+  if (maxGlyphDescent >= font->descent) {
+    font->descent = maxGlyphDescent + 1;
+  }
+
+  // Update bounding box after descent adjustment
+  font->bbx_h = font->ascent + font->descent;
+  font->bbx_yoff = -(font->descent);
 
   // Set defaultChar (space if available, else first glyph)
   font->defaultChar = font->glyphs.count(32) ? 32 : 0;
