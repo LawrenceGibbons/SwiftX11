@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import X11LowLevel
 
 final class SettingsStore: ObservableObject {
   @Published var displayNumber: Int {
