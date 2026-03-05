@@ -961,6 +961,15 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       gs.format = format;
       sGlyphSets[gsid] = std::move(gs);
     }
+#ifndef NDEBUG
+    {
+      const char* fmtName = (format == kFmtA8) ? "A8" :
+                             (format == kFmtA4) ? "A4" :
+                             (format == kFmtA1) ? "A1" : "?";
+      fprintf(stderr, "[RENDER] CreateGlyphSet gsid=0x%x format=0x%x (%s)\n",
+              gsid, format, fmtName);
+    }
+#endif
     return;
   }
 
@@ -1114,6 +1123,15 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
     }
 
+#ifndef NDEBUG
+    if (nglyphs > 0) {
+      const auto& info0 = infos[0];
+      fprintf(stderr, "[RENDER] AddGlyphs gsid=0x%x n=%u bpp=%d  "
+              "glyph0: id=%u %ux%u origin=(%d,%d) adv=(%d,%d)\n",
+              gsid, nglyphs, bpp,
+              ids[0], info0.w, info0.h, info0.x, info0.y, info0.xOff, info0.yOff);
+    }
+#endif
     br.skip(br.remaining());
     return;
   }
@@ -1174,6 +1192,19 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
+
+#ifndef NDEBUG
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* sps = findPicture(srcPid);
+      fprintf(stderr, "[RENDER] CompositeGlyphs%d op=%d src=0x%x(solid=%d,color=0x%08x) "
+              "dst=0x%x(draw=0x%x %ux%u stride=%u) mask=0x%x gs=0x%x\n",
+              glyphIdSize * 8, op, srcPid,
+              sps ? sps->isSolid : 0, srcColor,
+              dstPid, dstDrawable, dst.w, dst.h, dst.stridePixels,
+              maskFmt, gsid);
+    }
+#endif
 
     // Current glyphset
     uint32_t curGsid = gsid;
@@ -1275,6 +1306,31 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       penX = localPenX;
       penY = localPenY;
     }
+
+#ifndef NDEBUG
+    if (!cmds.empty()) {
+      fprintf(stderr, "[RENDER]   → %zu glyphs, pen=(%d,%d), useMask=%d\n",
+              cmds.size(), penX, penY, useMask ? 1 : 0);
+      // Show first few glyph placements
+      std::lock_guard<std::mutex> lk2(sGlyphMtx);
+      for (size_t ci = 0; ci < std::min(cmds.size(), (size_t)3); ci++) {
+        auto gsIt = sGlyphSets.find(cmds[ci].gsid);
+        if (gsIt == sGlyphSets.end()) continue;
+        auto gIt = gsIt->second.glyphs.find(cmds[ci].glyphId);
+        if (gIt == gsIt->second.glyphs.end()) {
+          fprintf(stderr, "[RENDER]   glyph[%zu] id=%u NOT FOUND in gs=0x%x\n",
+                  ci, cmds[ci].glyphId, cmds[ci].gsid);
+          continue;
+        }
+        const auto& rg = gIt->second;
+        fprintf(stderr, "[RENDER]   glyph[%zu] id=%u pen=(%d,%d) "
+                "%ux%u origin=(%d,%d) → draw@(%d,%d)\n",
+                ci, cmds[ci].glyphId, cmds[ci].penX, cmds[ci].penY,
+                rg.width, rg.height, rg.x, rg.y,
+                cmds[ci].penX - rg.x, cmds[ci].penY - rg.y);
+      }
+    }
+#endif
 
     // Now render all collected glyph commands
     int32_t dmgX0 = (int32_t)dst.w, dmgY0 = (int32_t)dst.h;

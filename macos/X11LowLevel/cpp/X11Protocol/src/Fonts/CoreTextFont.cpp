@@ -355,11 +355,14 @@ std::unique_ptr<BdfFont> createCoreTextFont(const std::string& xlfdOrName,
   // Get font metrics.
   // CoreText separates line spacing into ascent + descent + leading.
   // X11 fonts only have ascent + descent, so we fold the leading into
-  // ascent to get proper inter-line spacing (otherwise text is cramped).
+  // ascent to get proper inter-line spacing.  Many system fonts (Menlo,
+  // Courier) report leading ≈ 0, which makes X11 text cramped.  Enforce
+  // a minimum of 2px leading for readable line spacing.
   CGFloat ctAscent  = CTFontGetAscent(ctFont);
   CGFloat ctDescent = CTFontGetDescent(ctFont);
   CGFloat ctLeading = CTFontGetLeading(ctFont);
-  font->ascent  = (int)std::ceil(ctAscent + ctLeading);
+  CGFloat effectiveLeading = std::max(ctLeading, (CGFloat)2.0);
+  font->ascent  = (int)std::ceil(ctAscent + effectiveLeading);
   font->descent = (int)std::ceil(ctDescent);
 
   // Font bounding box (approximate from cell size)
