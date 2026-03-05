@@ -219,17 +219,22 @@ static bool rasterizeGlyph(CTFontRef ctFont, UniChar ch, Glyph& out) {
   CTFontGetAdvancesForGlyphs(
       ctFont, kCTFontOrientationDefault, &glyphID, &advance, 1);
 
-  // Compute integer dimensions (ceil to capture all pixels)
-  int gw = (int)std::ceil(bbox.size.width);
-  int gh = (int)std::ceil(bbox.size.height);
-  if (gw <= 0) gw = 1;
-  if (gh <= 0) gh = 1;
-
   // The bbox origin is relative to the glyph origin (baseline, pen position).
   // bbox.origin.x = left bearing (can be negative for overhanging glyphs)
   // bbox.origin.y = descent below baseline (negative means below)
-  int bbx_xoff = (int)std::floor(bbox.origin.x);
-  int bbx_yoff = (int)std::floor(bbox.origin.y);
+  //
+  // Compute integer pixel span from floor(origin) to ceil(origin + size).
+  // This ensures fractional origins don't cause the buffer to be 1px too small
+  // (e.g., origin.y = -3.2, height = 11.7 → span = ceil(8.5) - floor(-3.2) = 13,
+  //  not ceil(11.7) = 12, which would clip the bottom of descenders).
+  int x0 = (int)std::floor(bbox.origin.x);
+  int y0 = (int)std::floor(bbox.origin.y);
+  int x1 = (int)std::ceil(bbox.origin.x + bbox.size.width);
+  int y1 = (int)std::ceil(bbox.origin.y + bbox.size.height);
+  int gw = std::max(1, x1 - x0);
+  int gh = std::max(1, y1 - y0);
+  int bbx_xoff = x0;
+  int bbx_yoff = y0;
 
   // Rasterize into an 8-bit grayscale bitmap context
   size_t bytesPerRow = (size_t)gw;  // 1 byte per pixel for 8-bit gray
@@ -347,10 +352,14 @@ std::unique_ptr<BdfFont> createCoreTextFont(const std::string& xlfdOrName,
   font->name = xlfdOrName;
   font->pointSize = pxSize; // approximate
 
-  // Get font metrics
-  CGFloat ctAscent = CTFontGetAscent(ctFont);
+  // Get font metrics.
+  // CoreText separates line spacing into ascent + descent + leading.
+  // X11 fonts only have ascent + descent, so we fold the leading into
+  // ascent to get proper inter-line spacing (otherwise text is cramped).
+  CGFloat ctAscent  = CTFontGetAscent(ctFont);
   CGFloat ctDescent = CTFontGetDescent(ctFont);
-  font->ascent = (int)std::ceil(ctAscent);
+  CGFloat ctLeading = CTFontGetLeading(ctFont);
+  font->ascent  = (int)std::ceil(ctAscent + ctLeading);
   font->descent = (int)std::ceil(ctDescent);
 
   // Font bounding box (approximate from cell size)
