@@ -225,6 +225,15 @@ void x11_clipboard_register_change_count(x11_clipboard_change_count_fn fn);
 int64_t x11_clipboard_get_change_count(void);
 
 // -------------------------------------------------------------------------------------
+// Font antialiasing toggle
+// -------------------------------------------------------------------------------------
+// Set/get whether server-side text rendering uses antialiased (8-bit alpha) glyphs.
+// When enabled, CoreText-rasterized fonts are rendered with per-pixel alpha blending.
+// When disabled, glyphs use 1-bit bitmaps (crisp/bitmap style).
+void x11_set_font_antialiased(int enabled);
+int  x11_get_font_antialiased(void);
+
+// -------------------------------------------------------------------------------------
 // Version
 // -------------------------------------------------------------------------------------
 const char* swiftx11_version(void);

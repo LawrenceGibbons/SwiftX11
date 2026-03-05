@@ -14,6 +14,7 @@ extern "C" {
 }
 
 #include "Core/XProtoServer.hpp"
+#include "Fonts/CoreTextFont.hpp"
 
 // Forward: get the server instance (defined in XProtoServerBridge.cpp)
 extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
@@ -298,6 +299,19 @@ extern "C" int64_t x11_clipboard_get_change_count(void)
 {
   if (!g_clip_cc) return -1;
   return g_clip_cc();
+}
+
+// -------------------------------------------------------------------------------------
+// Font antialiasing toggle
+// -------------------------------------------------------------------------------------
+extern "C" void x11_set_font_antialiased(int enabled)
+{
+  x11::font::setAntialiasedFonts(enabled != 0);
+}
+
+extern "C" int x11_get_font_antialiased(void)
+{
+  return x11::font::antialiasedFonts() ? 1 : 0;
 }
 
 // -------------------------------------------------------------------------------------

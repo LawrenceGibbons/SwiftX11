@@ -24,6 +24,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "Fonts/BDF.hpp"
+#include "Fonts/CoreTextFont.hpp"
 #include "Core/FontTable.hpp"
 #include "Utils/WireEvents.hpp"
 #include "Utils/RasterOp.hpp"
@@ -1143,6 +1144,45 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       }
     };
 
+    // Alpha-blended glyph rendering for antialiased CoreText fonts
+    auto drawGlyphAlpha32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w, gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
+      if ((int)g.alpha.size() < gw * gh) return;
+
+      const uint8_t fgR = (uint8_t)((fg >> 16) & 0xFFu);
+      const uint8_t fgG = (uint8_t)((fg >>  8) & 0xFFu);
+      const uint8_t fgB = (uint8_t)( fg        & 0xFFu);
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* arow = g.alpha.data() + (size_t)yy * (size_t)gw;
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+          const uint8_t a = arow[xx];
+          if (a == 0) continue;
+          if (gcClip && !x11::gcPointVisible(*gcClip, dx, dy)) continue;
+          if (a == 255) {
+            drow[(size_t)dx] = (fg & 0x00FFFFFFu) | 0xFF000000u;
+          } else {
+            const uint32_t bg = drow[(size_t)dx];
+            const uint8_t bgR = (uint8_t)((bg >> 16) & 0xFFu);
+            const uint8_t bgG = (uint8_t)((bg >>  8) & 0xFFu);
+            const uint8_t bgB = (uint8_t)( bg        & 0xFFu);
+            const uint8_t oR = (uint8_t)((fgR * a + bgR * (255u - a) + 127u) / 255u);
+            const uint8_t oG = (uint8_t)((fgG * a + bgG * (255u - a) + 127u) / 255u);
+            const uint8_t oB = (uint8_t)((fgB * a + bgB * (255u - a) + 127u) / 255u);
+            drow[(size_t)dx] = 0xFF000000u | ((uint32_t)oR << 16) | ((uint32_t)oG << 8) | (uint32_t)oB;
+          }
+        }
+      }
+    };
+
+    const bool useAA = x11::font::antialiasedFonts();
+
     // Parse items until end of request body.
     while (br.remaining() >= 2) {
       const uint8_t len = br.readU8();
@@ -1184,7 +1224,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
         const int leftX = (int)penX + g->bbx_xoff;
         const int topY  = (int)baseY - g->bbx_yoff - (g->bbx_h - 1);
 
-        drawGlyph1bpp32(leftX, topY, *g, gc.fg);
+        if (g->hasAlpha() && useAA)
+          drawGlyphAlpha32(leftX, topY, *g, gc.fg);
+        else
+          drawGlyph1bpp32(leftX, topY, *g, gc.fg);
 
         penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor((int)ch);
       }
@@ -1327,6 +1370,45 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       }
     };
 
+    // Alpha-blended glyph rendering for antialiased CoreText fonts
+    auto drawGlyphAlpha32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w, gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
+      if ((int)g.alpha.size() < gw * gh) return;
+
+      const uint8_t fgR = (uint8_t)((fg >> 16) & 0xFFu);
+      const uint8_t fgG = (uint8_t)((fg >>  8) & 0xFFu);
+      const uint8_t fgB = (uint8_t)( fg        & 0xFFu);
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* arow = g.alpha.data() + (size_t)yy * (size_t)gw;
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+          const uint8_t a = arow[xx];
+          if (a == 0) continue;
+          if (gcClipIT && !x11::gcPointVisible(*gcClipIT, dx, dy)) continue;
+          if (a == 255) {
+            drow[(size_t)dx] = (fg & 0x00FFFFFFu) | 0xFF000000u;
+          } else {
+            const uint32_t bg = drow[(size_t)dx];
+            const uint8_t bgR = (uint8_t)((bg >> 16) & 0xFFu);
+            const uint8_t bgG = (uint8_t)((bg >>  8) & 0xFFu);
+            const uint8_t bgB = (uint8_t)( bg        & 0xFFu);
+            const uint8_t oR = (uint8_t)((fgR * a + bgR * (255u - a) + 127u) / 255u);
+            const uint8_t oG = (uint8_t)((fgG * a + bgG * (255u - a) + 127u) / 255u);
+            const uint8_t oB = (uint8_t)((fgB * a + bgB * (255u - a) + 127u) / 255u);
+            drow[(size_t)dx] = 0xFF000000u | ((uint32_t)oR << 16) | ((uint32_t)oG << 8) | (uint32_t)oB;
+          }
+        }
+      }
+    };
+
+    const bool useAA = x11::font::antialiasedFonts();
+
     // Background fill: [x .. x+overallW) × [y-ascent .. y+descent]
     //
     // The fill height is fontAscent + fontDescent + 1 to include the row at
@@ -1352,7 +1434,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       const int leftX = penX + g->bbx_xoff;
       const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
 
-      drawGlyph1bpp32(leftX, topY, *g, gc.fg);
+      if (g->hasAlpha() && useAA)
+        drawGlyphAlpha32(leftX, topY, *g, gc.fg);
+      else
+        drawGlyph1bpp32(leftX, topY, *g, gc.fg);
 
       penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor((int)ch);
     }
@@ -1433,6 +1518,45 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       }
     };
 
+    // Alpha-blended glyph rendering for antialiased CoreText fonts
+    auto drawGlyphAlpha32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w, gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
+      if ((int)g.alpha.size() < gw * gh) return;
+
+      const uint8_t fgR = (uint8_t)((fg >> 16) & 0xFFu);
+      const uint8_t fgG = (uint8_t)((fg >>  8) & 0xFFu);
+      const uint8_t fgB = (uint8_t)( fg        & 0xFFu);
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* arow = g.alpha.data() + (size_t)yy * (size_t)gw;
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+          const uint8_t a = arow[xx];
+          if (a == 0) continue;
+          if (gcClip && !x11::gcPointVisible(*gcClip, dx, dy)) continue;
+          if (a == 255) {
+            drow[(size_t)dx] = (fg & 0x00FFFFFFu) | 0xFF000000u;
+          } else {
+            const uint32_t bg = drow[(size_t)dx];
+            const uint8_t bgR = (uint8_t)((bg >> 16) & 0xFFu);
+            const uint8_t bgG = (uint8_t)((bg >>  8) & 0xFFu);
+            const uint8_t bgB = (uint8_t)( bg        & 0xFFu);
+            const uint8_t oR = (uint8_t)((fgR * a + bgR * (255u - a) + 127u) / 255u);
+            const uint8_t oG = (uint8_t)((fgG * a + bgG * (255u - a) + 127u) / 255u);
+            const uint8_t oB = (uint8_t)((fgB * a + bgB * (255u - a) + 127u) / 255u);
+            drow[(size_t)dx] = 0xFF000000u | ((uint32_t)oR << 16) | ((uint32_t)oG << 8) | (uint32_t)oB;
+          }
+        }
+      }
+    };
+
+    const bool useAA = x11::font::antialiasedFonts();
+
     while (br.remaining() >= 2) {
       const uint8_t len = br.readU8();
       const int8_t  delta = (int8_t)br.readU8();
@@ -1467,7 +1591,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
         const int leftX = (int)penX + g->bbx_xoff;
         const int topY  = (int)baseY - g->bbx_yoff - (g->bbx_h - 1);
 
-        drawGlyph1bpp32(leftX, topY, *g, gc.fg);
+        if (g->hasAlpha() && useAA)
+          drawGlyphAlpha32(leftX, topY, *g, gc.fg);
+        else
+          drawGlyph1bpp32(leftX, topY, *g, gc.fg);
 
         penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor(encoding);
       }
@@ -1579,6 +1706,45 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       }
     };
 
+    // Alpha-blended glyph rendering for antialiased CoreText fonts
+    auto drawGlyphAlpha32 = [&](int leftX, int topY, const x11::font::Glyph& g, uint32_t fg) {
+      const int gw = g.bbx_w, gh = g.bbx_h;
+      if (gw <= 0 || gh <= 0) return;
+      if ((int)g.alpha.size() < gw * gh) return;
+
+      const uint8_t fgR = (uint8_t)((fg >> 16) & 0xFFu);
+      const uint8_t fgG = (uint8_t)((fg >>  8) & 0xFFu);
+      const uint8_t fgB = (uint8_t)( fg        & 0xFFu);
+
+      for (int yy = 0; yy < gh; yy++) {
+        const int dy = topY + yy;
+        if (dy < 0 || dy >= (int)dst.h) continue;
+        uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+        const uint8_t* arow = g.alpha.data() + (size_t)yy * (size_t)gw;
+        for (int xx = 0; xx < gw; xx++) {
+          const int dx = leftX + xx;
+          if (dx < 0 || dx >= (int)dst.w) continue;
+          const uint8_t a = arow[xx];
+          if (a == 0) continue;
+          if (gcClipIT && !x11::gcPointVisible(*gcClipIT, dx, dy)) continue;
+          if (a == 255) {
+            drow[(size_t)dx] = (fg & 0x00FFFFFFu) | 0xFF000000u;
+          } else {
+            const uint32_t bg = drow[(size_t)dx];
+            const uint8_t bgR = (uint8_t)((bg >> 16) & 0xFFu);
+            const uint8_t bgG = (uint8_t)((bg >>  8) & 0xFFu);
+            const uint8_t bgB = (uint8_t)( bg        & 0xFFu);
+            const uint8_t oR = (uint8_t)((fgR * a + bgR * (255u - a) + 127u) / 255u);
+            const uint8_t oG = (uint8_t)((fgG * a + bgG * (255u - a) + 127u) / 255u);
+            const uint8_t oB = (uint8_t)((fgB * a + bgB * (255u - a) + 127u) / 255u);
+            drow[(size_t)dx] = 0xFF000000u | ((uint32_t)oR << 16) | ((uint32_t)oG << 8) | (uint32_t)oB;
+          }
+        }
+      }
+    };
+
+    const bool useAA = x11::font::antialiasedFonts();
+
     // Background fill (+1 row to cover glyph descent boundary — see ImageText8)
     const int bgH = fontAscent + fontDescent + 1;
     fillRect32((int)x, (int)y - fontAscent, overallW, bgH, gc.bg);
@@ -1594,7 +1760,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       const int leftX = penX + g->bbx_xoff;
       const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
 
-      drawGlyph1bpp32(leftX, topY, *g, gc.fg);
+      if (g->hasAlpha() && useAA)
+        drawGlyphAlpha32(leftX, topY, *g, gc.fg);
+      else
+        drawGlyph1bpp32(leftX, topY, *g, gc.fg);
 
       penX += (g->dwidth != 0) ? g->dwidth : f->advanceFor(ch);
     }

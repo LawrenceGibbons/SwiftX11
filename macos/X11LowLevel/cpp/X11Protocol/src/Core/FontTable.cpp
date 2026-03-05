@@ -17,6 +17,7 @@
 #include "Core/FontTable.hpp"
 #include "Fonts/BDF.hpp"
 #include "Fonts/PCF.hpp"
+#include "Fonts/CoreTextFont.hpp"
 #include "Fonts/BundleResource.hpp"
 #include "Utils/TraceDefs.hpp"
 
@@ -546,6 +547,12 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
     }
   }
 
+  // Try CoreText (macOS system fonts) — before glob/pixel-size fallbacks
+  if (const auto* f = tryLoadCoreText(key)) {
+    dbgFontResolve(name, "coretext", f);
+    return f;
+  }
+
   // XLFD glob matching: if the name contains wildcards, find the first match
   if (key.find('*') != std::string::npos || key.find('?') != std::string::npos) {
 #if X11_TRACE_FONT_ENABLED
@@ -677,6 +684,44 @@ const x11::font::BdfFont* FontTable::loadPcfOnDemand(const std::string& xlfdLowe
 
   const auto* ptr = font.get();
   pcfCache_[xlfdLower] = std::move(font);
+  return ptr;
+}
+
+
+const x11::font::BdfFont* FontTable::tryLoadCoreText(const std::string& nameLower) const {
+  // Check cache first
+  auto cacheIt = ctCache_.find(nameLower);
+  if (cacheIt != ctCache_.end()) {
+    return cacheIt->second.get(); // may be nullptr (negative cache)
+  }
+
+  // Skip fonts that must use PCF/BDF (special encodings)
+  if (nameLower == "cursor") return nullptr;
+  if (nameLower.find("fontspecific") != std::string::npos) return nullptr;
+  if (nameLower.find("symbol") != std::string::npos) return nullptr;
+
+  // Skip wildcard patterns — CoreText needs a concrete name
+  if (nameLower.find('*') != std::string::npos ||
+      nameLower.find('?') != std::string::npos) {
+    return nullptr;
+  }
+
+  // Extract pixel size from XLFD if present
+  int pixelSize = 0;
+  if (!nameLower.empty() && nameLower[0] == '-') {
+    pixelSize = parseXLFD_PixelSize(nameLower);
+  }
+  if (pixelSize <= 0) pixelSize = 13; // sensible default
+
+  auto font = x11::font::createCoreTextFont(nameLower, pixelSize);
+  if (!font || font->glyphs.empty()) {
+    // Negative cache: don't retry
+    ctCache_[nameLower] = nullptr;
+    return nullptr;
+  }
+
+  const auto* ptr = font.get();
+  ctCache_[nameLower] = std::move(font);
   return ptr;
 }
 

@@ -10,10 +10,20 @@ final class SettingsStore: ObservableObject {
       didSet { UserDefaults.standard.set(useMetal, forKey: "useMetal") }
   }
 
+  @Published var antialiasedFonts: Bool {
+      didSet {
+          UserDefaults.standard.set(antialiasedFonts, forKey: "antialiasedFonts")
+          x11_set_font_antialiased(antialiasedFonts ? 1 : 0)
+      }
+  }
+
   init() {
     self.displayNumber = UserDefaults.standard.object(forKey: "displayNumber") as? Int ?? 0
     //self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? false
     self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? true
+    self.antialiasedFonts = UserDefaults.standard.object(forKey: "antialiasedFonts") as? Bool ?? true
+    // Sync initial AA state to C++
+    x11_set_font_antialiased(self.antialiasedFonts ? 1 : 0)
   }
 
   @Published var enableClipboard: Bool = true

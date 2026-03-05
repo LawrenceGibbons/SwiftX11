@@ -257,16 +257,18 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **SHAPE extension with actual clipping** (v1.7.5): Full SHAPE implementation — non-rectangular windows with real visual clipping and transparent backgrounds. ShapeRegion data structure stores bounding/clip/input regions per window. Wire protocol parsing for ShapeRectangles (minor 1), ShapeMask (minor 2), ShapeCombine (minor 3), ShapeOffset (minor 4). ShapeQueryExtents (minor 5) and ShapeGetRectangles (minor 8) return real data. Depth-1 pixmap drawing added to PolyFillArc and PolyFillRectangle (xeyes creates elliptical masks via XFillArc on depth-1 bitmaps). Hit testing respects shape regions (InputRouting + XProtoNotifyBridge). Present-time alpha masking in Swift: premultiplied alpha (transparent pixels = 0x00000000), shape rects queried via bridge. NSWindow + CAMetalLayer + SwiftUI layer hierarchy all set non-opaque for shaped windows. Metal pipeline uses alpha blending (sourceAlpha/oneMinusSourceAlpha). Retained display buffer skipped for shaped windows during resize. Total advertised extensions: 7 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE).
 
+- **CoreText font bridge** (v1.8.0): Maps X11 font requests (XLFD or bare names) to macOS system fonts via CoreText C API. Family mapping: fixed→Menlo, courier→Courier, helvetica→Helvetica, times→Times New Roman, lucida→Lucida Grande. XLFD parsing extracts family, weight (bold), slant (italic), pixel size. Rasterizes Latin-1 glyphs (0-255) with both 1-bit bitmap and 8-bit alpha coverage via `CGBitmapContext` + `CTFontDrawGlyphs`. New `drawGlyphAlpha32` lambda in all 4 text handlers (PolyText8/16, ImageText8/16) performs per-pixel alpha blending. Runtime toggle: `std::atomic<bool> g_antialiased` controlled via Settings → Rendering → "Antialiased Fonts". CoreText fonts tried first in FontTable lookup chain (after builtins/aliases/exact PCF), PCF/BDF fallback for cursor/symbol/fontspecific encodings. New files: `CoreTextFont.hpp/cpp`. Bridge: `x11_set/get_font_antialiased()`.
+
 ### Known Issues (v1.7.5)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
-- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple charset fonts; not all charsets covered.
+- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
 - **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
 
 - **xeyes shaped window occasional black flash on resize**: During live resize, eyes may briefly flash black as the shape mask is reapplied to the new surface size. Minor cosmetic issue.
 
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
-1. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering; optional CoreText bridge
+1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
 2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
 3. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
 4. **Container networking** — TCP + Unix socket for Docker workflow

@@ -50,6 +50,9 @@ private:
   // Load a PCF font on demand (lazy loading)
   const x11::font::BdfFont* loadPcfOnDemand(const std::string& xlfdLower) const;
 
+  // Try to create a font via CoreText (macOS system fonts)
+  const x11::font::BdfFont* tryLoadCoreText(const std::string& name) const;
+
   // Built-in fonts by short name (e.g. "6x13")
   std::unordered_map<std::string, std::unique_ptr<x11::font::BdfFont>> builtins_;
 
@@ -66,6 +69,9 @@ private:
 
   // Lazily-loaded PCF fonts (mutable for const findByName)
   mutable std::unordered_map<std::string, std::unique_ptr<x11::font::BdfFont>> pcfCache_;
+
+  // Lazily-loaded CoreText fonts (mutable for const findByName)
+  mutable std::unordered_map<std::string, std::unique_ptr<x11::font::BdfFont>> ctCache_;
 };
 
 } // namespace x11

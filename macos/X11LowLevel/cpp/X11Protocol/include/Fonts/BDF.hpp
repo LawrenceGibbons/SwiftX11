@@ -30,7 +30,10 @@ struct Glyph {
   int bbx_yoff = 0;
   int dwidth = 0;         // DWIDTH x
   std::vector<uint8_t> bitmap; // 1bpp packed rows, rowStrideBytes = ceil(bbx_w/8)
-  
+  std::vector<uint8_t> alpha;  // 8-bit grayscale coverage (bbx_w * bbx_h), empty for 1bpp-only
+
+  bool hasAlpha() const { return !alpha.empty(); }
+
   CharInfo charInfo() const {
     CharInfo ci;
     ci.lsb = (int16_t)bbx_xoff;

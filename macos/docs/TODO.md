@@ -206,10 +206,10 @@ These are frequently queried. Return present=0 with correct reply format, or min
 - [x] **Symbol font encoding**: Adobe Symbol font (`adobe-fontspecific` encoding) works correctly — xcalc √, ÷, π characters render from symb12.pcf.gz.
 - [x] **ListFontsWithInfo** (opcode 50): Full implementation returns per-font metrics + name, followed by correct 60-byte terminator reply.
 
-### 3.3 TrueType / CoreText Integration (MEDIUM — deferred)
+### 3.3 TrueType / CoreText Integration ✅ (v1.8.0)
 Client-side font rendering via RENDER CompositeGlyphs (Pango/FreeType) is the primary path for modern toolkits. Server-side PCF/BDF fonts cover legacy apps (xterm, xcalc, xclock).
-- [ ] **Xft/fontconfig on client side**: Clients use their own FreeType + fontconfig to render glyphs, upload via RENDER CompositeGlyphs. Server just needs RENDER support (done).
-- [ ] **CoreText bridge (optional)**: Map X11 font requests to macOS system fonts via CoreText for high-quality server-side rendering.
+- [x] **Xft/fontconfig on client side**: RENDER CompositeGlyphs8/16/32 fully implemented (v1.6.0+). Clients use FreeType + fontconfig → AddGlyphs → CompositeGlyphs.
+- [x] **CoreText bridge**: Maps X11 font requests (XLFD or bare names) to macOS system fonts via CoreText C API. Rasterizes Latin-1 glyphs with both 1-bit bitmap and 8-bit alpha coverage. Runtime toggle for antialiased vs crisp rendering. Settings menu in Preferences → Rendering. Family mapping: fixed→Menlo, courier→Courier, helvetica→Helvetica, times→Times New Roman, etc. CoreText fonts tried first in FontTable lookup chain, PCF/BDF fallback for cursor/symbol/fontspecific fonts.
 
 ---
 
@@ -413,13 +413,13 @@ rendercheck                 # RENDER extension tests
 ~~20. **SHAPE extension actual clipping** — DONE (v1.7.5): Full SHAPE implementation with ShapeRegion storage, wire protocol parsing (ShapeRectangles/Mask/Combine/Offset), depth-1 pixmap drawing (PolyFillArc/PolyFillRectangle), hit testing, present-time alpha masking, Metal transparency. xeyes displays with transparent eye-shaped windows. 7 extensions now advertised.~~
 
 ### Remaining priorities
-1. **Complete Phase 3.3** — Verify Xft/fontconfig client-side rendering works via RENDER CompositeGlyphs; optional CoreText bridge
+1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
 2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close) (Phase 5.4)
 3. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
 4. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
 
 ### Phase 2+3 Status Assessment (v1.7.5)
-**Phase 2 is nearly complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Seven extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), GE (v1.0), and SHAPE (v1.1 with actual clipping). SHAPE is fully implemented with ShapeRegion storage, depth-1 pixmap drawing, hit testing, and present-time alpha masking — xeyes displays with transparent eye-shaped windows. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
+**Phase 2 is complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Seven extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), GE (v1.0), and SHAPE (v1.1 with actual clipping). SHAPE is fully implemented with ShapeRegion storage, depth-1 pixmap drawing, hit testing, and present-time alpha masking — xeyes displays with transparent eye-shaped windows. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
 
 **v1.7.2 adds a reply-tracking safety net** that prevents XCB sequence desync crashes (the xcalc resize crash). Missing replies for reply-bearing opcodes now automatically get a BadImplementation error response.
 
@@ -429,7 +429,9 @@ rendercheck                 # RENDER extension tests
 
 **v1.7.5 enables SHAPE with actual clipping** — Phase 2.4 complete. Full SHAPE wire protocol parsing (ShapeRectangles/Mask/Combine/Offset), ShapeRegion storage with Set/Union/Intersect/Subtract/Invert operations, depth-1 pixmap drawing for PolyFillArc/PolyFillRectangle, hit testing in InputRouting and XProtoNotifyBridge, present-time alpha masking with premultiplied alpha, Metal transparency with layer hierarchy management, shaped window resize handling.
 
-**Next priorities**: Complete 3.3 (Xft/fontconfig verification), then Phase 4+ (window lifecycle, error handling, container networking).
+**v1.8.0 adds CoreText font bridge** — Phase 3.3 complete. X11 font requests mapped to macOS system fonts (Menlo, Helvetica, Courier, etc.) via CoreText C API. Both 1-bit crisp and 8-bit antialiased rendering with runtime toggle in Preferences → Rendering. CoreText tried first in font lookup, PCF/BDF fallback for cursor/symbol fonts.
+
+**Next priorities**: Phase 4+ (window lifecycle, error handling, container networking).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
