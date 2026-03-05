@@ -734,6 +734,7 @@ final class X11View: NSView {
           let y0 = max(0, ry)
           let x1 = min(width, rx + rw)
           let y1 = min(height, ry + rh)
+          if x0 >= x1 || y0 >= y1 { continue }
 
           for row in y0..<y1 {
             for col in x0..<x1 {
