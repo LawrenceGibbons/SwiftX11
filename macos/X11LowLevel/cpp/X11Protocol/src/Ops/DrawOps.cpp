@@ -1409,15 +1409,15 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     const bool useAA = x11::font::antialiasedFonts();
 
-    // Background fill: [x .. x+overallW) × [y-ascent .. y+descent]
+    // Background fill: [x .. x+overallW) × [y-fontAscent .. y+fontDescent-1]
     //
-    // The fill height is fontAscent + fontDescent + 1 to include the row at
-    // y + fontDescent.  Glyph bitmaps span [y - (fontAscent-1), y + fontDescent]
-    // (fontAscent + fontDescent rows) — because FONT_ASCENT includes the
-    // baseline row.  The +1 ensures the background fill covers the glyph's
-    // descent boundary, preventing stale pixels when the glyph bottom row
-    // (y + fontDescent) has foreground bits but no background was painted.
-    const int bgH = fontAscent + fontDescent + 1;
+    // Per the X11 spec, the background rectangle height is fontAscent + fontDescent.
+    // The background covers [y - fontAscent, y + fontDescent - 1] inclusive.
+    // For CoreText fonts, we ensure fontDescent > maxGlyphDescent so the
+    // background covers all glyph pixels.  Using fontAscent + fontDescent
+    // (not +1) prevents overlap with the next line's background fill, which
+    // otherwise overwrites the bottom row of descenders.
+    const int bgH = fontAscent + fontDescent;
 
     fillRect32((int)x,
                (int)y - fontAscent,
@@ -1745,8 +1745,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     const bool useAA = x11::font::antialiasedFonts();
 
-    // Background fill (+1 row to cover glyph descent boundary — see ImageText8)
-    const int bgH = fontAscent + fontDescent + 1;
+    // Background fill (see ImageText8 for rationale)
+    const int bgH = fontAscent + fontDescent;
     fillRect32((int)x, (int)y - fontAscent, overallW, bgH, gc.bg);
 
     // Draw glyphs
