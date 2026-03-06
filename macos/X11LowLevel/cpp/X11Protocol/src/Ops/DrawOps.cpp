@@ -47,28 +47,6 @@ namespace x11 {
 static constexpr uint32_t kBitmapScanlinePadBits = 32;   // matches SetupSuccess
 static constexpr bool     kBitmapBitOrderLSBFirst = true;
 
-// Core event: NoExpose (type 14)
-// Sent after CopyArea/CopyPlane when GC.graphics_exposures is true
-static inline void sendNoExpose(x11::XProtoContext& ctx,
-                                uint32_t dstWid,
-                                uint16_t seq,
-                                uint8_t majorEvent,
-                                uint16_t minorEvent)
-{
-  uint8_t ev[32];
-  std::memset(ev, 0, sizeof(ev));
-  ev[0] = 14; // NoExpose
-  // ev[1] unused
-  x11::wire::wr16_le(ev + 2, seq);
-  x11::wire::wr32_le(ev + 4, dstWid);      // drawable
-  x11::wire::wr16_le(ev + 8, minorEvent);  // minorEvent
-  ev[10] = majorEvent;                     // majorEvent (e.g. 62 CopyArea)
-
-  // Route as an event to the destination window (same client)
-  (void)ctx.transport().sendEvent32(dstWid, ev);
-}
-
-  
 DrawOps::DrawOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::ClearArea, &DrawOps::onMajor, this);  // 61
   reg.registerMajor(x11::opcode::CopyArea,  &DrawOps::onMajor, this);  // 62
@@ -136,41 +114,6 @@ uint32_t DrawOps::computeStrideBytesXY1(uint16_t width, uint8_t leftPadBits) {
 //  }
 //}
 
-static inline void drawGlyph1bppBGRA(uint32_t* pix, uint32_t fbW, uint32_t fbH,
-                                     int dstLeftX, int dstTopY,
-                                     const x11::font::Glyph& g,
-                                     uint32_t fg,
-                                     const x11::GCState* gc = nullptr)
-{
-  const int bw = g.bbx_w;
-  const int bh = g.bbx_h;
-  if (bw <= 0 || bh <= 0) return;
-
-  const int stride = g.rowStrideBytes();
-  const uint8_t* bm = g.bitmap.data();
-  if (!bm) return;
-
-  for (int gy = 0; gy < bh; gy++) {
-    const int yy = dstTopY + gy;
-    if ((unsigned)yy >= fbH) continue;
-
-    const uint8_t* row = bm + gy * stride;
-
-    for (int gx = 0; gx < bw; gx++) {
-      const int xx = dstLeftX + gx;
-      if ((unsigned)xx >= fbW) continue;
-
-      const uint8_t byte = row[gx >> 3];
-      const uint8_t bit  = 0x80u >> (gx & 7);
-      if (byte & bit) {
-        if (gc && !x11::gcPointVisible(*gc, xx, yy)) continue;
-        pix[(size_t)yy * fbW + (size_t)xx] = fg;
-      }
-    }
-  }
-}  
-
-
 static inline bool getGC(uint32_t gcXid, x11::GCState& out) {
   return x11::GCTable::instance().find(gcXid, out);
 }
@@ -189,13 +132,6 @@ static inline const x11::font::Glyph* resolveGlyph(const x11::font::BdfFont* f, 
   if (!g) g = f->getGlyph((int)'?');
   return g;
 }
-  
-  
-static inline int clampi(int v, int lo, int hi) {
-  return (v < lo) ? lo : (v > hi) ? hi : v;
-}
-
-  
   
   
 
@@ -440,7 +376,7 @@ void DrawOps::handleGetImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   const int16_t  y = br.readI16();
   const uint16_t w = br.readU16();
   const uint16_t h = br.readU16();
-  const uint32_t planeMask = br.readU32();
+  (void)br.readU32(); // planeMask (unused for now)
   br.skip(br.remaining());
 
   if (w == 0 || h == 0) return;

@@ -183,7 +183,6 @@ static void fillWindowBorderIfReady(x11::XProtoContext& ctx, uint32_t childXid) 
   const int32_t bx = (int32_t)cv.x;
   const int32_t by = (int32_t)cv.y;
   const int32_t totalW = (int32_t)cv.w + 2 * bw;
-  const int32_t totalH = (int32_t)cv.h + 2 * bw;
 
   auto fillRect = [&](int32_t rx, int32_t ry, int32_t rw, int32_t rh) {
     if (rx < 0) { rw += rx; rx = 0; }
@@ -868,6 +867,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 #endif
           break;
         }
+
+        // ------------------- WindowClose
+        // Handled directly in XProtoDaemon::drainHostCommands() (needs
+        // access to removeClient).  Listed here to silence -Wswitch.
+        case HostCmdType::WindowClose:
+          break;
 
   } // switch
 }

@@ -465,7 +465,7 @@ final class WindowRegistry {
     let sx = [width / 4, width / 2, (width * 3) / 4].map { max(0, min(width - 1, $0)) }
     let sy = max(0, min(height - 1, height / 2))
 
-    var samples: [UInt32] = sx.map { px(atX: $0, sy) }
+    let samples: [UInt32] = sx.map { px(atX: $0, sy) }
 
     // Count nonwhite (BGRA 0xFFFFFFFF is white in your logs)
     var nonwhite = 0
@@ -872,7 +872,6 @@ final class WindowRegistry {
     suppressCocoaResizeBudget[host] = 12
     suppressNextResizeFromCocoa.insert(host)
 
-    let scale = win.backingScaleFactor
     let wPoints = max(1.0, CGFloat(wX11))
     let hPoints = max(1.0, CGFloat(hX11))
     //let wPoints = max(1.0, CGFloat(wPx) / scale)

@@ -69,13 +69,14 @@ uint16_t XProtoTransport::nextEventSeq() {
   return event_seq_;
 }  
   
+#ifdef X11_TRACE_VERBOSE
 static inline void dbg_dump32(const char* tag, const uint8_t* b) {
   fprintf(stderr, "%s ", tag);
   for (int i = 0; i < 32; i++) fprintf(stderr, "%02X", b[i]);
   fprintf(stderr, "\n");
 }
+#endif
 
-  
 bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
 #ifdef X11_TRACE_VERBOSE
   const uint8_t* b = static_cast<const uint8_t*>(buf);

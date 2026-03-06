@@ -125,38 +125,6 @@ static int applyFontScale(int px) {
   return (px * fontScaleNumer + fontScaleDenom/2) / fontScaleDenom;
 }
 
-static const x11::font::BdfFont* pickClosestByPixelSize(
-                                                        const std::unordered_map<std::string, std::unique_ptr<x11::font::BdfFont>>& builtins,
-                                                        int pixel)
-{
-  if (pixel <= 0) return nullptr;
-
-  // Candidate keys you ship (add/remove as you like)
-  struct Cand { const char* key; int px; };
-  const Cand cands[] = {
-    {"6x13", 13},
-    {"7x13", 13},
-    {"8x13", 13},
-    {"7x14", 14},
-    {"9x15", 15},
-    {"9x18", 18},
-    {"10x20", 20},
-    {"fixed", 13}, // treat fixed as 13-ish fallback
-  };
-
-  const x11::font::BdfFont* best = nullptr;
-  int bestDist = 1<<30;
-
-  for (const auto& c : cands) {
-    auto it = builtins.find(c.key);
-    if (it == builtins.end()) continue;
-    int d = (c.px > pixel) ? (c.px - pixel) : (pixel - c.px);
-    if (d < bestDist) { bestDist = d; best = it->second.get(); }
-  }
-  return best;
-}
-
-
 static void dbgFontResolve(const std::string& req,
                            const char* resolvedKey,
                            const x11::font::BdfFont* f)
@@ -179,57 +147,6 @@ static void dbgFontResolve(const std::string& req,
           f->glyphs.size());
 #endif
 }
-
-
-static const x11::font::BdfFont* pickClosestMonospaceByPixel(
-    const std::unordered_map<std::string, std::unique_ptr<x11::font::BdfFont>>& builtins,
-    int px)
-{
-  auto get = [&](const char* k) -> const x11::font::BdfFont* {
-    auto it = builtins.find(std::string(k));
-    return (it == builtins.end()) ? nullptr : it->second.get();
-  };
-
-  // If px is unknown, pick a readable default.
-  if (px <= 0) {
-    if (auto* f = get("9x15")) return f;
-    return get("fixed");
-  }
-
-  // Exact-ish buckets (your actual set)
-  if (px <= 13) {
-    // Prefer 8x13 over 6x13 to avoid "tiny".
-    if (auto* f = get("8x13")) return f;
-    if (auto* f = get("7x13")) return f;
-    if (auto* f = get("6x13")) return f;
-    if (auto* f = get("fixed")) return f;
-  }
-
-  if (px == 14) {
-    if (auto* f = get("7x14")) return f;
-    // fall back to nearest
-    if (auto* f = get("9x15")) return f;
-    if (auto* f = get("8x13")) return f;
-  }
-
-  if (px >= 15 && px <= 17) {
-    if (auto* f = get("9x15")) return f;
-    if (auto* f = get("9x18")) return f;
-  }
-
-  if (px >= 18 && px <= 19) {
-    if (auto* f = get("9x18")) return f;
-    if (auto* f = get("10x20")) return f;
-  }
-
-  // px >= 20
-  if (auto* f = get("10x20")) return f;
-
-  // Final fallback
-  if (auto* f = get("9x15")) return f;
-  return get("fixed");
-}
-
 
 
 static const x11::font::BdfFont* pickClosestByBbxHeight(

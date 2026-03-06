@@ -23,22 +23,7 @@
 #include "Utils/WireEvents.hpp"
 
 namespace x11 {
-  
-  
-static bool computeAbsXY(XProtoContext& ctx, uint32_t xid, int32_t& outX, int32_t& outY) {
-  outX = 0; outY = 0;
-  uint32_t cur = xid;
-  for (int depth = 0; depth < 64 && cur != 0; depth++) {
-    WindowView vw{};
-    if (!ctx.windows().snapshot(cur, vw)) return false;
-    outX += vw.x;
-    outY += vw.y;
-    cur = vw.parent_xid;
-  }
-  return true;
-}
-  
-  
+
 static inline int clampi(int v, int lo, int hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
@@ -47,35 +32,13 @@ static inline int clampi(int v, int lo, int hi) {
 static inline int16_t clamp_i16(int v) {
   return (int16_t)clampi(v, -32768, 32767);
 }
-  
+
   static inline int16_t clamp16_i32(int32_t v) {
     if (v < -32768) return -32768;
     if (v >  32767) return  32767;
     return (int16_t)v;
   }
 
-
-// X11 state masks for buttons 1..5
-static inline uint16_t buttonMask(uint8_t button) {
-  // Button1Mask = 1<<8 ... Button5Mask = 1<<12
-  if (button >= 1 && button <= 5) return (uint16_t)(1u << (7u + button));
-  return 0;
-}
-
-// You need some way to get these.
-// rootW/rootH: from your Screen setup (what xdpyinfo reports).
-// absX/absY: absolute position of 'event window' in root coords.
-// If you don't track abs positions yet, use 0,0 (still consistent/clamped).
-struct AbsGeom { int absX=0, absY=0; };
-static inline AbsGeom getAbsGeomForEventWindow(const x11::WindowView* wv) {
-  AbsGeom g{};
-  if (!wv) return g;
-  // If you have these fields, use them; otherwise leave 0.
-  // g.absX = wv->abs_x;
-  // g.absY = wv->abs_y;
-  return g;
-}
-  
 static inline void getRootWH(x11::XProtoContext& ctx, int& outW, int& outH) {
   outW = 0;
   outH = 0;

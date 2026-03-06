@@ -21,20 +21,6 @@ extern "C" {
 #include "SwiftX11Bridge.h"
 }
 
-
-static inline uint16_t rd16_le(const uint8_t* p) {
-  return (uint16_t)p[0] | (uint16_t(p[1]) << 8);
-}
-static inline uint16_t rd16_be(const uint8_t* p) {
-  return (uint16_t)p[1] | (uint16_t(p[0]) << 8);
-}
-static inline uint32_t rd32_le(const uint8_t* p) {
-  return (uint32_t)p[0] | (uint32_t(p[1])<<8) | (uint32_t(p[2])<<16) | (uint32_t(p[3])<<24);
-}
-static inline uint32_t rd32_be(const uint8_t* p) {
-  return (uint32_t)p[3] | (uint32_t(p[2])<<8) | (uint32_t(p[1])<<16) | (uint32_t(p[0])<<24);
-}
-
 namespace x11 {
 
 struct XProtoServer::Impl {

@@ -87,32 +87,6 @@ static inline uint32_t packRGB16ToPixel24(uint16_t r, uint16_t g, uint16_t b) {
   return (uint32_t(r & 0xFF00u) << 8) | (uint32_t(g & 0xFF00u) << 0) | (uint32_t(b & 0xFF00u) >> 8);
 }
 
-static inline void unpackPixel24ToRGB16(uint32_t pixel, uint16_t& r, uint16_t& g, uint16_t& b) {
-  // Expand 8-bit channels to 16-bit by replication: xx -> xxxx
-  const uint8_t rr = (uint8_t)((pixel >> 16) & 0xFF);
-  const uint8_t gg = (uint8_t)((pixel >> 8)  & 0xFF);
-  const uint8_t bb = (uint8_t)((pixel >> 0)  & 0xFF);
-  r = (uint16_t(rr) << 8) | rr;
-  g = (uint16_t(gg) << 8) | gg;
-  b = (uint16_t(bb) << 8) | bb;
-}
-
-// xColorItem is 12 bytes on the wire:
-// CARD32 pixel; CARD16 red; CARD16 green; CARD16 blue; CARD8 flags; CARD8 pad
-static void appendColorItem(std::vector<uint8_t>& out,
-                            uint32_t pixel, uint16_t r, uint16_t g, uint16_t b,
-                            uint8_t flags = 0x07 /*doRGB*/) {
-  const size_t off = out.size();
-  out.resize(off + 12);
-  uint8_t* p = out.data() + off;
-  wire::wr32_le(p + 0, pixel);
-  wire::wr16_le(p + 4, r);
-  wire::wr16_le(p + 6, g);
-  wire::wr16_le(p + 8, b);
-  p[10] = flags;
-  p[11] = 0;
-}
-
 // ------------------------------
 // Registration / dispatch
 // ------------------------------

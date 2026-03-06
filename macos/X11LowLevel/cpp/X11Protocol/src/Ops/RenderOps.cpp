@@ -223,17 +223,6 @@ static inline int alphaBpp(uint32_t fmt) {
   return 8; // default
 }
 
-// Premultiply: convert straight-alpha ARGB to premultiplied
-static inline uint32_t premultiply(uint32_t c) {
-  const uint32_t a = (c >> 24) & 0xFF;
-  if (a == 255) return c;
-  if (a == 0) return 0;
-  uint32_t r = ((c >> 16) & 0xFF) * a / 255;
-  uint32_t g = ((c >> 8)  & 0xFF) * a / 255;
-  uint32_t b = ((c >> 0)  & 0xFF) * a / 255;
-  return (a << 24) | (r << 16) | (g << 8) | b;
-}
-
 // Over: src over dst (both premultiplied ARGB)
 static inline uint32_t compositeOver(uint32_t dst, uint32_t src) {
   const uint32_t sa = (src >> 24) & 0xFF;

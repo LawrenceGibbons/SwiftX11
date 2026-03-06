@@ -33,10 +33,6 @@ static inline void put32le(uint8_t* p, uint32_t v) {
   p[3] = (uint8_t)((v >> 24) & 0xFF);
 }
 
-static inline uint32_t pad4(uint32_t n) {
-  return (n + 3u) & ~3u;
-}
-
 enum : uint8_t {
   MappingSuccess = 0,
   MappingBusy    = 1,
@@ -126,21 +122,6 @@ static void sendReplyHeader(XProtoTransport& t,
   (void)t.sendReplyBytes(hdr, sizeof(hdr));
 }
 
-static void sendReplyHeaderWithU32At8(XProtoTransport& t,
-                                      uint16_t seq,
-                                      uint8_t rep1,
-                                      uint32_t lengthWords,
-                                      uint32_t u32_at8)
-{
-  uint8_t hdr[32];
-  std::memset(hdr, 0, sizeof(hdr));
-  hdr[0] = 1;
-  hdr[1] = rep1;
-  put16le(&hdr[2], seq);
-  put32le(&hdr[4], lengthWords);
-  put32le(&hdr[8], u32_at8);   // optional convenience if you need it later
-  (void)t.sendReplyBytes(hdr, sizeof(hdr));
-}
 
 // ----------------------------------------------------------------------
 

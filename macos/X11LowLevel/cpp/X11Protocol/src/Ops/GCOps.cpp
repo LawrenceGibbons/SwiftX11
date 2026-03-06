@@ -102,14 +102,16 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     const uint32_t vmask    = br.readU32();
     
     auto st = GCTable::instance().getOrCreate(gcXid);
+#ifdef X11_TRACE_VERBOSE
     const uint32_t oldFont = st.font;
-    
+#endif
+
     applyValueMask(vmask, br, st);
     // Consume any trailing padding (CreateGC has no fixed padding, but callers may pass more bytes)
     br.skip(br.remaining());
-    
+
     GCTable::instance().upsert(st);
-    
+
 #ifdef X11_TRACE_VERBOSE
     if (st.font != oldFont) {
       const x11::font::BdfFont* ff = ctx.fonts().get(st.font);
@@ -127,18 +129,20 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     //   CARD32 valueMask
     //   LISTofCARD32 values
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
-    
+
     const uint32_t gcXid = br.readU32();
     const uint32_t vmask = br.readU32();
-    
+
     auto st = GCTable::instance().getOrCreate(gcXid);
+#ifdef X11_TRACE_VERBOSE
     const uint32_t oldFont = st.font;
-    
+#endif
+
     applyValueMask(vmask, br, st);
     br.skip(br.remaining());
-    
+
     GCTable::instance().upsert(st);
-    
+
 #ifdef X11_TRACE_VERBOSE
     if (st.font != oldFont) {
       const x11::font::BdfFont* ff = ctx.fonts().get(st.font);

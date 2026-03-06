@@ -28,16 +28,10 @@ static constexpr uint32_t PCF_PROPERTIES     = (1 << 0);
 static constexpr uint32_t PCF_ACCELERATORS   = (1 << 1);
 static constexpr uint32_t PCF_METRICS        = (1 << 2);
 static constexpr uint32_t PCF_BITMAPS        = (1 << 3);
-static constexpr uint32_t PCF_INK_METRICS    = (1 << 4);
 static constexpr uint32_t PCF_BDF_ENCODINGS  = (1 << 5);
-static constexpr uint32_t PCF_SWIDTHS        = (1 << 6);
-static constexpr uint32_t PCF_GLYPH_NAMES    = (1 << 7);
 static constexpr uint32_t PCF_BDF_ACCELERATORS = (1 << 8);
 
 // Format bits
-static constexpr uint32_t PCF_DEFAULT_FORMAT     = 0x00000000;
-static constexpr uint32_t PCF_INKBOUNDS          = 0x00000200;
-static constexpr uint32_t PCF_ACCEL_W_INKBOUNDS  = 0x00000100;
 static constexpr uint32_t PCF_COMPRESSED_METRICS = 0x00000100;
 static constexpr uint32_t PCF_BYTE_MASK          = (1 << 2); // 0=LE, 1=BE
 static constexpr uint32_t PCF_BIT_MASK           = (1 << 3);

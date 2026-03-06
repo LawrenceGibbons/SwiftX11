@@ -131,7 +131,7 @@ void FontOps::handleOpenFont(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& b
   if (fid == 0) return;
 
   // Wire to FontTable (server-owned)
-  const bool ok = ctx.fonts().open(fid, name);
+  [[maybe_unused]] const bool ok = ctx.fonts().open(fid, name);
 
 #if X11_TRACE_FONT_ENABLED
   fprintf(stderr, "[FontOps] OpenFont fid=0x%08X name=\"%s\" -> %s\n",
