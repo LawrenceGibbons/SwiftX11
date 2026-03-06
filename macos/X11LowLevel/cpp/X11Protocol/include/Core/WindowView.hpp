@@ -41,6 +41,7 @@ struct WindowView {
   bool mapped = false;
   bool presentable = false;
   bool dirty = false;
+  bool surface_resize_exposed = false; // true after initial SurfaceResized re-expose
 
   // client socket for this window
   int  owner_fd = -1;

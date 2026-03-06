@@ -148,6 +148,15 @@ void WindowTable::setPresentable(uint32_t xid, bool presentable) {
   st->serial++;
 }
 
+void WindowTable::setSurfaceResizeExposed(uint32_t xid, bool v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->surface_resize_exposed = v;
+  st->serial++;
+}
+
 void WindowTable::markDirty(uint32_t xid) {
   if (xid == 0) return;
   std::lock_guard<std::mutex> lock(mu_);
@@ -239,6 +248,7 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.mapped = st->mapped;
   out.presentable = st->presentable;
   out.dirty = st->dirty;
+  out.surface_resize_exposed = st->surface_resize_exposed;
   out.owner_fd = st->owner_fd;
   out.border_width = st->border_width;
   out.border_pixel = st->border_pixel;

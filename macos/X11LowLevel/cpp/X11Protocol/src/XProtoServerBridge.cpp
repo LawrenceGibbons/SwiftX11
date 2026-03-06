@@ -363,11 +363,14 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           x11::WindowView sv{};
           bool haveSV = ctx.windows().snapshot(c.xid, sv);
 
-          if (haveSV && !sv.presentable) {
-            // Case A: initial presentation — full re-expose needed.
+          if (haveSV && !sv.surface_resize_exposed) {
+            // Case A: initial surface growth — full re-expose needed.
             // The first sendExposeSubtree (at SetPresentable time) may have
             // run when the surface was at its initial (small) size.  Children
             // at far offsets were clipped to zero and never rendered.
+            // Uses surface_resize_exposed (not presentable) because
+            // SetPresentable may have already set presentable=true while the
+            // surface was still small.
 #if X11_TRACE_RESIZE_ENABLED
             fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (initial) -> re-expose subtree\n",
                     (unsigned)c.xid);
@@ -378,6 +381,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             x11_shared_damage_union(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
             x11_ui_push_damage(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
             ctx.windows().markDirty(c.xid);
+            ctx.windows().setSurfaceResizeExposed(c.xid, true);
           } else {
             // Case B: live resize — skip EVERYTHING.
             // Do NOT call sendExposeSubtree (destructive BG fill wipes children).

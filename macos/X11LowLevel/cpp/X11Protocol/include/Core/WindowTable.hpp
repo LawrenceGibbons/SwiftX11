@@ -34,6 +34,7 @@ public:
   
   void setMapped(uint32_t xid, bool mapped);
   void setPresentable(uint32_t xid, bool presentable);
+  void setSurfaceResizeExposed(uint32_t xid, bool v);
   void markDirty(uint32_t xid);
 
   bool isReadyToPresent(uint32_t xid) const;
@@ -183,6 +184,7 @@ private:
     bool mapped = false;
     bool presentable = false;
     bool dirty = false;
+    bool surface_resize_exposed = false;
 
     int owner_fd = -1;
 
