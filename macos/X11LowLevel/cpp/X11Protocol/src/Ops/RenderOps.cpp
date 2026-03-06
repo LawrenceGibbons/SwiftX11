@@ -218,6 +218,8 @@ static inline uint32_t modulateAlpha(uint32_t c, uint8_t a) {
 
 // Return bits-per-pixel for alpha-only PictFormats
 static inline int alphaBpp(uint32_t fmt) {
+  if (fmt == kFmtARGB32) return 32;
+  if (fmt == kFmtRGB24)  return 32; // wire format is 32bpp (padded)
   if (fmt == kFmtA8) return 8;
   if (fmt == kFmtA4) return 4;
   if (fmt == kFmtA1) return 1;
@@ -963,7 +965,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 #ifndef NDEBUG
     {
-      const char* fmtName = (format == kFmtA8) ? "A8" :
+      const char* fmtName = (format == kFmtARGB32) ? "ARGB32" :
+                             (format == kFmtRGB24) ? "RGB24" :
+                             (format == kFmtA8) ? "A8" :
                              (format == kFmtA4) ? "A4" :
                              (format == kFmtA1) ? "A1" : "?";
       fprintf(stderr, "[RENDER] CreateGlyphSet gsid=0x%x format=0x%x (%s)\n",
@@ -1061,7 +1065,17 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (npixels > 0) {
           rg.alpha.resize(npixels);
 
-          if (bpp == 8) {
+          if (bpp == 32) {
+            // ARGB32/RGB24: 4 bytes per pixel, rows naturally 4-byte aligned.
+            // Extract alpha channel for compositing (loses subpixel coverage
+            // for LCD/component-alpha, but correctly consumes wire bytes).
+            for (uint32_t row = 0; row < info.h; row++) {
+              for (uint32_t col = 0; col < info.w && br.remaining() >= 4; col++) {
+                const uint32_t pixel = br.readU32();
+                rg.alpha[row * info.w + col] = (uint8_t)((pixel >> 24) & 0xFF);
+              }
+            }
+          } else if (bpp == 8) {
             // A8: each row padded to 4-byte boundary
             const uint32_t rowBytes = ((uint32_t)info.w + 3u) & ~3u;
             for (uint32_t row = 0; row < info.h; row++) {
