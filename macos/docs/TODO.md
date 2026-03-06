@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-06 (v1.9.0 — window close kills client)
+Last updated: 2026-03-06 (v1.9.3 — X11 error handling)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -215,10 +215,10 @@ Client-side font rendering via RENDER CompositeGlyphs (Pango/FreeType) is the pr
 
 ## Phase 4: Robustness and Correctness
 
-### 4.1 Error Handling (HIGH)
-- [ ] **Proper X11 error generation**: BadWindow, BadDrawable, BadGC, BadMatch, BadValue, BadAtom, BadPixmap, BadFont, BadAccess, BadAlloc for all relevant requests.
-- [ ] **Error reply format**: Ensure error replies have correct seq, minor opcode, major opcode fields.
-- [ ] **Error for destroyed resources**: Requests referencing destroyed XIDs should generate BadWindow/BadDrawable instead of silently failing.
+### 4.1 Error Handling (HIGH) — DONE (v1.9.3)
+- [x] **Proper X11 error generation**: BadWindow, BadDrawable, BadPixmap, BadFont, BadAtom, BadColor, BadValue across ~50 request handlers in 14 files. Three tiers: reply-bearing (XCB desync prevention), void resource-modifying (spec compliance), drawing ops. Uses `ctx.transport().sendErrorCore()` infrastructure.
+- [x] **Error reply format**: 32-byte error replies with correct error code, seq, resourceId, minor opcode, major opcode via `buildCoreError32()` in WireErrors.hpp.
+- [x] **Error for destroyed resources**: Drawing ops check drawable existence before sending BadDrawable — valid-but-unresolvable drawables (depth-1 pixmaps, unmapped windows) silently skip; truly non-existent XIDs get proper errors.
 
 ### 4.2 Wire Protocol Correctness (MEDIUM)
 - [ ] **Big-endian clients**: ByteReader/ReplyWriter currently assume little-endian. Java may connect with big-endian byte order. Need to respect client byte order from setup.
@@ -418,7 +418,7 @@ rendercheck                 # RENDER extension tests
 ### Remaining priorities
 1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
 2. ~~**Window close → client kill**~~ — ✅ Done (v1.9.0): WM_DELETE_WINDOW ClientMessage + forceful disconnect fallback (Phase 5.4)
-3. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
+3. ~~**Error handling**~~ — ✅ Done (v1.9.3): X11 error generation across ~50 handlers in 14 files (Phase 4.1)
 4. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
 
 ### Phase 2+3 Status Assessment (v1.7.5)
@@ -440,7 +440,9 @@ rendercheck                 # RENDER extension tests
 
 **v1.9.0 adds window close → client kill** — Red close button and Cmd+W now terminate X11 clients. ICCCM-compliant: checks WM_PROTOCOLS property for WM_DELETE_WINDOW atom, sends ClientMessage event to allow graceful shutdown. Falls back to forceful socket disconnect (`removeClient()`) for clients that don't set WM_DELETE_WINDOW. New `HostCmdType::WindowClose` host command + `x11_post_window_close()` bridge function. `windowWillClose` in Swift now routes through the close protocol instead of raw `x11_post_window_destroy`.
 
-**Next priorities**: Phase 4 (error handling), Phase 5.2 (container networking).
+**v1.9.3 adds X11 error handling** — Proper error generation (BadWindow, BadDrawable, BadPixmap, BadFont, BadAtom, BadColor, BadValue) across ~50 request handlers in 14 files. Three priority tiers: reply-bearing (critical for XCB sequence desync prevention), void resource-modifying (spec compliance), and drawing ops. Drawing ops check drawable existence to avoid false errors on valid-but-unresolvable drawables (depth-1 pixmaps, unmapped windows).
+
+**Next priority**: Phase 5.2 (container networking).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
