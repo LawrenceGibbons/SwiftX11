@@ -162,6 +162,11 @@ void x11_post_window_map(uint32_t xid);
 void x11_post_window_unmap(uint32_t xid);
 void x11_post_window_destroy(uint32_t xid);
 
+// Window close request (red button / Cmd+W).
+// Sends WM_DELETE_WINDOW ClientMessage if client supports it,
+// otherwise forcefully disconnects the client.
+void x11_post_window_close(uint32_t xid);
+
 // -------------------------------------------------------------------------------------
 // Host-driven resize (Cocoa changed size)
 // -------------------------------------------------------------------------------------

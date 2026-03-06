@@ -30,8 +30,12 @@
 #include "Core/WindowView.hpp"
 #include "Core/GrabTable.hpp"
 #include "Core/InputState.hpp"
+#include "Core/PropertyTable.hpp"
+#include "Core/ClipboardAtoms.hpp"
+#include "Core/timestamp.hpp"
 #include "Ops/EventOps.hpp"
 #include "Transport/X11Setup.hpp"
+#include "Utils/WireLE.hpp"
 
 extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
 extern "C" void x11_cpp_notify_shutdown(void);
@@ -456,11 +460,50 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
 }
 
 
+// Check if a window's WM_PROTOCOLS property includes WM_DELETE_WINDOW.
+static bool windowSupportsDeleteProtocol(uint32_t xid) {
+  PropertyTable::Prop prop{};
+  if (!PropertyTable::instance().get(xid, atom::kWM_PROTOCOLS, prop))
+    return false;
+  if (prop.format != 32) return false;
+
+  // WM_PROTOCOLS is a list of CARD32 atoms
+  const size_t count = prop.data.size() / 4;
+  for (size_t i = 0; i < count; i++) {
+    uint32_t a = wire::rd32_le(prop.data.data() + i * 4);
+    if (a == atom::kWM_DELETE_WINDOW)
+      return true;
+  }
+  return false;
+}
+
+// Send a WM_DELETE_WINDOW ClientMessage to a window.
+static void sendDeleteWindowMessage(XProtoContext& ctx, uint32_t xid) {
+  uint8_t ev[32] = {0};
+  ev[0] = 33;       // ClientMessage
+  ev[1] = 32;       // format = 32
+  wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+  wire::wr32_le(ev + 4, xid);                        // window
+  wire::wr32_le(ev + 8, atom::kWM_PROTOCOLS);        // type = WM_PROTOCOLS
+  wire::wr32_le(ev + 12, atom::kWM_DELETE_WINDOW);   // data[0] = WM_DELETE_WINDOW
+  wire::wr32_le(ev + 16, x11_now_ms_monotonic());    // data[1] = timestamp
+  // data[2..4] = 0 (already zeroed)
+  (void)ctx.transport().sendEvent32(xid, ev);
+
+#ifndef NDEBUG
+  fprintf(stderr, "[WINDOW_CLOSE] sent WM_DELETE_WINDOW to xid=0x%08X\n",
+          (unsigned)xid);
+#endif
+}
+
 void XProtoDaemon::drainHostCommands() {
   if (!server_) return;
 
   auto cmds = server_->hostCmds().takeAll();
   if (cmds.empty()) return;
+
+  // Collect fds that need forceful disconnect (WindowClose without WM_DELETE_WINDOW).
+  std::vector<int> forceDisconnect;
 
   for (const auto& c : cmds) {
     // Find the owning client for this command's window
@@ -471,6 +514,28 @@ void XProtoDaemon::drainHostCommands() {
     }
 
     ClientSession* cs = (owner_fd > 0) ? findClient(owner_fd) : nullptr;
+
+    // ---- WindowClose: special handling (needs daemon-level removeClient) ----
+    if (c.type == HostCmdType::WindowClose) {
+      if (!cs) continue;
+      activateClient(*cs);
+
+      if (windowSupportsDeleteProtocol(c.xid)) {
+        // ICCCM-compliant: send ClientMessage, client will exit gracefully
+        sendDeleteWindowMessage(server_->ctx(), c.xid);
+        server_->flushNotifyQueue();
+      } else {
+        // Client doesn't support WM_DELETE_WINDOW — forceful disconnect
+#ifndef NDEBUG
+        fprintf(stderr, "[WINDOW_CLOSE] no WM_DELETE_WINDOW on xid=0x%08X, "
+                "force disconnect fd=%d\n", (unsigned)c.xid, owner_fd);
+#endif
+        forceDisconnect.push_back(owner_fd);
+      }
+
+      deactivateClient();
+      continue;
+    }
 
     // For input events that update server-wide InputState, we need a client
     // active for event delivery. If no specific owner found, use any client.
@@ -487,6 +552,11 @@ void XProtoDaemon::drainHostCommands() {
     server_->flushNotifyQueue();
 
     deactivateClient();
+  }
+
+  // Forcefully disconnect clients that don't support WM_DELETE_WINDOW.
+  for (int fd : forceDisconnect) {
+    removeClient(fd);
   }
 }
 

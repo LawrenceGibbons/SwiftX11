@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-06 (v1.8.3 — font rendering fixes)
+Last updated: 2026-03-06 (v1.9.0 — window close kills client)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -258,11 +258,9 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [ ] **Keymap state**: QueryKeymap returns current key state (currently not implemented).
 - [ ] **XKB (optional)**: Modern clients may query for XKB extension — return not-present is acceptable.
 
-### 5.4 Window Close / Client Lifecycle (HIGH — user experience)
-- [ ] **Window close kills client**: When user clicks the red close button (Cocoa windowWillClose), the X11 client should be terminated. Two approaches:
-  - **WM_DELETE_WINDOW** (ICCCM-compliant): If WM_PROTOCOLS includes WM_DELETE_WINDOW, send a ClientMessage event. Well-behaved clients (xterm, xcalc) will exit gracefully.
-  - **Forceful disconnect**: If client doesn't support WM_DELETE_WINDOW (or as fallback), close the client socket (fd) to force disconnect. The server's eraseOwnedBy() cleanup handles resource teardown.
-- [ ] **Keyboard shortcut**: Cmd+W should also trigger window close with the same behavior.
+### 5.4 Window Close / Client Lifecycle (HIGH — user experience) — DONE (v1.9.0)
+- [x] **Window close kills client**: Red close button and Cmd+W now terminate X11 clients. ICCCM-compliant: checks WM_PROTOCOLS for WM_DELETE_WINDOW, sends ClientMessage if supported. Falls back to forceful socket disconnect for clients that don't support WM_DELETE_WINDOW (v1.9.0).
+- [x] **Keyboard shortcut**: Cmd+W triggers `performClose` on the key NSWindow, which fires `windowWillClose` → `x11_post_window_close`. Works automatically because X11 windows have `.closable` style (v1.9.0).
 
 ### 5.5 Window Menu Integration (MEDIUM — user experience)
 - [ ] **Window menu entries**: Each X11 client window should appear as an entry in SwiftX11's macOS "Window" menu. Selecting the entry should bring the window to the front and give it focus (makeKeyAndOrderFront).
@@ -414,7 +412,7 @@ rendercheck                 # RENDER extension tests
 
 ### Remaining priorities
 1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
-2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close) (Phase 5.4)
+2. ~~**Window close → client kill**~~ — ✅ Done (v1.9.0): WM_DELETE_WINDOW ClientMessage + forceful disconnect fallback (Phase 5.4)
 3. **Error handling** — Bad replies/missing errors confuse toolkits (Phase 4)
 4. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
 
@@ -435,7 +433,9 @@ rendercheck                 # RENDER extension tests
 
 **v1.8.3 fixes Xft subpixel glyph parsing** — AddGlyphs didn't handle ARGB32 glyph format (used for LCD/subpixel rendering). `alphaBpp()` returned 8 for ARGB32, causing A8 parser to read 1/4 of the bitmap data and corrupt all subsequent glyphs. Fixed with 32bpp parsing path. RENDER trace category added to TraceDefs.hpp.
 
-**Next priorities**: Phase 4+ (window lifecycle, error handling, container networking).
+**v1.9.0 adds window close → client kill** — Red close button and Cmd+W now terminate X11 clients. ICCCM-compliant: checks WM_PROTOCOLS property for WM_DELETE_WINDOW atom, sends ClientMessage event to allow graceful shutdown. Falls back to forceful socket disconnect (`removeClient()`) for clients that don't set WM_DELETE_WINDOW. New `HostCmdType::WindowClose` host command + `x11_post_window_close()` bridge function. `windowWillClose` in Swift now routes through the close protocol instead of raw `x11_post_window_destroy`.
+
+**Next priorities**: Phase 4 (error handling), Phase 5.2 (container networking).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
@@ -489,3 +489,6 @@ rendercheck                 # RENDER extension tests
   1. **Reply-sent tracking**: `XProtoTransport::reply_sent_` flag set in `sendAll()` when sending a reply (byte[0]==1) or error (byte[0]==0). Reset before each dispatch.
   2. **Core opcode safety net**: `isReplyBearingCore()` 128-entry static table in `XProtoServer::dispatch()`. After dispatch, if reply-bearing and no reply sent, sends `BadImplementation` error. Covers: unregistered handlers, handler exceptions, and normal dispatch without reply.
   3. **Extension error replies**: All extension `default` switch cases (XFIXES, SHAPE, RANDR, Xinerama, GE, RENDER) now send `BadRequest` error instead of silently consuming bytes.
+
+### Features (v1.9.0)
+- **Window close kills client**: Red close button and Cmd+W now terminate X11 clients instead of just hiding the NSWindow. ICCCM-compliant: reads WM_PROTOCOLS property on the window, checks for WM_DELETE_WINDOW atom. If present, sends ClientMessage event (type=WM_PROTOCOLS, data[0]=WM_DELETE_WINDOW, data[1]=timestamp) so the client can exit gracefully. If WM_DELETE_WINDOW not in WM_PROTOCOLS, forcefully disconnects the client by closing the socket (same path as `removeClient()`). New `HostCmdType::WindowClose` host command type, `x11_post_window_close()` bridge function, and `windowSupportsDeleteProtocol()`/`sendDeleteWindowMessage()` helpers in XProtoDaemon.cpp. Atoms already pre-registered: kWM_PROTOCOLS=76, kWM_DELETE_WINDOW=77.

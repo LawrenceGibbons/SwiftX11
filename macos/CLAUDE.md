@@ -263,16 +263,17 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **ARGB32 glyph format** (v1.8.3): AddGlyphs now handles ARGB32 (subpixel/LCD) glyph format. Previously `alphaBpp()` returned 8 for ARGB32, causing the A8 parser to read 1/4 of each glyph's data and corrupt all subsequent glyphs. New 32bpp path reads full CARD32 pixels, extracts alpha channel. RENDER trace category added to `TraceDefs.hpp`.
 
-### Known Issues (v1.8.3)
+- **Window close → client kill** (v1.9.0): Red close button and Cmd+W now terminate X11 clients. ICCCM-compliant: checks WM_PROTOCOLS property for WM_DELETE_WINDOW atom, sends ClientMessage if supported. Falls back to forceful socket disconnect for clients without WM_DELETE_WINDOW. New `HostCmdType::WindowClose` host command, `x11_post_window_close()` bridge function. Pre-registered atoms: kWM_PROTOCOLS=76, kWM_DELETE_WINDOW=77.
+
+### Known Issues (v1.9.0)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
-- **Window close (red button) does not kill client**: Closing the Cocoa window hides the NSWindow but the X11 client process keeps running. Need WM_DELETE_WINDOW ClientMessage support (ICCCM) or forceful client disconnect on window close.
 
 - **xeyes shaped window occasional black flash on resize**: During live resize, eyes may briefly flash black as the shape mask is reapplied to the new surface size. Minor cosmetic issue.
 
 ### Next Major Tasks (Vivado/Vitis Roadmap)
 See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
 1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
-2. **Window close → client kill** — Red button should terminate X11 client (WM_DELETE_WINDOW or socket close)
+2. ~~**Window close → client kill**~~ — ✅ Done (v1.9.0): WM_DELETE_WINDOW + forceful disconnect
 3. **Error handling** — proper X11 error generation (BadWindow, BadDrawable, etc.)
 4. **Container networking** — TCP + Unix socket for Docker workflow

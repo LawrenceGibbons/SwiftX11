@@ -211,6 +211,14 @@ extern "C" void x11_post_window_destroy(uint32_t xid)
   x11_ui_push_destroy(xid);
 }
 
+extern "C" void x11_post_window_close(uint32_t xid)
+{
+  if (xid == 0) return;
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return;
+  srv->hostCmds().push(x11::HostCmd{x11::HostCmdType::WindowClose, xid, 0, 0});
+}
+
 // ===========================================================================
 // Host-driven resize (Cocoa changed window size)
 // ===========================================================================

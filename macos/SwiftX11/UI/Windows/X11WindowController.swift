@@ -198,13 +198,14 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   @objc
   func windowWillClose(_ notification: Notification) {
     assert(Thread.isMainThread)
-    // make state look clean before arrival of the destroy event
+    // make state look clean before arrival of the close event
     x11_post_focus_event(xid, false)
     postSyntheticLeaveForCurrentMouseLocation()
 
-    // Tell the backend/event-queue that this X11 window is gone
-    x11_post_window_destroy(xid)
-    
+    // Send WM_DELETE_WINDOW (if client supports it) or forceful disconnect.
+    // This replaces the old x11_post_window_destroy which only hid the NSWindow
+    // but left the X11 client process running.
+    x11_post_window_close(xid)
   }  
   
   func windowDidMiniaturize(_ notification: Notification) {

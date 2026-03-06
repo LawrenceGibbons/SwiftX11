@@ -26,6 +26,7 @@ enum class HostCmdType : uint8_t {
   Key,
   Focus,
   ClipboardCapture,  // proactive selection request: xid=owner, keyCode=selection atom
+  WindowClose,       // user closed Cocoa window (red button or Cmd+W)
 };
 
 struct HostCmd {
