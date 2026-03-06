@@ -141,7 +141,7 @@ static inline const x11::font::Glyph* resolveGlyph(const x11::font::BdfFont* f, 
 // We implement the xeyes-critical case first:
 //   format=1, depth=1, destination is a depth-1 pixmap (packed bits).
 // -----------------------------
-void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t /*seq*/, uint8_t format, ByteReader& br) {
+void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, ByteReader& br) {
   // Request body (after 4-byte header):
   //   CARD32 drawable
   //   CARD32 gc
@@ -379,18 +379,27 @@ void DrawOps::handleGetImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   (void)br.readU32(); // planeMask (unused for now)
   br.skip(br.remaining());
 
-  if (w == 0 || h == 0) return;
+  if (w == 0 || h == 0) {
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, 0, x11::opcode::GetImage);
+    return;
+  }
 
   // Only support ZPixmap (format 2) for now
   if (format != 2) {
-    // Send error or empty reply? For bring-up, just skip.
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, (uint32_t)format, x11::opcode::GetImage);
     return;
   }
 
   // Resolve drawable
   x11::DrawableRW src{};
-  if (!x11::resolveDrawableRW(ctx, drawable, src) || !src.pixels32) return;
-  if (src.w == 0 || src.h == 0 || src.stridePixels == 0) return;
+  if (!x11::resolveDrawableRW(ctx, drawable, src) || !src.pixels32) {
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::GetImage);
+    return;
+  }
+  if (src.w == 0 || src.h == 0 || src.stridePixels == 0) {
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::GetImage);
+    return;
+  }
 
   // Clip request rect to drawable bounds
   int32_t x0 = (int32_t)x;
@@ -511,6 +520,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     srcRW.offsetX = 0;
     srcRW.offsetY = 0;
   } else {
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, src, x11::opcode::CopyArea);
     return;
   }
 
@@ -553,6 +563,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     dstRW.offsetX = 0;
     dstRW.offsetY = 0;
   } else {
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, dst, x11::opcode::CopyArea);
     return;
   }
 
@@ -892,7 +903,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   }
   
   
-  void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t /*seq*/, uint8_t exposures, ByteReader& br)
+  void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t seq, uint8_t exposures, ByteReader& br)
   {
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
@@ -908,7 +919,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
               (unsigned)exposures);
 
     if (wid == 0) return;
-    if (!ctx.windows().exists(wid)) return;
+    if (!ctx.windows().exists(wid)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::ClearArea);
+      return;
+    }
 
     // Resolve writable pixels (SurfaceRegistry preferred; C FB fallback).
     x11::DrawableRW dst{};
@@ -994,7 +1008,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // -----------------------------
   // PolyText8 (major 74)
   // -----------------------------
-  void DrawOps::handlePolyText8(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br)
+  void DrawOps::handlePolyText8(XProtoContext& ctx, uint16_t seq, ByteReader& br)
   {
     // Body:
     //   CARD32 drawable
@@ -1030,7 +1044,11 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 #endif
 
     x11::DrawableRW dst{};
-    if (!x11::resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText8);
+      return;
+    }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) { br.skip(br.remaining()); return; }
 
     // Get GC
@@ -1196,7 +1214,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // -----------------------------
   // ImageText8 (major 76)
   // -----------------------------
-  void DrawOps::handleImageText8(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br)
+  void DrawOps::handleImageText8(XProtoContext& ctx, uint16_t seq, uint8_t n, ByteReader& br)
   {
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
@@ -1229,7 +1247,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 #endif
 
     x11::DrawableRW dst{};
-    if (!x11::resolveDrawableRW(ctx, drawable, dst)) return;
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText8);
+      return;
+    }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
     // Get GC
@@ -1417,7 +1438,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   //   INT8 delta
   //   if len==255: CARD32 font
   //   else:        CHAR2B string[len]   (len * 2 bytes)
-  void DrawOps::handlePolyText16(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br)
+  void DrawOps::handlePolyText16(XProtoContext& ctx, uint16_t seq, ByteReader& br)
   {
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
@@ -1427,7 +1448,11 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const int32_t baseY     = (int16_t)br.readU16();
 
     x11::DrawableRW dst{};
-    if (!x11::resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText16);
+      return;
+    }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) { br.skip(br.remaining()); return; }
 
     x11::GCState gc{};
@@ -1572,7 +1597,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   //
   // Identical to ImageText8 except each character is a CHAR2B (2 bytes, byte1||byte2).
   // n (from minor/data byte) is the number of CHAR2B characters (not bytes).
-  void DrawOps::handleImageText16(XProtoContext& ctx, uint16_t /*seq*/, uint8_t n, ByteReader& br)
+  void DrawOps::handleImageText16(XProtoContext& ctx, uint16_t seq, uint8_t n, ByteReader& br)
   {
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
@@ -1591,7 +1616,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining());
 
     x11::DrawableRW dst{};
-    if (!x11::resolveDrawableRW(ctx, drawable, dst)) return;
+    if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText16);
+      return;
+    }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
     x11::GCState gc{};

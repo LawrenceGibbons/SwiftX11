@@ -7,6 +7,8 @@
 
 #include "Ops/GrabOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Core/WindowTable.hpp"
+#include "Core/XConstants.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Core/GrabTable.hpp"
 #include "Core/X11CoreOpcodes.hpp"
@@ -82,6 +84,15 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
 
   br.skip(br.remaining());
 
+  // Validate grab window exists (allow root XID 0 and 1)
+  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(grabWindow, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabPointer);
+      return;
+    }
+  }
+
   ctx.grabs().setPointerGrab(grabWindow, ownerEvents != 0, eventMask);
 
   // GrabPointer reply: status=GrabSuccess (same pattern as GrabKeyboard).
@@ -125,7 +136,7 @@ void GrabOps::handleUngrabPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
 //   BYTE   pad1
 //   CARD16 modifiers
 // -----------------------------
-void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t ownerEvents, ByteReader& br) {
+void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br) {
   if (br.remaining() < 20) { br.skip(br.remaining()); return; }
 
   const uint32_t grabWindow = br.readU32();
@@ -142,6 +153,15 @@ void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t own
   const uint16_t modifiers = br.readU16();
 
   br.skip(br.remaining());
+
+  // Validate grab window exists (allow root XID 0 and 1)
+  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(grabWindow, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabButton);
+      return;
+    }
+  }
 
   PassiveGrab g{};
   g.grabWindow = grabWindow;
@@ -167,7 +187,7 @@ void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t own
 //   CARD16 modifiers
 //   CARD16 pad
 // -----------------------------
-void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t button, ByteReader& br) {
+void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t seq, uint8_t button, ByteReader& br) {
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
   const uint32_t grabWindow = br.readU32();
@@ -175,6 +195,15 @@ void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t b
   (void)br.readU16(); // pad
 
   br.skip(br.remaining());
+
+  // Validate grab window exists (allow root XID 0 and 1)
+  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(grabWindow, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::UngrabButton);
+      return;
+    }
+  }
 
   ctx.grabs().remove(grabWindow, button, modifiers);
 
@@ -189,7 +218,20 @@ void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t /*seq*/, uint8_t b
 // Body (12 bytes): grabWindow(4), time(4), pointerMode(1), keyboardMode(1), pad(2)
 // -----------------------------
 void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*ownerEvents*/, ByteReader& br) {
+  // Body (12 bytes): grabWindow(4), time(4), pointerMode(1), keyboardMode(1), pad(2)
+  uint32_t grabWindow = 0;
+  if (br.remaining() >= 4) grabWindow = br.readU32();
   br.skip(br.remaining());
+
+  // Validate grab window exists (allow root XID 0 and 1)
+  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(grabWindow, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabKeyboard);
+      return;
+    }
+  }
+
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
     rep[1] = 0; // GrabSuccess
   });

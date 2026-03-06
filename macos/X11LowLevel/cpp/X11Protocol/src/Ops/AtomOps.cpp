@@ -81,6 +81,13 @@ void AtomOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const char* name = AtomTable::instance().name(atom, &nameLen);
 
     if (!name) { name = ""; nameLen = 0; } // defensive; name() returns "" for unknown
+
+    // BadAtom if atom is non-zero but not found
+    if (atom != 0 && nameLen == 0) {
+      ctx.transport().sendErrorCore(x11::error::BadAtom, seq, atom, x11::opcode::GetAtomName);
+      return;
+    }
+
     if (nameLen > 65535u) nameLen = 65535u;
 
     (void)ctx.reply().sendGetAtomNameReply(seq, name, static_cast<uint16_t>(nameLen));

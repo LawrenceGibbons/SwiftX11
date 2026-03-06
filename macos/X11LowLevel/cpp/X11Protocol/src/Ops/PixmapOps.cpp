@@ -12,6 +12,7 @@
 #include "Utils/ByteReader.hpp"
 #include "Core/PixmapTable.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Transport/XProtoTransport.hpp"
 
 namespace x11 {
 
@@ -28,7 +29,7 @@ void PixmapOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 void PixmapOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
     case x11::opcode::CreatePixmap: handleCreatePixmap(ctx, dc.minor /*depth*/, dc.br); return;
-    case x11::opcode::FreePixmap  : handleFreePixmap(ctx, dc.br); return;
+    case x11::opcode::FreePixmap  : handleFreePixmap(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[PixmapOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -73,13 +74,18 @@ void PixmapOps::handleCreatePixmap(XProtoContext& ctx, uint8_t depth, ByteReader
 // Request body after 4-byte header (4 bytes):
 //   CARD32 pid
 // ------------------------------------------------------------
-void PixmapOps::handleFreePixmap(XProtoContext& ctx, ByteReader& br) {
+void PixmapOps::handleFreePixmap(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
 
   const uint32_t pid = br.readU32();
   br.skip(br.remaining());
 
   if (pid == 0) return;
+
+  if (!ctx.pixmaps().exists(pid)) {
+    ctx.transport().sendErrorCore(x11::error::BadPixmap, seq, pid, x11::opcode::FreePixmap);
+    return;
+  }
 
   ctx.pixmaps().freePixmap(pid);
 

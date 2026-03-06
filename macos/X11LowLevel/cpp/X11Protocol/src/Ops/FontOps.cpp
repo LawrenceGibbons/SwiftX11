@@ -146,12 +146,18 @@ void FontOps::handleOpenFont(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& b
   
 // MARK: ---- 46: CloseFont ----
 // Request body: CARD32 fid
-void FontOps::handleCloseFont(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void FontOps::handleCloseFont(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t fid = br.readU32();
   br.skip(br.remaining());
+
+  if (!ctx.fonts().get(fid)) {
+    ctx.transport().sendErrorCore(x11::error::BadFont, seq, fid, x11::opcode::CloseFont);
+    return;
+  }
+
   ctx.fonts().close(fid);
-  
+
 #ifndef NDEBUG
   ctx.tracef("[FontOps] CloseFont fid=0x%08X\n", (unsigned)fid);
 #endif
@@ -165,7 +171,10 @@ void FontOps::handleQueryFont(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
 
   const x11::font::BdfFont* f = ctx.fonts().get(fid);
   if (!f) f = ctx.fonts().findByName("fixed");
-  if (!f) return;
+  if (!f) {
+    ctx.transport().sendErrorCore(x11::error::BadFont, seq, fid, x11::opcode::QueryFont);
+    return;
+  }
 
   if (!f->boundsValid) {
     const_cast<x11::font::BdfFont*>(f)->computeBounds();
@@ -336,7 +345,11 @@ void FontOps::handleQueryFont(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
     // Resolve font (authoritative)
     const x11::font::BdfFont* f = ctx.fonts().get(fid);
     if (!f) f = ctx.fonts().findByName("fixed");
-    if (!f) { br.skip(br.remaining()); return; }
+    if (!f) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadFont, seq, fid, x11::opcode::QueryTextExtents);
+      return;
+    }
 
     // X11 QueryTextExtents request:
     //  - oddLength==0: CHAR2B stream (2 bytes each)

@@ -18,6 +18,7 @@
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
 #include "Core/DrawableRW.hpp"
+#include "Core/PixmapTable.hpp"
 #include "Utils/WireEvents.hpp"
 
 // Bridge -- Update C-side 
@@ -69,7 +70,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 //   LISTofCARD32 valueList
 //
 // We only implement CWEventMask (bit 11) for now.
-  void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     ctx.tracef("[CWA] ENTER remain=%zu\n", br.remaining());
 #ifdef X11_TRACE_VERBOSE
     fprintf(stderr, "[CWA] ENTER remain=%zu\n", br.remaining());
@@ -80,6 +81,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t vmask = br.readU32();
 
     ctx.tracef("[CWA] wid=0x%08X vmask=0x%08X\n", wid, vmask);
+
+    // BadWindow error for unknown window XIDs (allow None=0 and root=1 through)
+    if (!ctx.window(wid) && wid > 1) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid,
+                                    x11::opcode::ChangeWindowAttributes);
+      return;
+    }
 
     // Snapshot current values so partial updates preserve unspecified fields.
     uint32_t old_mask = 0;
@@ -219,7 +228,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
   
   
-  void WindowAttrOps::handleConfigureWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void WindowAttrOps::handleConfigureWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     // Body (after 4-byte header):
     //   CARD32 window
     //   CARD16 valueMask
@@ -230,6 +239,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t wid   = br.readU32();
     const uint16_t vmask = br.readU16();
     (void)br.readU16(); // pad
+
+    // BadWindow error for unknown window XIDs (allow None=0 and root=1 through)
+    if (!ctx.window(wid) && wid > 1) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid,
+                                    x11::opcode::ConfigureWindow);
+      return;
+    }
 
     // Compute host once (rootless policy pivot).
     const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
@@ -411,6 +428,13 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Prefer WindowTable snapshot
     const WindowView* wv = ctx.window(wid);
 
+    // BadWindow error for unknown window XIDs (allow None=0 and root=1 through)
+    if (!wv && wid > 1) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid,
+                                    x11::opcode::GetWindowAttributes);
+      return;
+    }
+
     const uint32_t eventMask = wv ? wv->event_mask : 0;
     const uint8_t  mapState  = (wv && wv->mapped) ? 2 : 0; // Viewable=2, Unmapped=0
 
@@ -475,12 +499,13 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
     const uint32_t drawable = br.readU32();
     br.skip(br.remaining());
-    
+
     uint32_t root = kRootXid;
     int16_t  x = 0, y = 0;
     uint16_t w = kRootW, h = kRootH;
     uint16_t border = 0;
-    
+    uint16_t depth = kDepth;
+
     // If drawable is a known window, return its geometry.
     if (const WindowView* vw = ctx.window(drawable)) {
       x = vw->x;
@@ -488,10 +513,26 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       w = vw->w;
       h = vw->h;
       border = vw->border_width;
+    } else {
+      // Try pixmap lookup
+      PixmapView pv;
+      if (ctx.pixmaps().snapshot(drawable, pv)) {
+        x = 0;
+        y = 0;
+        w = pv.w;
+        h = pv.h;
+        border = 0;
+        depth = pv.depth;
+      } else if (drawable > 1) {
+        // Not a window, not a pixmap, not root/None — BadDrawable
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable,
+                                      x11::opcode::GetGeometry);
+        return;
+      }
     }
-    
-    // Use ReplyWriter helper (already in your code)
-    (void)ctx.reply().sendGetGeometryReply(seq, root, x, y, w, h, border, kDepth);
+
+    // Use ReplyWriter helper
+    (void)ctx.reply().sendGetGeometryReply(seq, root, x, y, w, h, border, depth);
   }
   
   

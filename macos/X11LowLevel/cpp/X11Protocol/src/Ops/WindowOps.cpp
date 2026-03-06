@@ -13,6 +13,7 @@
 #include "Core/DrawableRW.hpp"
 #include "Core/HostResize.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/XConstants.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "Utils/WireEvents.hpp"
 
@@ -476,13 +477,19 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
 
 
 // -------------------- DestroyWindow
-void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // Request body: CARD32 window
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t wid = br.readU32();
   br.skip(br.remaining());
 
   if (wid == 0) return;
+
+  // BadWindow if wid is not a known window
+  if (!ctx.windows().exists(wid)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::DestroyWindow);
+    return;
+  }
 
   // 1) Authoritative C++ state
   ctx.windows().erase(wid);
@@ -492,11 +499,16 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 }
 
 // -------------------- DestroySubwindows (opcode 5)
-void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t wid = br.readU32();
   br.skip(br.remaining());
   if (wid == 0) return;
+
+  if (!ctx.windows().exists(wid)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::DestroySubwindows);
+    return;
+  }
 
   // Get all descendants in BFS order, then destroy deepest first
   auto desc = ctx.windows().descendantsOf(wid);
@@ -515,7 +527,7 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t /*seq*/, By
 }
 
 // -------------------- ReparentWindow (opcode 7)
-void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 12) { br.skip(br.remaining()); return; }
   const uint32_t wid       = br.readU32();
   const uint32_t newParent = br.readU32();
@@ -526,7 +538,10 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteR
 
   // Snapshot current state
   WindowView vw{};
-  if (!ctx.windows().snapshot(wid, vw)) return;
+  if (!ctx.windows().snapshot(wid, vw)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::ReparentWindow);
+    return;
+  }
   const bool wasMapped = vw.mapped;
 
   // If mapped, unmap first (X11 spec: ReparentWindow unmaps if mapped)
@@ -567,11 +582,16 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteR
 }
 
 
-  void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
     const uint32_t wid = br.readU32();
     br.skip(br.remaining());
     if (wid == 0) return;
+
+    if (!ctx.windows().exists(wid)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::MapWindow);
+      return;
+    }
 
     // 1) Update authoritative table
     ctx.windows().setMapped(wid, true);
@@ -645,11 +665,16 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteR
   }
   
   
-void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t parent = br.readU32();
   br.skip(br.remaining());
   if (parent == 0) return;
+
+  if (!ctx.windows().exists(parent)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, parent, x11::opcode::MapSubwindows);
+    return;
+  }
 
   // Rootless host for this subtree.
   const uint32_t host = ctx.windows().topLevelAncestorOf(parent);
@@ -758,11 +783,16 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
 }
   
   
-void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t wid = br.readU32();
   br.skip(br.remaining());
   if (wid == 0) return;
+
+  if (!ctx.windows().exists(wid)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::UnmapWindow);
+    return;
+  }
 
   // Snapshot geometry BEFORE unmapping (geometry persists, but we need wasMapped).
   WindowView cv{};
@@ -805,12 +835,17 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
 // -----------------------------
 // UnmapSubwindows (major 11)
 // -----------------------------
-void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // Request body: CARD32 parent
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t parent = br.readU32();
   br.skip(br.remaining());
   if (parent == 0) return;
+
+  if (!ctx.windows().exists(parent)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, parent, x11::opcode::UnmapSubwindows);
+    return;
+  }
 
   // X11 spec: "equivalent to performing an UnmapWindow request on each mapped child."
   // Only direct children — NOT all descendants. Descendants keep their individual

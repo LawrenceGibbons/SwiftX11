@@ -19,6 +19,7 @@
 #include "Core/WindowTable.hpp"
 #include "Core/DrawableRW.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Transport/XProtoTransport.hpp"
 #include "Utils/RasterOp.hpp"
 #include "timestamp.hpp"
 
@@ -161,7 +162,7 @@ static void drawThinLine(uint32_t* pixels, uint32_t stride,
 // =============================================================================
 // PolyPoint (64)
 // =============================================================================
-void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coordMode, ByteReader& br) {
+void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t seq, uint8_t coordMode, ByteReader& br) {
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
   const uint32_t drawable = br.readU32();
   const uint32_t gcXid    = br.readU32();
@@ -170,7 +171,11 @@ void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coo
   if (nPts == 0) { br.skip(br.remaining()); return; }
 
   DrawableRW dst{};
-  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!resolveDrawableRW(ctx, drawable, dst)) {
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyPoint);
+    return;
+  }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
   x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
@@ -198,7 +203,7 @@ void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coo
 // =============================================================================
 // PolyLine (65)
 // =============================================================================
-void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coordMode, ByteReader& br) {
+void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t seq, uint8_t coordMode, ByteReader& br) {
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
   const uint32_t drawable = br.readU32();
   const uint32_t gcXid    = br.readU32();
@@ -207,7 +212,11 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coor
   if (nPts < 2) { br.skip(br.remaining()); return; }
 
   DrawableRW dst{};
-  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!resolveDrawableRW(ctx, drawable, dst)) {
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyLine);
+    return;
+  }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
   x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
@@ -252,7 +261,7 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t /*seq*/, uint8_t coor
 // =============================================================================
 // PolySegment (66)
 // =============================================================================
-void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
   const uint32_t drawable = br.readU32();
   const uint32_t gcXid    = br.readU32();
@@ -261,7 +270,11 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
   if (nSegs == 0) { br.skip(br.remaining()); return; }
 
   DrawableRW dst{};
-  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!resolveDrawableRW(ctx, drawable, dst)) {
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolySegment);
+    return;
+  }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
   x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
@@ -294,7 +307,7 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
 // =============================================================================
 // PolyRectangle (67) — outline rectangles
 // =============================================================================
-void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
   const uint32_t drawable = br.readU32();
   const uint32_t gcXid    = br.readU32();
@@ -303,7 +316,11 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
   if (nRects == 0) { br.skip(br.remaining()); return; }
 
   DrawableRW dst{};
-  if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+  if (!resolveDrawableRW(ctx, drawable, dst)) {
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyRectangle);
+    return;
+  }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
   x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
@@ -360,7 +377,7 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
 // ---------------------------
 // FillPoly (major 69)
 // ---------------------------
-void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // Body: CARD32 drawable, CARD32 gc, CARD8 shape, CARD8 coordMode, CARD16 pad, points...
   if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
@@ -394,7 +411,10 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 
   // Resolve drawable
   x11::DrawableRW dst{};
-  if (!x11::resolveDrawableRW(ctx, drawable, dst)) return;
+  if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
+    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::FillPoly);
+    return;
+  }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
   // GC
@@ -471,7 +491,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 // -----------------------------------------------------------------------------
 // PolyFillRectangle (70)
 // -----------------------------------------------------------------------------
-  void ShapeOps::handlePolyFillRectangle(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void ShapeOps::handlePolyFillRectangle(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
     
     const uint32_t drawable = br.readU32();
@@ -522,7 +542,11 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
     }
 
     DrawableRW dst{};
-    if (!resolveDrawableRW(ctx, drawable, dst)) { br.skip(br.remaining()); return; }
+    if (!resolveDrawableRW(ctx, drawable, dst)) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyFillRectangle);
+      return;
+    }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
     // Resolve GC once.
@@ -661,7 +685,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 // -----------------------------------------------------------------------------
 // PolyFillArc (71)
 // -----------------------------------------------------------------------------
-  void ShapeOps::handlePolyFillArc(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void ShapeOps::handlePolyFillArc(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
     const uint32_t drawable = br.readU32();
@@ -750,7 +774,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 #ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[PolyFillArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
 #endif
-      br.skip(br.remaining()); return;
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyFillArc);
+      return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
@@ -840,7 +866,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 // -----------------------------------------------------------------------------
 // PolyArc (68) — outline
 // -----------------------------------------------------------------------------
-  void ShapeOps::handlePolyArc(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void ShapeOps::handlePolyArc(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
     const uint32_t drawable = br.readU32();
@@ -859,7 +885,9 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& 
 #ifdef X11_TRACE_VERBOSE
       fprintf(stderr, "[PolyArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
 #endif
-      br.skip(br.remaining()); return;
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyArc);
+      return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 

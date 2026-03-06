@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "XProtoContext.hpp"
+#include "Core/WindowTable.hpp"
+#include "Core/XConstants.hpp"
 #include "ByteReader.hpp"
 #include "ReplyWriter.hpp"
 #include "WireLE.hpp"
@@ -23,6 +25,8 @@
 #include "Utils/X11ColorNames.hpp"
 
 namespace x11 {
+
+static constexpr uint32_t kRootCmap = 0x00000020u; // default colormap advertised in setup
 
 // ------------------------------
 // Minimal colormap state (bring-up)
@@ -196,6 +200,15 @@ void ColorOps::handleListInstalledColormaps(XProtoContext& ctx, uint16_t seq, By
   const uint32_t window = br.readU32();
   br.skip(br.remaining());
 
+  // Validate window exists (allow root XID 0 and 1)
+  if (window != 0 && window != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(window, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, window, x11::opcode::ListInstalledColormaps);
+      return;
+    }
+  }
+
   std::vector<uint32_t> list;
   {
     std::lock_guard<std::mutex> lock(cmapMu());
@@ -233,6 +246,15 @@ void ColorOps::handleAllocColor(XProtoContext& ctx, uint16_t seq, ByteReader& br
   br.skip(2);
   br.skip(br.remaining());
 
+  // Validate colormap
+  if (cmap != kRootCmap) {
+    std::lock_guard<std::mutex> lock(cmapMu());
+    if (cmapState().created.find(cmap) == cmapState().created.end()) {
+      ctx.transport().sendErrorCore(x11::error::BadColor, seq, cmap, x11::opcode::AllocColor);
+      return;
+    }
+  }
+
   uint32_t pixel = 0;
   {
     std::lock_guard<std::mutex> lock(cmapMu());
@@ -262,10 +284,19 @@ void ColorOps::handleAllocNamedColor(XProtoContext& ctx, uint16_t seq, ByteReade
   const uint16_t nbytes = br.readU16();
   br.skip(2);
 
+  // Validate colormap (read name first so bytes are consumed even on error)
   std::string name;
   if (const uint8_t* p = br.peekBytes(nbytes)) name.assign((const char*)p, nbytes);
   br.skip(std::min<std::size_t>(br.remaining(), nbytes));
   br.skip(br.remaining());
+
+  if (cmap != kRootCmap) {
+    std::lock_guard<std::mutex> lock(cmapMu());
+    if (cmapState().created.find(cmap) == cmapState().created.end()) {
+      ctx.transport().sendErrorCore(x11::error::BadColor, seq, cmap, x11::opcode::AllocNamedColor);
+      return;
+    }
+  }
 
   uint16_t r = 0, g = 0, b = 0;
   uint8_t r8 = 255, g8 = 255, b8 = 255;
@@ -436,6 +467,15 @@ void ColorOps::handleLookupColor(XProtoContext& ctx, uint16_t seq, ByteReader& b
   if (const uint8_t* p = br.peekBytes(nbytes)) name.assign((const char*)p, nbytes);
   br.skip(std::min<std::size_t>(br.remaining(), nbytes));
   br.skip(br.remaining());
+
+  // Validate colormap
+  if (cmap != kRootCmap) {
+    std::lock_guard<std::mutex> lock(cmapMu());
+    if (cmapState().created.find(cmap) == cmapState().created.end()) {
+      ctx.transport().sendErrorCore(x11::error::BadColor, seq, cmap, x11::opcode::LookupColor);
+      return;
+    }
+  }
 
   uint8_t r8 = 0, g8 = 0, b8 = 0;
   if (!x11::lookupColorName(name.c_str(), name.size(), r8, g8, b8)) {

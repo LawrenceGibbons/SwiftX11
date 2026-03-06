@@ -29,7 +29,7 @@ private:
   void handleCreatePixmap(XProtoContext& ctx, uint8_t depth, ByteReader& br);
 
   // major 54: FreePixmap
-  void handleFreePixmap(XProtoContext& ctx, ByteReader& br);
+  void handleFreePixmap(XProtoContext& ctx, uint16_t seq, ByteReader& br);
 };
 
 } // namespace x11

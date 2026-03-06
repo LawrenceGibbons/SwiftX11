@@ -34,7 +34,7 @@ private:
   
   // Major 10: UnmapWindow 
   void handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);
-  void handleUnmapSubwindows(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br);                 // major 11
+  void handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader& br);                     // major 11
   
   
   void handleConfigureWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);                     // major 12

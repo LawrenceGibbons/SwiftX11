@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "Core/XProtoContext.hpp"
+#include "Core/WindowTable.hpp"
+#include "Core/XConstants.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
@@ -64,10 +66,20 @@ void PropOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 //   CARD32 nUnits
 //   data...
 // -----------------------------
-void PropOps::handleChangeProperty(XProtoContext& /*ctx*/, uint16_t /*seq*/, uint8_t mode, ByteReader& br) {
+void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mode, ByteReader& br) {
   if (br.remaining() < 20) { br.skip(br.remaining()); return; }
 
   const uint32_t wid   = br.readU32();
+
+  // Validate window exists (allow root XID 0 and 1)
+  if (wid != 0 && wid != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(wid, tmp)) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::ChangeProperty);
+      return;
+    }
+  }
   const uint32_t atom  = br.readU32();
   const uint32_t type  = br.readU32();
   const uint8_t  fmt   = br.readU8();
@@ -108,11 +120,20 @@ void PropOps::handleChangeProperty(XProtoContext& /*ctx*/, uint16_t /*seq*/, uin
 // DeleteProperty (major 19)
 // body: CARD32 window, CARD32 property
 // -----------------------------
-void PropOps::handleDeleteProperty(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void PropOps::handleDeleteProperty(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
   const uint32_t wid  = br.readU32();
   const uint32_t atom = br.readU32();
   br.skip(br.remaining());
+
+  // Validate window exists (allow root XID 0 and 1)
+  if (wid != 0 && wid != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(wid, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::DeleteProperty);
+      return;
+    }
+  }
 
   PropertyTable::instance().erase(wid, atom);
   ctx.tracef("[PropOps] DeleteProperty wid=0x%08X atom=%u\n", (unsigned)wid, (unsigned)atom);
@@ -143,6 +164,15 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   const uint32_t longOff  = br.readU32();
   const uint32_t longLen  = br.readU32();
   br.skip(br.remaining());
+
+  // Validate window exists (allow root XID 0 and 1)
+  if (wid != 0 && wid != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(wid, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::GetProperty);
+      return;
+    }
+  }
 
   PropertyTable::Prop p{};
   const bool found = PropertyTable::instance().get(wid, atom, p);
@@ -243,6 +273,15 @@ void PropOps::handleListProperties(XProtoContext& ctx, uint16_t seq, ByteReader&
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t wid = br.readU32();
   if (br.remaining()) br.skip(br.remaining());
+
+  // Validate window exists (allow root XID 0 and 1)
+  if (wid != 0 && wid != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(wid, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::ListProperties);
+      return;
+    }
+  }
 
   std::vector<uint32_t> atoms;
   PropertyTable::instance().listAtoms(wid, atoms);

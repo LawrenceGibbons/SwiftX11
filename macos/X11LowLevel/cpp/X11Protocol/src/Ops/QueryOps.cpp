@@ -189,7 +189,16 @@ namespace x11 {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
     const uint32_t qwin = br.readU32();
     br.skip(br.remaining());
-    
+
+    // Validate window exists (root is always valid)
+    if (qwin != kRootXid && qwin != 0) {
+      WindowView tmp{};
+      if (!ctx.windows().snapshot(qwin, tmp)) {
+        ctx.transport().sendErrorCore(x11::error::BadWindow, seq, qwin, x11::opcode::QueryPointer);
+        return;
+      }
+    }
+
     const auto& in = ctx.input();
     
     // Root coords (global, top-left)
@@ -367,6 +376,11 @@ namespace x11 {
     // Use authoritative WindowTable (no C bridge)
     bool ok = ctx.windows().queryTree(wid, &parent, children, 256, &nchildren);
     if (!ok) {
+      // Root window (XID 1) is always valid even though it's not in WindowTable
+      if (wid != kRootXid && wid != 0) {
+        ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::QueryTree);
+        return;
+      }
       parent = 0;
       nchildren = 0;
     }
@@ -428,10 +442,19 @@ namespace x11 {
   // Reply:
   //   CARD16 nColors (in reply header bytes 8..9)
   //   nColors * xrgb (8 bytes each): CARD16 red, green, blue, pad
+  static constexpr uint32_t kRootCmap = 0x00000020u; // default colormap advertised in setup
+
   void QueryOps::handleQueryColors(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
 
-    (void)br.readU32(); // cmap (ignored for bring-up)
+    const uint32_t cmap = br.readU32();
+
+    // Validate colormap (only root colormap supported in QueryOps)
+    if (cmap != kRootCmap) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadColor, seq, cmap, x11::opcode::QueryColors);
+      return;
+    }
 
     uint16_t ncolors = (uint16_t)(br.remaining() / 4u);
     if (ncolors > 4096) ncolors = 4096; // avoid absurd allocations
@@ -668,6 +691,23 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
   const int16_t srcY = br.readI16();
   br.skip(br.remaining());
 
+  // Validate srcWin exists (root is always valid)
+  if (srcWin != kRootXid && srcWin != 0) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(srcWin, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, srcWin, x11::opcode::TranslateCoords);
+      return;
+    }
+  }
+  // Validate dstWin exists (root is always valid)
+  if (dstWin != kRootXid && dstWin != 0) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(dstWin, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, dstWin, x11::opcode::TranslateCoords);
+      return;
+    }
+  }
+
   // Compute absolute position of point in src window
   int32_t absX = (int32_t)srcX;
   int32_t absY = (int32_t)srcY;
@@ -747,11 +787,20 @@ void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
 
 // ---- 42: SetInputFocus ----
 // Body: focus(4), time(4)  (revertTo is in dc.minor)
-void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t /*seq*/, uint8_t revertTo, ByteReader& br) {
+void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t revertTo, ByteReader& br) {
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
   const uint32_t focus = br.readU32();
   (void)br.readU32(); // time
   br.skip(br.remaining());
+
+  // Validate focus window: None (0) and PointerRoot (1) are always valid
+  if (focus != 0 && focus != 1 && focus != kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(focus, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, focus, x11::opcode::SetInputFocus);
+      return;
+    }
+  }
 
   const uint32_t oldFocus = ctx.input().focus_xid;
   const uint32_t newFocus = (focus == 0) ? 0 : (focus == 1) ? kRootXid : focus;
