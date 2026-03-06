@@ -1046,7 +1046,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
       br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText8);
+      if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText8);
       return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) { br.skip(br.remaining()); return; }
@@ -1248,7 +1249,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
-      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText8);
+      if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText8);
       return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
@@ -1450,7 +1452,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
       br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText16);
+      if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText16);
       return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) { br.skip(br.remaining()); return; }
@@ -1617,7 +1620,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
-      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText16);
+      if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText16);
       return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;

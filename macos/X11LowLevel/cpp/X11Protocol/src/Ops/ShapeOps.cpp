@@ -173,7 +173,8 @@ void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t seq, uint8_t coordMo
   DrawableRW dst{};
   if (!resolveDrawableRW(ctx, drawable, dst)) {
     br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyPoint);
+    if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyPoint);
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -214,7 +215,8 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t seq, uint8_t coordMod
   DrawableRW dst{};
   if (!resolveDrawableRW(ctx, drawable, dst)) {
     br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyLine);
+    if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyLine);
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -272,7 +274,8 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t seq, ByteReader& b
   DrawableRW dst{};
   if (!resolveDrawableRW(ctx, drawable, dst)) {
     br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolySegment);
+    if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolySegment);
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -318,7 +321,8 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t seq, ByteReader&
   DrawableRW dst{};
   if (!resolveDrawableRW(ctx, drawable, dst)) {
     br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyRectangle);
+    if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyRectangle);
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -412,7 +416,8 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
   // Resolve drawable
   x11::DrawableRW dst{};
   if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
-    ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::FillPoly);
+    if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::FillPoly);
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
@@ -544,7 +549,8 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
       br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyFillRectangle);
+      if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyFillRectangle);
       return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -775,7 +781,8 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
       fprintf(stderr, "[PolyFillArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
 #endif
       br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyFillArc);
+      if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyFillArc);
       return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
@@ -886,7 +893,8 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
       fprintf(stderr, "[PolyArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
 #endif
       br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyArc);
+      if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
+        ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyArc);
       return;
     }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
