@@ -1,7 +1,7 @@
 # SwiftX11 — Session Handoff Prompt
 
-**Date**: 2026-03-04
-**Version**: v1.7.3
+**Date**: 2026-03-06
+**Version**: v1.8.3
 **Branch**: `develop++`
 
 ---
@@ -20,82 +20,72 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 - **Swift** (`SwiftX11/`): UI owner — AppKit, Metal/software rendering, surface allocation, networking
 - **C++** (`X11LowLevel/cpp/X11Protocol/`): Protocol core — request parsing, reply/event framing, raster ops, resource tables. `SwiftBridge.cpp` provides the `extern "C"` functions that Swift calls.
 
-**Working clients**: xterm (scrollbar, cursor blink, modifier keys, Option+click thumb drag, bidirectional clipboard), xeyes, xcalc (with XFILESEARCHPATH auto-setup, Symbol font √÷π), xclock, multi-client (xterm + xeyes simultaneously)
+**Working clients**: xterm (scrollbar, cursor blink, modifier keys, Option+click thumb drag, bidirectional clipboard, CoreText antialiased fonts, Xft subpixel rendering), xeyes (SHAPE transparency), xcalc (Symbol font sqrt/pi/division), xclock, multi-client
 
-**Advertised extensions**: BIG-REQUESTS (133), RENDER (139), XFIXES (134). SHAPE (135) has full stubs but is NOT advertised (breaks xeyes).
+**Advertised extensions (7)**: BIG-REQUESTS (133), RENDER (139), XFIXES (134), SHAPE (135), RANDR (136), XINERAMA (137), GE (138)
 
 **Display**: SwiftX11 listens on display :1 (TCP port 6001) to avoid XQuartz conflict. `~/.profile` sets `DISPLAY=127.0.0.1:1`.
 
 ---
 
-## What Was Accomplished (v1.7.0 → v1.7.3)
+## What Was Accomplished (v1.8.0 - v1.8.3)
 
-### v1.7.3: Monotonic Wire-Sequence Floor + Resize Border Fix
-- **Monotonic wire-sequence floor**: `XProtoTransport::sendAll()` now enforces that response sequences (events, replies, errors) never go backwards on the wire. Tracks `max_wire_seq_` (highest sequence ever sent) and bumps any stale sequence forward. Uses signed 16-bit delta for correct wrapping. Handles payload-aware tracking: `payload_remaining_` counter distinguishes reply payload chunks (where bytes[2:3] are arbitrary data) from response headers (where bytes[2:3] are sequence numbers). Skips floor logic during connection setup and reply payload data.
-- **Root cause of xcalc resize crash**: `drainHostCommands()` interleaves with `readAndDispatch()`. Host commands (resize → ConfigureNotify, Expose) carry stale sequences from `lastSeq()` that are behind sequences already sent during client request dispatch. XCB widens 16-bit sequences to 64-bit monotonically — any backwards sequence causes "Unknown sequence number" crash. The floor prevents this regardless of interleaving order.
-- **ExposeChildren border/background fix**: `ExposeChildren` handler (used during post-resize re-expose) now calls `fillWindowBorderIfReady()` and `fillWindowBackgroundIfReady()` for each child before sending Expose events, matching `sendExposeSubtree` behavior. Previously, ExposeChildren was "non-destructive" — after resize, surface is cleared to white, so server-drawn borders and backgrounds were lost.
+### v1.8.0: CoreText Font Bridge (Phase 3.3)
+- Maps X11 font requests (XLFD or bare names) to macOS system fonts via CoreText C API
+- Family mapping: fixed->Menlo, courier->Courier, helvetica->Helvetica, times->Times New Roman, lucida->Lucida Grande
+- Rasterizes Latin-1 glyphs (0-255) with both 1-bit bitmap and 8-bit alpha coverage
+- `drawGlyphAlpha32` lambda in all 4 text handlers does per-pixel alpha blending
+- Runtime toggle: Settings -> Rendering -> "Antialiased Fonts" (`std::atomic<bool> g_antialiased`)
+- CoreText tried first in FontTable lookup; PCF/BDF fallback for cursor/symbol/fontspecific
 
-### v1.7.2: XCB Sequence Desync Safety Net
-- **Reply-sent tracking**: `XProtoTransport` tracks whether a reply or error was sent during each dispatch via `reply_sent_` flag. Detection in `sendAll()`: byte[0]==0 (Error) or byte[0]==1 (Reply) sets the flag.
-- **Core opcode safety net**: `XProtoServer::dispatch()` uses a 128-entry `isReplyBearingCore()` table. After each dispatch, if a reply-bearing core opcode handler didn't send a reply/error, a `BadImplementation` error is automatically sent. Covers three failure paths: unregistered handlers, handler early-returns/exceptions, and normal dispatch without reply.
-- **Extension error replies**: All extension `default` switch cases (XFIXES, SHAPE, RANDR, Xinerama, GE, RENDER) now send `BadRequest` errors instead of silently consuming bytes. Previously, an unrecognized sub-opcode that happened to be reply-bearing would cause XCB sequence desync.
-- **Root cause**: xcalc resize crash (`[xcb] Unknown sequence number while processing queue`) was caused by a missing reply for a reply-bearing request. The safety net prevents this class of crash regardless of which specific handler is missing the reply.
+### v1.8.2: Descender Clipping Fix
+- Glyph positioning formula was `topY = y - bbx_yoff - (bbx_h - 1)` -- 1px too low vs X.org reference
+- Fixed to `topY = y - bbx_yoff - bbx_h` at all 4 text handlers in `DrawOps.cpp`
+- Also fixed CompositeGlyphs source picture resolution for old Xft 1x1 Repeat pixmap pattern
 
-### v1.7.0: Phase 3 Font Infrastructure
-- **PCF font support**: Full parser with TOC, metrics, bitmaps, encoding tables. MSB/LSB bit order handling. zlib decompression for .pcf.gz. Scans `/opt/X11/share/fonts/{misc,75dpi,100dpi}/`.
-- **XLFD wildcard matching**: Iterative glob with `*` and `?`. Matches against PCF registry and builtin BDF fonts.
-- **Font aliases**: System `fonts.alias` files loaded; alias targets resolved against PCF registry (99 aliases resolved).
-- **Symbol font encoding**: Adobe Symbol font (symb12.pcf.gz, `adobe-fontspecific`) works — xcalc √÷π render correctly.
-- **App sandbox disabled**: `ENABLE_APP_SANDBOX=NO` — sandbox blocked PCF font loading.
-- **Categorical trace system**: `TraceDefs.hpp` with opt-in categories (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT).
-- **ListFontsWithInfo**: Full implementation with per-font metrics + correct 60-byte terminator reply.
-- **Scrollbar resize fix**: Second ExposeChildren after promoteDisplaySurface (150ms post-resize) ensures scrollbar redraws after xterm reconfigures children.
-
-### v1.7.1: RENDER Triangles + Gradients
-- **Triangles/TriStrip/TriFan (minor 11/12/13)**: Full scanline triangle rasterization. Sort vertices by Y, walk edges with FIXED 16.16 interpolation. Triangles = independent 3-vertex groups, TriStrip = sliding window, TriFan = shared pivot.
-- **Gradient source pictures**: CreateLinearGradient (34), CreateRadialGradient (35), CreateConicalGradient (36) now create real gradient Pictures with per-pixel sampling. Linear: dot-product projection. Radial: concentric circle distance. Conical: atan2 angle. Color stop interpolation with Pad (clamp) mode.
-- **Composite gradient support**: Composite (minor 8) now handles gradient sources alongside solid and drawable sources.
-- All RENDER Phase 2.1 items are now complete.
+### v1.8.3: ARGB32 Glyph Parsing Fix
+- `alphaBpp()` returned 8 for ARGB32 format (0x24) -- Xft uses ARGB32 for LCD/subpixel rendering (4 bytes/pixel)
+- A8 parser read 1/4 of each glyph's bitmap, corrupting all subsequent glyphs in each AddGlyphs batch
+- Fixed with 32bpp parsing path in `RenderOps.cpp`
+- Added RENDER trace category to `TraceDefs.hpp`
+- Gated all font/render debug traces behind categorical trace system
 
 ---
 
 ## Known Issues (deferred)
 
-### xcalc -rpn Extra Button Labels
-**Symptom**: Buttons 40-54 show widget names. **NOT a server bug** — app-defaults only cover buttons 1-39.
-
-### xclock/xcalc FontSet Warnings
-**Symptom**: "Missing charsets in String to FontSet conversion" — XCreateFontSet() expects multiple charset fonts.
-
-### Window close does not kill client
-Closing the Cocoa window hides the NSWindow but the X11 client keeps running. Need WM_DELETE_WINDOW or socket close.
+- **xcalc -rpn extra button labels**: Buttons 40-54 show widget names. NOT a server bug -- app-defaults only cover 1-39.
+- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" -- XCreateFontSet() expects multiple charset fonts.
+- **Window close does not kill client**: Closing Cocoa window hides NSWindow but X11 client keeps running.
+- **xeyes shaped window occasional black flash on resize**: Minor cosmetic issue during live resize.
 
 ---
 
 ## Next Tasks (Priority Order)
 
-### 1. Complete Remaining Phase 2 Items (2.4, 2.5)
-Phase 2 is mostly complete but has remaining items:
-- **2.4 SHAPE actual clipping**: Implement pixel-level clipping based on stored shape regions. Required before advertising SHAPE extension. Currently stubs consume shape ops silently but don't clip. (SHAPE breaks xeyes without real clipping.)
-- **2.5 Enable remaining extensions**: Advertise RANDR, Xinerama, GE one at a time. Handler stubs already exist but are NOT advertised yet.
+### 1. Window Close -> Client Kill (Phase 5.4, HIGH)
+Red close button should terminate the X11 client.
+- **WM_DELETE_WINDOW** (ICCCM-compliant): Check WM_PROTOCOLS property for WM_DELETE_WINDOW atom, send ClientMessage. Atoms already pre-registered (68=WM_PROTOCOLS, 76=WM_DELETE_WINDOW in `ClipboardAtoms.hpp`).
+- **Forceful disconnect**: Close client socket (fd). `eraseOwnedBy()` handles resource cleanup.
+- **Cmd+W** should also trigger window close.
+- **Files**: `X11WindowHost.swift` (windowWillClose), `SwiftBridge.cpp`, `XProtoServerBridge.cpp`, `EventOps.cpp`
 
-### 2. Complete Remaining Phase 3 Item (3.3)
-Phase 3 font infrastructure is mostly done (PCF, XLFD, aliases all work) but 3.3 has remaining items:
-- **Xft/fontconfig on client side**: Verify that clients using FreeType + fontconfig render glyphs client-side and upload via RENDER CompositeGlyphs. Server just needs RENDER support (done).
-- **CoreText bridge (optional)**: Map X11 font requests to macOS system fonts via CoreText for high-quality server-side rendering.
+### 2. Error Handling (Phase 4.1, HIGH)
+No proper X11 errors generated -- requests referencing destroyed XIDs silently fail.
+- **Need**: BadWindow, BadDrawable, BadGC, BadMatch, BadValue, BadAtom, BadPixmap, BadFont, BadAccess, BadAlloc
+- **Format**: 32 bytes: type=0, error_code, seq, bad_value, minor_opcode, major_opcode
+- **Files**: Every Ops/*.cpp file needs error checks; need new ErrorReply utility
 
-### 3. Window Close → Client Kill
-Red close button should terminate the X11 client. Two approaches:
-- **WM_DELETE_WINDOW** (ICCCM-compliant): Check if client's WM_PROTOCOLS property includes WM_DELETE_WINDOW atom. If so, send a ClientMessage event with the WM_DELETE_WINDOW atom. Well-behaved clients (xterm, xcalc) will exit gracefully.
-- **Forceful disconnect**: If client doesn't support WM_DELETE_WINDOW (or as fallback after timeout), close the client socket (fd) to force disconnect. Server's `eraseOwnedBy()` handles resource cleanup.
-- Cmd+W should also trigger window close with the same behavior.
-- Key files: `SwiftX11/UI/Windows/X11WindowHost.swift` (Cocoa windowWillClose), `X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp` (DestroyWindow), `X11LowLevel/cpp/X11Protocol/include/Core/ClipboardAtoms.hpp` (WM_PROTOCOLS and WM_DELETE_WINDOW atom constants already defined)
+### 3. Container Networking (Phase 5.2, HIGH)
+TCP works on port 6001 but Unix sockets not implemented. Needed for Docker workflow.
+- Unix socket: `/tmp/.X11-unix/X1`
+- Xauth: Basic MIT-MAGIC-COOKIE-1 or xhost+ for development
+- Verify `DISPLAY=host.docker.internal:1` from Docker
 
-### 4. Error Handling (Phase 4)
-Proper X11 error generation (BadWindow, BadDrawable, BadGC, etc.) with correct error reply format. Currently, requests referencing destroyed XIDs silently fail. Java/GTK toolkits may depend on error responses for resource management.
-
-### 5. Container Networking
-TCP + Unix socket + xauth for Docker workflow. Verify `DISPLAY=host.docker.internal:1` works from Docker container.
+### 4. Phase 4 Remaining Items
+- **Big-endian clients** (4.2): ByteReader/ReplyWriter assume little-endian. Java may connect big-endian.
+- **Override-redirect** (4.3): Honor override_redirect window attribute.
+- **Gravity** (4.3): win_gravity and bit_gravity for resize behavior.
 
 ---
 
@@ -106,17 +96,18 @@ TCP + Unix socket + xauth for Docker workflow. Verify `DISPLAY=host.docker.inter
 open macos/SwiftX11.xcodeproj
 
 # Build target: SwiftX11 (macOS app)
-# Test clients (in separate terminal):
-xterm -sb -rightbar -bc    # scrollbar + cursor blink (DISPLAY set in ~/.profile)
-xeyes                      # pointer tracking, multi-client
-xcalc -rpn                 # calculator (XFILESEARCHPATH auto-set by SwiftX11)
-xclock -analog             # Xaw widgets, arcs, timer events
+# Test clients:
+xterm -sb -rightbar -bc        # scrollbar + cursor blink
+xterm -fa Menlo -fs 16         # Xft antialiased rendering
+xeyes                          # SHAPE transparency
+xcalc                          # Symbol font (sqrt, pi, division)
+xclock -analog                 # Xaw widgets, arcs
 
-# Verify version banner in console: "SwiftX11 v1.7.3"
+# Verify version banner: "SwiftX11 v1.8.3"
 
 # Test clipboard:
-# 1. Select text in xterm → Cmd+V in macOS app (X11→macOS)
-# 2. Copy text in macOS app → Option-click in xterm to paste (macOS→X11)
+# 1. Select text in xterm -> Cmd+V in macOS app (X11->macOS)
+# 2. Copy in macOS -> middle-click in xterm to paste (macOS->X11)
 ```
 
 ---
@@ -124,34 +115,24 @@ xclock -analog             # Xaw widgets, arcs, timer events
 ## Key Architecture References
 
 Read these files to understand the codebase:
-- `CLAUDE.md` — Comprehensive architecture doc (surface routing, damage pipeline, input events, development guidelines)
-- `docs/TODO.md` — Full 5-phase roadmap with testing apps and priority order
-- `X11LowLevel/cpp/X11Protocol/include/Core/XProtoModules.hpp` — All C++ protocol modules
-- `X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp` — Host command dispatch (button/focus/resize events)
-- `X11LowLevel/cpp/X11Protocol/src/Ops/EventOps.cpp` — computeEventXYFromHostLocal, button/key event building
-- `X11LowLevel/cpp/X11Protocol/src/Ops/ShapeOps.cpp` — PolyRectangle, PolyLine, PolyArc draw ops
-- `X11LowLevel/cpp/X11Protocol/include/Core/GCTable.hpp` — GCState struct with all GC fields
-- `X11LowLevel/cpp/X11Protocol/src/Ops/GCOps.cpp` — CreateGC/ChangeGC/CopyGC/SetDashes
-- `X11LowLevel/cpp/X11Protocol/src/Ops/RenderOps.cpp` — RENDER extension (full: Composite, Trapezoids, Triangles, Glyphs, Gradients)
-- `X11LowLevel/cpp/X11Protocol/src/Ops/ExtensionOps.cpp` — Extension stubs (XFIXES, SHAPE, RANDR, etc.)
-- `X11LowLevel/cpp/X11Protocol/src/Ops/SelectionOps.cpp` — Selection protocol + clipboard bridge
-- `X11LowLevel/cpp/X11Protocol/src/Ops/PropOps.cpp` — Property operations + ClipboardCapture
-- `X11LowLevel/include/SwiftX11Version.h` — Single source of truth for version string
+- `CLAUDE.md` -- Comprehensive architecture doc (surface routing, damage pipeline, input events, development guidelines)
+- `docs/TODO.md` -- Full roadmap with testing apps and priority order
+- `X11LowLevel/include/SwiftX11Version.h` -- Single source of truth for version string
+- `X11LowLevel/cpp/X11Protocol/include/Utils/TraceDefs.hpp` -- Categorical trace system (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT, RENDER)
+- `X11LowLevel/cpp/X11Protocol/src/Ops/RenderOps.cpp` -- RENDER extension (Composite, Trapezoids, Triangles, Glyphs, Gradients)
+- `X11LowLevel/cpp/X11Protocol/src/Fonts/CoreTextFont.cpp` -- CoreText font bridge
+- `X11LowLevel/cpp/X11Protocol/src/Core/FontTable.cpp` -- Font table lookup chain
 
 ---
 
 ## Important Conventions
 
-- **All new code in C++ or Swift** — no C files remain, no new C code
-- **Display :1** — SwiftX11 uses TCP port 6001 (display :1), set via `~/.profile`
-- **Version bump** — bump `SwiftX11Version.h` when making changes to verify correct build is running
-- **Reply-bearing opcodes** — always send reply via `ctx.reply().sendReply32()` or XCB will crash
-- **toX11State()** — always use for event state fields (modifier/button bit mapping)
-- **stridePixels** — always use `dst.stridePixels` not `dst.w` for pixel row indexing
-- **Branch**: all work on `develop++`, use `git -C /Users/lkg/Documents/Vivado/SwiftX11 merge <branch> --no-edit` to merge from worktree
-- **Extension opcodes**: BIG-REQUESTS=133, XFIXES=134, SHAPE=135, RANDR=136, Xinerama=137, GE=138, RENDER=139 (defined in X11ExtOpcodes.hpp)
-- **Do NOT advertise extensions** until core operations are complete — broken extension paths cause worse behavior than no extension
-- **Opcode dispatch**: Modules register via `reg.registerMajor(opcode, &Class::onMajor, this)` in constructors
-- **Wire helpers**: `wire::wr16_le`, `wire::wr32_le`, `wire::rd16_le`, `wire::rd32_le` for little-endian encoding
-- **ByteReader**: `br.readU32()`, `br.readU16()`, `br.readU8()`, `br.readI16()`, `br.skip(n)`, `br.remaining()`
-- **Trace tiers**: `#ifndef NDEBUG` for lifecycle traces always in debug; `X11_TRACE_<CATEGORY>` for categorical traces (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT); `X11_TRACE_VERBOSE` enables ALL categories. See `TraceDefs.hpp`.
+- **All new code in C++ or Swift** -- no C files remain
+- **Display :1** -- TCP port 6001, set via `~/.profile`
+- **Version bump** -- bump `SwiftX11Version.h` to verify correct build
+- **Reply-bearing opcodes** -- always send reply via `ctx.reply().sendReply32()` or XCB will crash
+- **toX11State()** -- always use for event state fields (modifier/button bit mapping)
+- **stridePixels** -- always use `dst.stridePixels` not `dst.w` for pixel row indexing
+- **Branch**: all work on `develop++`
+- **Extension opcodes**: BIG-REQUESTS=133, XFIXES=134, SHAPE=135, RANDR=136, Xinerama=137, GE=138, RENDER=139 (in X11ExtOpcodes.hpp)
+- **Trace tiers**: `#ifndef NDEBUG` for lifecycle traces; `X11_TRACE_<CATEGORY>` for categorical (RESIZE, PRESENT, LIFECYCLE, INPUT, RESOLVE, FONT, RENDER); `X11_TRACE_VERBOSE` enables ALL. See `TraceDefs.hpp`.
