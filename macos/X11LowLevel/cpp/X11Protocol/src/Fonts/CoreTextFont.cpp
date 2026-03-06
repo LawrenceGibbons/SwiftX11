@@ -385,12 +385,8 @@ std::unique_ptr<BdfFont> createCoreTextFont(const std::string& xlfdOrName,
   }
 
   // Ensure font descent covers all actual glyph extents.
-  // CoreText's descent metric sometimes equals the deepest glyph extent
-  // exactly, but X11 line spacing (ascent + descent) means the next line's
-  // background clear starts at baseline + descent, overwriting the bottom
-  // row of descenders if descent == maxGlyphDescent.  Add 1 pixel margin.
-  if (maxGlyphDescent >= font->descent) {
-    font->descent = maxGlyphDescent + 1;
+  if (maxGlyphDescent > font->descent) {
+    font->descent = maxGlyphDescent;
   }
 
   // Update bounding box after descent adjustment

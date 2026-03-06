@@ -1174,10 +1174,38 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Resolve source (typically solid fill for text color)
     uint32_t srcColor = 0xFF000000u;
+    bool srcIsSolid = false;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* sps = findPicture(srcPid);
-      if (sps && sps->isSolid) srcColor = sps->solidARGB;
+      if (sps) {
+        if (sps->isSolid) {
+          srcIsSolid = true;
+          srcColor = sps->solidARGB;
+        } else if (sps->repeat && sps->drawable != 0) {
+          // Old Xft uses 1×1 Repeat pixmap instead of CreateSolidFill.
+          // Promote it to a solid fill by reading the single pixel.
+          DrawableRW srcDrw{};
+          if (resolveDrawableRW(ctx, sps->drawable, srcDrw) && srcDrw.pixels32) {
+            if (srcDrw.w == 1 && srcDrw.h == 1) {
+              srcIsSolid = true;
+              srcColor = srcDrw.pixels32[0];
+#ifndef NDEBUG
+              fprintf(stderr, "[RENDER] CompositeGlyphs: promoted 1x1 Repeat to solid=0x%08X\n",
+                      srcColor);
+#endif
+            } else {
+              // Larger repeat source — sample first pixel as fallback
+              srcIsSolid = true;
+              srcColor = srcDrw.pixels32[0];
+#ifndef NDEBUG
+              fprintf(stderr, "[RENDER] CompositeGlyphs: non-1x1 source %ux%u, using pixel[0]=0x%08X\n",
+                      srcDrw.w, srcDrw.h, srcColor);
+#endif
+            }
+          }
+        }
+      }
     }
 
     // Resolve destination
@@ -1195,12 +1223,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
 #ifndef NDEBUG
     {
-      std::lock_guard<std::mutex> lk(sPicMtx);
-      PictureState* sps = findPicture(srcPid);
       fprintf(stderr, "[RENDER] CompositeGlyphs%d op=%d src=0x%x(solid=%d,color=0x%08x) "
               "dst=0x%x(draw=0x%x %ux%u stride=%u) mask=0x%x gs=0x%x\n",
               glyphIdSize * 8, op, srcPid,
-              sps ? sps->isSolid : 0, srcColor,
+              srcIsSolid ? 1 : 0, srcColor,
               dstPid, dstDrawable, dst.w, dst.h, dst.stridePixels,
               maskFmt, gsid);
     }

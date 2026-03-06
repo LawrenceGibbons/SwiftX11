@@ -1249,7 +1249,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
         if (!g) { penX += f->advanceFor((int)ch); continue; }
 
         const int leftX = (int)penX + g->bbx_xoff;
-        const int topY  = (int)baseY - g->bbx_yoff - (g->bbx_h - 1);
+        const int topY  = (int)baseY - g->bbx_yoff - g->bbx_h;
 
         if (g->hasAlpha() && useAA)
           drawGlyphAlpha32(leftX, topY, *g, gc.fg);
@@ -1487,7 +1487,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       if (!g) { penX += f->advanceFor((int)ch); continue; }
 
       const int leftX = penX + g->bbx_xoff;
-      const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
+      const int topY  = (int)y - g->bbx_yoff - g->bbx_h;
 
       if (g->hasAlpha() && useAA)
         drawGlyphAlpha32(leftX, topY, *g, gc.fg);
@@ -1644,7 +1644,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
         if (!g) { penX += f->advanceFor(encoding); continue; }
 
         const int leftX = (int)penX + g->bbx_xoff;
-        const int topY  = (int)baseY - g->bbx_yoff - (g->bbx_h - 1);
+        const int topY  = (int)baseY - g->bbx_yoff - g->bbx_h;
 
         if (g->hasAlpha() && useAA)
           drawGlyphAlpha32(leftX, topY, *g, gc.fg);
@@ -1813,7 +1813,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       if (!g) { penX += f->advanceFor(ch); continue; }
 
       const int leftX = penX + g->bbx_xoff;
-      const int topY  = (int)y - g->bbx_yoff - (g->bbx_h - 1);
+      const int topY  = (int)y - g->bbx_yoff - g->bbx_h;
 
       if (g->hasAlpha() && useAA)
         drawGlyphAlpha32(leftX, topY, *g, gc.fg);
