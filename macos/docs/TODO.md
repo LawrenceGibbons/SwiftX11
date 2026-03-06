@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-06 (v1.9.3 — X11 error handling)
+Last updated: 2026-03-06 (v1.9.4 — Container/network support)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -246,9 +246,10 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [ ] **PutImage optimization**: Large PutImage calls (Vivado waveform/schematic) need efficient copy paths.
 - [ ] **Expose coalescing**: Batch expose events to reduce client redraw overhead.
 
-### 5.2 Container / Network Support (HIGH for Vivado use case)
-- [ ] **TCP socket listener**: Verify TCP connections work from Docker container (DISPLAY=host.docker.internal:0).
-- [ ] **Unix socket**: Add /tmp/.X11-unix/X0 Unix domain socket support for local containers.
+### 5.2 Container / Network Support (HIGH for Vivado use case) — DONE (v1.9.4)
+- [x] **TCP socket listener**: TCP now binds to 0.0.0.0 (all interfaces) by default. Docker containers connect via `DISPLAY=host.docker.internal:1`. (v1.9.4)
+- [x] **Unix socket**: /tmp/.X11-unix/X{display} Unix domain socket listener for local containers via volume mount (`-v /tmp/.X11-unix:/tmp/.X11-unix`). (v1.9.4)
+- [x] **Multi-listener architecture**: XProtoDaemon supports simultaneous TCP + Unix listeners with vector-based poll loop. Settings UI toggles for TCP/Unix. (v1.9.4)
 - [ ] **Xauth**: Basic MIT-MAGIC-COOKIE-1 authentication (or xhost + for development).
 - [ ] **Latency tolerance**: Ensure protocol handling doesn't assume local-only latency.
 
@@ -419,7 +420,7 @@ rendercheck                 # RENDER extension tests
 1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
 2. ~~**Window close → client kill**~~ — ✅ Done (v1.9.0): WM_DELETE_WINDOW ClientMessage + forceful disconnect fallback (Phase 5.4)
 3. ~~**Error handling**~~ — ✅ Done (v1.9.3): X11 error generation across ~50 handlers in 14 files (Phase 4.1)
-4. **Container networking** — TCP + Unix socket + xauth for Docker workflow (Phase 5.2)
+4. ~~**Container networking**~~ — ✅ Done (v1.9.4): TCP + Unix socket multi-listener for Docker workflow (Phase 5.2)
 
 ### Phase 2+3 Status Assessment (v1.7.5)
 **Phase 2 is complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Seven extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), GE (v1.0), and SHAPE (v1.1 with actual clipping). SHAPE is fully implemented with ShapeRegion storage, depth-1 pixmap drawing, hit testing, and present-time alpha masking — xeyes displays with transparent eye-shaped windows. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
@@ -442,7 +443,9 @@ rendercheck                 # RENDER extension tests
 
 **v1.9.3 adds X11 error handling** — Proper error generation (BadWindow, BadDrawable, BadPixmap, BadFont, BadAtom, BadColor, BadValue) across ~50 request handlers in 14 files. Three priority tiers: reply-bearing (critical for XCB sequence desync prevention), void resource-modifying (spec compliance), and drawing ops. Drawing ops check drawable existence to avoid false errors on valid-but-unresolvable drawables (depth-1 pixmaps, unmapped windows).
 
-**Next priority**: Phase 5.2 (container networking).
+**v1.9.4 adds container/network support** — Multi-listener architecture for Docker workflow. XProtoDaemon supports simultaneous TCP (0.0.0.0 bind) and Unix domain socket (/tmp/.X11-unix/X{display}) listeners. Settings UI wired with TCP/Unix toggles and Docker usage instructions. New `x11_start_server_ex()` bridge function.
+
+**Next priority**: Phase 5.3 (keyboard) or Phase 5.1 (performance).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.

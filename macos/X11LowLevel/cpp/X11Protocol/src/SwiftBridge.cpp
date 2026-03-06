@@ -21,6 +21,8 @@ extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
 
 // ---- C++ bridge functions (defined in XProtoServerBridge.cpp) ----
 extern "C" int  x11_proto_start_daemon(int display);
+extern "C" int  x11_proto_start_daemon_ex(int display, int enable_tcp, int enable_unix,
+                                          const char* tcp_bind_addr);
 extern "C" void x11_proto_stop_daemon(void);
 
 extern "C" void x11_proto_bridge_post_pointer_move2(uint32_t xid,
@@ -83,6 +85,16 @@ extern "C" bool x11_start_server(int32_t display)
   // Start the C++ XProtoDaemon (poll-based listener + protocol engine).
   // No C backend, no C runloop thread.
   int ok = x11_proto_start_daemon((int)display);
+  return ok ? true : false;
+}
+
+extern "C" bool x11_start_server_ex(int32_t display, bool enable_tcp, bool enable_unix,
+                                     const char* tcp_bind_addr)
+{
+  int ok = x11_proto_start_daemon_ex((int)display,
+                                     enable_tcp ? 1 : 0,
+                                     enable_unix ? 1 : 0,
+                                     tcp_bind_addr);
   return ok ? true : false;
 }
 

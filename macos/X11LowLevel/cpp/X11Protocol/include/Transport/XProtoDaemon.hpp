@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <string>
 
 namespace x11 {
 
@@ -46,7 +47,8 @@ public:
   XProtoDaemon();
   ~XProtoDaemon();
 
-  bool start(int display, const char* bindAddr = "127.0.0.1");
+  bool start(int display, bool enableTCP = true, bool enableUnix = true,
+             const char* tcpBindAddr = "0.0.0.0");
   void stop();
 
   bool isRunning() const { return running_.load(std::memory_order_acquire); }
@@ -58,11 +60,12 @@ public:
   ClientSession* findClient(int fd);
 
 private:
-  void runListener(int display, const char* bindAddr);
+  void runListener(int display, bool enableTCP, bool enableUnix,
+                   const char* tcpBindAddr);
   void ensureServer();
 
   // Poll-loop helpers
-  void acceptClient();
+  void acceptClient(int listenFd);
   void removeClient(int fd);
   bool readAndDispatch(int fd, ClientSession& cs);
   void drainHostCommands();
@@ -71,7 +74,8 @@ private:
 
   std::atomic<bool> stop_{false};
   std::atomic<bool> running_{false};
-  int listen_fd_ = -1;
+  std::vector<int> listen_fds_;
+  std::string unix_socket_path_;
   std::thread th_;
 
   // Active client sessions keyed by socket fd.

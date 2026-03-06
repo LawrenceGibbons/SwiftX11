@@ -23,12 +23,23 @@ final class SettingsStore: ObservableObject {
     //self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? false
     self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? true
     self.antialiasedFonts = UserDefaults.standard.object(forKey: "antialiasedFonts") as? Bool ?? true
+    self.enableTCP = UserDefaults.standard.object(forKey: "enableTCP") as? Bool ?? true
+    self.enableUnixSocket = UserDefaults.standard.object(forKey: "enableUnixSocket") as? Bool ?? true
+    self.tcpBindAddress = UserDefaults.standard.object(forKey: "tcpBindAddress") as? String ?? "0.0.0.0"
     // Sync initial AA state to C++
     x11_set_font_antialiased(self.antialiasedFonts ? 1 : 0)
   }
 
   @Published var enableClipboard: Bool = true
-  @Published var enableTCP:       Bool = false
+  @Published var enableTCP: Bool {
+    didSet { UserDefaults.standard.set(enableTCP, forKey: "enableTCP") }
+  }
+  @Published var enableUnixSocket: Bool {
+    didSet { UserDefaults.standard.set(enableUnixSocket, forKey: "enableUnixSocket") }
+  }
+  @Published var tcpBindAddress: String {
+    didSet { UserDefaults.standard.set(tcpBindAddress, forKey: "tcpBindAddress") }
+  }
   
   @Published var pauseLogAppend: Bool = false     // freeze the log history
   @Published var showMotionLogs: Bool = false     // suppress the motion logging 

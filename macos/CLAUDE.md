@@ -267,6 +267,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **X11 error handling** (v1.9.3): Proper X11 error generation across ~50 request handlers in 14 files. Previously, ~166 resource lookup sites silently skipped operations on missing resources; only 2 explicit error sends existed. Now sends spec-compliant errors: BadWindow (windows), BadDrawable (drawables), BadPixmap (pixmaps), BadFont (fonts), BadAtom (atoms), BadColor (colormaps), BadValue (invalid parameters). Three tiers: reply-bearing requests (critical for XCB desync prevention), void resource-modifying requests (spec compliance), and drawing ops. Uses existing infrastructure: `ctx.transport().sendErrorCore(error, seq, resourceId, major)`. Root XID (kRootXid) and None (0) bypass validation where appropriate.
 
+- **Container/network support** (v1.9.4): Multi-listener architecture for Docker workflow. XProtoDaemon now supports both TCP and Unix domain socket listeners simultaneously. `listen_fd_` replaced with `vector<int> listen_fds_`. New `make_listen_socket_unix()` creates `/tmp/.X11-unix/X{display}` with mode 0777 for container access. TCP default bind changed from `127.0.0.1` to `0.0.0.0` so Docker containers using `host.docker.internal:1` can connect. New bridge function `x11_start_server_ex(display, enableTCP, enableUnix, bindAddr)`. Settings UI wired: NetworkTab has TCP/Unix toggles with Docker usage instructions. Poll loop updated for multiple listener sockets. Unix socket auto-cleaned on server stop.
+
 ### Known Issues (v1.9.0)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
@@ -278,4 +280,4 @@ See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phas
 1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
 2. ~~**Window close → client kill**~~ — ✅ Done (v1.9.0): WM_DELETE_WINDOW + forceful disconnect
 3. ~~**Error handling**~~ — ✅ Done (v1.9.3): X11 error generation across ~50 handlers
-4. **Container networking** — TCP + Unix socket for Docker workflow
+4. ~~**Container networking**~~ — ✅ Done (v1.9.4): TCP + Unix socket for Docker workflow

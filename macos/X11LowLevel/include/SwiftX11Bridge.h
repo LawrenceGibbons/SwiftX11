@@ -64,6 +64,8 @@ typedef struct {
 // Lifecycle
 // -------------------------------------------------------------------------------------
 bool x11_start_server(int32_t display);
+bool x11_start_server_ex(int32_t display, bool enable_tcp, bool enable_unix,
+                         const char* tcp_bind_addr);
 void x11_stop_server(void);
 
 

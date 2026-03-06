@@ -1123,7 +1123,26 @@ extern "C" int x11_proto_start_daemon(int display)
   fprintf(stderr, "  display=:%d\n", display);
   fprintf(stderr, "========================================\n\n");
   g_daemon_ptr = &g_daemon;
-  return g_daemon.start(display) ? 1 : 0;
+  // Legacy: enable both TCP (0.0.0.0) and Unix socket
+  return g_daemon.start(display, true, true, "0.0.0.0") ? 1 : 0;
+}
+
+extern "C" int x11_proto_start_daemon_ex(int display, int enable_tcp, int enable_unix,
+                                          const char* tcp_bind_addr)
+{
+  fprintf(stderr, "\n========================================\n");
+  fprintf(stderr, "  SwiftX11 v%s  (C++ protocol core)\n", kSwiftX11Version);
+  fprintf(stderr, "  display=:%d  tcp=%s unix=%s bind=%s\n",
+          display,
+          enable_tcp ? "on" : "off",
+          enable_unix ? "on" : "off",
+          tcp_bind_addr ? tcp_bind_addr : "0.0.0.0");
+  fprintf(stderr, "========================================\n\n");
+  g_daemon_ptr = &g_daemon;
+  return g_daemon.start(display,
+                        enable_tcp != 0,
+                        enable_unix != 0,
+                        tcp_bind_addr ? tcp_bind_addr : "0.0.0.0") ? 1 : 0;
 }
 
 extern "C" void x11_proto_stop_daemon(void)

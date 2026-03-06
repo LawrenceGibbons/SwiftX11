@@ -8,6 +8,8 @@
 #include "Transport/XProtoDaemon.hpp"
 
 #include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -66,6 +68,42 @@ static int make_listen_socket(int display, const char* bindAddr) {
   return fd;
 }
 
+/// Create a Unix domain socket listener at /tmp/.X11-unix/X{display}.
+static int make_listen_socket_unix(int display, std::string& outPath) {
+  // Ensure /tmp/.X11-unix/ directory exists (sticky bit, world-writable)
+  ::mkdir("/tmp/.X11-unix", 01777);
+
+  char path[108];
+  ::snprintf(path, sizeof(path), "/tmp/.X11-unix/X%d", display);
+
+  // Remove stale socket file
+  ::unlink(path);
+
+  int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  ::strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+  if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+    ::close(fd);
+    return -1;
+  }
+
+  // Allow Docker containers (different UID) to connect
+  ::chmod(path, 0777);
+
+  if (::listen(fd, 16) < 0) {
+    ::close(fd);
+    ::unlink(path);
+    return -1;
+  }
+
+  outPath = path;
+  return fd;
+}
+
 static bool recv_waitall(int fd, void* buf, size_t n) {
   uint8_t* p = (uint8_t*)buf;
   size_t got = 0;
@@ -111,12 +149,20 @@ void XProtoDaemon::ensureServer() {
   modules_ = new x11::XProtoModules(*server_);
 }
 
-bool XProtoDaemon::start(int display, const char* bindAddr) {
+bool XProtoDaemon::start(int display, bool enableTCP, bool enableUnix,
+                         const char* tcpBindAddr) {
   if (running_.load(std::memory_order_acquire)) return true;
 
+  if (!enableTCP && !enableUnix) {
+    fprintf(stderr, "[X11] ERROR: both TCP and Unix socket disabled — no listeners!\n");
+    return false;
+  }
+
   stop_.store(false, std::memory_order_release);
-  th_ = std::thread([this, display, bindAddr] {
-    runListener(display, bindAddr);
+  // Copy bindAddr since the pointer may not outlive the caller
+  std::string bindAddrStr = tcpBindAddr ? tcpBindAddr : "0.0.0.0";
+  th_ = std::thread([this, display, enableTCP, enableUnix, bindAddrStr] {
+    runListener(display, enableTCP, enableUnix, bindAddrStr.c_str());
   });
 
   return true;
@@ -125,11 +171,17 @@ bool XProtoDaemon::start(int display, const char* bindAddr) {
 void XProtoDaemon::stop() {
   stop_.store(true, std::memory_order_release);
 
-  // Closing listen fd unblocks poll
-  if (listen_fd_ >= 0) {
-    ::shutdown(listen_fd_, SHUT_RDWR);
-    ::close(listen_fd_);
-    listen_fd_ = -1;
+  // Close all listen fds to unblock poll
+  for (int fd : listen_fds_) {
+    ::shutdown(fd, SHUT_RDWR);
+    ::close(fd);
+  }
+  listen_fds_.clear();
+
+  // Unlink Unix socket if we created one
+  if (!unix_socket_path_.empty()) {
+    ::unlink(unix_socket_path_.c_str());
+    unix_socket_path_.clear();
   }
 
   if (th_.joinable()) th_.join();
@@ -143,11 +195,38 @@ ClientSession* XProtoDaemon::findClient(int fd) {
 
 // ---------- poll loop ----------
 
-void XProtoDaemon::runListener(int display, const char* bindAddr) {
+void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
+                               const char* tcpBindAddr) {
   running_.store(true, std::memory_order_release);
 
-  listen_fd_ = make_listen_socket(display, bindAddr);
-  if (listen_fd_ < 0) {
+  // Create listen sockets based on flags
+  if (enableTCP) {
+    int tcpFd = make_listen_socket(display, tcpBindAddr);
+    if (tcpFd >= 0) {
+      listen_fds_.push_back(tcpFd);
+      fprintf(stderr, "[X11] TCP listener on %s:%d (fd=%d)\n",
+              tcpBindAddr, 6000 + display, tcpFd);
+    } else {
+      fprintf(stderr, "[X11] WARNING: failed to create TCP listener on %s:%d\n",
+              tcpBindAddr, 6000 + display);
+    }
+  }
+
+  if (enableUnix) {
+    std::string unixPath;
+    int unixFd = make_listen_socket_unix(display, unixPath);
+    if (unixFd >= 0) {
+      listen_fds_.push_back(unixFd);
+      unix_socket_path_ = unixPath;
+      fprintf(stderr, "[X11] Unix socket listener on %s (fd=%d)\n",
+              unixPath.c_str(), unixFd);
+    } else {
+      fprintf(stderr, "[X11] WARNING: failed to create Unix socket listener\n");
+    }
+  }
+
+  if (listen_fds_.empty()) {
+    fprintf(stderr, "[X11] ERROR: no listeners created — aborting\n");
     running_.store(false, std::memory_order_release);
     return;
   }
@@ -155,9 +234,12 @@ void XProtoDaemon::runListener(int display, const char* bindAddr) {
   ensureServer();
 
   while (!stop_.load(std::memory_order_acquire)) {
-    // Build pollfd array: listen socket + all client fds
+    // Build pollfd array: listen sockets first, then client fds
     std::vector<struct pollfd> fds;
-    fds.push_back({listen_fd_, POLLIN, 0});
+    for (int lfd : listen_fds_)
+      fds.push_back({lfd, POLLIN, 0});
+
+    const size_t numListeners = listen_fds_.size();
 
     std::vector<int> clientFds;
     for (auto& [fd, _] : clients_) {
@@ -171,9 +253,11 @@ void XProtoDaemon::runListener(int display, const char* bindAddr) {
       break;
     }
 
-    // Check listen socket for new connections
-    if (fds[0].revents & POLLIN) {
-      acceptClient();
+    // Check ALL listen sockets for new connections
+    for (size_t i = 0; i < numListeners; i++) {
+      if (fds[i].revents & POLLIN) {
+        acceptClient(listen_fds_[i]);
+      }
     }
 
     // Drain host commands FIRST so client requests (e.g. xeyes' QueryPointer)
@@ -184,7 +268,7 @@ void XProtoDaemon::runListener(int display, const char* bindAddr) {
     std::vector<int> toRemove;
     for (size_t i = 0; i < clientFds.size(); i++) {
       int cfd = clientFds[i];
-      short rev = fds[i + 1].revents; // +1 because listen is at index 0
+      short rev = fds[i + numListeners].revents;
 
       if (rev & (POLLHUP | POLLERR)) {
         toRemove.push_back(cfd);
@@ -213,8 +297,8 @@ void XProtoDaemon::runListener(int display, const char* bindAddr) {
 }
 
 
-void XProtoDaemon::acceptClient() {
-  int cfd = ::accept(listen_fd_, nullptr, nullptr);
+void XProtoDaemon::acceptClient(int listenFd) {
+  int cfd = ::accept(listenFd, nullptr, nullptr);
   if (cfd < 0) return;
 
 #if defined(SO_NOSIGPIPE)

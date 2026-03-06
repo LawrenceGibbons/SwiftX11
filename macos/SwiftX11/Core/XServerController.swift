@@ -66,13 +66,21 @@ final class XServerController: ObservableObject {
     // app-defaults live in /opt/X11/share/X11/app-defaults/.
     ensureXFilesSearchPath()
 
-    let display = self.display // capture on MainActor
+    let display = max(self.display, 1) // capture on MainActor; minimum display :1
     append("SwiftX11 v\(Self.buildVersion) — starting on :\(display)…")
 
-    // x11_start_server spins its own runloop thread; keep the call on MainActor to
-    // avoid Swift 6 Sendable capture warnings from DispatchQueue.async.
-    //let ok = x11_start_server(Int32(display))
-    let ok = x11_start_server(Int32(1))
+    // Read network settings (SettingsStore is injected via environment;
+    // fall back to defaults if not available yet).
+    let enableTCP = UserDefaults.standard.object(forKey: "enableTCP") as? Bool ?? true
+    let enableUnix = UserDefaults.standard.object(forKey: "enableUnixSocket") as? Bool ?? true
+    let bindAddr = UserDefaults.standard.object(forKey: "tcpBindAddress") as? String ?? "0.0.0.0"
+
+    let ok = x11_start_server_ex(
+      Int32(display),
+      enableTCP,
+      enableUnix,
+      bindAddr
+    )
     
     isRunning = ok
     append(ok ? "Server started" : "Failed to start server")
