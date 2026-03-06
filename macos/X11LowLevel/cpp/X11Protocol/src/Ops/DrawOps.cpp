@@ -1016,6 +1016,18 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       return;
     }
 
+#ifndef NDEBUG
+    {
+      static int sCACount = 0;
+      if (sCACount < 20) {
+        fprintf(stderr, "[CA_DBG] #%d wid=0x%X clear=[%d,%d]->[%d,%d] (%dx%d) dst=%ux%u\n",
+                sCACount, (unsigned)wid, x0, y0, x1, y1,
+                x1 - x0, y1 - y0, (unsigned)dst.w, (unsigned)dst.h);
+        sCACount++;
+      }
+    }
+#endif
+
     if (dst.numOccluded > 0) {
       // Occlusion-aware fill: skip pixels covered by higher-stacking siblings
       for (int yy = y0; yy < y1; yy++) {
@@ -1182,6 +1194,21 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     };
 
     const bool useAA = x11::font::antialiasedFonts();
+
+#ifndef NDEBUG
+    {
+      static int sPT8Count = 0;
+      if (sPT8Count < 20) {
+        fprintf(stderr, "[PT8_DBG] #%d draw=0x%X pen=(%d,%d) fontAsc=%d fontDesc=%d "
+                "dst=%ux%u font=\"%s\"\n",
+                sPT8Count, (unsigned)drawable, (int)penX, (int)baseY,
+                f->ascent, f->descent,
+                (unsigned)dst.w, (unsigned)dst.h,
+                f->name.c_str());
+        sPT8Count++;
+      }
+    }
+#endif
 
     // Parse items until end of request body.
     while (br.remaining() >= 2) {
@@ -1408,6 +1435,34 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     };
 
     const bool useAA = x11::font::antialiasedFonts();
+
+#ifndef NDEBUG
+    {
+      static int sIT8Count = 0;
+      if (sIT8Count < 50) {
+        // Find max glyph descent and check for alpha glyphs
+        int maxGD = 0;
+        bool anyAlpha = false;
+        for (uint8_t ch : text) {
+          const x11::font::Glyph* g = resolveGlyph(f, ch);
+          if (g) {
+            int d = -g->bbx_yoff;
+            if (d > maxGD) maxGD = d;
+            if (g->hasAlpha()) anyAlpha = true;
+          }
+        }
+        fprintf(stderr, "[IT8_DBG] #%d draw=0x%X baseline_y=%d fontAsc=%d fontDesc=%d "
+                "bgTop=%d bgBot=%d maxGD=%d lineH=%d dst=%ux%u AA=%d font=\"%s\"\n",
+                sIT8Count, (unsigned)drawable, (int)y, fontAscent, fontDescent,
+                (int)y - fontAscent, (int)y + fontDescent - 1, maxGD,
+                fontAscent + fontDescent,
+                (unsigned)dst.w, (unsigned)dst.h,
+                anyAlpha ? 1 : 0,
+                f->name.c_str());
+        sIT8Count++;
+      }
+    }
+#endif
 
     // Background fill: [x .. x+overallW) × [y-fontAscent .. y+fontDescent-1]
     //

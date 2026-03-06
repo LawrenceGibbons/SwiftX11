@@ -10,6 +10,8 @@
 		5225BDE32F05AF2B009E510B /* X11LowLevel.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; };
 		5225BDE42F05AF2B009E510B /* X11LowLevel.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5225BDDB2F05AF2B009E510B /* X11LowLevel.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		52814ACB2F43662D003CF94A /* fonts in Resources */ = {isa = PBXBuildFile; fileRef = 52814ACA2F43662D003CF94A /* fonts */; };
+		52CF442A2F59DFFB00EC62ED /* CoreText.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 52CF44292F59DFFB00EC62ED /* CoreText.framework */; };
+		52CF442C2F59E00E00EC62ED /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 52CF442B2F59E00E00EC62ED /* CoreGraphics.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,6 +45,8 @@
 		5227CE872F53446A005C83EB /* HANDOFF.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = HANDOFF.md; sourceTree = "<group>"; };
 		5227CE882F53446A005C83EB /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 		52814ACA2F43662D003CF94A /* fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fonts; path = X11LowLevel/Resources/fonts; sourceTree = "<group>"; };
+		52CF44292F59DFFB00EC62ED /* CoreText.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreText.framework; path = System/Library/Frameworks/CoreText.framework; sourceTree = SDKROOT; };
+		52CF442B2F59E00E00EC62ED /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -185,6 +189,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				52CF442C2F59E00E00EC62ED /* CoreGraphics.framework in Frameworks */,
+				52CF442A2F59DFFB00EC62ED /* CoreText.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -199,6 +205,7 @@
 				5227CE892F53446A005C83EB /* docs */,
 				5225BD792F0489A9009E510B /* SwiftX11 */,
 				5225BDDC2F05AF2B009E510B /* X11LowLevel */,
+				52CF44282F59DFFB00EC62ED /* Frameworks */,
 				5225BD782F0489A9009E510B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -220,6 +227,15 @@
 				5227CE882F53446A005C83EB /* TODO.md */,
 			);
 			path = docs;
+			sourceTree = "<group>";
+		};
+		52CF44282F59DFFB00EC62ED /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				52CF442B2F59E00E00EC62ED /* CoreGraphics.framework */,
+				52CF44292F59DFFB00EC62ED /* CoreText.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */

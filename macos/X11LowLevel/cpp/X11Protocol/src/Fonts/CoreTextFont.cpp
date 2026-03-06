@@ -223,18 +223,19 @@ static bool rasterizeGlyph(CTFontRef ctFont, UniChar ch, Glyph& out) {
   // bbox.origin.x = left bearing (can be negative for overhanging glyphs)
   // bbox.origin.y = descent below baseline (negative means below)
   //
-  // Compute integer pixel span from floor(origin) to ceil(origin + size).
-  // This ensures fractional origins don't cause the buffer to be 1px too small
-  // (e.g., origin.y = -3.2, height = 11.7 → span = ceil(8.5) - floor(-3.2) = 13,
-  //  not ceil(11.7) = 12, which would clip the bottom of descenders).
+  // Compute integer pixel span from floor(origin) to ceil(origin + size),
+  // then add 1px padding on all sides.  The padding captures antialiased
+  // edge pixels that CoreText renders slightly outside the reported bbox
+  // (font smoothing spreads coverage beyond the "ink" boundary).
   int x0 = (int)std::floor(bbox.origin.x);
   int y0 = (int)std::floor(bbox.origin.y);
   int x1 = (int)std::ceil(bbox.origin.x + bbox.size.width);
   int y1 = (int)std::ceil(bbox.origin.y + bbox.size.height);
-  int gw = std::max(1, x1 - x0);
-  int gh = std::max(1, y1 - y0);
-  int bbx_xoff = x0;
-  int bbx_yoff = y0;
+  const int pad = 1;  // 1px padding for antialiased overshoot
+  int gw = std::max(1, x1 - x0) + 2 * pad;
+  int gh = std::max(1, y1 - y0) + 2 * pad;
+  int bbx_xoff = x0 - pad;
+  int bbx_yoff = y0 - pad;
 
   // Rasterize into an 8-bit grayscale bitmap context
   size_t bytesPerRow = (size_t)gw;  // 1 byte per pixel for 8-bit gray
@@ -259,10 +260,10 @@ static bool rasterizeGlyph(CTFontRef ctFont, UniChar ch, Glyph& out) {
 
   // Draw the glyph.
   // CGContext is bottom-up. We draw at the position that places the
-  // glyph's bounding box at (0, 0) in our buffer.
+  // glyph within our padded buffer.
   // The glyph origin (baseline, pen position) needs to be at:
-  //   x = -bbx_xoff (so the left edge of bbox maps to x=0)
-  //   y = -bbx_yoff (so the bottom of bbox maps to y=0)
+  //   x = -bbx_xoff (accounts for left bearing + padding)
+  //   y = -bbx_yoff (accounts for descent + padding)
   CGPoint position = CGPointMake(-(CGFloat)bbx_xoff, -(CGFloat)bbx_yoff);
   CTFontDrawGlyphs(ctFont, &glyphID, &position, 1, cgCtx);
 
@@ -407,12 +408,17 @@ std::unique_ptr<BdfFont> createCoreTextFont(const std::string& xlfdOrName,
 
   CFRelease(ctFont);
 
-#if X11_TRACE_FONT_ENABLED
-  fprintf(stderr, "[CoreText] created font: \"%s\" family=\"%s\" px=%d "
-          "ascent=%d descent=%d bbx=%dx%d glyphs=%zu bold=%d italic=%d\n",
+#ifndef NDEBUG
+  fprintf(stderr, "[CoreText] CREATED \"%s\" family=\"%s\" px=%d "
+          "ctAsc=%.1f ctDesc=%.1f ctLead=%.1f → "
+          "fontAscent=%d fontDescent=%d maxGlyphDesc=%d lineH=%d "
+          "bbx=%dx%d glyphs=%zu\n",
           xlfdOrName.c_str(), family.c_str(), pxSize,
-          font->ascent, font->descent, font->bbx_w, font->bbx_h,
-          font->glyphs.size(), bold ? 1 : 0, italic ? 1 : 0);
+          (double)ctAscent, (double)ctDescent, (double)ctLeading,
+          font->ascent, font->descent, maxGlyphDescent,
+          font->ascent + font->descent,
+          font->bbx_w, font->bbx_h,
+          font->glyphs.size());
 #endif
 
   return font;
