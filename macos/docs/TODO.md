@@ -289,6 +289,11 @@ Synchronization primitives. Some compositors and toolkits use SYNC for frame syn
 - [ ] **SYNC QueryVersion**: Return present=0 initially, implement if needed.
 - [ ] **SYNC counters/fences**: Full implementation if required by specific apps.
 
+### 7.3 Window Shape AA Compositing (LOW)
+Antialiased window shape borders at the macOS compositing level. Currently SHAPE uses binary masking (pixel is inside or outside the shape region). XQuartz produces softer window outlines because its compositor may antialias the shape boundary.
+- [ ] **Shape mask AA**: Generate antialiased alpha mask from shape rects in the Swift present path (e.g., signed-distance-field or multi-sample approach for shape boundary pixels).
+- [ ] **Metal blending**: Ensure the alpha channel in the Metal texture reflects shape coverage, producing smooth window outlines against the desktop.
+
 ---
 
 ## Testing Applications by Phase
