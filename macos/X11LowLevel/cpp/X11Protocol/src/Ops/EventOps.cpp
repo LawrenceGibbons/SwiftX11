@@ -33,6 +33,8 @@ static inline int16_t clamp_i16(int v) {
   return (int16_t)clampi(v, -32768, 32767);
 }
 
+struct AbsGeom { int absX=0, absY=0; };
+
   static inline int16_t clamp16_i32(int32_t v) {
     if (v < -32768) return -32768;
     if (v >  32767) return  32767;
