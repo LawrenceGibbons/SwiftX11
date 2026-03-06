@@ -13,10 +13,7 @@
 //            all Porter-Duff blend modes.
 //
 
-// Define X11_TRACE_RENDER to enable RENDER extension debug tracing.
-// Separate from X11_TRACE_VERBOSE since RENDER debugging is often needed
-// independently. Undefine to silence all RENDER traces.
-// #define X11_TRACE_RENDER 1  // disabled — using [REQ] all-requests trace instead
+#include "Utils/TraceDefs.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -465,7 +462,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       std::lock_guard<std::mutex> lk(sPicMtx);
       sPictures[pid] = ps;
     }
-#ifdef X11_TRACE_RENDER
+#if X11_TRACE_RENDER_ENABLED
     fprintf(stderr, "[RENDER CreatePicture] pid=0x%X drw=0x%X fmt=0x%X repeat=%d\n",
             pid, drawable, format, ps.repeat);
 #endif
@@ -598,7 +595,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) return;
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) return;
 
-#ifdef X11_TRACE_RENDER
+#if X11_TRACE_RENDER_ENABLED
     fprintf(stderr, "[RENDER Composite] op=%u src=0x%X(solid=%d repeat=%d drw=0x%X) "
             "msk=0x%X(has=%d solid=%d repeat=%d drw=0x%X) dst=0x%X(drw=0x%X win=%d) "
             "src(%d,%d) msk(%d,%d) dst(%d,%d) %ux%u\n",
@@ -618,7 +615,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (srcDrw.w == 1 && srcDrw.h == 1) {
           srcIsSolid = true;
           srcColor   = srcDrw.pixels32[0];
-#ifdef X11_TRACE_RENDER
+#if X11_TRACE_RENDER_ENABLED
           fprintf(stderr, "[RENDER Composite] promoted 1x1 Repeat to solid=0x%08X\n",
                   srcColor);
 #endif
@@ -963,7 +960,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       gs.format = format;
       sGlyphSets[gsid] = std::move(gs);
     }
-#ifndef NDEBUG
+#if X11_TRACE_RENDER_ENABLED
     {
       const char* fmtName = (format == kFmtARGB32) ? "ARGB32" :
                              (format == kFmtRGB24) ? "RGB24" :
@@ -1137,7 +1134,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
     }
 
-#ifndef NDEBUG
+#if X11_TRACE_RENDER_ENABLED
     if (nglyphs > 0) {
       const auto& info0 = infos[0];
       fprintf(stderr, "[RENDER] AddGlyphs gsid=0x%x n=%u bpp=%d  "
@@ -1204,7 +1201,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             if (srcDrw.w == 1 && srcDrw.h == 1) {
               srcIsSolid = true;
               srcColor = srcDrw.pixels32[0];
-#ifndef NDEBUG
+#if X11_TRACE_RENDER_ENABLED
               fprintf(stderr, "[RENDER] CompositeGlyphs: promoted 1x1 Repeat to solid=0x%08X\n",
                       srcColor);
 #endif
@@ -1212,7 +1209,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
               // Larger repeat source — sample first pixel as fallback
               srcIsSolid = true;
               srcColor = srcDrw.pixels32[0];
-#ifndef NDEBUG
+#if X11_TRACE_RENDER_ENABLED
               fprintf(stderr, "[RENDER] CompositeGlyphs: non-1x1 source %ux%u, using pixel[0]=0x%08X\n",
                       srcDrw.w, srcDrw.h, srcColor);
 #endif
@@ -1235,15 +1232,13 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
-#ifndef NDEBUG
-    {
-      fprintf(stderr, "[RENDER] CompositeGlyphs%d op=%d src=0x%x(solid=%d,color=0x%08x) "
-              "dst=0x%x(draw=0x%x %ux%u stride=%u) mask=0x%x gs=0x%x\n",
-              glyphIdSize * 8, op, srcPid,
-              srcIsSolid ? 1 : 0, srcColor,
-              dstPid, dstDrawable, dst.w, dst.h, dst.stridePixels,
-              maskFmt, gsid);
-    }
+#if X11_TRACE_RENDER_ENABLED
+    fprintf(stderr, "[RENDER] CompositeGlyphs%d op=%d src=0x%x(solid=%d,color=0x%08x) "
+            "dst=0x%x(draw=0x%x %ux%u stride=%u) mask=0x%x gs=0x%x\n",
+            glyphIdSize * 8, op, srcPid,
+            srcIsSolid ? 1 : 0, srcColor,
+            dstPid, dstDrawable, dst.w, dst.h, dst.stridePixels,
+            maskFmt, gsid);
 #endif
 
     // Current glyphset
@@ -1347,21 +1342,16 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       penY = localPenY;
     }
 
-#ifndef NDEBUG
+#if X11_TRACE_RENDER_ENABLED
     if (!cmds.empty()) {
       fprintf(stderr, "[RENDER]   → %zu glyphs, pen=(%d,%d), useMask=%d\n",
               cmds.size(), penX, penY, useMask ? 1 : 0);
-      // Show first few glyph placements
       std::lock_guard<std::mutex> lk2(sGlyphMtx);
       for (size_t ci = 0; ci < std::min(cmds.size(), (size_t)3); ci++) {
         auto gsIt = sGlyphSets.find(cmds[ci].gsid);
         if (gsIt == sGlyphSets.end()) continue;
         auto gIt = gsIt->second.glyphs.find(cmds[ci].glyphId);
-        if (gIt == gsIt->second.glyphs.end()) {
-          fprintf(stderr, "[RENDER]   glyph[%zu] id=%u NOT FOUND in gs=0x%x\n",
-                  ci, cmds[ci].glyphId, cmds[ci].gsid);
-          continue;
-        }
+        if (gIt == gsIt->second.glyphs.end()) continue;
         const auto& rg = gIt->second;
         fprintf(stderr, "[RENDER]   glyph[%zu] id=%u pen=(%d,%d) "
                 "%ux%u origin=(%d,%d) → draw@(%d,%d)\n",
@@ -1532,7 +1522,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
-#ifdef X11_TRACE_RENDER
+#if X11_TRACE_RENDER_ENABLED
     fprintf(stderr, "[RENDER FillRects] op=%u dst=0x%X(drw=0x%X win=%d) color=0x%08X\n",
             (unsigned)op, dstPid, dstDrawable, dst.isWindow, fillColor);
 #endif
@@ -1637,7 +1627,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       std::lock_guard<std::mutex> lk(sPicMtx);
       sPictures[pid] = ps;
     }
-#ifdef X11_TRACE_RENDER
+#if X11_TRACE_RENDER_ENABLED
     fprintf(stderr, "[RENDER CreateSolidFill] pid=0x%X argb=0x%08X\n",
             pid, ps.solidARGB);
 #endif

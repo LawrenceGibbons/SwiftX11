@@ -61,3 +61,11 @@
 #else
   #define X11_TRACE_FONT_ENABLED 0
 #endif
+
+// RENDER extension: CreatePicture, CreateGlyphSet, AddGlyphs,
+//                   CompositeGlyphs, Composite, source promotion
+#if defined(X11_TRACE_RENDER) || defined(X11_TRACE_VERBOSE)
+  #define X11_TRACE_RENDER_ENABLED 1
+#else
+  #define X11_TRACE_RENDER_ENABLED 0
+#endif

@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-05 (v1.7.5 — SHAPE extension with actual clipping)
+Last updated: 2026-03-06 (v1.8.3 — font rendering fixes)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -431,6 +431,10 @@ rendercheck                 # RENDER extension tests
 
 **v1.8.0 adds CoreText font bridge** — Phase 3.3 complete. X11 font requests mapped to macOS system fonts (Menlo, Helvetica, Courier, etc.) via CoreText C API. Both 1-bit crisp and 8-bit antialiased rendering with runtime toggle in Preferences → Rendering. CoreText tried first in font lookup, PCF/BDF fallback for cursor/symbol fonts.
 
+**v1.8.2 fixes descender clipping** — Glyph positioning formula was `topY = y - bbx_yoff - (bbx_h - 1)`, placing every glyph 1px too low vs X.org reference (`topY = y - bbx_yoff - bbx_h`). Fixed at all 4 text handlers. Also fixed CompositeGlyphs source picture resolution for old Xft 1×1 Repeat pixmap pattern.
+
+**v1.8.3 fixes Xft subpixel glyph parsing** — AddGlyphs didn't handle ARGB32 glyph format (used for LCD/subpixel rendering). `alphaBpp()` returned 8 for ARGB32, causing A8 parser to read 1/4 of the bitmap data and corrupt all subsequent glyphs. Fixed with 32bpp parsing path. RENDER trace category added to TraceDefs.hpp.
+
 **Next priorities**: Phase 4+ (window lifecycle, error handling, container networking).
 
 ### Bug fixes (v1.6.0)
@@ -470,6 +474,15 @@ rendercheck                 # RENDER extension tests
 ### Bug fixes (v1.7.3)
 - **xcalc resize crash — monotonic wire-sequence floor**: Even with v1.7.2's reply-tracking safety net, xcalc resize still triggered `[xcb] Unknown sequence number` crashes. Root cause: `drainHostCommands()` interleaves with `readAndDispatch()`, and host commands (resize → ConfigureNotify, Expose) carry stale sequences from `lastSeq()` that are behind sequences already sent during client request dispatch. XCB widens 16-bit sequences to 64-bit monotonically — any backwards sequence causes crash. Fixed by tracking `max_wire_seq_` (highest sequence ever sent) in `XProtoTransport::sendAll()` and bumping any stale sequence forward. Payload-aware: `payload_remaining_` counter distinguishes reply payload chunks (bytes[2:3] are arbitrary data) from response headers (bytes[2:3] are sequence numbers).
 - **Button borders missing after resize**: After window resize, button outlines (server-drawn borders) disappeared — only text labels rendered. Root cause: `ExposeChildren` handler was "non-destructive" (only sent Expose events), but after resize the surface is cleared to white, so server-drawn borders and backgrounds were lost. Fixed by adding `fillWindowBorderIfReady()` and `fillWindowBackgroundIfReady()` calls in `ExposeChildren`, matching `sendExposeSubtree` behavior.
+
+### Bug fixes (v1.8.2)
+- **Descender clipping**: Characters with descenders (g, j, p, q, y) had bottom pixels clipped. Root cause: glyph positioning formula `topY = y - bbx_yoff - (bbx_h - 1)` placed every glyph 1 pixel too low vs X.org reference (`topY = y - bbx_yoff - bbx_h`). The bottom pixel of maximum-descent glyphs extended below ImageText8 background fill, getting overwritten by the next line's background. Fixed at all 4 text handlers (PolyText8/16, ImageText8/16).
+- **CompositeGlyphs source color defaulting to black**: When old-style Xft used a 1×1 Repeat pixmap (instead of CreateSolidFill) for text color, CompositeGlyphs defaulted srcColor to black (0xFF000000). Fixed by adding 1×1 Repeat → solid promotion logic matching the Composite handler.
+- **CoreText descent workaround removed**: The `+1` descent padding in CoreTextFont.cpp was compensating for the same off-by-one; no longer needed.
+
+### Bug fixes (v1.8.3)
+- **Xft garbled text with Menlo 16pt** (`xterm -fa Menlo -fs 16`): ARGB32 glyph format (subpixel/LCD rendering) not handled in AddGlyphs. `alphaBpp()` returned 8 for unrecognized formats, causing A8 parser to read 1 byte per pixel instead of 4. This consumed 1/4 of each glyph's bitmap data; the remaining 3/4 was misinterpreted as subsequent glyph metadata, corrupting all glyphs after the first in each AddGlyphs batch. Fixed by adding 32bpp path to `alphaBpp()` and AddGlyphs parser (extracts alpha channel from ARGB32 pixels).
+- **RENDER trace category**: Added `X11_TRACE_RENDER_ENABLED` to TraceDefs.hpp categorical trace system. Migrated ad-hoc `#define X11_TRACE_RENDER` and `#ifndef NDEBUG` debug traces to use the standardized flag. Font debug traces (IT8_DBG, PT8_DBG, CA_DBG) moved from `#ifndef NDEBUG` to `X11_TRACE_FONT_ENABLED`.
 
 ### Bug fixes (v1.7.2)
 - **xcalc resize crash (XCB sequence desync)**: Resizing xcalc triggered `[xcb] Unknown sequence number while processing queue` → abort. Root cause: a reply-bearing request was dispatched to a handler that didn't send a reply, causing XCB's internal sequence tracking to desync. Fixed with three-layer defense:
