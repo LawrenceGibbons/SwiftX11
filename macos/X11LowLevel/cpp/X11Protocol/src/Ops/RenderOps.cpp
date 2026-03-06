@@ -691,17 +691,17 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     return;
   }
 
-  // ---- 10: Trapezoids ----
+  // ---- 10: Trapezoids (with sub-pixel coverage antialiasing) ----
   case 10: {
     if (br.remaining() < 20) { br.skip(br.remaining()); return; }
-    const uint8_t  op     = br.readU8();
+    const uint8_t  op      = br.readU8();
     br.skip(3); // pad
-    const uint32_t srcPid = br.readU32();
-    const uint32_t dstPid = br.readU32();
+    const uint32_t srcPid  = br.readU32();
+    const uint32_t dstPid  = br.readU32();
     const uint32_t maskFmt = br.readU32();
-    const int16_t  xSrc   = (int16_t)br.readU16();
-    const int16_t  ySrc   = (int16_t)br.readU16();
-    (void)maskFmt; (void)xSrc; (void)ySrc;
+    const int16_t  xSrc    = (int16_t)br.readU16();
+    const int16_t  ySrc    = (int16_t)br.readU16();
+    (void)xSrc; (void)ySrc; // used for source offset (solid fill = no effect)
 
     // Resolve source color (typically solid fill)
     uint32_t srcColor = 0xFF000000u;
@@ -724,70 +724,246 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!resolveDrawableRW(ctx, dstDrawable, dst)) { br.skip(br.remaining()); return; }
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
-    // Track damage bounding box
-    int32_t dmgX0 = (int32_t)dst.w, dmgY0 = (int32_t)dst.h;
-    int32_t dmgX1 = 0, dmgY1 = 0;
-
+    // Parse ALL trapezoids into a vector (ByteReader is single-pass).
     // Each TRAPEZOID is 40 bytes:
     //   FIXED top, bottom (16.16 each = 4 bytes)
     //   LINEFIX left  (two POINTFIXes = 2x8 = 16 bytes)
     //   LINEFIX right (two POINTFIXes = 2x8 = 16 bytes)
+    struct ParsedTrap {
+      int32_t topFixed, bottomFixed;
+      int32_t lx1, ly1, lx2, ly2;   // left edge endpoints  (FIXED 16.16)
+      int32_t rx1, ry1, rx2, ry2;   // right edge endpoints (FIXED 16.16)
+    };
+    std::vector<ParsedTrap> traps;
+    traps.reserve(br.remaining() / 40);
     while (br.remaining() >= 40) {
-      const int32_t topFixed    = (int32_t)br.readU32();
-      const int32_t bottomFixed = (int32_t)br.readU32();
-      // Left edge: p1(x,y), p2(x,y) in FIXED 16.16
-      const int32_t lx1 = (int32_t)br.readU32();
-      const int32_t ly1 = (int32_t)br.readU32();
-      const int32_t lx2 = (int32_t)br.readU32();
-      const int32_t ly2 = (int32_t)br.readU32();
-      // Right edge: p1(x,y), p2(x,y) in FIXED 16.16
-      const int32_t rx1 = (int32_t)br.readU32();
-      const int32_t ry1 = (int32_t)br.readU32();
-      const int32_t rx2 = (int32_t)br.readU32();
-      const int32_t ry2 = (int32_t)br.readU32();
+      ParsedTrap t;
+      t.topFixed    = (int32_t)br.readU32();
+      t.bottomFixed = (int32_t)br.readU32();
+      t.lx1 = (int32_t)br.readU32(); t.ly1 = (int32_t)br.readU32();
+      t.lx2 = (int32_t)br.readU32(); t.ly2 = (int32_t)br.readU32();
+      t.rx1 = (int32_t)br.readU32(); t.ry1 = (int32_t)br.readU32();
+      t.rx2 = (int32_t)br.readU32(); t.ry2 = (int32_t)br.readU32();
+      traps.push_back(t);
+    }
+    br.skip(br.remaining());
+    if (traps.empty()) return;
 
-      // Convert FIXED 16.16 to integer scanlines (round to pixel centers)
-      int32_t yTop    = (topFixed + 0x8000) >> 16;
-      int32_t yBottom = (bottomFixed + 0x8000) >> 16;
-      yTop    = std::max(yTop,    (int32_t)0);
-      yBottom = std::min(yBottom, (int32_t)dst.h);
+#if X11_TRACE_RENDER_ENABLED
+    fprintf(stderr, "[RENDER Trapezoids] op=%u src=0x%X dst=0x%X maskFmt=0x%X nTraps=%zu\n",
+            (unsigned)op, srcPid, dstPid, maskFmt, traps.size());
+#endif
+
+    // ---------------------------------------------------------------
+    // Sub-pixel coverage antialiasing constants.
+    // N_SUB Y sub-rows per pixel row; analytical horizontal coverage.
+    // ---------------------------------------------------------------
+    constexpr int N_SUB = 8;
+    // Scale factor: each sub-row contributes up to 255/N_SUB coverage units.
+    // We accumulate fixed-point coverage and convert to 0..255 at the end.
+
+    // Lambda: interpolate edge X at a given yFixed (FIXED 16.16).
+    // Returns X in FIXED 16.16.
+    auto interpEdgeX = [](int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                          int64_t yF) -> int64_t {
+      int64_t dy = (int64_t)y2 - (int64_t)y1;
+      if (dy == 0) return (int64_t)x1;
+      return (int64_t)x1 + ((int64_t)(x2 - x1) * (yF - (int64_t)y1)) / dy;
+    };
+
+    // Lambda: rasterize one trapezoid into a coverage row buffer.
+    // For each pixel row, iterates N_SUB sub-rows, computing analytical
+    // horizontal coverage per pixel and accumulating into covRow[].
+    //
+    // covRow is caller-provided scratch, size >= clipW.
+    // Writes coverage to either coverageBuf (mask path) or composites
+    // directly to dst (direct path).
+    auto rasterOneTrap = [&](const ParsedTrap& t,
+                             uint8_t* coverageBuf,
+                             int32_t bufW, int32_t bufOffX, int32_t bufOffY,
+                             int32_t clipW, int32_t clipH,
+                             int32_t* covRow,      // scratch, size >= clipW
+                             bool directComposite,
+                             int32_t& dmgX0, int32_t& dmgY0,
+                             int32_t& dmgX1, int32_t& dmgY1)
+    {
+      // Pixel-row range for this trapezoid
+      int32_t yTop    = t.topFixed >> 16;                      // floor
+      int32_t yBottom = (t.bottomFixed + 0xFFFF) >> 16;        // ceil
+      yTop    = std::max(yTop, (int32_t)0);
+      yBottom = std::min(yBottom, clipH);
 
       const bool forceOpaque = dst.isWindow;
+
       for (int32_t y = yTop; y < yBottom; y++) {
-        // Fixed-point Y for this scanline center (y + 0.5)
-        int64_t yFixed = ((int64_t)y << 16) + 0x8000;
+        // Track X bounds across all sub-rows for this pixel row
+        int32_t xMin = clipW, xMax = 0;
 
-        // Interpolate left edge X at this Y
-        int64_t lDy = (int64_t)ly2 - (int64_t)ly1;
-        int64_t leftX;
-        if (lDy == 0) leftX = (int64_t)lx1;
-        else leftX = (int64_t)lx1 + ((int64_t)(lx2 - lx1) * (yFixed - (int64_t)ly1)) / lDy;
+        // Zero the coverage row scratch (only the portion we'll use)
+        // We'll track xMin/xMax to zero only what's needed.
+        bool rowUsed = false;
 
-        // Interpolate right edge X at this Y
-        int64_t rDy = (int64_t)ry2 - (int64_t)ry1;
-        int64_t rightX;
-        if (rDy == 0) rightX = (int64_t)rx1;
-        else rightX = (int64_t)rx1 + ((int64_t)(rx2 - rx1) * (yFixed - (int64_t)ry1)) / rDy;
+        for (int sub = 0; sub < N_SUB; sub++) {
+          // Sub-row Y center: y + (sub + 0.5) / N_SUB  in FIXED 16.16
+          int64_t yF = ((int64_t)y << 16) + ((int64_t)(2 * sub + 1) << 15) / N_SUB;
 
-        // Convert to pixel coordinates
-        int32_t xLeft  = (int32_t)((leftX + 0x8000) >> 16);
-        int32_t xRight = (int32_t)((rightX + 0x8000) >> 16);
-        xLeft  = std::max(xLeft,  (int32_t)0);
-        xRight = std::min(xRight, (int32_t)dst.w);
+          // Skip sub-rows outside the trapezoid Y extent
+          if (yF < (int64_t)t.topFixed || yF >= (int64_t)t.bottomFixed)
+            continue;
 
-        if (xLeft < xRight) {
-          uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
-          for (int32_t x = xLeft; x < xRight; x++) {
-            uint32_t px = applyOp(op, row[(size_t)x], srcColor);
+          // Interpolate edge X positions at this sub-row
+          int64_t leftX  = interpEdgeX(t.lx1, t.ly1, t.lx2, t.ly2, yF);
+          int64_t rightX = interpEdgeX(t.rx1, t.ry1, t.rx2, t.ry2, yF);
+          if (leftX > rightX) std::swap(leftX, rightX);
+
+          // Integer pixel column range (expand by 1 for partial edge pixels)
+          int32_t pxL = (int32_t)(leftX >> 16);          // floor of left edge
+          int32_t pxR = (int32_t)((rightX + 0xFFFF) >> 16); // ceil of right edge
+          pxL = std::max(pxL, (int32_t)0);
+          pxR = std::min(pxR, clipW);
+          if (pxL >= pxR) continue;
+
+          // On first valid sub-row for this pixel row, zero the scratch
+          if (!rowUsed) {
+            for (int32_t i = pxL; i < pxR; i++) covRow[i] = 0;
+            xMin = pxL;
+            xMax = pxR;
+            rowUsed = true;
+          } else {
+            // Expand and zero new pixels if sub-row span is wider
+            if (pxL < xMin) {
+              for (int32_t i = pxL; i < xMin; i++) covRow[i] = 0;
+              xMin = pxL;
+            }
+            if (pxR > xMax) {
+              for (int32_t i = xMax; i < pxR; i++) covRow[i] = 0;
+              xMax = pxR;
+            }
+          }
+
+          // Accumulate horizontal coverage for each pixel in the span.
+          // Coverage = fraction of pixel width [x, x+1) covered by [leftX, rightX],
+          // scaled to 0..65536 (one full pixel width in FIXED 16.16).
+          for (int32_t x = pxL; x < pxR; x++) {
+            int64_t pixL = (int64_t)x << 16;
+            int64_t pixR = ((int64_t)x + 1) << 16;
+            int64_t covL = std::max(leftX, pixL);
+            int64_t covR = std::min(rightX, pixR);
+            int64_t covW = covR - covL;
+            if (covW <= 0) continue;
+            // covW is in [0, 0x10000]. Scale to [0, 255]:
+            int32_t subCov = (int32_t)((covW * 255 + 0x8000) >> 16);
+            covRow[x] += subCov;
+          }
+        } // sub-rows
+
+        if (!rowUsed) continue;
+
+        // Convert accumulated coverage to 0..255 (divide by N_SUB)
+        // and either write to coverage buffer or composite directly.
+        for (int32_t x = xMin; x < xMax; x++) {
+          int32_t avg = (covRow[x] + N_SUB / 2) / N_SUB;
+          if (avg <= 0) continue;
+          uint8_t cov = (uint8_t)std::min(avg, 255);
+
+          if (!directComposite) {
+            // maskFormat != 0: accumulate into coverage buffer (saturating add)
+            size_t idx = (size_t)(y - bufOffY) * (size_t)bufW + (size_t)(x - bufOffX);
+            int32_t v = (int32_t)coverageBuf[idx] + (int32_t)cov;
+            coverageBuf[idx] = (uint8_t)std::min(v, 255);
+          } else {
+            // maskFormat == 0: composite directly
+            uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+            uint32_t sc = modulateAlpha(srcColor, cov);
+            uint32_t px = applyOp(op, row[(size_t)x], sc);
             if (forceOpaque) px |= 0xFF000000u;
             row[(size_t)x] = px;
           }
-          // Update damage bounds
-          if (xLeft  < dmgX0) dmgX0 = xLeft;
-          if (xRight > dmgX1) dmgX1 = xRight;
-          if (y      < dmgY0) dmgY0 = y;
-          if (y + 1  > dmgY1) dmgY1 = y + 1;
         }
+
+        // Update damage bounds
+        if (xMin < dmgX0) dmgX0 = xMin;
+        if (xMax > dmgX1) dmgX1 = xMax;
+        if (y    < dmgY0) dmgY0 = y;
+        if (y +1 > dmgY1) dmgY1 = y + 1;
+      } // pixel rows
+    }; // rasterOneTrap
+
+    // Track damage bounding box
+    int32_t dmgX0 = (int32_t)dst.w, dmgY0 = (int32_t)dst.h;
+    int32_t dmgX1 = 0, dmgY1 = 0;
+
+    // Scratch buffer for per-row coverage accumulation (reused across rows)
+    std::vector<int32_t> covRow((size_t)dst.w, 0);
+
+    if (maskFmt != 0) {
+      // ---- maskFormat != 0 (typically A8): grouped compositing via temp mask ----
+      // Compute bounding box of ALL trapezoids
+      int32_t bbX0 = (int32_t)dst.w, bbY0 = (int32_t)dst.h;
+      int32_t bbX1 = 0,               bbY1 = 0;
+      for (const auto& t : traps) {
+        int32_t yT = t.topFixed >> 16;
+        int32_t yB = (t.bottomFixed + 0xFFFF) >> 16;
+        int32_t xL = std::min({t.lx1 >> 16, t.lx2 >> 16, t.rx1 >> 16, t.rx2 >> 16});
+        int32_t xR = (std::max({t.lx1, t.lx2, t.rx1, t.rx2}) + 0xFFFF) >> 16;
+        bbX0 = std::min(bbX0, xL);  bbX1 = std::max(bbX1, xR);
+        bbY0 = std::min(bbY0, yT);  bbY1 = std::max(bbY1, yB);
+      }
+      bbX0 = std::max(bbX0, (int32_t)0);
+      bbY0 = std::max(bbY0, (int32_t)0);
+      bbX1 = std::min(bbX1, (int32_t)dst.w);
+      bbY1 = std::min(bbY1, (int32_t)dst.h);
+
+      if (bbX0 < bbX1 && bbY0 < bbY1) {
+        const int32_t bufW = bbX1 - bbX0;
+        const int32_t bufH = bbY1 - bbY0;
+        const size_t  bufSz = (size_t)bufW * (size_t)bufH;
+
+        // Safety: cap coverage buffer at 4MB to prevent malicious OOM
+        if (bufSz <= 4u * 1024u * 1024u) {
+          std::vector<uint8_t> coverageBuf(bufSz, 0);
+
+          // Rasterize all trapezoids into coverage buffer (additive)
+          for (const auto& t : traps) {
+            rasterOneTrap(t, coverageBuf.data(), bufW, bbX0, bbY0,
+                          (int32_t)dst.w, (int32_t)dst.h,
+                          covRow.data(), /*directComposite=*/false,
+                          dmgX0, dmgY0, dmgX1, dmgY1);
+          }
+
+          // Composite coverage buffer onto destination in one pass
+          const bool forceOpaque = dst.isWindow;
+          for (int32_t y = bbY0; y < bbY1; y++) {
+            uint32_t*      drow = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
+            const uint8_t* crow = coverageBuf.data() + (size_t)(y - bbY0) * (size_t)bufW;
+            for (int32_t x = bbX0; x < bbX1; x++) {
+              uint8_t cov = crow[x - bbX0];
+              if (cov == 0) continue;
+              uint32_t sc = modulateAlpha(srcColor, cov);
+              uint32_t px = applyOp(op, drow[(size_t)x], sc);
+              if (forceOpaque) px |= 0xFF000000u;
+              drow[(size_t)x] = px;
+            }
+          }
+          dmgX0 = bbX0; dmgY0 = bbY0;
+          dmgX1 = bbX1; dmgY1 = bbY1;
+        } else {
+          // Buffer too large: fall back to direct per-trapezoid compositing
+          for (const auto& t : traps) {
+            rasterOneTrap(t, nullptr, 0, 0, 0,
+                          (int32_t)dst.w, (int32_t)dst.h,
+                          covRow.data(), /*directComposite=*/true,
+                          dmgX0, dmgY0, dmgX1, dmgY1);
+          }
+        }
+      }
+    } else {
+      // ---- maskFormat == 0: direct per-trapezoid compositing ----
+      for (const auto& t : traps) {
+        rasterOneTrap(t, nullptr, 0, 0, 0,
+                      (int32_t)dst.w, (int32_t)dst.h,
+                      covRow.data(), /*directComposite=*/true,
+                      dmgX0, dmgY0, dmgX1, dmgY1);
       }
     }
 
@@ -795,7 +971,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       damageOrDirty(ctx, dstDrawable, (int16_t)dmgX0, (int16_t)dmgY0,
                     dmgX1 - dmgX0, dmgY1 - dmgY0);
     }
-    br.skip(br.remaining());
     return;
   }
 
