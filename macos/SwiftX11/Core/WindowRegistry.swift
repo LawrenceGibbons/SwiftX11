@@ -124,6 +124,9 @@ final class WindowRegistry {
   private var suppressNextUnmapFromCocoa: Set<UInt32> = []
   private var closingXids = Set<UInt32>()
   private var mappedXids = Set<UInt32>()
+  // Override-redirect windows whose mapWindow() deferred orderFront
+  // because the geometry wasn't available yet. moveWindow() will show them.
+  private var pendingORShow = Set<UInt32>()
   
   //var useMetalForNewWindows: Bool = false  // set from UI on launch / changes
   var useMetalForNewWindows: Bool = true  // set from UI on launch / changes
@@ -250,10 +253,14 @@ final class WindowRegistry {
                            width: CGFloat(x11w), height: CGFloat(x11h))
         print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
         win.setFrame(frame, display: false)
+        // Position is known — show immediately
+        win.orderFront(nil)
       } else {
-        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) geometry query FAILED")
+        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) geometry query FAILED — deferring show to moveWindow")
+        // Don't show yet. The X11_UI_MOVE command (pushed by MapWindow handler)
+        // will position and show the window with correct coordinates.
+        pendingORShow.insert(host)
       }
-      win.orderFront(nil)
     } else {
       win.makeKeyAndOrderFront(nil)
     }
@@ -726,6 +733,13 @@ final class WindowRegistry {
       let macY = screenH - CGFloat(x11Y) - CGFloat(x11h)
       let origin = NSPoint(x: CGFloat(x11X), y: macY)
       win.setFrameOrigin(origin)
+
+      // If mapWindow() deferred showing this OR window, show it now that
+      // we have the correct position.
+      if pendingORShow.remove(xid) != nil {
+        print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) deferred show at (\(x11X),\(x11Y))")
+        win.orderFront(nil)
+      }
     }
   }
 
