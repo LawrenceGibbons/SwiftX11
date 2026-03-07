@@ -173,7 +173,7 @@ void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t seq, uint8_t ownerEv
   ctx.grabs().addOrReplace(g);
 
 #ifndef NDEBUG
-  ctx.tracef("[GrabOps] GrabButton win=0x%08X btn=%u mods=0x%04X owner=%u mask=0x%04X\n",
+  fprintf(stderr, "[GrabButton] win=0x%08X btn=%u mods=0x%04X owner=%u mask=0x%04X\n",
              (unsigned)grabWindow, (unsigned)button, (unsigned)modifiers,
              (unsigned)ownerEvents, (unsigned)eventMask);
 #endif

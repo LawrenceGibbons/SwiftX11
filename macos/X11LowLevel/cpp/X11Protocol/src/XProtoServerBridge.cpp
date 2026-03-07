@@ -572,9 +572,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
               uint32_t checkWin = under;
               bool foundGrab = false;
               int safety = 0;
+              // GrabButton stores modifiers in X11 wire format (ControlMask=bit2).
+              // c.modsMask uses internal format (Ctrl=bit1). Convert to X11.
+              const uint16_t x11Mods = x11::input::toX11State(0, c.modsMask) & 0xFF;
               while (checkWin && safety++ < 64) {
-                if (ctx.grabs().match(checkWin, c.button,
-                        (uint16_t)(c.modsMask & 0xFFu), pg)) {
+                if (ctx.grabs().match(checkWin, c.button, x11Mods, pg)) {
                   foundGrab = true;
                   under = pg.grabWindow;
                   break;
@@ -584,10 +586,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 if (!ctx.windows().snapshot(checkWin, vw)) break;
                 checkWin = vw.parent_xid;
               }
-            #if X11_TRACE_INPUT_ENABLED
+            #ifndef NDEBUG
               fprintf(stderr,
-                      "[BTN_GRAB] under=0x%08X btn=%u grab=%s grabWin=0x%08X\n",
-                      (unsigned)under, (unsigned)c.button,
+                      "[BTN_GRAB] under=0x%08X btn=%u x11Mods=0x%04X grab=%s grabWin=0x%08X\n",
+                      (unsigned)under, (unsigned)c.button, (unsigned)x11Mods,
                       foundGrab ? "YES" : "no",
                       foundGrab ? (unsigned)pg.grabWindow : 0u);
             #endif
@@ -595,6 +597,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 
           // ---- STEP 3: Update button state with the CORRECT target ----
+          // Save button state BEFORE the transition for the event state field.
+          // X11 spec: "state is set to indicate the logical state just prior
+          // to the event." For ButtonPress, state should NOT include the button
+          // being pressed. For ButtonRelease, state should include it.
+          const uint32_t buttonsBefore = ctx.input().buttons;
+
           // Now drag_xid will be set to 'under' (the child/grab window),
           // not the host. Subsequent button/motion events will route here.
           ctx.input().button(under, c.isDown != 0, c.button, c.buttonsMask);
@@ -695,7 +703,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           srv->eventOps().sendButtonEvent(ctx, deliver,
                                           c.isDown != 0, c.button,
                                           ctx.input().root_x_u, ctx.input().root_y_u,
-                                          ctx.input().buttons, c.modsMask,
+                                          buttonsBefore, c.modsMask,
                                           child);
           break;
         }

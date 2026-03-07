@@ -78,6 +78,7 @@ final class X11View: NSView {
   // MARK: -- interface to X11
   private var buttonMask: UInt32 = 0
   private var optionClickButton: UInt8 = 1  // tracks Option+click → button 2 remap
+  private var ctrlClickSuppressRight = false  // suppress duplicate rightMouseDown from Ctrl+click
   private var scrollAccumX: CGFloat = 0
   private var scrollAccumY: CGFloat = 0
   private var lastModifierFlags: NSEvent.ModifierFlags = []
@@ -1190,15 +1191,16 @@ final class X11View: NSView {
   }
   
   override func mouseDown(with event: NSEvent) {
-    let hasMods = event.modifierFlags.intersection([.control, .option, .shift, .command])
-    if !hasMods.isEmpty {
-      print("[MOUSE_DOWN] mouseDown xid=0x\(String(format:"%X", xid)) ctrl=\(event.modifierFlags.contains(.control)) opt=\(event.modifierFlags.contains(.option)) cocoaMods=\(event.modifierFlags.rawValue)")
-    }
     lastInsideForSyntheticCrossing = true
     requestFirstResponderCoalesced()
+    // On macOS, Ctrl+click generates BOTH mouseDown AND rightMouseDown.
+    // We send button 1 + ControlMask (which triggers xterm's Ctrl+Btn1
+    // popup-menu translation). Suppress the duplicate rightMouseDown
+    // that macOS will also fire, to avoid confusing Xt event dispatch.
+    if event.modifierFlags.contains(.control) {
+      ctrlClickSuppressRight = true
+    }
     // Option+click → button 2 (middle mouse) for Xaw scrollbar thumb drag etc.
-    // Note: Ctrl+click on macOS is converted to rightMouseDown by Cocoa, so it
-    // never reaches here. It goes through rightMouseDown → button 3 automatically.
     let btn: UInt8 = event.modifierFlags.contains(.option) ? 2 : 1
     optionClickButton = btn   // remember for mouseUp / mouseDragged
     buttonMask |= bitForButton(Int(btn))
@@ -1214,8 +1216,13 @@ final class X11View: NSView {
   }
   
   override func rightMouseDown(with event: NSEvent) {
-    let (x, y) = pointInX11(event, clampToView: false)
-    print("[RIGHT_CLICK] rightMouseDown xid=0x\(String(format:"%X", xid)) btn=3 at=(\(x),\(y)) mods=0x\(String(format:"%X", mods(event.modifierFlags))) cocoaMods=\(event.modifierFlags.rawValue)")
+    // If this rightMouseDown was triggered by Ctrl+click, mouseDown already
+    // sent button 1 + ControlMask. Suppress this duplicate button 3 event
+    // to avoid confusing Xt's popup-menu grab action dispatch.
+    if ctrlClickSuppressRight {
+      ctrlClickSuppressRight = false
+      return
+    }
     lastInsideForSyntheticCrossing = true
     requestFirstResponderCoalesced()
     buttonMask |= bitForButton(3)
@@ -1223,6 +1230,8 @@ final class X11View: NSView {
   }
   
   override func rightMouseUp(with event: NSEvent) {
+    // Only send release if button 3 was actually pressed (not suppressed by Ctrl+click)
+    guard buttonMask & bitForButton(3) != 0 else { return }
     sendButton(false, button: 3, event)
     buttonMask &= ~bitForButton(3)
   }
