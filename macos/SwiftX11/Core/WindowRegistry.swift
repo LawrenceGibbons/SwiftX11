@@ -242,25 +242,13 @@ final class WindowRegistry {
     // Also reposition to current X11 geometry (may have been updated by ConfigureWindow
     // between CreateWindow and MapWindow — e.g., Xt popup menus).
     if infoByXid[host]?.overrideRedirect == true {
-      // Query current X11 position from WindowTable (may differ from creation position)
-      var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
-      var isOR: Bool = false
-      if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR),
-         let screen = NSScreen.main {
-        let screenH = screen.frame.height
-        let macY = screenH - CGFloat(x11y) - CGFloat(x11h)
-        let frame = NSRect(x: CGFloat(x11x), y: macY,
-                           width: CGFloat(x11w), height: CGFloat(x11h))
-        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
-        win.setFrame(frame, display: false)
-        // Position is known — show immediately
-        win.orderFront(nil)
-      } else {
-        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) geometry query FAILED — deferring show to moveWindow")
-        // Don't show yet. The X11_UI_MOVE command (pushed by MapWindow handler)
-        // will position and show the window with correct coordinates.
-        pendingORShow.insert(host)
-      }
+      // Always defer override-redirect windows (popup menus, tooltips).
+      // The X11_UI_MOVE command (pushed by MapWindow handler right after
+      // X11_UI_MAP) will position and show the window. This avoids the
+      // race where geometry query returns stale (0,0) creation position
+      // before ConfigureWindow updates it.
+      print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) deferring show to moveWindow")
+      pendingORShow.insert(host)
     } else {
       win.makeKeyAndOrderFront(nil)
     }
