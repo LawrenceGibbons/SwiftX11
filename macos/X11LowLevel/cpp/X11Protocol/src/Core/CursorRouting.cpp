@@ -48,6 +48,7 @@
       x11::UICommand::Type::SetCursor,
       /*xid=*/host,
       /*parent=*/0,
+      /*x_px=*/0, /*y_px=*/0,
       /*w_px=*/0, /*h_px=*/0,
       /*flags=*/0,
       /*cursor_xid=*/cursorXid,

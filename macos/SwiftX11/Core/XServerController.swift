@@ -357,6 +357,8 @@ final class XServerController: ObservableObject {
         xid: cmd.xid,
         parentXid: cmd.parent_xid,
         title: "SwiftX11 Window",
+        x: Int(cmd.x_u),
+        y: Int(cmd.y_u),
         width: Int(cmd.w_u),
         height: Int(cmd.h_u),
         overrideRedirect: isOverrideRedirect

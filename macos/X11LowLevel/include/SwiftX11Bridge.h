@@ -87,7 +87,8 @@ void x11_ui_push_raise(uint32_t xid);
 void x11_ui_push_map(uint32_t xid);
 void x11_ui_push_unmap(uint32_t xid);
 void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
-void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t h_px,
+void x11_ui_push_create(uint32_t xid, uint32_t parent_xid,
+                        int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px,
                         uint32_t flags);
 void x11_ui_push_destroy(uint32_t xid);
 void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px);

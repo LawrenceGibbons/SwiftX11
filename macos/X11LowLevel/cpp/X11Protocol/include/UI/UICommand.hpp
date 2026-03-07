@@ -21,7 +21,9 @@ struct UICommand {
   uint32_t xid = 0;
   uint32_t parent = 0;
 
-  // geometry
+  // geometry (position used for override-redirect windows)
+  int32_t x_px = 0;
+  int32_t y_px = 0;
   int32_t w_px = 0;
   int32_t h_px = 0;
 

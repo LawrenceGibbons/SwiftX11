@@ -486,7 +486,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
 
   uint32_t createFlags = 0;
   if (override_redirect) createFlags |= X11_UI_FLAG_OVERRIDE_REDIRECT;
-  ctx.ui().pushCreate(wid, parent, title, (int32_t)wpx, (int32_t)hpx, createFlags);
+  ctx.ui().pushCreate(wid, parent, title, (int32_t)x, (int32_t)y, (int32_t)wpx, (int32_t)hpx, createFlags);
 
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);

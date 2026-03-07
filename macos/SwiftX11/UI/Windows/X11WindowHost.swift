@@ -1192,16 +1192,10 @@ final class X11View: NSView {
   override func mouseDown(with event: NSEvent) {
     lastInsideForSyntheticCrossing = true
     requestFirstResponderCoalesced()
-    // Ctrl+click → button 3 (right-click, macOS convention)
     // Option+click → button 2 (middle mouse) for Xaw scrollbar thumb drag etc.
-    let btn: UInt8
-    if event.modifierFlags.contains(.control) {
-      btn = 3
-    } else if event.modifierFlags.contains(.option) {
-      btn = 2
-    } else {
-      btn = 1
-    }
+    // Note: Ctrl+click on macOS is converted to rightMouseDown by Cocoa, so it
+    // never reaches here. It goes through rightMouseDown → button 3 automatically.
+    let btn: UInt8 = event.modifierFlags.contains(.option) ? 2 : 1
     optionClickButton = btn   // remember for mouseUp / mouseDragged
     buttonMask |= bitForButton(Int(btn))
     sendButton(true, button: btn, event)

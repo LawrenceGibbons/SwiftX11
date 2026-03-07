@@ -8,7 +8,8 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   var logAppend: ((String) -> Void)?
   var shouldLogQueueStats: (() -> Bool)?
 
-  init(xid: UInt32, title: String, width: Int, height: Int, useMetal: Bool, overrideRedirect: Bool = false) {
+  init(xid: UInt32, title: String, x: Int = 0, y: Int = 0, width: Int, height: Int,
+       useMetal: Bool, overrideRedirect: Bool = false) {
     self.xid = xid
 
     // Create X11View directly as the window's contentView — NO SwiftUI hosting.
@@ -17,7 +18,19 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     // display wake, etc.), those constraints can trigger a layout → frame change
     // notification → window resize → layout cycle (_NSDetectedLayoutRecursion).
     // Bypassing SwiftUI eliminates the Auto Layout constraint chain entirely.
-    let contentRect = NSRect(x: 0, y: 0, width: width, height: height)
+
+    // For override-redirect windows (menus/tooltips), convert X11 root coordinates
+    // to macOS screen coordinates. X11: origin top-left, y-down. macOS: origin
+    // bottom-left, y-up.
+    let contentRect: NSRect
+    if overrideRedirect, let screen = NSScreen.main {
+      let screenH = screen.frame.height
+      // X11 y is from top of screen; macOS y is from bottom
+      let macY = screenH - CGFloat(y) - CGFloat(height)
+      contentRect = NSRect(x: CGFloat(x), y: macY, width: CGFloat(width), height: CGFloat(height))
+    } else {
+      contentRect = NSRect(x: 0, y: 0, width: width, height: height)
+    }
 
     // Override-redirect windows (menus, tooltips, popups) get no WM decoration.
     // Standard X11 behavior: the WM does not intercept or decorate these windows.

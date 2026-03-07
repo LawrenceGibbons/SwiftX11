@@ -213,7 +213,9 @@ extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_u, int32_t h_u) {
   push_cmd(c);
 }
 
-extern "C" void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_u, int32_t h_u,
+extern "C" void x11_ui_push_create(uint32_t xid, uint32_t parent_xid,
+                                   int32_t x_u, int32_t y_u,
+                                   int32_t w_u, int32_t h_u,
                                    uint32_t flags) {
   if (xid == 0) return;
   clamp_wh(w_u, h_u);
@@ -222,6 +224,8 @@ extern "C" void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_
   c.type = X11_UI_CREATE;
   c.xid = xid;
   c.parent_xid = parent_xid;
+  c.x_u = x_u;
+  c.y_u = y_u;
   c.w_u = w_u;
   c.h_u = h_u;
   c.flags = flags;

@@ -21,6 +21,8 @@ struct DamageRect {
 struct X11WindowInfo {
   var xid: UInt32
   var parentXid: UInt32
+  var x: Int = 0           // X11 root-relative position (for override-redirect positioning)
+  var y: Int = 0
   var width: Int
   var height: Int
   var title: String
@@ -333,6 +335,8 @@ final class WindowRegistry {
   func noteX11WindowCreated(xid: UInt32,
                             parentXid: UInt32,
                             title: String,
+                            x: Int = 0,
+                            y: Int = 0,
                             width: Int,
                             height: Int,
                             overrideRedirect: Bool = false)
@@ -340,11 +344,13 @@ final class WindowRegistry {
     let xids = String(format: "0x%X", xid)
     let parent_xids = String(format: "0x%X", parentXid)
 
-    if X11Trace.lifecycle { logAppend?("noteX11WindowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height) or=\(overrideRedirect)") }
+    if X11Trace.lifecycle { logAppend?("noteX11WindowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height) @(\(x),\(y)) or=\(overrideRedirect)") }
     // Update/insert metadata (idempotent).
     infoByXid[xid] = X11WindowInfo(
       xid: xid,
       parentXid: parentXid,
+      x: x,
+      y: y,
       width: width,
       height: height,
       title: title,
@@ -387,6 +393,8 @@ final class WindowRegistry {
     let controller = X11WindowController(
       xid: xid,
       title: info.title,
+      x: info.x,
+      y: info.y,
       width: info.width,
       height: info.height,
       useMetal: useMetalForNewWindows,
