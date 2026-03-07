@@ -129,10 +129,25 @@ void postMotion(uint32_t host_xid,
     // Xt popup menus use owner_events=True so that MotionNotify reaches
     // the SimpleMenu child (which needs coords for item highlighting).
     if (activeGrab.ownerEvents) {
-      // Try normal routing first
+      // Try normal routing within the current host first
       target = pick_motion_target(*ctx, host_xid, win_x, win_y);
+      if (!target && activeGrab.grabWindow != host_xid) {
+        // Current host didn't contain the event target. This happens when
+        // macOS routes drag events to the original mouseDown window (xterm)
+        // while the pointer is actually over the popup menu (different host).
+        // Try picking within the grab window's subtree using root coords
+        // translated to the grab window's local coordinate space.
+        x11::WindowView gv{};
+        if (ctx->windows().snapshot(activeGrab.grabWindow, gv)) {
+          // For a top-level OR window, x/y are root-relative
+          int32_t grabLocalX = root_x - gv.x;
+          int32_t grabLocalY = root_y - gv.y;
+          target = pick_motion_target(*ctx, activeGrab.grabWindow,
+                                     grabLocalX, grabLocalY);
+        }
+      }
       if (!target) {
-        // No normal target → fall back to grab window if it wants motion
+        // Still nothing → fall back to grab window if it wants motion
         if (activeGrab.eventMask & (1u << 6)) // PointerMotionMask
           target = activeGrab.grabWindow;
       }

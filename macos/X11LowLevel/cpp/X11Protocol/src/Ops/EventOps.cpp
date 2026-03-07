@@ -93,6 +93,36 @@ static bool computeEventXYFromHostLocal(x11::XProtoContext& ctx,
   *outEx = clamp16_i32(lx);
   *outEy = clamp16_i32(ly);
   return true;
+}
+
+// Compute eventX/eventY using root (screen) coordinates.
+// This is the fallback when the target is in a different host tree than the
+// current motion host (e.g., popup menu on a separate NSWindow while macOS
+// routes drag events to the original window).
+// Walks from target to root, accumulating absolute position, then subtracts.
+static bool computeEventXYFromRoot(x11::XProtoContext& ctx,
+                                   uint32_t targetWid,
+                                   int32_t root_x, int32_t root_y,
+                                   int16_t* outEx, int16_t* outEy)
+{
+  if (!outEx || !outEy) return false;
+
+  // Accumulate absolute position by walking target → root
+  int32_t absX = 0, absY = 0;
+  uint32_t cur = targetWid;
+  int safety = 0;
+  while (cur && cur != 1) { // 1 = root XID (kRootXid)
+    x11::WindowView cv{};
+    if (!ctx.windows().snapshot(cur, cv)) return false;
+    absX += cv.x + cv.border_width;
+    absY += cv.y + cv.border_width;
+    cur = cv.parent_xid;
+    if (++safety > 64) return false;
+  }
+
+  *outEx = clamp16_i32(root_x - absX);
+  *outEy = clamp16_i32(root_y - absY);
+  return true;
 }  
   
 
@@ -356,8 +386,12 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
   // event-local coords
   int16_t ex = 0, ey = 0;
   if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey)) {
-    ex = clamp16_i32(ctx.input().win_x_u);
-    ey = clamp16_i32(ctx.input().win_y_u);
+    // Host-local failed (target in different host tree, e.g., popup menu
+    // while macOS routes drag to original window). Use root-relative path.
+    if (!computeEventXYFromRoot(ctx, wid, root_x, root_y, &ex, &ey)) {
+      ex = clamp16_i32(ctx.input().win_x_u);
+      ey = clamp16_i32(ctx.input().win_y_u);
+    }
   }
 
   int rootW = 0, rootH = 0;
