@@ -418,6 +418,16 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // Only the top-level host drives Cocoa resize.
       x11_ui_push_resize(wid, (int32_t)w, (int32_t)h);
 
+      // For override-redirect windows (popup menus, tooltips), push
+      // position to Swift so the NSWindow moves to the correct screen
+      // location. Normal windows are positioned by Cocoa.
+      if (vmask & 0x03) { // CWX (bit 0) or CWY (bit 1) changed
+        const WindowView* vw3 = ctx.window(wid);
+        if (vw3 && vw3->override_redirect) {
+          x11_ui_push_move(wid, (int32_t)x, (int32_t)y);
+        }
+      }
+
     } else if (host != 0) {
       // CHILD: geometry changed — it affects what the host should present.
       // Full host repaint (child moved/resized within host surface).

@@ -56,6 +56,12 @@ static inline bool coalesce_tail(x11_ui_cmd_t& tail, const x11_ui_cmd_t& in) {
         tail.h_u = in.h_u;
         return true;
 
+      case X11_UI_MOVE:
+        // last move wins
+        tail.x_u = in.x_u;
+        tail.y_u = in.y_u;
+        return true;
+
       case X11_UI_DAMAGE: {
         // union rectangles
         const int32_t ax0 = tail.x_u;
@@ -271,6 +277,16 @@ extern "C" void x11_ui_push_shape_changed(uint32_t host_xid) {
   x11_ui_cmd_t c = make_empty();
   c.type = X11_UI_SHAPE_CHANGED;
   c.xid = host_xid;
+  push_cmd(c);
+}
+
+extern "C" void x11_ui_push_move(uint32_t xid, int32_t x_px, int32_t y_px) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_MOVE;
+  c.xid = xid;
+  c.x_u = x_px;
+  c.y_u = y_px;
   push_cmd(c);
 }
 

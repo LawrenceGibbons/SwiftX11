@@ -9,6 +9,7 @@
 #include "Ops/EventOps.hpp"
 #include "Core/XProtoContext.hpp"   // whatever you currently have
 #include "Core/WindowTable.hpp"
+#include "Core/GrabTable.hpp"
 #include "XProtoMotionRoute.hpp"
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
@@ -78,6 +79,13 @@ void postMotion(uint32_t host_xid,
   // Only deliver MotionNotify when inside (or dragging/grab)
   if (!deliver) return;
 
+  // ---- Check for active pointer grab (GrabPointer) ----
+  // Popup menus (xterm Ctrl+click) grab the pointer after mapping.
+  // While a grab is active, ALL motion and crossing events must route
+  // to the grab window (or its subwindows if ownerEvents is true).
+  x11::PointerGrab activeGrab{};
+  const bool haveGrab = ctx->grabs().getPointerGrab(activeGrab) && activeGrab.active;
+
   // ---- Child-to-child crossing events ----
   // When not dragging, pick the deepest mapped child under the pointer
   // and generate EnterNotify/LeaveNotify if the pointer moved to a
@@ -109,27 +117,36 @@ void postMotion(uint32_t host_xid,
   uint32_t target;
   if (ctx->input().drag_xid) {
     target = ctx->input().drag_xid;
+  } else if (haveGrab) {
+    // Active pointer grab (GrabPointer): route motion to grab window
+    // if the grab's event mask includes PointerMotionMask (bit 6).
+    // This is critical for popup menus where the button is already
+    // released (drag_xid == 0) but the grab is still active.
+    if (activeGrab.eventMask & (1u << 6)) { // PointerMotionMask
+      target = activeGrab.grabWindow;
+    } else {
+      target = 0;  // grab active but doesn't want motion events
+    }
   } else {
     // Normal case: route based on WINDOW-LOCAL coords
     target = pick_motion_target(*ctx, host_xid, win_x, win_y);
   }
 
 #ifndef NDEBUG
-  // Only trace drag-routed motion (high-frequency, but only during grab/drag)
-  if (ctx->input().drag_xid) {
+  // Trace drag-routed or grab-routed motion (high-frequency, but only during grab/drag)
+  if (ctx->input().drag_xid || haveGrab) {
     static int dragMotionCount = 0;
     if (++dragMotionCount <= 5) { // first 5 only, to avoid flood
       fprintf(stderr,
-              "[DRAG_MOTION] host=0x%08X target=0x%08X drag=0x%08X win=(%d,%d)\n",
+              "[DRAG_MOTION] host=0x%08X target=0x%08X drag=0x%08X grab=%s grabWin=0x%08X win=(%d,%d)\n",
               (unsigned)host_xid, (unsigned)target, (unsigned)ctx->input().drag_xid,
+              haveGrab ? "YES" : "no",
+              haveGrab ? (unsigned)activeGrab.grabWindow : 0u,
               (int)win_x, (int)win_y);
     }
     if (dragMotionCount == 5) {
       fprintf(stderr, "[DRAG_MOTION] (further traces suppressed)\n");
     }
-    // Reset counter when drag ends
-  } else {
-    // Not dragging — no trace needed
   }
 #endif
 
