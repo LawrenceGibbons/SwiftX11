@@ -110,14 +110,13 @@ void postMotion(uint32_t host_xid,
     }
   }
 
-  // During an active grab/drag, route motion to the grab owner.
-  // This is essential for scrollbar drag: xterm's scrollbar installs a
-  // passive grab via GrabButton; when button 1 is pressed, drag_xid is
-  // set to the scrollbar child. All subsequent motion must go there.
+  // Route motion: active grab takes priority over drag_xid.
+  // X11 spec: GrabPointer controls ALL event routing while active.
+  // drag_xid is our internal button-drag tracker; it must NOT override
+  // an active grab (e.g., popup menu's GrabPointer with ownerEvents=True
+  // needs to route to SimpleMenu child, not the original click target).
   uint32_t target;
-  if (ctx->input().drag_xid) {
-    target = ctx->input().drag_xid;
-  } else if (haveGrab) {
+  if (haveGrab) {
     // Active pointer grab (GrabPointer / activated passive grab).
     //
     // X11 spec for owner_events:
@@ -158,6 +157,10 @@ void postMotion(uint32_t host_xid,
       else
         target = 0;
     }
+  } else if (ctx->input().drag_xid) {
+    // No active grab, but button drag in progress (e.g., scrollbar drag
+    // without GrabPointer). Route to the drag target.
+    target = ctx->input().drag_xid;
   } else {
     // Normal case: route based on WINDOW-LOCAL coords
     target = pick_motion_target(*ctx, host_xid, win_x, win_y);
