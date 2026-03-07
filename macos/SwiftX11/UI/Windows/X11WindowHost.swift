@@ -1190,6 +1190,10 @@ final class X11View: NSView {
   }
   
   override func mouseDown(with event: NSEvent) {
+    let hasMods = event.modifierFlags.intersection([.control, .option, .shift, .command])
+    if !hasMods.isEmpty {
+      print("[MOUSE_DOWN] mouseDown xid=0x\(String(format:"%X", xid)) ctrl=\(event.modifierFlags.contains(.control)) opt=\(event.modifierFlags.contains(.option)) cocoaMods=\(event.modifierFlags.rawValue)")
+    }
     lastInsideForSyntheticCrossing = true
     requestFirstResponderCoalesced()
     // Option+click → button 2 (middle mouse) for Xaw scrollbar thumb drag etc.
