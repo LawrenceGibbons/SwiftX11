@@ -236,7 +236,20 @@ final class WindowRegistry {
 
     // Override-redirect windows (menus/tooltips) should not steal keyboard focus.
     // Use orderFront instead of makeKeyAndOrderFront for these windows.
+    // Also reposition to current X11 geometry (may have been updated by ConfigureWindow
+    // between CreateWindow and MapWindow — e.g., Xt popup menus).
     if infoByXid[host]?.overrideRedirect == true {
+      // Query current X11 position from WindowTable (may differ from creation position)
+      var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
+      var isOR: Bool = false
+      if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR),
+         let screen = NSScreen.main {
+        let screenH = screen.frame.height
+        let macY = screenH - CGFloat(x11y) - CGFloat(x11h)
+        let frame = NSRect(x: CGFloat(x11x), y: macY,
+                           width: CGFloat(x11w), height: CGFloat(x11h))
+        win.setFrame(frame, display: false)
+      }
       win.orderFront(nil)
     } else {
       win.makeKeyAndOrderFront(nil)

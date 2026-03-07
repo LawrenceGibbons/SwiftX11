@@ -343,6 +343,26 @@ extern "C" bool x11_shape_is_shaped(uint32_t xid) {
   return srv->windows().isShapedBounding(xid);
 }
 
+// -------------------------------------------------------------------------------------
+// Window geometry query (for override-redirect positioning at map time)
+// -------------------------------------------------------------------------------------
+extern "C" bool x11_get_window_geometry(uint32_t xid, int32_t* out_x, int32_t* out_y,
+                                        int32_t* out_w, int32_t* out_h,
+                                        bool* out_override_redirect) {
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return false;
+
+  x11::WindowView vw;
+  if (!srv->windows().snapshot(xid, vw)) return false;
+
+  if (out_x) *out_x = vw.x;
+  if (out_y) *out_y = vw.y;
+  if (out_w) *out_w = vw.w;
+  if (out_h) *out_h = vw.h;
+  if (out_override_redirect) *out_override_redirect = vw.override_redirect;
+  return true;
+}
+
 extern "C" int32_t x11_shape_get_rects(uint32_t xid, int16_t* out_xywh, int32_t max_rects) {
   auto* srv = x11_proto_bridge_get_server();
   if (!srv || !out_xywh || max_rects <= 0) return 0;

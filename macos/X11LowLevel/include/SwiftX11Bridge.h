@@ -102,6 +102,12 @@ bool x11_shape_is_shaped(uint32_t xid);
 // Returns number of rects written. Each rect = 4 int16_t (x,y,w,h).
 int32_t x11_shape_get_rects(uint32_t xid, int16_t* out_xywh, int32_t max_rects);
 
+// Query X11 window geometry (called by Swift at map time for override-redirect positioning)
+// Returns true if window found. Coordinates are in X11 root space (y-down).
+bool x11_get_window_geometry(uint32_t xid, int32_t* out_x, int32_t* out_y,
+                             int32_t* out_w, int32_t* out_h,
+                             bool* out_override_redirect);
+
 // -------------------------------------------------------------------------------------
 // Input injection
 // -------------------------------------------------------------------------------------
