@@ -431,18 +431,21 @@ void EventOps::sendButtonEvent(XProtoContext& ctx,
 {
   // event-local coords
   int16_t ex = 0, ey = 0;
-  bool coordOk = computeEventXYFromHostLocal(ctx, wid, &ex, &ey);
-  if (!coordOk) {
-    ex = clamp16_i32(ctx.input().win_x_u);
-    ey = clamp16_i32(ctx.input().win_y_u);
+  if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey)) {
+    // Host-local failed (target in different host tree, e.g., popup menu
+    // while macOS routes button to original window). Use root-relative path.
+    if (!computeEventXYFromRoot(ctx, wid, root_x, root_y, &ex, &ey)) {
+      ex = clamp16_i32(ctx.input().win_x_u);
+      ey = clamp16_i32(ctx.input().win_y_u);
+    }
   }
 
 #ifndef NDEBUG
   fprintf(stderr,
-          "[BTN_EVENT] wid=0x%08X %s btn=%u event_xy=(%d,%d) root_xy=(%d,%d) coordOk=%d child=0x%08X\n",
+          "[BTN_EVENT] wid=0x%08X %s btn=%u event_xy=(%d,%d) root_xy=(%d,%d) child=0x%08X\n",
           (unsigned)wid, is_press ? "PRESS" : "RELEASE",
           (unsigned)button, (int)ex, (int)ey,
-          (int)root_x, (int)root_y, (int)coordOk, (unsigned)child_xid);
+          (int)root_x, (int)root_y, (unsigned)child_xid);
 #endif
 
   int rootW = 0, rootH = 0;
