@@ -75,14 +75,38 @@ void postMotion(uint32_t host_xid,
                             win_x, win_y,
                             root_x, root_y,
                             buttons, mods);
-  
+
   // Only deliver MotionNotify when inside (or dragging/grab)
   if (!deliver) return;
 
+  // ---- macOS drag correction ----
+  // macOS's drag tracking loop routes ALL mouseDragged events to the
+  // original mouseDown window. If a popup menu (override-redirect) is
+  // on top, the pointer is actually over THAT window, not the reported
+  // host. Use root coords to find the real top-level window under the
+  // pointer and correct host_xid/win_x/win_y accordingly.
+  const uint32_t originalHost = host_xid;
+  {
+    auto topLevels = ctx->windows().childrenInStackOrder(1); // root children
+    // Search from topmost down; stop when we reach host_xid
+    for (auto it = topLevels.rbegin(); it != topLevels.rend(); ++it) {
+      if (*it == host_xid) break; // nothing above host contains pointer
+      x11::WindowView vw{};
+      if (!ctx->windows().snapshot(*it, vw)) continue;
+      if (!vw.mapped) continue;
+      int32_t bw = (int32_t)vw.border_width;
+      if (root_x >= vw.x - bw && root_x < vw.x + (int32_t)vw.w + bw &&
+          root_y >= vw.y - bw && root_y < vw.y + (int32_t)vw.h + bw) {
+        host_xid = *it;
+        win_x = root_x - vw.x;
+        win_y = root_y - vw.y;
+        break;
+      }
+    }
+  }
+  const bool hostCorrected = (host_xid != originalHost);
+
   // ---- Check for active pointer grab (GrabPointer) ----
-  // Popup menus (xterm Ctrl+click) grab the pointer after mapping.
-  // While a grab is active, ALL motion and crossing events must route
-  // to the grab window (or its subwindows if ownerEvents is true).
   x11::PointerGrab activeGrab{};
   const bool haveGrab = ctx->grabs().getPointerGrab(activeGrab) && activeGrab.active;
 
@@ -157,9 +181,12 @@ void postMotion(uint32_t host_xid,
       else
         target = 0;
     }
-  } else if (ctx->input().drag_xid) {
-    // No active grab, but button drag in progress (e.g., scrollbar drag
-    // without GrabPointer). Route to the drag target.
+  } else if (ctx->input().drag_xid && !hostCorrected) {
+    // No active grab, but button drag in progress AND pointer is still
+    // over the same host (e.g., scrollbar drag within xterm).
+    // When hostCorrected is true, the pointer moved to a different
+    // top-level window (popup menu), so ignore drag_xid and route
+    // to the actual window under the pointer.
     target = ctx->input().drag_xid;
   } else {
     // Normal case: route based on WINDOW-LOCAL coords
