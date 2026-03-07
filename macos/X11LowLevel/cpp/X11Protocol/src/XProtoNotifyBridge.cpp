@@ -118,14 +118,30 @@ void postMotion(uint32_t host_xid,
   if (ctx->input().drag_xid) {
     target = ctx->input().drag_xid;
   } else if (haveGrab) {
-    // Active pointer grab (GrabPointer): route motion to grab window
-    // if the grab's event mask includes PointerMotionMask (bit 6).
-    // This is critical for popup menus where the button is already
-    // released (drag_xid == 0) but the grab is still active.
-    if (activeGrab.eventMask & (1u << 6)) { // PointerMotionMask
-      target = activeGrab.grabWindow;
+    // Active pointer grab (GrabPointer / activated passive grab).
+    //
+    // X11 spec for owner_events:
+    //   True  → events go to the window they'd normally go to (if that
+    //           window selected the event). Only fall back to grab window
+    //           if no normal target wants the event.
+    //   False → all events go to the grab window filtered by eventMask.
+    //
+    // Xt popup menus use owner_events=True so that MotionNotify reaches
+    // the SimpleMenu child (which needs coords for item highlighting).
+    if (activeGrab.ownerEvents) {
+      // Try normal routing first
+      target = pick_motion_target(*ctx, host_xid, win_x, win_y);
+      if (!target) {
+        // No normal target → fall back to grab window if it wants motion
+        if (activeGrab.eventMask & (1u << 6)) // PointerMotionMask
+          target = activeGrab.grabWindow;
+      }
     } else {
-      target = 0;  // grab active but doesn't want motion events
+      // owner_events=False: route directly to grab window
+      if (activeGrab.eventMask & (1u << 6)) // PointerMotionMask
+        target = activeGrab.grabWindow;
+      else
+        target = 0;
     }
   } else {
     // Normal case: route based on WINDOW-LOCAL coords
