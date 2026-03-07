@@ -13,6 +13,7 @@
 #include "XProtoMotionRoute.hpp"
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
+#include "Core/XEventMask.hpp"
 
 #include <atomic>
 
@@ -339,15 +340,28 @@ namespace x11 {
       }
     }
     
+    // Build motion mask: PointerMotionMask always, plus button-specific
+    // masks when buttons are pressed (e.g., ButtonMotionMask for Xaw
+    // SimpleMenu highlighting via <BtnMotion> translation).
+    uint32_t motionMask = x11::mask::PointerMotion; // bit 6
+    uint32_t btns = ctx.input().buttons;
+    if (btns) {
+      motionMask |= x11::mask::ButtonMotion; // bit 13: any button
+      for (int b = 0; b < 5; b++) {
+        if (btns & (1u << b))
+          motionMask |= (1u << (8 + b)); // Button{1-5}MotionMask
+      }
+    }
+
     // Walk up until you find a motion listener.
     uint32_t cur = best;
     while (cur) {
       WindowView vw{};
       if (!ctx.windows().snapshot(cur, vw)) break;
-      if (vw.event_mask & (1u << 6)) return cur; // PointerMotionMask
+      if (vw.event_mask & motionMask) return cur;
       cur = vw.parent_xid;
     }
-    
+
     return 0;
   }
   
