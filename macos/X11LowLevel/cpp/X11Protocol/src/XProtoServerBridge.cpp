@@ -547,20 +547,49 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           ctx.input().win_x_u = c.win_x_u;
           ctx.input().win_y_u = c.win_y_u;
 
+          // ---- macOS drag correction ----
+          // macOS routes mouseUp to the original mouseDown window. If the
+          // pointer is actually over a higher-stacking window (popup menu),
+          // correct the host using root coords from the last motion event.
+          uint32_t effectiveHost = host;
+          int32_t effectiveWinX = c.win_x_u;
+          int32_t effectiveWinY = c.win_y_u;
+          bool hostCorrected = false;
+          {
+            const int32_t rx = ctx.input().root_x_u;
+            const int32_t ry = ctx.input().root_y_u;
+            auto topLevels = ctx.windows().childrenInStackOrder(1);
+            for (auto it = topLevels.rbegin(); it != topLevels.rend(); ++it) {
+              if (*it == host) break;
+              x11::WindowView vw{};
+              if (!ctx.windows().snapshot(*it, vw)) continue;
+              if (!vw.mapped) continue;
+              int32_t bw = (int32_t)vw.border_width;
+              if (rx >= vw.x - bw && rx < vw.x + (int32_t)vw.w + bw &&
+                  ry >= vw.y - bw && ry < vw.y + (int32_t)vw.h + bw) {
+                effectiveHost = *it;
+                effectiveWinX = rx - vw.x;
+                effectiveWinY = ry - vw.y;
+                hostCorrected = true;
+                break;
+              }
+            }
+          }
+
           // ---- STEP 1: Pick the deepest window BEFORE updating drag state ----
           // This is critical: InputState::button() sets drag_xid on the
           // 0→nonzero button transition. We must pick the child under the
           // pointer first, so drag_xid gets set to the correct child window
           // (not the host).
           uint32_t under = 0;
-          if (ctx.input().drag_xid) {
-            // Already in an active grab/drag — route to grab owner
+          if (ctx.input().drag_xid && !hostCorrected) {
+            // Already in an active grab/drag, pointer still over same host
             under = ctx.input().drag_xid;
           } else {
-            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
-                                                            c.win_x_u,
-                                                            c.win_y_u);
-            if (!under) under = host;
+            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, effectiveHost,
+                                                            effectiveWinX,
+                                                            effectiveWinY);
+            if (!under) under = effectiveHost;
 
             // ---- STEP 2: Check passive grabs (GrabButton) on press ----
             // Walk from the deepest window up to the host checking each
@@ -625,19 +654,19 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           uint32_t deliver = under;
 
-          // If under doesn't select, climb to parent until host (simple propagation).
+          // If under doesn't select, climb to parent until effective host (simple propagation).
           if (!wantsBtn(deliver)) {
             uint32_t cur = under;
             int safety = 0;
-            while (cur && cur != host) {
+            while (cur && cur != effectiveHost) {
               x11::WindowView vw{};
               if (!ctx.windows().snapshot(cur, vw)) break;
               cur = vw.parent_xid;
               if (wantsBtn(cur)) { deliver = cur; break; }
               if (++safety > 64) break;
             }
-            // If still not found, try host last.
-            if (!wantsBtn(deliver) && wantsBtn(host)) deliver = host;
+            // If still not found, try effective host last.
+            if (!wantsBtn(deliver) && wantsBtn(effectiveHost)) deliver = effectiveHost;
           }
 
           // If nobody wants it, drop.
