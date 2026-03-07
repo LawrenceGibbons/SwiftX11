@@ -367,6 +367,11 @@ final class XServerController: ObservableObject {
     case X11_UI_DESTROY:
       WindowRegistry.shared.noteX11WindowDestroyed(xid: cmd.xid)
 
+    case X11_UI_MOVE:
+      // Override-redirect windows (popup menus) use X11 root coords.
+      // Convert to macOS screen coords and move the NSWindow.
+      WindowRegistry.shared.moveWindow(xid: cmd.xid, x11X: Int(cmd.x_u), x11Y: Int(cmd.y_u))
+
     case X11_UI_DAMAGE:
       // The shared C++ damage accumulator carries the actual rect data.
       // This UI command just signals Swift to schedule a present.

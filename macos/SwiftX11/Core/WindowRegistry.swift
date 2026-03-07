@@ -711,7 +711,24 @@ final class WindowRegistry {
 
     win.makeKeyAndOrderFront(nil)
   }
-  
+
+  func moveWindow(xid: UInt32, x11X: Int, x11Y: Int) {
+    guard let controller = windows[xid], let win = controller.window else { return }
+    guard let screen = NSScreen.main else { return }
+
+    // Query fresh geometry for the height (needed for Y conversion)
+    var x11w: Int32 = 0, x11h: Int32 = 0
+    var dummy1: Int32 = 0, dummy2: Int32 = 0
+    var dummyOR: Bool = false
+    if x11_get_window_geometry(xid, &dummy1, &dummy2, &x11w, &x11h, &dummyOR) {
+      // Convert X11 root coords (y-down) to macOS screen coords (y-up)
+      let screenH = screen.frame.height
+      let macY = screenH - CGFloat(x11Y) - CGFloat(x11h)
+      let origin = NSPoint(x: CGFloat(x11X), y: macY)
+      win.setFrameOrigin(origin)
+    }
+  }
+
   private func sendConfigureAsync(xid: UInt32, w: Int32, h: Int32) {
     // Normalize to the top-level host. Configure/resize only applies to Cocoa host windows.
     let host = hostXid(xid)

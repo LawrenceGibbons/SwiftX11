@@ -36,6 +36,7 @@ typedef enum {
   X11_UI_SET_CURSOR,
   X11_UI_WARP_POINTER,
   X11_UI_SHAPE_CHANGED,
+  X11_UI_MOVE,
 } x11_ui_cmd_type_t;
 
 // SwiftX11Bridge.h
@@ -96,6 +97,7 @@ void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shap
 // WarpPointer: host_xid=0 means root-relative (screen coords); otherwise host-window-local.
 void x11_ui_push_warp_pointer(uint32_t host_xid, int32_t x, int32_t y);
 void x11_ui_push_shape_changed(uint32_t host_xid);
+void x11_ui_push_move(uint32_t xid, int32_t x_px, int32_t y_px);
 
 // SHAPE extension — query shape data from C++ (called by Swift at present time)
 bool x11_shape_is_shaped(uint32_t xid);

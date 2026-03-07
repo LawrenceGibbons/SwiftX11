@@ -666,6 +666,14 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
       WindowView vw{};
       if (ctx.windows().snapshot(wid, vw)) {
         x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);
+
+        // For override-redirect windows (popup menus, tooltips), push the
+        // position at map time. The window's geometry was set at CreateWindow
+        // or ConfigureWindow, but the NSWindow needs to be placed correctly
+        // before/when it becomes visible.
+        if (vw.override_redirect) {
+          x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
+        }
       }
     }
 
