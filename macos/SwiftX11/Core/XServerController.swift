@@ -352,12 +352,14 @@ final class XServerController: ObservableObject {
       WindowRegistry.shared.applyX11Resize(xid: cmd.xid, wX11: cmd.w_u, hX11: cmd.h_u)
 
     case X11_UI_CREATE:
+      let isOverrideRedirect = (cmd.flags & UInt32(X11_UI_FLAG_OVERRIDE_REDIRECT)) != 0
       WindowRegistry.shared.noteX11WindowCreated(
         xid: cmd.xid,
         parentXid: cmd.parent_xid,
         title: "SwiftX11 Window",
         width: Int(cmd.w_u),
-        height: Int(cmd.h_u)
+        height: Int(cmd.h_u),
+        overrideRedirect: isOverrideRedirect
       )
 
     case X11_UI_DESTROY:

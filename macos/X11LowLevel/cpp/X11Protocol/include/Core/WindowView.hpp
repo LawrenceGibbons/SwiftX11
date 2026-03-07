@@ -37,6 +37,12 @@ struct WindowView {
   uint16_t border_width = 0;
   uint32_t border_pixel = 0xFF000000u; // ARGB, default black
 
+  // Window manager attributes
+  bool     override_redirect = false;  // CWOverrideRedirect (bit 9)
+  uint8_t  win_gravity = 1;   // CWWinGravity (bit 5): default NorthWest=1
+  uint8_t  bit_gravity = 0;   // CWBitGravity (bit 4): default Forget=0
+  uint8_t  backing_store = 0; // CWBackingStore (bit 6): default NotUseful=0
+
   // state flags
   bool mapped = false;
   bool presentable = false;

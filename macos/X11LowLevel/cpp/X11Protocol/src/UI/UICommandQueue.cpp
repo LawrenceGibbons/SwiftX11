@@ -27,7 +27,7 @@ bool UICommandQueue::push(const UICommand& c)
     case UICommand::Type::Create: {
       const int32_t w = clamp_dim(c.w_px);
       const int32_t h = clamp_dim(c.h_px);
-      x11_ui_push_create(c.xid, c.parent, w, h);
+      x11_ui_push_create(c.xid, c.parent, w, h, c.flags);
       return true;
     }
 

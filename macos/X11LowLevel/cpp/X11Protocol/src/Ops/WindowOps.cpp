@@ -356,31 +356,59 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   bool     parent_relative = false; // CWBackPixmap=1 (ParentRelative)
   uint32_t border_pixel_raw = 0;
   bool     has_border_pixel = false;
-  // Consume values for *all* bits set; record bit 0 (CWBackPixmap), bit 1 (CWBackPixel),
-  // bit 3 (CWBorderPixel), bit 11 (CWEventMask).
+  // Window management attributes (Phase 4.3)
+  uint8_t  bit_gravity = 0;      // CWBitGravity (bit 4): default Forget=0
+  bool     has_bit_gravity = false;
+  uint8_t  win_gravity = 1;      // CWWinGravity (bit 5): default NorthWest=1
+  bool     has_win_gravity = false;
+  uint8_t  backing_store = 0;    // CWBackingStore (bit 6): default NotUseful=0
+  bool     has_backing_store = false;
+  bool     override_redirect = false; // CWOverrideRedirect (bit 9)
+  bool     has_override_redirect = false;
+
+  // Consume values for *all* bits set in increasing bit order.
   for (uint32_t bit = 0; bit < 32; bit++) {
     if (!(vmask & (1u << bit))) continue;
     if (br.remaining() < 4) break;
     const uint32_t val = br.readU32();
-    if (bit == 0) { // CWBackPixmap
-      if (val == 1) { // ParentRelative
-        parent_relative = true;
-      }
-      // val == 0 → None (no background, which is our default)
-      // val > 1  → pixmap ID (not supported yet)
+    switch (bit) {
+      case 0: // CWBackPixmap
+        if (val == 1) parent_relative = true;
+        // val == 0 → None (no background, which is our default)
+        // val > 1  → pixmap ID (not supported yet)
+        break;
+      case 1: // CWBackPixel
+        if (val == 0)       bg_pixel = 0xFF000000u;       // black
+        else if (val == 1)  bg_pixel = 0xFFFFFFFFu;       // white
+        else                bg_pixel = 0xFF000000u | (val & 0x00FFFFFFu);
+        has_bg_pixel = true;
+        break;
+      case 3: // CWBorderPixel
+        border_pixel_raw = val;
+        has_border_pixel = true;
+        break;
+      case 4: // CWBitGravity
+        bit_gravity = (uint8_t)(val & 0xFF);
+        has_bit_gravity = true;
+        break;
+      case 5: // CWWinGravity
+        win_gravity = (uint8_t)(val & 0xFF);
+        has_win_gravity = true;
+        break;
+      case 6: // CWBackingStore
+        backing_store = (uint8_t)(val & 0xFF);
+        has_backing_store = true;
+        break;
+      case 9: // CWOverrideRedirect
+        override_redirect = (val != 0);
+        has_override_redirect = true;
+        break;
+      case 11: // CWEventMask
+        event_mask = val;
+        break;
+      default:
+        break; // consume but ignore unhandled bits (2, 7, 8, 10, 12-14)
     }
-    if (bit == 1) { // CWBackPixel
-      // Map X11 pixel value to ARGB8888 (force alpha opaque)
-      if (val == 0)       bg_pixel = 0xFF000000u;       // black
-      else if (val == 1)  bg_pixel = 0xFFFFFFFFu;       // white
-      else                bg_pixel = 0xFF000000u | (val & 0x00FFFFFFu);
-      has_bg_pixel = true;
-    }
-    if (bit == 3) { // CWBorderPixel
-      border_pixel_raw = val;
-      has_border_pixel = true;
-    }
-    if (bit == 11) event_mask = val;
   }
   br.skip(br.remaining());
 
@@ -437,6 +465,12 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     // CWBackPixmap=ParentRelative: inherit the nearest ancestor's background_pixel.
     ctx.windows().resolveParentRelativeBackground(wid);
   }
+  // Window management attributes (Phase 4.3)
+  if (has_override_redirect) ctx.windows().setOverrideRedirect(wid, override_redirect);
+  if (has_win_gravity)       ctx.windows().setWinGravity(wid, win_gravity);
+  if (has_bit_gravity)       ctx.windows().setBitGravity(wid, bit_gravity);
+  if (has_backing_store)     ctx.windows().setBackingStore(wid, backing_store);
+
   ctx.windows().setMapped(wid, false);
   ctx.windows().setPresentable(wid, false);
 
@@ -450,7 +484,9 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   char title[64];
   snprintf(title, sizeof(title), "xid=0x%08X", (unsigned)wid);
 
-  ctx.ui().pushCreate(wid, parent, title, (int32_t)wpx, (int32_t)hpx);
+  uint32_t createFlags = 0;
+  if (override_redirect) createFlags |= X11_UI_FLAG_OVERRIDE_REDIRECT;
+  ctx.ui().pushCreate(wid, parent, title, (int32_t)wpx, (int32_t)hpx, createFlags);
 
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
@@ -563,7 +599,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     wire::wr32_le(ev + 12, newParent); // parent
     wire::wr16_le(ev + 16, (uint16_t)x);
     wire::wr16_le(ev + 18, (uint16_t)y);
-    ev[20] = 0; // override-redirect = false
+    ev[20] = vw.override_redirect ? 1 : 0;
     (void)ctx.transport().sendEvent32(wid, ev);
   }
 

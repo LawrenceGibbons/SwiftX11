@@ -252,6 +252,10 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.owner_fd = st->owner_fd;
   out.border_width = st->border_width;
   out.border_pixel = st->border_pixel;
+  out.override_redirect = st->override_redirect;
+  out.win_gravity = st->win_gravity;
+  out.bit_gravity = st->bit_gravity;
+  out.backing_store = st->backing_store;
   out.bounding_shaped = st->shape_bounding.shaped;
   out.clip_shaped = st->shape_clip.shaped;
   out.input_shaped = st->shape_input.shaped;
@@ -379,6 +383,43 @@ void WindowTable::setBorderPixel(uint32_t xid, uint32_t pixel_argb) {
   WindowState* st = findLocked(xid);
   if (!st) return;
   st->border_pixel = pixel_argb;
+  st->serial++;
+}
+
+// Window manager attribute setters
+void WindowTable::setOverrideRedirect(uint32_t xid, bool v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->override_redirect = v;
+  st->serial++;
+}
+
+void WindowTable::setWinGravity(uint32_t xid, uint8_t v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->win_gravity = v;
+  st->serial++;
+}
+
+void WindowTable::setBitGravity(uint32_t xid, uint8_t v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->bit_gravity = v;
+  st->serial++;
+}
+
+void WindowTable::setBackingStore(uint32_t xid, uint8_t v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->backing_store = v;
   st->serial++;
 }
 
@@ -558,6 +599,8 @@ bool WindowTable::queryTree(uint32_t wid,
                             uint32_t  maxChildren,
                             uint32_t* outNChildren) const
 {
+  static constexpr uint32_t kRoot = 0x00000001u;
+
   if (outParent) *outParent = 0;
   if (outNChildren) *outNChildren = 0;
   if (!outChildren || maxChildren == 0) {
@@ -565,18 +608,18 @@ bool WindowTable::queryTree(uint32_t wid,
     std::lock_guard<std::mutex> lock(mu_);
     const WindowState* st = findLocked(wid);
     if (outParent) *outParent = st ? st->parent : 0;
-    return st != nullptr;
+    return st != nullptr || wid == kRoot;
   }
 
   std::lock_guard<std::mutex> lock(mu_);
 
   // Parent:
   const WindowState* st = findLocked(wid);
-  if (!st) {
-    // X11 behavior for unknown wid varies; for bring-up, just "not found"
+  if (!st && wid != kRoot) {
+    // Unknown window — return error
     return false;
   }
-  if (outParent) *outParent = st->parent;
+  if (outParent) *outParent = st ? st->parent : 0;  // root has no parent
 
   // Children: return in stacking order (bottom-to-top = creation order)
   uint32_t n = 0;

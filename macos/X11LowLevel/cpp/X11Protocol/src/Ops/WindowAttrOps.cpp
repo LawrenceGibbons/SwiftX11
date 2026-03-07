@@ -117,6 +117,12 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     uint32_t newBorderPixel = 0;
     bool sawBorderPixel = false;
 
+    // Window management attributes (Phase 4.3)
+    uint8_t newBitGravity = 0;    bool sawBitGravity = false;
+    uint8_t newWinGravity = 0;    bool sawWinGravity = false;
+    uint8_t newBackingStore = 0;  bool sawBackingStore = false;
+    bool    newOverrideRedirect = false; bool sawOverrideRedirect = false;
+
     // Value list is 32-bit items in increasing bit order.
     // We must consume every provided value in order, even if we ignore most.
     for (uint32_t bit = 0; bit < 32 && br.remaining() >= 4; bit++) {
@@ -155,6 +161,26 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
                      wid, val, newBorderPixel);
           break;
 
+        case 4: // CWBitGravity
+          newBitGravity = (uint8_t)(val & 0xFF);
+          sawBitGravity = true;
+          break;
+
+        case 5: // CWWinGravity
+          newWinGravity = (uint8_t)(val & 0xFF);
+          sawWinGravity = true;
+          break;
+
+        case 6: // CWBackingStore
+          newBackingStore = (uint8_t)(val & 0xFF);
+          sawBackingStore = true;
+          break;
+
+        case 9: // CWOverrideRedirect
+          newOverrideRedirect = (val != 0);
+          sawOverrideRedirect = true;
+          break;
+
         case 11: // CWEventMask
           cur_mask = val;
           sawEventMask = true;
@@ -168,7 +194,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           break;
 
         default:
-          break;
+          break; // consume but ignore unhandled bits (2, 7, 8, 10, 12, 13)
       }
     }
 
@@ -212,6 +238,12 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (sawBorderPixel) {
       ctx.windows().setBorderPixel(wid, newBorderPixel);
     }
+
+    // ---- Apply window management attributes (Phase 4.3) ----
+    if (sawBitGravity)       ctx.windows().setBitGravity(wid, newBitGravity);
+    if (sawWinGravity)       ctx.windows().setWinGravity(wid, newWinGravity);
+    if (sawBackingStore)     ctx.windows().setBackingStore(wid, newBackingStore);
+    if (sawOverrideRedirect) ctx.windows().setOverrideRedirect(wid, newOverrideRedirect);
 
     // ---- Apply event mask only if present ----
     if (!sawEventMask) return;
@@ -446,8 +478,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     std::array<uint8_t, 44> rep{};
     rep.fill(0);
 
-    rep[0] = 1;   // Reply
-    rep[1] = 0;   // backing-store = NotUseful
+    // Retrieve stored window management attributes
+    const uint8_t backingStore     = wv ? wv->backing_store : 0;
+    const uint8_t bitGravity       = wv ? wv->bit_gravity : 0;
+    const uint8_t winGravity       = wv ? wv->win_gravity : 1;
+    const bool    overrideRedirect = wv ? wv->override_redirect : false;
+
+    rep[0] = 1;               // Reply
+    rep[1] = backingStore;    // backing-store (0=NotUseful, 1=WhenMapped, 2=Always)
 
     // seq
     wire::wr16_le(rep.data() + 2, seq);
@@ -462,8 +500,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     wire::wr16_le(rep.data() + 12, 1);
 
     // bit-gravity / win-gravity
-    rep[14] = 0; // Forget
-    rep[15] = 0; // Unmap
+    rep[14] = bitGravity;
+    rep[15] = winGravity;
 
     // backing-planes / backing-pixel
     wire::wr32_le(rep.data() + 16, 0);
@@ -473,7 +511,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     rep[24] = 0;        // saveUnder
     rep[25] = 1;        // mapIsInstalled (true)
     rep[26] = mapState; // mapState
-    rep[27] = 0;        // overrideRedirect
+    rep[27] = overrideRedirect ? 1 : 0;
 
     // colormap
     wire::wr32_le(rep.data() + 28, kRootCmap);

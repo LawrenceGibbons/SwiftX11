@@ -47,14 +47,18 @@ typedef struct {
   int32_t  reserved;      // future (theme, flags, etc.)
 } x11_ui_cursor_t;
 
+// Window flags (bitmask for x11_ui_cmd_t.flags)
+#define X11_UI_FLAG_OVERRIDE_REDIRECT  (1u << 0)
+
 typedef struct {
   x11_ui_cmd_type_t type;
   uint32_t          xid;
   uint32_t          parent_xid;
   int32_t           x_u, y_u, w_u, h_u;  // used by DAMAGE/RESIZE/CREATE
+  uint32_t          flags;                // X11_UI_FLAG_* bits (used by CREATE)
   uint8_t           title_len;
   char              title_utf8[32];
-  
+
   // explicit cursor payload (only meaningful for X11_UI_SET_CURSOR)
   x11_ui_cursor_t   cursor;
 
@@ -83,7 +87,8 @@ void x11_ui_push_raise(uint32_t xid);
 void x11_ui_push_map(uint32_t xid);
 void x11_ui_push_unmap(uint32_t xid);
 void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
-void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t h_px);
+void x11_ui_push_create(uint32_t xid, uint32_t parent_xid, int32_t w_px, int32_t h_px,
+                        uint32_t flags);
 void x11_ui_push_destroy(uint32_t xid);
 void x11_ui_push_damage(uint32_t xid, int32_t x_px, int32_t y_px, int32_t w_px, int32_t h_px);
 void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shape);

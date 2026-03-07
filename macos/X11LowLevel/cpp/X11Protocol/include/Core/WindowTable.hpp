@@ -136,6 +136,12 @@ public:
   // cursor
   void setCursor(uint32_t xid, uint32_t cursor_xid);
   uint32_t cursor(uint32_t xid) const; // optional
+
+  // Window manager attributes
+  void setOverrideRedirect(uint32_t xid, bool v);
+  void setWinGravity(uint32_t xid, uint8_t v);
+  void setBitGravity(uint32_t xid, uint8_t v);
+  void setBackingStore(uint32_t xid, uint8_t v);
   
   // Bring-up behavior: keep each descendant’s x/y (relative to parent) unchanged,
   // but clamp w/h so the child fits within its *direct* parent’s bounds.
@@ -175,6 +181,12 @@ private:
     // Window border (server-drawn around child windows)
     uint16_t border_width = 0;
     uint32_t border_pixel = 0xFF000000u; // ARGB, default black
+
+    // Window manager attributes
+    bool     override_redirect = false;  // CWOverrideRedirect (bit 9)
+    uint8_t  win_gravity = 1;   // CWWinGravity (bit 5): default NorthWest=1
+    uint8_t  bit_gravity = 0;   // CWBitGravity (bit 4): default Forget=0
+    uint8_t  backing_store = 0; // CWBackingStore (bit 6): default NotUseful=0
 
     // SHAPE extension regions
     ShapeRegion shape_bounding;  // visual clipping

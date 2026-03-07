@@ -49,6 +49,7 @@
       /*xid=*/host,
       /*parent=*/0,
       /*w_px=*/0, /*h_px=*/0,
+      /*flags=*/0,
       /*cursor_xid=*/cursorXid,
       /*shape=*/(int32_t)shape,
       /*title_utf8=*/nullptr

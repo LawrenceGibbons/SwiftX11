@@ -221,16 +221,16 @@ Client-side font rendering via RENDER CompositeGlyphs (Pango/FreeType) is the pr
 - [x] **Error for destroyed resources**: Drawing ops check drawable existence before sending BadDrawable — valid-but-unresolvable drawables (depth-1 pixmaps, unmapped windows) silently skip; truly non-existent XIDs get proper errors.
 
 ### 4.2 Wire Protocol Correctness (MEDIUM)
-- [ ] **Big-endian clients**: ByteReader/ReplyWriter currently assume little-endian. Java may connect with big-endian byte order. Need to respect client byte order from setup.
-- [ ] **Padding verification**: Ensure all replies are padded to 4-byte boundaries.
-- [ ] **Request length validation**: Verify request body length matches expected size for each opcode.
+- [x] **Big-endian clients**: Rejected at handshake with clear error. ByteReader has BE methods ready if needed. All practical targets (x86/ARM Docker for Vivado) are LE. Full BE support deferred.
+- [x] **Padding verification**: All replies use `sendPaddedBytes`/`sendReplyWithPaddedPayload`/`pad4_u32()` for correct 4-byte alignment. 32-byte base replies inherently aligned.
+- [x] **Request length validation**: Dispatch loop auto-skips unconsumed bytes after handler (XProtoServer.cpp). Per-handler `br.remaining()` minimum checks. Reply safety net sends `BadImplementation` for missing replies.
 
 ### 4.3 Window Management Correctness (MEDIUM)
 - [x] **ConfigureWindow stack mode**: Above/Below/TopIf/BottomIf/Opposite sibling stacking with CWSibling support (v1.5.6).
 - [x] **ConfigureWindow border width**: Tracked, stored, and rendered (v1.3.0).
-- [ ] **Override-redirect**: Honor override_redirect attribute (don't apply WM decoration/placement).
-- [ ] **Gravity**: Implement win_gravity and bit_gravity for resize behavior.
-- [ ] **Backing store**: Accept BackingStore attribute (can be NotUseful stub).
+- [x] **Override-redirect**: Parsed in CreateWindow/ChangeWindowAttributes (bit 9), stored in WindowState, wired through UICommandQueue to Swift. Creates borderless NSWindow with floating level. Override-redirect windows don't steal focus on map. GetWindowAttributes/ConfigureNotify/ReparentNotify return actual stored value (v1.9.5).
+- [x] **Gravity**: win_gravity (bit 5) and bit_gravity (bit 4) parsed, stored, and reported correctly. Actual gravity-based position adjustment during resize deferred (low priority — most X11 toolkits handle gravity client-side) (v1.9.5).
+- [x] **Backing store**: Parsed in CreateWindow/ChangeWindowAttributes (bit 6), stored, reported in GetWindowAttributes. Stored as stub (NotUseful behavior — server never saves/restores obscured pixels) (v1.9.5).
 
 ### 4.4 Colormap (LOW — TrueColor is sufficient)
 SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Current colormap stubs (accept requests, return reasonable defaults) should work.

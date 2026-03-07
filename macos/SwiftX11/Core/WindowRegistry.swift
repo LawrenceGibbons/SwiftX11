@@ -25,6 +25,7 @@ struct X11WindowInfo {
   var height: Int
   var title: String
   var mapped: Bool
+  var overrideRedirect: Bool = false
 }
 
 @MainActor
@@ -230,7 +231,14 @@ final class WindowRegistry {
                           view: controller.x11View)
 
     suppressNextMapFromCocoa.insert(host)
-    win.makeKeyAndOrderFront(nil)
+
+    // Override-redirect windows (menus/tooltips) should not steal keyboard focus.
+    // Use orderFront instead of makeKeyAndOrderFront for these windows.
+    if infoByXid[host]?.overrideRedirect == true {
+      win.orderFront(nil)
+    } else {
+      win.makeKeyAndOrderFront(nil)
+    }
 
     schedulePresent(xid: host)
   }
@@ -326,12 +334,13 @@ final class WindowRegistry {
                             parentXid: UInt32,
                             title: String,
                             width: Int,
-                            height: Int)
+                            height: Int,
+                            overrideRedirect: Bool = false)
   {
     let xids = String(format: "0x%X", xid)
     let parent_xids = String(format: "0x%X", parentXid)
 
-    if X11Trace.lifecycle { logAppend?("noteX11WindowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height)") }
+    if X11Trace.lifecycle { logAppend?("noteX11WindowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height) or=\(overrideRedirect)") }
     // Update/insert metadata (idempotent).
     infoByXid[xid] = X11WindowInfo(
       xid: xid,
@@ -339,7 +348,8 @@ final class WindowRegistry {
       width: width,
       height: height,
       title: title,
-      mapped: false
+      mapped: false,
+      overrideRedirect: overrideRedirect
     )
 
     // Track hierarchy: parent relationship is required for topLevelAncestor() / presentation routing.
@@ -379,7 +389,8 @@ final class WindowRegistry {
       title: info.title,
       width: info.width,
       height: info.height,
-      useMetal: useMetalForNewWindows
+      useMetal: useMetalForNewWindows,
+      overrideRedirect: info.overrideRedirect
     )
     ignoreCocoaResizeUntilMapped.insert(xid)
 

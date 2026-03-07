@@ -25,6 +25,9 @@ struct UICommand {
   int32_t w_px = 0;
   int32_t h_px = 0;
 
+  // flags (X11_UI_FLAG_* bits, used by Create)
+  uint32_t flags = 0;
+
   // cursor
   uint32_t cursor_xid = 0;
   int32_t shape = 0;

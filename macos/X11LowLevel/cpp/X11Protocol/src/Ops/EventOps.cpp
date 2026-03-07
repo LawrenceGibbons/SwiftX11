@@ -319,9 +319,9 @@ void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
       p.y = w->y;
       p.w = static_cast<uint16_t>(w->w);
       p.h = static_cast<uint16_t>(w->h);
-      p.borderWidth = 0;
+      p.borderWidth = w->border_width;
       p.aboveSibling = 0;
-      p.overrideRedirect = false;
+      p.overrideRedirect = w->override_redirect;
       auto ev = buildConfigureNotify(p);
       ctx_.transport().sendEvent32(pn.wid, ev.data());
     }

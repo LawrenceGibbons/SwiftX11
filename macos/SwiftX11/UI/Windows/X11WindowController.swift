@@ -8,7 +8,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   var logAppend: ((String) -> Void)?
   var shouldLogQueueStats: (() -> Bool)?
 
-  init(xid: UInt32, title: String, width: Int, height: Int, useMetal: Bool) {
+  init(xid: UInt32, title: String, width: Int, height: Int, useMetal: Bool, overrideRedirect: Bool = false) {
     self.xid = xid
 
     // Create X11View directly as the window's contentView — NO SwiftUI hosting.
@@ -18,13 +18,27 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     // notification → window resize → layout cycle (_NSDetectedLayoutRecursion).
     // Bypassing SwiftUI eliminates the Auto Layout constraint chain entirely.
     let contentRect = NSRect(x: 0, y: 0, width: width, height: height)
+
+    // Override-redirect windows (menus, tooltips, popups) get no WM decoration.
+    // Standard X11 behavior: the WM does not intercept or decorate these windows.
+    let styleMask: NSWindow.StyleMask = overrideRedirect
+      ? [.borderless]
+      : [.titled, .closable, .resizable, .miniaturizable]
+
     let window = NSWindow(contentRect: contentRect,
-                          styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                          styleMask: styleMask,
                           backing: .buffered,
                           defer: false)
     window.isRestorable = false
-    window.title = title.isEmpty ? "SwiftX11 Window" : title
     window.isReleasedWhenClosed = false
+
+    if overrideRedirect {
+      // Override-redirect: float above normal windows (popup/menu behavior).
+      window.level = .floating
+      window.hasShadow = true
+    } else {
+      window.title = title.isEmpty ? "SwiftX11 Window" : title
+    }
 
     let view = X11View(frame: contentRect)
     view.xid = xid
@@ -221,19 +235,13 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   }
   
   func windowDidChangeOcclusionState(_ notification: Notification) {
-    assert(Thread.isMainThread)
-    guard let win = window else { return }
-
-    // Treat "not visible" (occluded/hidden/off-screen) as an Unmap, and visible as a Map.
-    // This is the most reliable way to observe hide/unhide semantics on macOS.
-    let isVisible = win.occlusionState.contains(.visible)
-    if isVisible {
-      if WindowRegistry.shared.consumeSuppressMapFromCocoa(xid: xid) { return }
-      x11_post_window_map(xid)
-    } else {
-      if WindowRegistry.shared.consumeSuppressUnmapFromCocoa(xid: xid) { return }
-      x11_post_window_unmap(xid)
-    }
+    // NOTE: Occlusion state changes happen when OTHER macOS apps cover
+    // our window. We must NOT treat this as an X11 unmap — that would
+    // permanently hide the window (orderOut) and it would never come back.
+    // The X11 window remains mapped; only Cocoa's visibility changes.
+    //
+    // We can optionally pause rendering when fully occluded (future
+    // optimization), but we must never unmap/orderOut the window.
   }
   
   
