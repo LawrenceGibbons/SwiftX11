@@ -1210,6 +1210,8 @@ final class X11View: NSView {
   }
   
   override func rightMouseDown(with event: NSEvent) {
+    let (x, y) = pointInX11(event, clampToView: false)
+    print("[RIGHT_CLICK] rightMouseDown xid=0x\(String(format:"%X", xid)) btn=3 at=(\(x),\(y)) mods=0x\(String(format:"%X", mods(event.modifierFlags))) cocoaMods=\(event.modifierFlags.rawValue)")
     lastInsideForSyntheticCrossing = true
     requestFirstResponderCoalesced()
     buttonMask |= bitForButton(3)

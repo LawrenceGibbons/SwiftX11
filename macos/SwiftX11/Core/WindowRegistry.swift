@@ -248,7 +248,10 @@ final class WindowRegistry {
         let macY = screenH - CGFloat(x11y) - CGFloat(x11h)
         let frame = NSRect(x: CGFloat(x11x), y: macY,
                            width: CGFloat(x11w), height: CGFloat(x11h))
+        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
         win.setFrame(frame, display: false)
+      } else {
+        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) geometry query FAILED")
       }
       win.orderFront(nil)
     } else {
@@ -357,6 +360,9 @@ final class WindowRegistry {
     let xids = String(format: "0x%X", xid)
     let parent_xids = String(format: "0x%X", parentXid)
 
+    if overrideRedirect {
+      print("[OR_CREATE] xid=\(xids) parent=\(parent_xids) \(width)x\(height) @(\(x),\(y)) override_redirect=true")
+    }
     if X11Trace.lifecycle { logAppend?("noteX11WindowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height) @(\(x),\(y)) or=\(overrideRedirect)") }
     // Update/insert metadata (idempotent).
     infoByXid[xid] = X11WindowInfo(
