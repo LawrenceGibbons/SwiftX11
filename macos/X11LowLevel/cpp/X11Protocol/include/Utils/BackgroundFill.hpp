@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include "Core/DrawableRW.hpp"
 #include "Core/PixmapTable.hpp"
 #include "Core/XProtoContext.hpp"
@@ -34,17 +35,35 @@ static inline bool tilePixmapFill(XProtoContext& ctx, uint32_t pixmapXid,
                                   int x0, int y0, int x1, int y1)
 {
     PixmapView pv{};
-    if (!ctx.pixmaps().snapshot(pixmapXid, pv))
+    if (!ctx.pixmaps().snapshot(pixmapXid, pv)) {
+#ifndef NDEBUG
+        fprintf(stderr, "[TILE_BG] pixmap=0x%08X NOT FOUND in PixmapTable\n",
+                (unsigned)pixmapXid);
+#endif
         return false;
+    }
 
     // Background pixmaps must be 32bpp (matching window depth).
     // For depth-1 stipple pixmaps used as backgrounds, X11 clients
     // create a 32bpp tiled version. If we only have bits, skip.
-    if (!pv.pixels || pv.w == 0 || pv.h == 0)
+    if (!pv.pixels || pv.w == 0 || pv.h == 0) {
+#ifndef NDEBUG
+        fprintf(stderr, "[TILE_BG] pixmap=0x%08X depth=%u %ux%u pixels=%p bits=%p — no 32bpp data\n",
+                (unsigned)pixmapXid, (unsigned)pv.depth,
+                (unsigned)pv.w, (unsigned)pv.h,
+                (const void*)pv.pixels, (const void*)pv.bits);
+#endif
         return false;
+    }
 
     const int32_t tw = (int32_t)pv.w;
     const int32_t th = (int32_t)pv.h;
+
+#ifndef NDEBUG
+    fprintf(stderr, "[TILE_BG] pixmap=0x%08X %ux%u depth=%u filling [%d,%d)->[%d,%d) p0=0x%08X\n",
+            (unsigned)pixmapXid, (unsigned)pv.w, (unsigned)pv.h, (unsigned)pv.depth,
+            x0, y0, x1, y1, (unsigned)pv.pixels[0]);
+#endif
 
     if (dst.numOccluded > 0) {
         for (int yy = y0; yy < y1; yy++) {
