@@ -393,6 +393,10 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     const uint32_t val = br.readU32();
     switch (bit) {
       case 0: // CWBackPixmap
+#ifndef NDEBUG
+        fprintf(stderr, "[CW_PARSE] wid=0x%08X CWBackPixmap val=0x%08X vmask=0x%08X\n",
+                (unsigned)wid, (unsigned)val, (unsigned)vmask);
+#endif
         if (val == 1) parent_relative = true;
         else if (val == 0) { /* None (no background, which is our default) */ }
         else { bg_pixmap = val; }  // actual pixmap XID
@@ -402,6 +406,10 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
         else if (val == 1)  bg_pixel = 0xFFFFFFFFu;       // white
         else                bg_pixel = 0xFF000000u | (val & 0x00FFFFFFu);
         has_bg_pixel = true;
+#ifndef NDEBUG
+        fprintf(stderr, "[CW_PARSE] wid=0x%08X CWBackPixel val=0x%08X → argb=0x%08X vmask=0x%08X\n",
+                (unsigned)wid, (unsigned)val, (unsigned)bg_pixel, (unsigned)vmask);
+#endif
         break;
       case 3: // CWBorderPixel
         border_pixel_raw = val;
@@ -480,11 +488,20 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     ctx.windows().setBorderPixel(wid, bp_argb);
   }
   if (has_bg_pixel) {
+#ifndef NDEBUG
+    if (bg_pixmap)
+      fprintf(stderr, "[CW_BG] wid=0x%08X bg_pixmap=0x%08X OVERRIDDEN by CWBackPixel=0x%08X\n",
+              (unsigned)wid, (unsigned)bg_pixmap, (unsigned)bg_pixel);
+#endif
     ctx.windows().setBackgroundPixel(wid, bg_pixel);
   } else if (parent_relative) {
     // CWBackPixmap=ParentRelative: inherit the nearest ancestor's background_pixel.
     ctx.windows().resolveParentRelativeBackground(wid);
   } else if (bg_pixmap) {
+#ifndef NDEBUG
+    fprintf(stderr, "[CW_BG] wid=0x%08X applying CWBackPixmap=0x%08X\n",
+            (unsigned)wid, (unsigned)bg_pixmap);
+#endif
     ctx.windows().setBackgroundPixmap(wid, bg_pixmap);
   }
   // Window management attributes (Phase 4.3)

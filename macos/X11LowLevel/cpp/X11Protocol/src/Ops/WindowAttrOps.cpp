@@ -140,6 +140,10 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           } else {
             backPixmapId = val;  // actual pixmap XID
           }
+#ifndef NDEBUG
+          fprintf(stderr, "[CWA_PARSE] wid=0x%08X CWBackPixmap val=0x%08X parentRel=%d none=%d pix=0x%X vmask=0x%08X\n",
+                     (unsigned)wid, (unsigned)val, (int)parentRelative, (int)backPixmapNone, (unsigned)backPixmapId, (unsigned)vmask);
+#endif
           ctx.tracef("[CWA] CWBackPixmap wid=0x%08X val=0x%08X parentRel=%d none=%d pix=0x%X\n",
                      wid, val, (int)parentRelative, (int)backPixmapNone, backPixmapId);
           break;
@@ -150,6 +154,10 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           else if (val == 1)  newBgPixel = 0xFFFFFFFFu;       // white
           else                newBgPixel = 0xFF000000u | (val & 0x00FFFFFFu);
           sawBgPixel = true;
+#ifndef NDEBUG
+          fprintf(stderr, "[CWA_PARSE] wid=0x%08X CWBackPixel val=0x%08X → argb=0x%08X\n",
+                     (unsigned)wid, (unsigned)val, (unsigned)newBgPixel);
+#endif
           ctx.tracef("[CWA] CWBackPixel wid=0x%08X val=0x%08X → argb=0x%08X\n",
                      wid, val, newBgPixel);
           break;
