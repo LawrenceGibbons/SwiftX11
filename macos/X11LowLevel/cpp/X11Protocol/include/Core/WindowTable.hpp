@@ -106,8 +106,9 @@ public:
   std::vector<uint32_t> childrenInStackOrder(uint32_t parent) const;
   
   
-  // background pixel
+  // background pixel / pixmap
   void setBackgroundPixel(uint32_t xid, uint32_t pixel_argb);
+  void setBackgroundPixmap(uint32_t xid, uint32_t pixmap_xid);
   void clearBackground(uint32_t xid); // CWBackPixmap=None: no server bg fill
   void setParentRelative(uint32_t xid); // CWBackPixmap=ParentRelative
 
@@ -119,6 +120,9 @@ public:
   // If window has ParentRelative, walks parent chain at call time to find
   // the current background pixel. Returns true if a background was found.
   bool resolveBackgroundForClear(uint32_t xid, uint32_t& out_pixel) const;
+
+  // Returns the background pixmap XID if the window has one set.
+  bool resolveBackgroundPixmapForClear(uint32_t xid, uint32_t& out_pixmap) const;
 
   // border
   void setBorderWidth(uint32_t xid, uint16_t bw);
@@ -177,6 +181,7 @@ private:
     uint32_t background_pixel = 0;
     bool     has_background_pixel = false;
     bool     is_parent_relative = false;  // CWBackPixmap=ParentRelative
+    uint32_t background_pixmap = 0;       // CWBackPixmap pixmap XID (0=none)
 
     // Window border (server-drawn around child windows)
     uint16_t border_width = 0;

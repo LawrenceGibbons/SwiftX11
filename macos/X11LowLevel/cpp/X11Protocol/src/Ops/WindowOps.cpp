@@ -19,6 +19,7 @@
 
 // util
 #include "Damage.hpp"
+#include "Utils/BackgroundFill.hpp"
 
 // bridge
 #include "XProtoServerBridge.h"
@@ -30,11 +31,32 @@ extern "C" {
 
 namespace x11 {
 
-// Fill a window's drawable area with its background_pixel (if set).
+// Fill a window's drawable area with its background (pixel or tiled pixmap).
 // This implements the X11 spec requirement: the server should paint the window's
 // background before delivering Expose events.
 static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
-  // Use dynamic resolution: if ParentRelative, walk parent chain at fill time.
+  // Check for background pixmap first (takes priority over solid pixel)
+  uint32_t bgPixmap = 0;
+  if (ctx.windows().resolveBackgroundPixmapForClear(wid, bgPixmap)) {
+    DrawableRW dst{};
+    if (!resolveDrawableRW(ctx, wid, dst)) return;
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
+
+#if X11_TRACE_PRESENT_ENABLED
+    fprintf(stderr, "[BG_FILL] wid=0x%08X pixmap=0x%08X wh=%ux%u stride=%u\n",
+            (unsigned)wid, (unsigned)bgPixmap,
+            (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
+#endif
+
+    if (tilePixmapFill(ctx, bgPixmap, dst, 0, 0, (int)dst.w, (int)dst.h)) {
+      if (dst.isWindow) {
+        damageOrDirty(ctx, wid, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
+      }
+    }
+    return;
+  }
+
+  // Fall back to solid-color background
   uint32_t bg = 0;
   if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
     // No background defined — nothing to fill.
@@ -57,7 +79,6 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
 #endif
 
   if (dst.numOccluded > 0) {
-    // Occlusion-aware fill: skip pixels covered by higher-stacking siblings
     for (uint16_t y = 0; y < dst.h; y++) {
       uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
       for (uint16_t x = 0; x < dst.w; x++) {
@@ -65,7 +86,6 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
       }
     }
   } else {
-    // Fast path: no occlusion
     for (uint16_t y = 0; y < dst.h; y++) {
       uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
       for (uint16_t x = 0; x < dst.w; x++) {
@@ -74,7 +94,6 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
     }
   }
 
-  // Damage the host so the fill is presented.
   if (dst.isWindow) {
     damageOrDirty(ctx, wid, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
   }
@@ -354,6 +373,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   uint32_t bg_pixel = 0;
   bool     has_bg_pixel = false;
   bool     parent_relative = false; // CWBackPixmap=1 (ParentRelative)
+  uint32_t bg_pixmap = 0;          // CWBackPixmap > 1 (actual pixmap XID)
   uint32_t border_pixel_raw = 0;
   bool     has_border_pixel = false;
   // Window management attributes (Phase 4.3)
@@ -374,8 +394,8 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     switch (bit) {
       case 0: // CWBackPixmap
         if (val == 1) parent_relative = true;
-        // val == 0 → None (no background, which is our default)
-        // val > 1  → pixmap ID (not supported yet)
+        else if (val == 0) { /* None (no background, which is our default) */ }
+        else { bg_pixmap = val; }  // actual pixmap XID
         break;
       case 1: // CWBackPixel
         if (val == 0)       bg_pixel = 0xFF000000u;       // black
@@ -464,6 +484,8 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   } else if (parent_relative) {
     // CWBackPixmap=ParentRelative: inherit the nearest ancestor's background_pixel.
     ctx.windows().resolveParentRelativeBackground(wid);
+  } else if (bg_pixmap) {
+    ctx.windows().setBackgroundPixmap(wid, bg_pixmap);
   }
   // Window management attributes (Phase 4.3)
   if (has_override_redirect) ctx.windows().setOverrideRedirect(wid, override_redirect);

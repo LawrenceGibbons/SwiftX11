@@ -113,6 +113,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     bool sawBackPixmap = false;
     bool parentRelative = false;
     bool backPixmapNone = false;
+    uint32_t backPixmapId = 0;
 
     uint32_t newBorderPixel = 0;
     bool sawBorderPixel = false;
@@ -136,10 +137,11 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             parentRelative = true;
           } else if (val == 0) {
             backPixmapNone = true;
+          } else {
+            backPixmapId = val;  // actual pixmap XID
           }
-          // val > 1 → pixmap ID (not supported yet)
-          ctx.tracef("[CWA] CWBackPixmap wid=0x%08X val=0x%08X parentRel=%d none=%d\n",
-                     wid, val, (int)parentRelative, (int)backPixmapNone);
+          ctx.tracef("[CWA] CWBackPixmap wid=0x%08X val=0x%08X parentRel=%d none=%d pix=0x%X\n",
+                     wid, val, (int)parentRelative, (int)backPixmapNone, backPixmapId);
           break;
 
         case 1: // CWBackPixel
@@ -228,6 +230,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         ctx.windows().resolveParentRelativeBackground(wid);
       } else if (backPixmapNone) {
         ctx.windows().clearBackground(wid);
+      } else if (backPixmapId) {
+        ctx.windows().setBackgroundPixmap(wid, backPixmapId);
       }
     }
     if (sawBgPixel) {

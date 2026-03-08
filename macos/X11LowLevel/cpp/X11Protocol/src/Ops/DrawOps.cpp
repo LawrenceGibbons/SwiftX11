@@ -30,6 +30,7 @@
 #include "Utils/RasterOp.hpp"
 #include "Core/SurfaceDesc.hpp"
 #include "Core/DrawableSurfaceRegistry.hpp"
+#include "Utils/BackgroundFill.hpp"
 
 // bridging
 #include "XProtoServerBridge.h"
@@ -949,42 +950,50 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (x0 >= x1 || y0 >= y1) return;
 
     // X11 spec: ClearArea clears to the window's background.
-    // If ParentRelative, dynamically walk parent chain for current background.
+    // Check for background pixmap first, then solid pixel.
     // If no background defined (CWBackPixmap=None), do NOT modify contents.
-    uint32_t bg = 0;
-    if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
-      // No background — per X11 spec, ClearArea has no effect on contents.
-      // Still send Expose if requested.
-      if (exposures && dst.isWindow) {
-        ctx.transport().queueExposeRect(
-          wid,
-          (uint16_t)x0, (uint16_t)y0,
-          (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
-          0
-        );
-      }
-      return;
+    bool filled = false;
+
+    uint32_t bgPixmap = 0;
+    if (ctx.windows().resolveBackgroundPixmapForClear(wid, bgPixmap)) {
+      // Tiled pixmap background
+      filled = x11::tilePixmapFill(ctx, bgPixmap, dst, x0, y0, x1, y1);
     }
 
+    if (!filled) {
+      uint32_t bg = 0;
+      if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
+        // No background — per X11 spec, ClearArea has no effect on contents.
+        // Still send Expose if requested.
+        if (exposures && dst.isWindow) {
+          ctx.transport().queueExposeRect(
+            wid,
+            (uint16_t)x0, (uint16_t)y0,
+            (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
+            0
+          );
+        }
+        return;
+      }
+
 #if X11_TRACE_FONT_ENABLED
-    fprintf(stderr, "[CA_DBG] wid=0x%X clear=[%d,%d]->[%d,%d] (%dx%d) dst=%ux%u\n",
-            (unsigned)wid, x0, y0, x1, y1,
-            x1 - x0, y1 - y0, (unsigned)dst.w, (unsigned)dst.h);
+      fprintf(stderr, "[CA_DBG] wid=0x%X clear=[%d,%d]->[%d,%d] (%dx%d) dst=%ux%u\n",
+              (unsigned)wid, x0, y0, x1, y1,
+              x1 - x0, y1 - y0, (unsigned)dst.w, (unsigned)dst.h);
 #endif
 
-    if (dst.numOccluded > 0) {
-      // Occlusion-aware fill: skip pixels covered by higher-stacking siblings
-      for (int yy = y0; yy < y1; yy++) {
-        uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
-        for (int xx = x0; xx < x1; xx++) {
-          if (!dst.isOccluded(xx, yy)) row[(size_t)xx] = bg;
+      if (dst.numOccluded > 0) {
+        for (int yy = y0; yy < y1; yy++) {
+          uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+          for (int xx = x0; xx < x1; xx++) {
+            if (!dst.isOccluded(xx, yy)) row[(size_t)xx] = bg;
+          }
         }
-      }
-    } else {
-      // Fast path: no occlusion, fill entire rectangle
-      for (int yy = y0; yy < y1; yy++) {
-        uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
-        for (int xx = x0; xx < x1; xx++) row[(size_t)xx] = bg;
+      } else {
+        for (int yy = y0; yy < y1; yy++) {
+          uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
+          for (int xx = x0; xx < x1; xx++) row[(size_t)xx] = bg;
+        }
       }
     }
 
