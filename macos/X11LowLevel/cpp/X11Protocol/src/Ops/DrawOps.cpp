@@ -956,6 +956,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     uint32_t bgPixmap = 0;
     if (ctx.windows().resolveBackgroundPixmapForClear(wid, bgPixmap)) {
+#ifndef NDEBUG
+      fprintf(stderr, "[ClearArea] wid=0x%08X using PIXMAP bg=0x%08X [%d,%d)->[%d,%d)\n",
+              (unsigned)wid, (unsigned)bgPixmap, x0, y0, x1, y1);
+#endif
       // Tiled pixmap background
       filled = x11::tilePixmapFill(ctx, bgPixmap, dst, x0, y0, x1, y1);
     }
@@ -963,6 +967,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (!filled) {
       uint32_t bg = 0;
       if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
+#ifndef NDEBUG
+        fprintf(stderr, "[ClearArea] wid=0x%08X NO background (CWBackPixmap=None) [%d,%d)->[%d,%d) exp=%d\n",
+                (unsigned)wid, x0, y0, x1, y1, (int)exposures);
+#endif
         // No background — per X11 spec, ClearArea has no effect on contents.
         // Still send Expose if requested.
         if (exposures && dst.isWindow) {
