@@ -28,6 +28,7 @@
 #include "Ops/EventOps.hpp"
 #include "XProtoNotifyBridge.hpp"
 #include "Core/XEventMask.hpp"
+#include "Utils/BackgroundFill.hpp"
 #include "Core/X11Modifiers.hpp"
 #include "Core/InputRouting.hpp"
 #include "Core/GrabTable.hpp"
@@ -125,10 +126,26 @@ extern "C" int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
 // at MapWindow time may have failed because the Swift surface wasn't yet
 // registered.
 static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
-  // Use dynamic resolution: if ParentRelative, walk parent chain at fill time.
+  // Check for background pixmap first (takes priority over solid pixel)
+  uint32_t bgPixmap = 0;
+  if (ctx.windows().resolveBackgroundPixmapForClear(wid, bgPixmap)) {
+    x11::DrawableRW dst{};
+    if (!x11::resolveDrawableRW(ctx, wid, dst)) return;
+    if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
+
+#if X11_TRACE_PRESENT_ENABLED
+    fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X pixmap=0x%08X wh=%ux%u stride=%u\n",
+            (unsigned)wid, (unsigned)bgPixmap,
+            (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
+#endif
+
+    x11::tilePixmapFill(ctx, bgPixmap, dst, 0, 0, (int)dst.w, (int)dst.h);
+    return;
+  }
+
+  // Fall back to solid-color background
   uint32_t bg = 0;
   if (!ctx.windows().resolveBackgroundForClear(wid, bg)) {
-    // No background defined — nothing to fill.
     return;
   }
 

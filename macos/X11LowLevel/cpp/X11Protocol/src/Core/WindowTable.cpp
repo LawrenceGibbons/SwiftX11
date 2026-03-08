@@ -245,6 +245,7 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.background_pixel = st->background_pixel;
   out.has_background_pixel = st->has_background_pixel;
   out.is_parent_relative = st->is_parent_relative;
+  out.background_pixmap = st->background_pixmap;
   out.mapped = st->mapped;
   out.presentable = st->presentable;
   out.dirty = st->dirty;
@@ -270,6 +271,19 @@ void WindowTable::setBackgroundPixel(uint32_t xid, uint32_t pixel_argb) {
   st->background_pixel = pixel_argb;
   st->has_background_pixel = true;
   st->is_parent_relative = false;  // explicit pixel overrides ParentRelative
+  st->background_pixmap = 0;       // pixel overrides pixmap
+  st->serial++;
+}
+
+void WindowTable::setBackgroundPixmap(uint32_t xid, uint32_t pixmap_xid) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->background_pixmap = pixmap_xid;
+  st->has_background_pixel = false;  // pixmap overrides solid
+  st->is_parent_relative = false;
+  st->background_pixel = 0;
   st->serial++;
 }
 
@@ -281,6 +295,7 @@ void WindowTable::clearBackground(uint32_t xid) {
   st->background_pixel = 0;
   st->has_background_pixel = false;
   st->is_parent_relative = false;
+  st->background_pixmap = 0;
   st->serial++;
 }
 
@@ -290,6 +305,7 @@ void WindowTable::setParentRelative(uint32_t xid) {
   WindowState* st = findLocked(xid);
   if (!st) return;
   st->is_parent_relative = true;
+  st->background_pixmap = 0;  // ParentRelative overrides pixmap
   st->serial++;
 }
 
@@ -365,6 +381,18 @@ bool WindowTable::resolveBackgroundForClear(uint32_t xid, uint32_t& out_pixel) c
 
   // No background defined (CWBackPixmap=None or never set).
   // Per X11 spec, ClearArea should not modify window contents.
+  return false;
+}
+
+bool WindowTable::resolveBackgroundPixmapForClear(uint32_t xid, uint32_t& out_pixmap) const {
+  if (xid == 0) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  const WindowState* st = findLocked(xid);
+  if (!st) return false;
+  if (st->background_pixmap != 0) {
+    out_pixmap = st->background_pixmap;
+    return true;
+  }
   return false;
 }
 
