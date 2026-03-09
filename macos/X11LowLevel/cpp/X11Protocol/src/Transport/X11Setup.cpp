@@ -7,6 +7,7 @@
 //
 
 #include "Transport/X11Setup.hpp"
+#include "Core/ScreenLayout.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -237,11 +238,15 @@ extern "C" void x11_send_setup_success_minimal_little_endian(int fd,
   const uint32_t root_visid  = 0x00000021u;
   const uint32_t root_cmap   = 0x00000020u;
 
-  uint16_t screen_w_u  = 800, screen_h_u  = 600;
-  uint16_t screen_w_mm = 270, screen_h_mm = 203;
-  x11_get_virtual_desktop_px(&screen_w_u, &screen_h_u, &screen_w_mm, &screen_h_mm);
-  fprintf(stderr, "[DISPLAY] advertised screen_w_u = %d  screen_h_u = %d\n",
-          screen_w_u, screen_h_u);
+  // Query cached display layout (dynamic, multi-monitor aware)
+  const auto layout = x11::getScreenLayout();
+  const uint16_t screen_w_u  = layout.virtual_w;
+  const uint16_t screen_h_u  = layout.virtual_h;
+  const uint16_t screen_w_mm = layout.virtual_w_mm;
+  const uint16_t screen_h_mm = layout.virtual_h_mm;
+  fprintf(stderr, "[DISPLAY] advertised screen_w_u = %d  screen_h_u = %d  (%zu monitor%s)\n",
+          screen_w_u, screen_h_u,
+          layout.monitors.size(), layout.monitors.size() == 1 ? "" : "s");
 
   const char* vendor = "SwiftX11";
   const uint16_t vendor_len = static_cast<uint16_t>(std::strlen(vendor));

@@ -10,8 +10,8 @@
 namespace x11 {
   
   static constexpr uint32_t kRootXid = 0x00000001u;
-  static constexpr uint16_t kRootW   = 800;
-  static constexpr uint16_t kRootH   = 600;
   static constexpr uint16_t kDepth   = 24;
+  // Note: kRootW/kRootH removed — use x11::getScreenLayout().virtual_w/h
+  // for actual root window dimensions (dynamic, multi-monitor aware).
   
 }
