@@ -262,7 +262,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     ctx.windows().setEventMask(wid, cur_mask);
 
-    // Exposure “unstick” (optional; only meaningful when we changed event_mask)
+    // Exposure "unstick" (optional; only meaningful when we changed event_mask)
     const bool hadExposure = ((old_mask & (1u << 15)) != 0);
     const bool wantExpose  = ((cur_mask & (1u << 15)) != 0);
     if (wasMapped && !hadExposure && wantExpose) {
@@ -295,7 +295,26 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Compute host once (rootless policy pivot).
     const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
 
-    // Pull current values (so “partial configure” keeps the rest)
+#ifndef NDEBUG
+    {
+      const WindowView* dbg_vw = ctx.window(wid);
+      if (dbg_vw && dbg_vw->override_redirect) {
+        fprintf(stderr, "[CONFIGURE_OR] wid=0x%08X vmask=0x%04X cur_pos=(%d,%d) cur_size=%ux%u bits=%s%s%s%s%s%s%s\n",
+                (unsigned)wid, (unsigned)vmask,
+                (int)dbg_vw->x, (int)dbg_vw->y,
+                (unsigned)dbg_vw->w, (unsigned)dbg_vw->h,
+                (vmask & 0x01) ? "X " : "",
+                (vmask & 0x02) ? "Y " : "",
+                (vmask & 0x04) ? "W " : "",
+                (vmask & 0x08) ? "H " : "",
+                (vmask & 0x10) ? "BW " : "",
+                (vmask & 0x20) ? "SIB " : "",
+                (vmask & 0x40) ? "STACK " : "");
+      }
+    }
+#endif
+
+    // Pull current values (so "partial configure" keeps the rest)
     int32_t  x32 = 0, y32 = 0;
     uint32_t w32 = 1, h32 = 1;
     uint16_t borderW = 0;
@@ -546,7 +565,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     wire::wr16_le(rep.data() + 40, 0);
     wire::wr16_le(rep.data() + 42, 0);
 
-    // IMPORTANT: this is a single 44-byte reply (not “32 + payload separately”)
+    // IMPORTANT: this is a single 44-byte reply (not "32 + payload separately")
     // so just sendReplyBytes directly.
     (void)ctx.transport().sendReplyBytes(rep.data(), rep.size());
   }

@@ -510,6 +510,14 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   if (has_bit_gravity)       ctx.windows().setBitGravity(wid, bit_gravity);
   if (has_backing_store)     ctx.windows().setBackingStore(wid, backing_store);
 
+#ifndef NDEBUG
+  if (override_redirect) {
+    fprintf(stderr, "[OR_CREATE] wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u\n",
+            (unsigned)wid, (unsigned)parent,
+            (int)x, (int)y, (unsigned)wpx, (unsigned)hpx);
+  }
+#endif
+
   ctx.windows().setMapped(wid, false);
   ctx.windows().setPresentable(wid, false);
 
@@ -711,6 +719,10 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
         // or ConfigureWindow, but the NSWindow needs to be placed correctly
         // before/when it becomes visible.
         if (vw.override_redirect) {
+#ifndef NDEBUG
+          fprintf(stderr, "[OR_MAP] wid=0x%08X pushing move to (%d,%d) size=%ux%u\n",
+                  (unsigned)wid, (int)vw.x, (int)vw.y, (unsigned)vw.w, (unsigned)vw.h);
+#endif
           x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
         }
       }

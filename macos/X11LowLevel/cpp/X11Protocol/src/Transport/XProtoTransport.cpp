@@ -19,6 +19,7 @@
 #include "Core/XProtoContext.hpp"
 #include "Utils/WireLE.hpp" // your wire::wr16_le / wr32_le etc
 #include "Utils/WireErrors.hpp"
+#include "Utils/TraceDefs.hpp"
 
 // Stub: the old C-level xproto thread check was in the deleted x11_xproto.c.
 // XProtoTransport::sendAll() has its own thread check (xproto_thread_valid_),
@@ -157,7 +158,9 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     last_sent_type = b0;
     (void)last_sent_type; // suppress unused warning
 
-    // Always log the wire send (compact format for debugging).
+    // Log the wire send (compact format for debugging).
+    // Gated by X11_TRACE_WIRE (or X11_TRACE_VERBOSE) — very noisy.
+#if X11_TRACE_WIRE_ENABLED
     if (b0 == 0) {
       fprintf(stderr, "[WIRE] #%u ERROR seq=%u code=%u major=%u\n",
               send_count, (unsigned)seq, (unsigned)bb[1], (unsigned)bb[11]);
@@ -171,6 +174,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
       fprintf(stderr, "[WIRE] #%u EVENT type=%u seq=%u\n",
               send_count, (unsigned)b0, (unsigned)seq);
     }
+#endif
   }
 #endif
   if (!xproto_thread_valid_ || !pthread_equal(pthread_self(), xproto_thread_)) {

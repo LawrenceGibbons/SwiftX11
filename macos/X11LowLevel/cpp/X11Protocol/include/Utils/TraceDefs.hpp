@@ -69,3 +69,13 @@
 #else
   #define X11_TRACE_RENDER_ENABLED 0
 #endif
+
+// Wire-level transport: every sendAll() 32-byte packet logged as
+// [WIRE] ERROR/REPLY/EVENT.  Extremely noisy — hundreds of lines
+// per client session.  Enable only when debugging sequence or
+// reply-ordering issues.
+#if defined(X11_TRACE_WIRE) || defined(X11_TRACE_VERBOSE)
+  #define X11_TRACE_WIRE_ENABLED 1
+#else
+  #define X11_TRACE_WIRE_ENABLED 0
+#endif
