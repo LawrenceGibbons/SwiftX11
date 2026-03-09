@@ -36,6 +36,7 @@ extern "C" void x11_proto_bridge_post_pointer_button(uint32_t xid,
                                                       uint8_t is_press,
                                                       uint8_t button,
                                                       int32_t win_x_u, int32_t win_y_u,
+                                                      int32_t root_x_u, int32_t root_y_u,
                                                       uint32_t buttons,
                                                       uint32_t modifiers);
 
@@ -128,6 +129,8 @@ extern "C" void x11_post_pointer_button(uint32_t xid,
                                          uint8_t button,
                                          int32_t x_u,
                                          int32_t y_u,
+                                         int32_t root_x,
+                                         int32_t root_y,
                                          uint32_t buttons,
                                          uint32_t modifiers)
 {
@@ -136,6 +139,7 @@ extern "C" void x11_post_pointer_button(uint32_t xid,
                                        is_press ? 1 : 0,
                                        button,
                                        x_u, y_u,
+                                       root_x, root_y,
                                        buttons,
                                        modifiers);
 }
