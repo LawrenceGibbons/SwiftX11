@@ -686,8 +686,14 @@ final class X11View: NSView {
 
     if usingMetal {
       // Metal path: upload texture now; actual present happens in MTKViewDelegate.draw(in:)
-      guard let mv = self.mtkView else { return }
-      guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else { return }
+      guard let mv = self.mtkView else {
+        print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) mtkView=nil")
+        return
+      }
+      guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
+        print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) drawableSize=\(mv.drawableSize) frame=\(mv.frame)")
+        return
+      }
 
       self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
                                    damageRect: damageRect)

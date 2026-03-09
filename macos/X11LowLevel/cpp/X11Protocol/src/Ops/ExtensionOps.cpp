@@ -538,7 +538,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     case 8:  // RRGetScreenResources      (1.2)
-    case 19: // RRGetScreenResourcesCurrent (1.3)
+    case 25: // RRGetScreenResourcesCurrent (1.3)
     {
       br.skip(br.remaining());
       const auto layout = x11::getScreenLayout();
@@ -681,7 +681,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    case 13: {
+    case 20: {
       // RRGetCrtcInfo — look up requested CRTC
       if (br.remaining() < 4) { br.skip(br.remaining()); return; }
       const uint32_t requested_crtc = br.readU32();
@@ -727,7 +727,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    case 14: {
+    case 21: {
       // RRSetCrtcConfig — reply success
       br.skip(br.remaining());
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
@@ -738,7 +738,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    case 15: {
+    case 22: {
       // RRGetCrtcGammaSize — reply size=0
       br.skip(br.remaining());
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
@@ -759,6 +759,18 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       (void)ctx.reply().sendReply32(seq, [primaryOutput](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, 0);
         wire::wr32_le(rep.data() + 8, primaryOutput);
+      });
+      return;
+    }
+
+    case 32: {
+      // RRGetProviders — reply with empty provider list
+      // RANDR 1.4 feature; xrandr sends this but we don't need provider support
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr32_le(rep.data() + 8, 0); // timestamp
+        wire::wr16_le(rep.data() + 12, 0); // num_providers
       });
       return;
     }
