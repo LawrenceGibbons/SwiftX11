@@ -71,6 +71,7 @@ void x11_proto_bridge_post_pointer_move2(uint32_t xid,
                                             uint8_t is_press,
                                             uint8_t button,
                                             int32_t win_x, int32_t win_y,
+                                            int32_t root_x, int32_t root_y,
                                             uint32_t buttons,
                                             uint32_t modifiers);
 

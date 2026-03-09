@@ -1187,7 +1187,8 @@ final class X11View: NSView {
   
   private func sendButton(_ isPress: Bool, button: UInt8, _ event: NSEvent) {
     let (x, y) = pointInX11(event, clampToView: false)
-    x11_post_pointer_button(xid, isPress, button, x, y, buttonMask, mods(event.modifierFlags))
+    let (rootX, rootY) = rootPointInX11TopLeft()
+    x11_post_pointer_button(xid, isPress, button, x, y, rootX, rootY, buttonMask, mods(event.modifierFlags))
   }
   
   override func mouseDown(with event: NSEvent) {

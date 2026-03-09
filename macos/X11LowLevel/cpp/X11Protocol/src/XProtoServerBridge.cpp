@@ -563,6 +563,8 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // (not stale coords from the last PointerMove).
           ctx.input().win_x_u = c.win_x_u;
           ctx.input().win_y_u = c.win_y_u;
+          ctx.input().root_x_u = c.root_x_u;
+          ctx.input().root_y_u = c.root_y_u;
 
           // ---- macOS drag correction ----
           // macOS routes mouseUp to the original mouseDown window. If the
@@ -1279,6 +1281,7 @@ extern "C" void x11_proto_bridge_post_pointer_button(uint32_t xid,
                                                      uint8_t is_press,
                                                      uint8_t button,
                                                      int32_t win_x_u, int32_t win_y_u,
+                                                     int32_t root_x_u, int32_t root_y_u,
                                                      uint32_t buttons,
                                                      uint32_t modifiers)
 {
@@ -1291,6 +1294,8 @@ extern "C" void x11_proto_bridge_post_pointer_button(uint32_t xid,
   c.button = button;
   c.win_x_u = win_x_u;
   c.win_y_u = win_y_u;
+  c.root_x_u = root_x_u;
+  c.root_y_u = root_y_u;
   c.buttonsMask = buttons;
   c.modsMask = modifiers;
   srv->hostCmds().push(c);

@@ -125,6 +125,8 @@ void x11_post_pointer_button(uint32_t xid,
                              uint8_t button,        // 1..31 (1=left, 2=middle, 3=right, 4..7 wheel if desired)
                              int32_t x_u,
                              int32_t y_u,
+                             int32_t root_x,
+                             int32_t root_y,
                              uint32_t buttons,      // current button mask AFTER state update
                              uint32_t modifiers);
 
