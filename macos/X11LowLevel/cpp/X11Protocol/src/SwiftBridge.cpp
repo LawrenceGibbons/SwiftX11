@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "Core/ScreenLayout.hpp"
+
 extern "C" {
 #include "SwiftX11Bridge.h"
 }
@@ -92,6 +94,9 @@ extern "C" bool x11_start_server(int32_t display)
 extern "C" bool x11_start_server_ex(int32_t display, bool enable_tcp, bool enable_unix,
                                      const char* tcp_bind_addr)
 {
+  // Register for display-change notifications so ScreenLayout cache stays fresh.
+  x11::registerDisplayChangeCallback();
+
   int ok = x11_proto_start_daemon_ex((int)display,
                                      enable_tcp ? 1 : 0,
                                      enable_unix ? 1 : 0,

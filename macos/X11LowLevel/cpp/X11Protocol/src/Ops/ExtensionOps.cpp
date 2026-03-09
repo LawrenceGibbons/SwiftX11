@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "Ops/ExtensionOps.hpp"
 #include "Core/XProtoContext.hpp"
@@ -20,6 +21,7 @@
 #include "Core/WindowView.hpp"
 #include "Core/PixmapTable.hpp"
 #include "Core/ShapeRegion.hpp"
+#include "Core/ScreenLayout.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Utils/ByteReader.hpp"
@@ -496,21 +498,13 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
 
   // -------------------------------------------------------------------
-  // RANDR — single-screen stubs (version 1.3)
+  // RANDR — dynamic multi-monitor (version 1.3)
   //
-  // Fake resource IDs for our single output/crtc/mode:
-  //   Output  = 0x00100000
-  //   CRTC    = 0x00100001
-  //   Mode    = 0x00100010
-  // Screen dimensions hardcoded to 1920×1080 (matches Xinerama stub).
+  // Resource XIDs assigned per-monitor by ScreenLayout:
+  //   Output  = 0x00100000 + 2*i
+  //   CRTC    = 0x00100001 + 2*i
+  //   Mode    = 0x00100010 + i
   // -------------------------------------------------------------------
-  static constexpr uint32_t kRR_Output = 0x00100000;
-  static constexpr uint32_t kRR_Crtc   = 0x00100001;
-  static constexpr uint32_t kRR_ModeId = 0x00100010;
-  static constexpr uint16_t kRR_W      = 1920;
-  static constexpr uint16_t kRR_H      = 1080;
-  static constexpr uint16_t kRR_Wmm    = 508;  // ~25.4 * 1920 / 96
-  static constexpr uint16_t kRR_Hmm    = 285;  // ~25.4 * 1080 / 96
 
   if (major == ext::kRANDR) {
     switch (minor) {
@@ -546,81 +540,134 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case 8:  // RRGetScreenResources      (1.2)
     case 19: // RRGetScreenResourcesCurrent (1.3)
     {
-      // Reply: 1 CRTC, 1 output, 1 mode
       br.skip(br.remaining());
+      const auto layout = x11::getScreenLayout();
+      const size_t N = layout.monitors.size();
 
-      // Mode name "1920x1080" (9 chars)
-      static const char modeName[] = "1920x1080";
-      static constexpr uint16_t modeNameLen = 9;
+      // Build mode names and ModeInfo blocks
+      struct ModeEntry {
+        uint8_t info[32];
+        char    name[32];
+        uint16_t nameLen;
+      };
+      std::vector<ModeEntry> modes(N);
+      uint16_t totalNameLen = 0;
 
-      // Build ModeInfo (32 bytes)
-      uint8_t modeInfo[32] = {};
-      wire::wr32_le(modeInfo + 0,  kRR_ModeId);
-      wire::wr16_le(modeInfo + 4,  kRR_W);       // width
-      wire::wr16_le(modeInfo + 6,  kRR_H);       // height
-      wire::wr32_le(modeInfo + 8,  148500000);    // dotClock (148.5 MHz, 1080p60)
-      wire::wr16_le(modeInfo + 12, 2008);         // hSyncStart
-      wire::wr16_le(modeInfo + 14, 2052);         // hSyncEnd
-      wire::wr16_le(modeInfo + 16, 2200);         // hTotal
-      wire::wr16_le(modeInfo + 18, 0);            // hSkew
-      wire::wr16_le(modeInfo + 20, 1084);         // vSyncStart
-      wire::wr16_le(modeInfo + 22, 1089);         // vSyncEnd
-      wire::wr16_le(modeInfo + 24, 1125);         // vTotal
-      wire::wr16_le(modeInfo + 26, modeNameLen);  // nameLen
-      wire::wr32_le(modeInfo + 28, 0);            // modeFlags
+      for (size_t i = 0; i < N; i++) {
+        const auto& m = layout.monitors[i];
+        auto& me = modes[i];
+        me.nameLen = static_cast<uint16_t>(
+          std::snprintf(me.name, sizeof(me.name), "%ux%u", (unsigned)m.w, (unsigned)m.h));
 
-      // Payload: crtcIds(4) + outputIds(4) + ModeInfo(32) + name(9) + pad(3) = 52 bytes
-      uint8_t payload[52] = {};
-      wire::wr32_le(payload + 0, kRR_Crtc);       // crtc[0]
-      wire::wr32_le(payload + 4, kRR_Output);     // output[0]
-      std::memcpy(payload + 8, modeInfo, 32);      // modes[0]
-      std::memcpy(payload + 40, modeName, modeNameLen); // name bytes
+        std::memset(me.info, 0, 32);
+        wire::wr32_le(me.info + 0,  m.mode_xid);
+        wire::wr16_le(me.info + 4,  m.w);          // width
+        wire::wr16_le(me.info + 6,  m.h);          // height
+        // Approximate timing: dotClock = w * h * 60
+        uint32_t dotClock = static_cast<uint32_t>(m.w) * m.h * 60;
+        wire::wr32_le(me.info + 8,  dotClock);
+        wire::wr16_le(me.info + 12, m.w + 88);     // hSyncStart (approx)
+        wire::wr16_le(me.info + 14, m.w + 132);    // hSyncEnd
+        wire::wr16_le(me.info + 16, m.w + 280);    // hTotal
+        wire::wr16_le(me.info + 18, 0);            // hSkew
+        wire::wr16_le(me.info + 20, m.h + 4);      // vSyncStart
+        wire::wr16_le(me.info + 22, m.h + 9);      // vSyncEnd
+        wire::wr16_le(me.info + 24, m.h + 45);     // vTotal
+        wire::wr16_le(me.info + 26, me.nameLen);   // nameLen
+        wire::wr32_le(me.info + 28, 0);            // modeFlags
 
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 13);  // length = 52/4
+        totalNameLen += me.nameLen;
+      }
+
+      // Payload: crtc_ids[N] + output_ids[N] + ModeInfo[N] + names + pad
+      size_t namesWithPad = (totalNameLen + 3u) & ~3u;
+      size_t payloadBytes = 4*N + 4*N + 32*N + namesWithPad;
+      std::vector<uint8_t> payload(payloadBytes, 0);
+      size_t off = 0;
+
+      // CRTC IDs
+      for (size_t i = 0; i < N; i++) {
+        wire::wr32_le(payload.data() + off, layout.monitors[i].crtc_xid);
+        off += 4;
+      }
+      // Output IDs
+      for (size_t i = 0; i < N; i++) {
+        wire::wr32_le(payload.data() + off, layout.monitors[i].output_xid);
+        off += 4;
+      }
+      // ModeInfo blocks
+      for (size_t i = 0; i < N; i++) {
+        std::memcpy(payload.data() + off, modes[i].info, 32);
+        off += 32;
+      }
+      // Mode names (concatenated, padded to 4 bytes)
+      for (size_t i = 0; i < N; i++) {
+        std::memcpy(payload.data() + off, modes[i].name, modes[i].nameLen);
+        off += modes[i].nameLen;
+      }
+
+      const uint32_t replyLength = static_cast<uint32_t>(payloadBytes / 4);
+      const uint16_t numC = static_cast<uint16_t>(N);
+      const uint16_t numO = static_cast<uint16_t>(N);
+      const uint16_t numM = static_cast<uint16_t>(N);
+      (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, replyLength);
         wire::wr32_le(rep.data() + 8,  0);  // timestamp
         wire::wr32_le(rep.data() + 12, 0);  // configTimestamp
-        wire::wr16_le(rep.data() + 16, 1);  // num_crtcs
-        wire::wr16_le(rep.data() + 18, 1);  // num_outputs
-        wire::wr16_le(rep.data() + 20, 1);  // num_modes
-        wire::wr16_le(rep.data() + 22, modeNameLen); // names_len
+        wire::wr16_le(rep.data() + 16, numC);
+        wire::wr16_le(rep.data() + 18, numO);
+        wire::wr16_le(rep.data() + 20, numM);
+        wire::wr16_le(rep.data() + 22, totalNameLen);
       });
-      ctx.reply().sendBytes(payload, sizeof(payload));
+      ctx.reply().sendBytes(payload.data(), payloadBytes);
       return;
     }
 
     case 9: {
-      // RRGetOutputInfo — single connected output
+      // RRGetOutputInfo — look up requested output
+      if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+      const uint32_t requested_output = br.readU32();
       br.skip(br.remaining());
 
-      // Output name "Virtual-1" (9 chars)
-      static const char outputName[] = "Virtual-1";
-      static constexpr uint16_t nameLen = 9;
+      const auto layout = x11::getScreenLayout();
+      const x11::MonitorInfo* found = nullptr;
+      for (auto& m : layout.monitors) {
+        if (m.output_xid == requested_output) { found = &m; break; }
+      }
+      if (!found) {
+        ctx.transport().sendErrorCore(x11::error::BadValue, seq, requested_output, major);
+        return;
+      }
 
-      // Payload after 32-byte header:
-      //   nClones(2) + nameLength(2) + crtcs(4) + modes(4) + clones(0) + name(9) + pad(3) = 24
-      uint8_t payload[24] = {};
-      wire::wr16_le(payload + 0, 0);          // num_clones
-      wire::wr16_le(payload + 2, nameLen);    // name_length
-      wire::wr32_le(payload + 4, kRR_Crtc);  // crtcs[0]
-      wire::wr32_le(payload + 8, kRR_ModeId);// modes[0]
-      // no clones
-      std::memcpy(payload + 12, outputName, nameLen); // name
+      const auto& mon = *found;
+      const uint16_t nameLen = static_cast<uint16_t>(std::strlen(mon.name));
 
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+      // Payload: crtcs(4) + modes(4) + name(nameLen) + pad
+      size_t nameWithPad = (nameLen + 3u) & ~3u;
+      size_t payloadBytes = 4 + 4 + nameWithPad;
+      std::vector<uint8_t> payload(payloadBytes, 0);
+      wire::wr32_le(payload.data() + 0, mon.crtc_xid);  // crtcs[0]
+      wire::wr32_le(payload.data() + 4, mon.mode_xid);   // modes[0]
+      std::memcpy(payload.data() + 8, mon.name, nameLen); // name
+
+      const uint32_t replyLen = static_cast<uint32_t>(payloadBytes / 4);
+      const uint32_t crtcXid = mon.crtc_xid;
+      const uint32_t mmW = mon.w_mm;
+      const uint32_t mmH = mon.h_mm;
+      (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
         rep[1] = 0; // status = RRSetConfigSuccess
-        wire::wr32_le(rep.data() + 4, 6);       // length = 24/4
-        wire::wr32_le(rep.data() + 8, 0);       // timestamp
-        wire::wr32_le(rep.data() + 12, kRR_Crtc);  // crtc
-        wire::wr32_le(rep.data() + 16, kRR_Wmm);   // mm_width
-        wire::wr32_le(rep.data() + 20, kRR_Hmm);   // mm_height
+        wire::wr32_le(rep.data() + 4, replyLen);
+        wire::wr32_le(rep.data() + 8, 0);          // timestamp
+        wire::wr32_le(rep.data() + 12, crtcXid);   // crtc
+        wire::wr32_le(rep.data() + 16, mmW);        // mm_width
+        wire::wr32_le(rep.data() + 20, mmH);        // mm_height
         rep[24] = 0; // connection = Connected
         rep[25] = 0; // subpixel_order = Unknown
         wire::wr16_le(rep.data() + 26, 1); // num_crtcs
         wire::wr16_le(rep.data() + 28, 1); // num_modes
         wire::wr16_le(rep.data() + 30, 1); // num_preferred
       });
-      ctx.reply().sendBytes(payload, sizeof(payload));
+      ctx.reply().sendBytes(payload.data(), payloadBytes);
       return;
     }
 
@@ -635,23 +682,42 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     case 13: {
-      // RRGetCrtcInfo — single CRTC at 0,0
+      // RRGetCrtcInfo — look up requested CRTC
+      if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+      const uint32_t requested_crtc = br.readU32();
       br.skip(br.remaining());
+
+      const auto layout = x11::getScreenLayout();
+      const x11::MonitorInfo* found = nullptr;
+      for (auto& m : layout.monitors) {
+        if (m.crtc_xid == requested_crtc) { found = &m; break; }
+      }
+      if (!found) {
+        ctx.transport().sendErrorCore(x11::error::BadValue, seq, requested_crtc, major);
+        return;
+      }
+
+      const auto& mon = *found;
 
       // Payload: outputs(4) + possible_outputs(4) = 8 bytes
       uint8_t payload[8] = {};
-      wire::wr32_le(payload + 0, kRR_Output); // outputs[0]
-      wire::wr32_le(payload + 4, kRR_Output); // possible[0]
+      wire::wr32_le(payload + 0, mon.output_xid); // outputs[0]
+      wire::wr32_le(payload + 4, mon.output_xid); // possible[0]
 
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+      const uint16_t mx = static_cast<uint16_t>(mon.x);
+      const uint16_t my = static_cast<uint16_t>(mon.y);
+      const uint16_t mw = mon.w;
+      const uint16_t mh = mon.h;
+      const uint32_t modeXid = mon.mode_xid;
+      (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
         rep[1] = 0; // status
         wire::wr32_le(rep.data() + 4, 2);        // length = 8/4
         wire::wr32_le(rep.data() + 8, 0);        // timestamp
-        wire::wr16_le(rep.data() + 12, 0);       // x
-        wire::wr16_le(rep.data() + 14, 0);       // y
-        wire::wr16_le(rep.data() + 16, kRR_W);   // width
-        wire::wr16_le(rep.data() + 18, kRR_H);   // height
-        wire::wr32_le(rep.data() + 20, kRR_ModeId); // mode
+        wire::wr16_le(rep.data() + 12, mx);      // x
+        wire::wr16_le(rep.data() + 14, my);      // y
+        wire::wr16_le(rep.data() + 16, mw);      // width
+        wire::wr16_le(rep.data() + 18, mh);      // height
+        wire::wr32_le(rep.data() + 20, modeXid); // mode
         wire::wr16_le(rep.data() + 24, 1);       // rotation = Rotate_0
         wire::wr16_le(rep.data() + 26, 1);       // rotations = Rotate_0
         wire::wr16_le(rep.data() + 28, 1);       // num_outputs
@@ -683,11 +749,16 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     case 31: {
-      // RRGetOutputPrimary — reply with our output XID
+      // RRGetOutputPrimary — reply with primary output XID
       br.skip(br.remaining());
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+      const auto layout = x11::getScreenLayout();
+      uint32_t primaryOutput = 0x00100000; // fallback
+      for (auto& m : layout.monitors) {
+        if (m.is_primary) { primaryOutput = m.output_xid; break; }
+      }
+      (void)ctx.reply().sendReply32(seq, [primaryOutput](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, 0);
-        wire::wr32_le(rep.data() + 8, kRR_Output); // output
+        wire::wr32_le(rep.data() + 8, primaryOutput);
       });
       return;
     }
@@ -701,7 +772,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
 
   // -------------------------------------------------------------------
-  // Xinerama — minor 0 = QueryVersion, minor 4 = IsActive, minor 5 = QueryScreens
+  // Xinerama — dynamic multi-monitor
+  // minor 0 = QueryVersion, minor 4 = IsActive, minor 5 = QueryScreens
   // -------------------------------------------------------------------
   if (major == ext::kXinerama) {
     if (minor == 0) {
@@ -718,7 +790,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (minor == 4) {
       // XineramaIsActive — no request body
       br.skip(br.remaining());
-      // Reply: state=1 (active, single screen)
+      // Reply: state=1 (active)
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, 0); // length
         wire::wr32_le(rep.data() + 8, 1); // state = active
@@ -726,21 +798,29 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
     if (minor == 5) {
-      // XineramaQueryScreens — no request body
+      // XineramaQueryScreens — dynamic from ScreenLayout
       br.skip(br.remaining());
-      // Reply: 1 screen. Payload = 1 × XineramaScreenInfo (8 bytes)
-      // XineramaScreenInfo: INT16 x, INT16 y, CARD16 w, CARD16 h
-      uint8_t payload[8] = {};
-      wire::wr16_le(payload + 0, 0);    // x = 0
-      wire::wr16_le(payload + 2, 0);    // y = 0
-      wire::wr16_le(payload + 4, 1920); // w (default)
-      wire::wr16_le(payload + 6, 1080); // h (default)
 
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 2); // length = 8 bytes / 4 = 2 words
-        wire::wr32_le(rep.data() + 8, 1); // number = 1 screen
+      const auto layout = x11::getScreenLayout();
+      const size_t N = layout.monitors.size();
+
+      // Each XineramaScreenInfo = 8 bytes: INT16 x, INT16 y, CARD16 w, CARD16 h
+      std::vector<uint8_t> payload(N * 8, 0);
+      for (size_t i = 0; i < N; i++) {
+        const auto& m = layout.monitors[i];
+        wire::wr16_le(payload.data() + i*8 + 0, static_cast<uint16_t>(m.x));
+        wire::wr16_le(payload.data() + i*8 + 2, static_cast<uint16_t>(m.y));
+        wire::wr16_le(payload.data() + i*8 + 4, m.w);
+        wire::wr16_le(payload.data() + i*8 + 6, m.h);
+      }
+
+      const uint32_t replyLength = static_cast<uint32_t>(N * 2); // N*8/4
+      const uint32_t numScreens = static_cast<uint32_t>(N);
+      (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, replyLength);
+        wire::wr32_le(rep.data() + 8, numScreens);
       });
-      ctx.reply().sendBytes(payload, sizeof(payload));
+      ctx.reply().sendBytes(payload.data(), N * 8);
       return;
     }
     fprintf(stderr, "[Xinerama] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);

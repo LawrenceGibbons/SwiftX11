@@ -32,8 +32,27 @@ struct X11WindowInfo {
 
 @MainActor
 final class WindowRegistry {
-  
+
   static let shared = WindowRegistry()
+
+  // MARK: - Multi-monitor coordinate conversion
+
+  /// Convert X11 root coordinates (top-left origin, y-down) to macOS global
+  /// screen coordinates (bottom-left origin, y-up).  Uses the union bounding
+  /// box of all connected screens so that windows on any monitor are placed
+  /// correctly.  The inverse of rootPointInX11TopLeft() in X11WindowHost.swift.
+  static func x11RootToMacOSOrigin(x11X: CGFloat, x11Y: CGFloat, height: CGFloat) -> NSPoint {
+    let screens = NSScreen.screens
+    let vminX = screens.map { $0.frame.minX }.min() ?? 0
+    let vmaxY = screens.map { $0.frame.maxY }.max() ?? 0
+    return NSPoint(x: x11X + vminX, y: vmaxY - x11Y - height)
+  }
+
+  /// Virtual desktop max-Y in macOS global screen coordinates.
+  /// Used by WarpPointer to convert macOS screen coords to CG coords.
+  static var virtualDesktopMaxY: CGFloat {
+    NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
+  }
   
   private var showDamageLogs: () -> Bool = { true }   // default
 
@@ -245,12 +264,11 @@ final class WindowRegistry {
       // Query current X11 position from WindowTable (may differ from creation position)
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
-      if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR),
-         let screen = NSScreen.main {
-        let screenH = screen.frame.height
-        let macY = screenH - CGFloat(x11y) - CGFloat(x11h)
-        let frame = NSRect(x: CGFloat(x11x), y: macY,
-                           width: CGFloat(x11w), height: CGFloat(x11h))
+      if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
+        let origin = WindowRegistry.x11RootToMacOSOrigin(
+          x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(x11h))
+        let frame = NSRect(origin: origin,
+                           size: NSSize(width: CGFloat(x11w), height: CGFloat(x11h)))
         print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
         win.setFrame(frame, display: false)
         // Position is known — show immediately
@@ -721,7 +739,6 @@ final class WindowRegistry {
 
   func moveWindow(xid: UInt32, x11X: Int, x11Y: Int) {
     guard let controller = windows[xid], let win = controller.window else { return }
-    guard let screen = NSScreen.main else { return }
 
     // Query fresh geometry for the height (needed for Y conversion)
     var x11w: Int32 = 0, x11h: Int32 = 0
@@ -729,9 +746,9 @@ final class WindowRegistry {
     var dummyOR: Bool = false
     if x11_get_window_geometry(xid, &dummy1, &dummy2, &x11w, &x11h, &dummyOR) {
       // Convert X11 root coords (y-down) to macOS screen coords (y-up)
-      let screenH = screen.frame.height
-      let macY = screenH - CGFloat(x11Y) - CGFloat(x11h)
-      let origin = NSPoint(x: CGFloat(x11X), y: macY)
+      // Uses virtual desktop union bounds so windows on any monitor work correctly.
+      let origin = WindowRegistry.x11RootToMacOSOrigin(
+        x11X: CGFloat(x11X), x11Y: CGFloat(x11Y), height: CGFloat(x11h))
       win.setFrameOrigin(origin)
 
       // If mapWindow() deferred showing this OR window, show it now that

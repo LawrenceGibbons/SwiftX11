@@ -13,6 +13,7 @@
 #include "Ops/ReplyWriter.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Core/XConstants.hpp"
+#include "Core/ScreenLayout.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/CursorRouting.hpp"
@@ -581,7 +582,10 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     uint32_t root = kRootXid;
     int16_t  x = 0, y = 0;
-    uint16_t w = kRootW, h = kRootH;
+    // Default to actual virtual desktop dimensions (for root window queries)
+    const auto screenLayout = x11::getScreenLayout();
+    uint16_t w = screenLayout.virtual_w;
+    uint16_t h = screenLayout.virtual_h;
     uint16_t border = 0;
     uint16_t depth = kDepth;
 

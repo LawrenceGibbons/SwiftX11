@@ -23,11 +23,13 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     // to macOS screen coordinates. X11: origin top-left, y-down. macOS: origin
     // bottom-left, y-up.
     let contentRect: NSRect
-    if overrideRedirect, let screen = NSScreen.main {
-      let screenH = screen.frame.height
-      // X11 y is from top of screen; macOS y is from bottom
-      let macY = screenH - CGFloat(y) - CGFloat(height)
-      contentRect = NSRect(x: CGFloat(x), y: macY, width: CGFloat(width), height: CGFloat(height))
+    if overrideRedirect {
+      // Convert X11 root coords (top-left, y-down) to macOS global coords.
+      // Uses virtual desktop union bounds so windows on any monitor work correctly.
+      let origin = WindowRegistry.x11RootToMacOSOrigin(
+        x11X: CGFloat(x), x11Y: CGFloat(y), height: CGFloat(height))
+      contentRect = NSRect(origin: origin,
+                           size: NSSize(width: CGFloat(width), height: CGFloat(height)))
     } else {
       contentRect = NSRect(x: 0, y: 0, width: width, height: height)
     }
