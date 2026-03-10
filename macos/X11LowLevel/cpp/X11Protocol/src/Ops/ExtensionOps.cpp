@@ -776,6 +776,42 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
+    case 27: {
+      // RRGetCrtcTransform — 96-byte reply: identity transforms, no filters
+      // xRRGetCrtcTransformReply = 96 bytes:
+      //   0-7:   reply header (type, status, seq, length)
+      //   8-43:  pendingTransform (xRenderTransform = 9 x Fixed = 36 bytes)
+      //   44:    hasTransforms (BOOL)
+      //   45-47: pad
+      //   48-83: currentTransform (xRenderTransform = 9 x Fixed)
+      //   84-87: pad
+      //   88-89: pendingNbytesFilter
+      //   90-91: pendingNparamsFilter
+      //   92-93: currentNbytesFilter
+      //   94-95: currentNparamsFilter
+      br.skip(br.remaining());
+      uint8_t rep[96] = {};
+      rep[0] = 1;                          // reply type
+      rep[1] = 1;                          // status = hasTransforms
+      wire::wr16_le(rep + 2, seq);         // sequence
+      wire::wr32_le(rep + 4, 16);          // length = (96-32)/4 = 16
+
+      // Identity transform: diag = 1.0 in 16.16 fixed-point = 0x00010000
+      const uint32_t one = 0x00010000u;
+      // Pending transform (bytes 8-43): 3x3 identity
+      wire::wr32_le(rep + 8,  one);        // m11
+      wire::wr32_le(rep + 24, one);        // m22
+      wire::wr32_le(rep + 40, one);        // m33
+      rep[44] = 1;                          // hasTransforms = true
+      // Current transform (bytes 48-83): 3x3 identity
+      wire::wr32_le(rep + 48, one);        // m11
+      wire::wr32_le(rep + 64, one);        // m22
+      wire::wr32_le(rep + 80, one);        // m33
+      // Filter name lengths = 0 (bytes 88-95 already zero)
+      ctx.reply().sendReplyRaw(rep, sizeof(rep));
+      return;
+    }
+
     case 28: {
       // RRGetPanning — 36-byte reply: no panning (all zeros)
       br.skip(br.remaining());
