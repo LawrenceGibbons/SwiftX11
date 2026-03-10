@@ -1,7 +1,7 @@
 # SwiftX11 — Session Handoff Prompt
 
 **Date**: 2026-03-09
-**Version**: v1.9.7
+**Version**: v1.10.0
 **Branch**: `develop++`
 
 ---
@@ -28,36 +28,28 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 
 ---
 
-## What Was Accomplished Recently (v1.9.3 - v1.9.7)
+## What Was Accomplished Recently (v1.9.3 - v1.10.0)
+
+### v1.10.0: Rendering Performance
+- **Software present partial copy**: `presentSoftwarePartial()` maintains a persistent backing buffer (`swBackingBuffer`) and only copies damaged rows from the source framebuffer. 3-frame full-copy countdown on resize (matches Metal's `fullUploadCountdown`). Avoids copying the entire surface (potentially 4MB+) on every present when only a small region changed.
+- **PutImage bulk memcpy**: GXcopy fast path now uses `std::memcpy` for the full row, then 4-pixel-unrolled alpha forcing (`dp[i] |= 0xFF000000u`), instead of per-pixel copy-and-OR. System memcpy is SIMD-optimized, yielding significant speedup for large PutImage calls (Vivado waveform/schematic renders).
+- **Expose coalescing**: `sendExposeSubtree()` and `ExposeChildren` handler now set the X11 Expose `count` field correctly — count=N-1 for the first event, decrementing to count=0 for the last. This allows X11 clients to defer redrawing until the final Expose event arrives. Backgrounds and borders are pre-filled for all windows before any Expose events are sent.
 
 ### v1.9.7: Multi-Monitor Support
-- **ScreenLayout cache** (`ScreenLayout.hpp/cpp`): Queries `CGGetActiveDisplayList` for all monitors, caches position/size/pixel-size/physical-mm/name per display. Thread-safe with `std::mutex`. Auto-refreshes via `CGDisplayRegisterReconfigurationCallback`.
-- **Dynamic RANDR**: `RRGetScreenResources` returns N outputs/CRTCs/modes from real monitor data. `RRGetOutputInfo`, `RRGetCrtcInfo`, `RRGetOutputPrimary` all use ScreenLayout. Added handlers for minors 27 (GetCrtcTransform), 28 (GetPanning), 29 (SetPanning), 32 (GetProviders).
-- **Dynamic Xinerama**: `XineramaQueryScreens` returns real per-monitor rectangles.
-- **X11 connection setup**: Virtual desktop size from ScreenLayout (union of all monitors).
-- **GetGeometry on root**: Returns actual virtual desktop dimensions (was hardcoded 800x600).
-- **Coordinate conversion fixes**: Four locations in Swift that used `NSScreen.main` now use virtual desktop bounds (`screens.map { $0.frame.minX }.min()`, `.maxY.max()`). New `x11RootToMacOSOrigin()` helper.
-- **WarpPointer fix**: Uses `vmaxY` from all screens instead of `NSScreen.main?.frame.height`.
-- **OR window Metal drawable retry**: Popup menus on secondary monitors had blank rendering due to Metal drawable timing race. Fixed with retry mechanism + `setFrame(display: true)`.
-- **Removed stale `kRootW/kRootH`** constants (were hardcoded 800x600).
-- `xrandr --query` now works, showing real monitor configuration.
+- ScreenLayout cache, dynamic RANDR/Xinerama, coordinate conversion fixes
+- `xrandr --query` works with real monitor configuration
 
 ### v1.9.6: UX Bug Fixes
-- Ctrl+click correctly maps to X11 right-click (button 3)
-- Window persistence fix (windowDidChangeOcclusionState no longer unmaps)
-- QueryTree root children fix (xwininfo -root -tree works)
+- Ctrl+click → button 3, window persistence fix, QueryTree root children
 
 ### v1.9.5: Window Management Attributes
-- override_redirect, win_gravity, bit_gravity, backing_store fully parsed and reported
-- Override-redirect windows create borderless floating NSWindows
+- override_redirect, win_gravity, bit_gravity, backing_store
 
 ### v1.9.4: Container/Network Support
 - TCP + Unix domain socket dual listeners
-- Docker workflow: `DISPLAY=host.docker.internal:1`
 
 ### v1.9.3: X11 Error Handling
-- Proper error generation across ~50 request handlers in 14 files
-- BadWindow, BadDrawable, BadPixmap, BadFont, BadAtom, BadColor, BadValue
+- Proper error generation across ~50 request handlers
 
 ---
 
@@ -67,36 +59,16 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" -- XCreateFontSet() expects multiple charset fonts.
 - **xeyes shaped window occasional black flash on resize**: Minor cosmetic issue during live resize.
 - **xrandr gamma warning**: `Failed to get size of gamma for output Virtual-0` -- RRGetCrtcGammaSize returns 0. Low priority cosmetic.
-- **Multi-monitor popup testing pending**: OR window Metal drawable retry fix committed but untested with dual monitors (user has only laptop currently).
 
 ---
 
-## Next Task: Phase 5.1 — Rendering Performance (MEDIUM priority)
+## Next Task: See docs/TODO.md
 
-This is what the user explicitly chose as the next priority. Three items from TODO.md:
-
-### 1. Software Present Path: Partial CGImage Blit
-**Current**: `presentSoftware()` in `X11WindowHost.swift` creates a full CGImage from the entire host surface every frame, even when only a small region changed. Metal path already does partial texture uploads via `MTLTexture.replace(region:)`.
-**Goal**: Use `CGImage(cropping:)` or sub-image creation to only upload the damaged region in the software fallback path.
-**Key files**: `SwiftX11/UI/Windows/X11WindowHost.swift` (presentBGRA/presentSoftware methods)
-
-### 2. PutImage Optimization
-**Current**: Large PutImage calls (e.g., full-window background images) go through per-pixel processing with alpha forcing and GC function application even for the common GXcopy case.
-**Goal**: Fast memcpy path for GXcopy + no-clip + full-alpha cases; SIMD for alpha forcing in bulk.
-**Key files**: `X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp` (PutImage handler)
-
-### 3. Expose Coalescing
-**Current**: Each child window gets its own Expose event. Window resize can trigger many individual Expose events.
-**Goal**: Batch expose events where possible to reduce client redraw overhead.
-**Key files**: `X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp` (sendExposeSubtree, ExposeChildren)
-
-### Getting Started
-Read these files first to understand the present pipeline:
-- `SwiftX11/UI/Windows/X11WindowHost.swift` — `presentBGRA()`, `presentSoftware()`, `snapshotAndPresentNow()`
-- `SwiftX11/Core/WindowRegistry.swift` — `schedulePresent()`, present timer
-- `X11LowLevel/cpp/X11Protocol/src/UI/UICommandQueue.cpp` — shared damage accumulator (`x11_shared_damage_union/consume`)
-- `SwiftX11/UI/Windows/X11MetalRenderer.swift` — Metal partial texture upload (reference for what software path should do)
-- `X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp` — PutImage handler
+Check `docs/TODO.md` for remaining Phase 5 items (Xauth, keyboard mapping, window menu) and Phase 7 (additional extensions). Priority order from TODO.md:
+- Phase 5.2: Xauth + latency tolerance (for Docker security)
+- Phase 5.3: Full keyboard/keysym mapping
+- Phase 5.5: Window menu integration
+- Phase 7: XInput2, SYNC (if needed by specific apps)
 
 ---
 
@@ -115,7 +87,7 @@ xcalc                          # Symbol font (sqrt, pi, division)
 xclock -analog                 # Xaw widgets, arcs
 xrandr --query                 # Multi-monitor: shows real monitor config
 
-# Verify version banner: "SwiftX11 v1.9.7"
+# Verify version banner: "SwiftX11 v1.10.0"
 
 # Test window close:
 # 1. Launch xterm, click red close button -> xterm process should exit
@@ -140,21 +112,6 @@ Read these files to understand the codebase:
 - `X11LowLevel/cpp/X11Protocol/src/Ops/ExtensionOps.cpp` -- RANDR/Xinerama/SHAPE/XFIXES handlers
 - `X11LowLevel/cpp/X11Protocol/src/Ops/RenderOps.cpp` -- RENDER extension (Composite, Trapezoids, Triangles, Glyphs, Gradients)
 - `X11LowLevel/cpp/X11Protocol/src/Fonts/CoreTextFont.cpp` -- CoreText font bridge
-
----
-
-## Recent Commits on develop++
-
-```
-4d47203 Bump version to v1.9.7, update docs for multi-monitor support
-c1658fd Add RRGetCrtcTransform (minor 27) handler — identity transform reply
-6c5f5c2 Fix blank OR windows on secondary monitors (Metal drawable retry)
-8ee7cf4 Add RRGetPanning (minor 28) and RRSetPanning (minor 29) handlers
-4ba17a2 Fix RRGetOutputInfo 36-byte reply + RANDR debug traces
-3b76f66 Fix RANDR minor opcodes + add RRGetProviders + present diagnostic traces
-b9b37e1 Remove dead x11_get_virtual_desktop_px() from X11Setup.cpp
-4754071 Merge multi-monitor support (ScreenLayout, RANDR, Xinerama, coordinate fixes)
-```
 
 ---
 

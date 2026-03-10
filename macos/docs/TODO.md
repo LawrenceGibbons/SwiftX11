@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-09 (v1.9.7 — Multi-monitor support)
+Last updated: 2026-03-09 (v1.10.0 — Rendering performance)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -251,10 +251,10 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 
 ## Phase 5: Performance and Polish
 
-### 5.1 Rendering Performance (MEDIUM)
-- [ ] **Software present path**: Implement partial CGImage blit (currently full surface copy).
-- [ ] **PutImage optimization**: Large PutImage calls (Vivado waveform/schematic) need efficient copy paths.
-- [ ] **Expose coalescing**: Batch expose events to reduce client redraw overhead.
+### 5.1 Rendering Performance (MEDIUM) — DONE (v1.10.0)
+- [x] **Software present path**: Persistent backing buffer with partial-row copy (only damaged rows memcpy'd). Avoids full-surface copy on every frame. 3-frame full-copy countdown on resize (matches Metal's fullUploadCountdown). (v1.10.0)
+- [x] **PutImage optimization**: GXcopy fast path uses bulk memcpy + 4-pixel-unrolled alpha forcing instead of per-pixel copy-and-OR. (v1.10.0)
+- [x] **Expose coalescing**: sendExposeSubtree and ExposeChildren now set the X11 Expose `count` field correctly (count=N-1 for first event, decrementing to 0 for last), allowing clients to defer redrawing until the final Expose. (v1.10.0)
 
 ### 5.2 Container / Network Support (HIGH for Vivado use case) — DONE (v1.9.4)
 - [x] **TCP socket listener**: TCP now binds to 0.0.0.0 (all interfaces) by default. Docker containers connect via `DISPLAY=host.docker.internal:1`. (v1.9.4)

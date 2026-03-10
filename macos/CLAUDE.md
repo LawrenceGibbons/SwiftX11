@@ -189,7 +189,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.9.7)
+### Current State (v1.10.0)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -277,6 +277,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **Multi-monitor support** (v1.9.7): ScreenLayout cache queries `CGGetActiveDisplayList` for real per-monitor data (position, size in points, pixel dimensions, physical mm). Auto-refreshes via `CGDisplayRegisterReconfigurationCallback`. Dynamic RANDR: `RRGetScreenResources/Current` reports N outputs/CRTCs/modes from real displays. `RRGetOutputInfo` uses 36-byte reply (not 32). New handlers: `RRGetCrtcTransform` (96-byte identity reply), `RRGetPanning/SetPanning`, `RRGetProviders`. Fixed 4 wrong RANDR minor opcode numbers. Dynamic Xinerama: `QueryScreens` returns N real screens. X11↔macOS coordinate conversion uses virtual desktop union bounds (`NSScreen.screens` min/max) for all 4 conversion sites. `GetGeometry` on root returns actual virtual desktop dimensions. `WarpPointer` uses virtual desktop bounds. OR window Metal drawable retry (up to 5×50ms) when `drawableSize == 0` after cross-screen `setFrame`. `xrandr --query` works. New files: `ScreenLayout.hpp/cpp`.
 
+- **Rendering performance** (v1.10.0): Three optimizations: (1) **Software present partial copy** — persistent backing buffer with partial-row memcpy (only damaged rows copied from source). 3-frame full-copy countdown on resize, matching Metal's fullUploadCountdown. Avoids full-surface copy on every frame for the software fallback path. (2) **PutImage bulk memcpy** — GXcopy fast path uses `std::memcpy` for row data then 4-pixel-unrolled alpha forcing, instead of per-pixel copy-and-OR. (3) **Expose coalescing** — `sendExposeSubtree` and `ExposeChildren` set the X11 Expose `count` field correctly (count=remaining for each event), allowing clients to defer redrawing until the final Expose (count=0).
+
 ### Known Issues (v1.9.0)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
@@ -291,3 +293,4 @@ See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phas
 4. ~~**Container networking**~~ — ✅ Done (v1.9.4): TCP + Unix socket for Docker workflow
 5. ~~**Window management + wire protocol**~~ — ✅ Done (v1.9.5): WM attributes (override-redirect, gravity, backing store) + wire correctness verification
 6. ~~**Multi-monitor support**~~ — ✅ Done (v1.9.7): ScreenLayout, dynamic RANDR/Xinerama, coordinate fixes
+7. ~~**Rendering performance**~~ — ✅ Done (v1.10.0): Software partial present, PutImage bulk memcpy, Expose coalescing

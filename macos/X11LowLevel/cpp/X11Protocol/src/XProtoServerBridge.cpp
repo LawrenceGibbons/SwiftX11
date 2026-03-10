@@ -13,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <cstdint>
+#include <vector>
 
 #include "XProtoServerBridge.h"
 #include "Core/XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
@@ -228,9 +229,12 @@ static void fillWindowBorderIfReady(x11::XProtoContext& ctx, uint32_t childXid) 
 }
 
 // Send a full-window Expose to a single window.
+// `count` indicates how many more Expose events will follow for this window's
+// client, allowing the client to defer redrawing until count==0.
 static inline void sendExposeNow(x11::XProtoContext& ctx,
                                  x11::EventOps& /*evOps*/,
-                                 uint32_t wid)
+                                 uint32_t wid,
+                                 uint16_t count = 0)
 {
   const x11::WindowView* wv = ctx.window(wid);
   if (!wv) {
@@ -241,16 +245,16 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
   }
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X wh=%ux%u mapped=%d evmask=0x%08X\n",
+  fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X wh=%ux%u mapped=%d evmask=0x%08X count=%u\n",
           (unsigned)wid, (unsigned)wv->w, (unsigned)wv->h,
-          (int)wv->mapped, (unsigned)wv->event_mask);
+          (int)wv->mapped, (unsigned)wv->event_mask, (unsigned)count);
 #endif
 
   auto ev = x11::wireev::buildExpose(ctx.transport().lastSeq(),
                                    wid,
                                    0, 0,
                                    wv->w, wv->h,
-                                   0);
+                                   count);
   ctx.transport().sendEvent32(wid, ev.data());
 }
 
@@ -272,25 +276,27 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
 
   // Fill background + Expose the host itself.
   fillWindowBackgroundIfReady(ctx, hostXid);
-  sendExposeNow(ctx, evOps, hostXid);
 
-  // Fill borders + backgrounds + Expose every mapped descendant.
+  // Collect mapped descendants and fill their borders + backgrounds first
+  // (X11 spec: server paints backgrounds before delivering Expose).
   auto kids = ctx.windows().descendantsOf(hostXid);
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
           (unsigned)hostXid, kids.size());
 #endif
+
+  // Pre-fill all backgrounds/borders, then collect mapped kids for Expose.
+  std::vector<uint32_t> mappedKids;
+  mappedKids.reserve(kids.size());
   for (uint32_t kid : kids) {
     x11::WindowView kv{};
     if (!ctx.windows().snapshot(kid, kv)) continue;
     if (!kv.mapped) continue;
 
-    // Paint border + background before Expose (X11 spec requirement).
     fillWindowBorderIfReady(ctx, kid);
     fillWindowBackgroundIfReady(ctx, kid);
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-    // Diagnostic: verify the child window can resolve to the host surface.
     {
       x11::DrawableRW dbgDst{};
       bool resolved = x11::resolveDrawableRW(ctx, kid, dbgDst);
@@ -303,8 +309,17 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
               resolved ? (unsigned)dbgDst.stridePixels : 0u);
     }
 #endif
+    mappedKids.push_back(kid);
+  }
 
-    sendExposeNow(ctx, evOps, kid);
+  // Send Expose events with correct count field.  count=N means N more
+  // Expose events will follow for this client, allowing the client to
+  // defer redrawing until count==0 (the last one).
+  const size_t total = 1 + mappedKids.size();   // host + children
+  sendExposeNow(ctx, evOps, hostXid, (uint16_t)(total - 1));
+  for (size_t i = 0; i < mappedKids.size(); i++) {
+    uint16_t remaining = (uint16_t)(mappedKids.size() - 1 - i);
+    sendExposeNow(ctx, evOps, mappedKids[i], remaining);
   }
 }
 
@@ -422,19 +437,28 @@ static void processOneHostCmd(x11::XProtoServer* srv,
         // surface was memset to white during resize — server-drawn borders
         // and backgrounds must be repainted before sending Expose events.
         case HostCmdType::ExposeChildren: {
-          // Fill + Expose the host itself first.
+          // Fill + Expose the host and all mapped descendants.
           fillWindowBackgroundIfReady(ctx, c.xid);
-          sendExposeNow(ctx, srv->eventOps(), c.xid);
 
-          // Fill borders + backgrounds + Expose every mapped descendant.
+          // Collect mapped kids, fill borders/backgrounds, then send
+          // Expose events with coalesced count field.
           auto kids = ctx.windows().descendantsOf(c.xid);
+          std::vector<uint32_t> mappedKids;
+          mappedKids.reserve(kids.size());
           for (uint32_t kid : kids) {
             x11::WindowView kv{};
             if (!ctx.windows().snapshot(kid, kv)) continue;
             if (!kv.mapped) continue;
             fillWindowBorderIfReady(ctx, kid);
             fillWindowBackgroundIfReady(ctx, kid);
-            sendExposeNow(ctx, srv->eventOps(), kid);
+            mappedKids.push_back(kid);
+          }
+
+          const size_t total = 1 + mappedKids.size();
+          sendExposeNow(ctx, srv->eventOps(), c.xid, (uint16_t)(total - 1));
+          for (size_t i = 0; i < mappedKids.size(); i++) {
+            uint16_t remaining = (uint16_t)(mappedKids.size() - 1 - i);
+            sendExposeNow(ctx, srv->eventOps(), mappedKids[i], remaining);
           }
           {
             x11::WindowView sv{};

@@ -264,9 +264,22 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
         const uint32_t* sp = reinterpret_cast<const uint32_t*>(srow) + srcX0;
         uint32_t* dp = drow + cx0;
         if (piFast) {
-          // GXcopy + full planemask: copy and force alpha opaque.
-          for (int32_t i = 0; i < copyPx; i++)
-            dp[i] = sp[i] | 0xFF000000u;
+          // GXcopy + full planemask: bulk memcpy then force alpha opaque.
+          // memcpy is SIMD-optimized by the system library; much faster than
+          // per-pixel copy for large spans (e.g., Vivado waveform/schematic).
+          std::memcpy(dp, sp, (size_t)copyPx * 4u);
+          // Force alpha channel to 0xFF for XRGB8888 surfaces.
+          // Process 4 pixels at a time for better throughput.
+          int32_t i = 0;
+          const int32_t bulk = copyPx & ~3;
+          for (; i < bulk; i += 4) {
+            dp[i]   |= 0xFF000000u;
+            dp[i+1] |= 0xFF000000u;
+            dp[i+2] |= 0xFF000000u;
+            dp[i+3] |= 0xFF000000u;
+          }
+          for (; i < copyPx; i++)
+            dp[i] |= 0xFF000000u;
         } else {
           for (int32_t i = 0; i < copyPx; i++)
             dp[i] = x11_apply_rop_argb(dp[i], sp[i] | 0xFF000000u, piFn, piPm);

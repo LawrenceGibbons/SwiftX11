@@ -62,6 +62,16 @@ final class X11View: NSView {
   // MARK: - Software path
   private var imageLayer: CALayer?
   private var lastFrameData: Data?
+  /// Persistent backing buffer for software present — avoids full-surface copy
+  /// when damage is small.  Only the damaged rows are memcpy'd from the source.
+  private var swBackingBuffer: UnsafeMutableRawPointer?
+  private var swBackingSize: Int = 0      // allocated byte count
+  private var swBackingWidth: Int = 0
+  private var swBackingHeight: Int = 0
+  private var swBackingBPR: Int = 0
+  /// Countdown: force full-buffer copy for the first N frames after resize,
+  /// matching the Metal renderer's fullUploadCountdown pattern.
+  private var swFullCopyCountdown: Int = 0
   private var trackingArea: NSTrackingArea?
   
   // MARK: - Metal path
@@ -108,6 +118,11 @@ final class X11View: NSView {
   }
   private var didNotifyPresentable = false
   override var acceptsFirstResponder: Bool { true }
+
+  deinit {
+    swBackingBuffer?.deallocate()
+    swBackingBuffer = nil
+  }
   
   
   // MARK: -- suppress circular rootless resize calls
@@ -279,8 +294,6 @@ final class X11View: NSView {
   // MARK: -- debug
 #if DEBUG
   private var swFrameSeq: UInt64 = 0
-  private var swLastAppliedSeq: UInt64 = 0
-  private var swLastAppliedWH: (w: Int, h: Int, bpr: Int) = (0, 0, 0)
 #endif
   
   required init?(coder: NSCoder) {
@@ -658,7 +671,8 @@ final class X11View: NSView {
   /// Present BGRA8888 little-endian framebuffer.
   ///
   /// Callers may pass a pointer that is only valid for the duration of this call.
-  /// We always copy into `Data` first to decouple lifetime from the C backend.
+  /// Metal/shaped paths copy into `Data`; software path uses a persistent backing
+  /// buffer with partial-row copies for performance.
   func presentBGRA(framebuffer: UnsafeRawPointer, width: Int, height: Int, bytesPerRow: Int,
                    damageRect: DamageRect? = nil) {
     guard width > 0, height > 0, bytesPerRow > 0 else { return }
@@ -670,11 +684,9 @@ final class X11View: NSView {
     let byteCount = bytesPerRow * height
     guard byteCount > 0 else { return }
 
-    // Copy bytes so the backing memory remains valid after C returns/frees.
-    var data = Data(bytes: framebuffer, count: byteCount)
-
-    // SHAPE extension: clear alpha for pixels outside the shape region
+    // SHAPE extension needs full copy + alpha masking regardless of path
     if isShaped {
+      var data = Data(bytes: framebuffer, count: byteCount)
       applyShapeMask(to: &data, width: width, height: height, bytesPerRow: bytesPerRow)
 
       // Ensure renderer and layer stay in sync (MTKView may reset layer properties)
@@ -688,48 +700,65 @@ final class X11View: NSView {
         shapeDebugDumped = true
         dumpLayerHierarchy()
       }
+
+      if usingMetal {
+        guard let mv = self.mtkView else { return }
+        guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
+          retryPresentIfNeeded()
+          return
+        }
+        presentRetryCount = 0
+        self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
+                                     damageRect: damageRect)
+        mv.setNeedsDisplay(mv.bounds)
+      } else {
+        // Shaped software path: use shaped data (full copy already done)
+        presentSoftware(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
+      }
+      return
     }
 
+    // Non-shaped paths
     if usingMetal {
-      // Metal path: upload texture now; actual present happens in MTKViewDelegate.draw(in:)
+      // Metal path: copy to Data, upload texture
+      let data = Data(bytes: framebuffer, count: byteCount)
       guard let mv = self.mtkView else {
         print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) mtkView=nil")
         return
       }
       guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
         print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) drawableSize=\(mv.drawableSize) frame=\(mv.frame) retry=\(presentRetryCount)/\(Self.maxPresentRetries)")
-        // Drawable not ready (e.g., window just moved to a different screen).
-        // Schedule a re-present so content appears once the drawable is ready.
-        if presentRetryCount < Self.maxPresentRetries {
-          presentRetryCount += 1
-          let xid = self.xid
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            // Push minimal damage to re-trigger the present pipeline.
-            // The surface still has valid content from the previous draw.
-            x11_ui_push_damage(xid, 0, 0, 1, 1)
-          }
-        }
+        retryPresentIfNeeded()
         return
       }
-
-      // Drawable is ready — reset retry counter
       presentRetryCount = 0
-
       self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
                                    damageRect: damageRect)
-
-      // Ask MTKView to draw exactly once (draw(in:) will use currentDrawable and present).
       mv.setNeedsDisplay(mv.bounds)
     } else {
+      #if DEBUG
       swFrameSeq &+= 1
-      let seq = swFrameSeq
       if X11Trace.present {
         let tid = pthread_mach_thread_np(pthread_self())
         print(String(format: "[SWFRAME] recv xid=0x%08X seq=%llu wh=%dx%d bpr=%d tid=0x%X main=%d",
-                     xid, seq, width, height, bytesPerRow, tid, Thread.isMainThread ? 1 : 0))
+                     xid, swFrameSeq, width, height, bytesPerRow, tid, Thread.isMainThread ? 1 : 0))
       }
-      // Software path: build a CGImage and put it into the layer.
-      presentSoftware(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
+      #endif
+      // Software path: partial-copy only the damaged rows into the persistent
+      // backing buffer, then build a CGImage and update the layer.
+      presentSoftwarePartial(source: framebuffer, width: width, height: height,
+                             bytesPerRow: bytesPerRow, damageRect: damageRect)
+    }
+  }
+
+  /// Schedule a re-present when the Metal drawable isn't ready yet.
+  private func retryPresentIfNeeded() {
+    if presentRetryCount < Self.maxPresentRetries {
+      presentRetryCount += 1
+      let xid = self.xid
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        x11_ui_push_damage(xid, 0, 0, 1, 1)
+      }
     }
   }
   
@@ -888,16 +917,84 @@ final class X11View: NSView {
     imageLayer = layer
   }
   
+  /// Software present for shaped windows (full Data copy already done by applyShapeMask).
   private func presentSoftware(data: Data, width: Int, height: Int, bytesPerRow: Int) {
+    guard let cgImage = makeCGImage(from: data, width: width, height: height, bytesPerRow: bytesPerRow) else { return }
+
+    lastFrameData = data
+    syncSoftwareLayerScale()
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    imageLayer?.contents = cgImage
+    CATransaction.commit()
+  }
+
+  /// Optimized software present: maintains a persistent backing buffer and only
+  /// copies the damaged rows from the source, avoiding a full-surface memcpy
+  /// on every frame.  Falls back to full copy when the surface size changes or
+  /// the damage rect is unknown.
+  private func presentSoftwarePartial(source: UnsafeRawPointer, width: Int, height: Int,
+                                      bytesPerRow: Int, damageRect: DamageRect?) {
+    let byteCount = bytesPerRow * height
+
+    // Reallocate backing buffer on size change.
+    let sizeChanged = (width != swBackingWidth || height != swBackingHeight || bytesPerRow != swBackingBPR)
+    if sizeChanged || swBackingBuffer == nil {
+      swBackingBuffer?.deallocate()
+      swBackingBuffer = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 64)
+      swBackingSize = byteCount
+      swBackingWidth = width
+      swBackingHeight = height
+      swBackingBPR = bytesPerRow
+      // Force full copy for a few frames after resize (matches Metal's fullUploadCountdown).
+      swFullCopyCountdown = 3
+    }
+
+    guard let backing = swBackingBuffer else { return }
+
+    if swFullCopyCountdown > 0 {
+      // Full copy during stabilization period.
+      swFullCopyCountdown -= 1
+      memcpy(backing, source, byteCount)
+    } else if let dr = damageRect,
+              dr.w > 0, dr.h > 0,
+              dr.x >= 0, dr.y >= 0,
+              dr.x + dr.w <= width, dr.y + dr.h <= height {
+      // Partial copy: only the damaged rows.
+      let rowStart = dr.y
+      let rowEnd = dr.y + dr.h
+      let srcOffset = rowStart * bytesPerRow
+      let copyBytes = (rowEnd - rowStart) * bytesPerRow
+      memcpy(backing.advanced(by: srcOffset), source.advanced(by: srcOffset), copyBytes)
+    } else {
+      // Unknown damage — full copy.
+      memcpy(backing, source, byteCount)
+    }
+
+    // Build CGImage from the persistent backing buffer.
+    let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: backing),
+                    count: byteCount, deallocator: .none)
+    guard let cgImage = makeCGImage(from: data, width: width, height: height, bytesPerRow: bytesPerRow) else { return }
+
+    // Keep a copy for lastFrameData (retained display buffer on resize).
+    lastFrameData = Data(bytes: backing, count: byteCount)
+
+    syncSoftwareLayerScale()
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    imageLayer?.contents = cgImage
+    CATransaction.commit()
+  }
+
+  /// Helper: create a CGImage from BGRA8888 data.
+  private func makeCGImage(from data: Data, width: Int, height: Int, bytesPerRow: Int) -> CGImage? {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let bitmapInfo: CGBitmapInfo = [
       .byteOrder32Little,
       CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
     ]
-    
-    guard let provider = CGDataProvider(data: data as CFData) else { return }
-    
-    guard let cgImage = CGImage(
+    guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+    return CGImage(
       width: width,
       height: height,
       bitsPerComponent: 8,
@@ -909,36 +1006,7 @@ final class X11View: NSView {
       decode: nil,
       shouldInterpolate: false,
       intent: .defaultIntent
-    ) else { return }
-    
-    let seq = swFrameSeq
-    let recvWH = (w: width, h: height, bpr: bytesPerRow)
-
-    DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-      if X11Trace.present {
-        let tid = pthread_mach_thread_np(pthread_self())
-        let last = self.swLastAppliedWH
-        let lastSeq = self.swLastAppliedSeq
-        let isStaleBySeq = seq < lastSeq
-        let isStaleBySize = (recvWH.w < last.w || recvWH.h < last.h) && (last.w > 0 && last.h > 0)
-
-        print(String(format:
-                      "[SWFRAME] apply xid=0x%08X seq=%llu (last=%llu) wh=%dx%d bpr=%d lastWh=%dx%d lastBpr=%d staleSeq=%d staleSize=%d tid=0x%X",
-                     self.xid, seq, lastSeq,
-                     recvWH.w, recvWH.h, recvWH.bpr,
-                     last.w, last.h, last.bpr,
-                     isStaleBySeq ? 1 : 0,
-                     isStaleBySize ? 1 : 0,
-                     tid))
-      }
-      self.swLastAppliedSeq = max(self.swLastAppliedSeq, seq)
-      self.swLastAppliedWH = recvWH
-      self.lastFrameData = data
-      
-      syncSoftwareLayerScale()
-      self.imageLayer?.contents = cgImage
-    }
+    )
   }
   
   // MARK: - Metal setup
