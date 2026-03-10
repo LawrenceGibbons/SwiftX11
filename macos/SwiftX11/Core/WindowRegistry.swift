@@ -270,8 +270,11 @@ final class WindowRegistry {
         let frame = NSRect(origin: origin,
                            size: NSSize(width: CGFloat(x11w), height: CGFloat(x11h)))
         print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
-        win.setFrame(frame, display: false)
-        // Position is known — show immediately
+        win.setFrame(frame, display: true)
+        // Position is known — show immediately.
+        // display:true above forces a layout pass, ensuring the Metal drawable
+        // is created before the first schedulePresent fires (fixes blank OR
+        // windows when mapped on a secondary monitor with different backing scale).
         win.orderFront(nil)
       } else {
         print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) geometry query FAILED — deferring show to moveWindow")

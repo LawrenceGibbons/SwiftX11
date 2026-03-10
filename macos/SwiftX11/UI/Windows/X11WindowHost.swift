@@ -87,6 +87,12 @@ final class X11View: NSView {
   var isShaped: Bool = false
   private var shapeDebugDumped: Bool = false
 
+  // MARK: -- Metal drawable retry
+  /// Retry counter for presents that fail because the Metal drawable isn't ready
+  /// (e.g., OR window moved to a different screen). Capped to avoid infinite loops.
+  fileprivate var presentRetryCount: Int = 0
+  fileprivate static let maxPresentRetries = 5
+
   // MARK: -- be authoritative for the tracking events
   private var lastInsideForSyntheticCrossing: Bool = false
   private var isPointerInside: Bool = false
@@ -691,9 +697,23 @@ final class X11View: NSView {
         return
       }
       guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
-        print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) drawableSize=\(mv.drawableSize) frame=\(mv.frame)")
+        print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) drawableSize=\(mv.drawableSize) frame=\(mv.frame) retry=\(presentRetryCount)/\(Self.maxPresentRetries)")
+        // Drawable not ready (e.g., window just moved to a different screen).
+        // Schedule a re-present so content appears once the drawable is ready.
+        if presentRetryCount < Self.maxPresentRetries {
+          presentRetryCount += 1
+          let xid = self.xid
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            // Push minimal damage to re-trigger the present pipeline.
+            // The surface still has valid content from the previous draw.
+            x11_ui_push_damage(xid, 0, 0, 1, 1)
+          }
+        }
         return
       }
+
+      // Drawable is ready — reset retry counter
+      presentRetryCount = 0
 
       self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
                                    damageRect: damageRect)
@@ -1504,6 +1524,17 @@ final class X11Renderer: NSObject, MTKViewDelegate {
       didNotifyPresentable = true
       if X11Trace.lifecycle { print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X -> posting presentable", xid)) }
       x11_post_window_presentable(xid)
+    }
+
+    // If a present previously failed (drawable wasn't ready), now that the
+    // drawable IS ready, push damage to trigger a re-present with the existing
+    // surface content. This fixes blank OR windows on secondary monitors.
+    if let o = owner, o.presentRetryCount > 0 {
+      o.presentRetryCount = 0
+      let xid = self.xid
+      DispatchQueue.main.async {
+        x11_ui_push_damage(xid, 0, 0, 1, 1)
+      }
     }
 
     // Keep pending in PIXELS for the throttle (fine)
