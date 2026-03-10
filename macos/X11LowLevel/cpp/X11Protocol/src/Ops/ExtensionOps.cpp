@@ -776,6 +776,30 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
+    case 28: {
+      // RRGetPanning — 36-byte reply: no panning (all zeros)
+      br.skip(br.remaining());
+      uint8_t rep[36] = {};
+      rep[0] = 1;                        // reply type
+      rep[1] = 0;                        // status = success
+      wire::wr16_le(rep + 2, seq);       // sequence
+      wire::wr32_le(rep + 4, 1);         // length = (36-32)/4 = 1
+      // bytes 8-35: all zero (timestamp=0, no panning rect, no tracking, no borders)
+      ctx.reply().sendReplyRaw(rep, sizeof(rep));
+      return;
+    }
+
+    case 29: {
+      // RRSetPanning — reply with success status
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 0; // status = RRSetConfigSuccess
+        wire::wr32_le(rep.data() + 4, 0);
+        wire::wr32_le(rep.data() + 8, 0); // timestamp
+      });
+      return;
+    }
+
     case 32: {
       // RRGetProviders — reply with empty provider list
       // RANDR 1.4 feature; xrandr sends this but we don't need provider support
