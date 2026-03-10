@@ -459,7 +459,7 @@ final class X11View: NSView {
   }
   
   
-  private func notifyPresentableOnce() {
+  fileprivate func notifyPresentableOnce() {
     guard !didNotifyPresentable else { return }
     guard self.window != nil else { return }
     guard xid != 0 else { return }
@@ -1266,17 +1266,15 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   private weak var owner: X11View?
   private var xid: UInt32 = 0
   
-  private var didNotifyPresentable = false
   private var lastDrawablePt: (w: Int32, h: Int32) = (0, 0)
-  
+
   init(owner: X11View) {
     self.owner = owner
     super.init()
   }
-  
+
   func setXid(_ xid: UInt32) {
     self.xid = xid
-    self.didNotifyPresentable = false
     self.lastDrawablePt = (0, 0)
     self.pendingSize = nil
     self.resizeFlushScheduled = false
@@ -1355,11 +1353,13 @@ final class X11Renderer: NSObject, MTKViewDelegate {
       owner?.ensureHostSurface(wPx: wX11, hPx: hX11)
     }
 
-    if !didNotifyPresentable {
-      didNotifyPresentable = true
-      if X11Trace.lifecycle { print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X -> posting presentable", xid)) }
-      x11_post_window_presentable(xid)
-    }
+    // Use the X11View's single presentable gate to avoid posting SetPresentable
+    // twice.  Before this fix, X11Renderer had its own didNotifyPresentable flag
+    // which fired here, and X11View had a separate one that fired in
+    // scheduleAttachSettle — resulting in two SetPresentable host commands.
+    // The second sendExposeSubtree would fill backgrounds over text drawn by
+    // the client in response to the first Expose, causing blank popup menus.
+    owner?.notifyPresentableOnce()
 
     // If a present previously failed (drawable wasn't ready), now that the
     // drawable IS ready, push damage to trigger a re-present with the existing

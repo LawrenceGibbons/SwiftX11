@@ -270,6 +270,24 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
                                      x11::EventOps& evOps,
                                      uint32_t hostXid)
 {
+  // Check if host is override-redirect (for diagnostic traces)
+  bool hostIsOR = false;
+  {
+    x11::WindowView hv{};
+    if (ctx.windows().snapshot(hostXid, hv)) hostIsOR = hv.override_redirect;
+  }
+
+#ifndef NDEBUG
+  if (hostIsOR) {
+    x11::SurfaceDesc dbgS{};
+    bool hasSurf = ctx.surfaces().get(hostXid, dbgS);
+    fprintf(stderr, "[OR_EXPOSE_SUBTREE] host=0x%08X hasSurface=%d surfWH=%ux%u bpr=%u ptr=%p client_fd=%d\n",
+            (unsigned)hostXid, (int)hasSurf,
+            (unsigned)dbgS.w, (unsigned)dbgS.h,
+            (unsigned)dbgS.bytesPerRow, dbgS.ptr,
+            ctx.transport().clientFd());
+  }
+#endif
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
 #endif
@@ -280,6 +298,13 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
   // Collect mapped descendants and fill their borders + backgrounds first
   // (X11 spec: server paints backgrounds before delivering Expose).
   auto kids = ctx.windows().descendantsOf(hostXid);
+
+#ifndef NDEBUG
+  if (hostIsOR) {
+    fprintf(stderr, "[OR_EXPOSE_SUBTREE] host=0x%08X total_descendants=%zu\n",
+            (unsigned)hostXid, kids.size());
+  }
+#endif
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
           (unsigned)hostXid, kids.size());
@@ -296,6 +321,22 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
     fillWindowBorderIfReady(ctx, kid);
     fillWindowBackgroundIfReady(ctx, kid);
 
+#ifndef NDEBUG
+    if (hostIsOR) {
+      x11::DrawableRW dbgDst{};
+      bool resolved = x11::resolveDrawableRW(ctx, kid, dbgDst);
+      fprintf(stderr, "[OR_EXPOSE_SUBTREE] kid=0x%08X mapped=%d wh=%ux%u pos=(%d,%d) owner_fd=%d resolved=%d res_wh=%ux%u off=(%d,%d)\n",
+              (unsigned)kid, (int)kv.mapped,
+              (unsigned)kv.w, (unsigned)kv.h,
+              (int)kv.x, (int)kv.y,
+              kv.owner_fd,
+              (int)resolved,
+              resolved ? (unsigned)dbgDst.w : 0u,
+              resolved ? (unsigned)dbgDst.h : 0u,
+              resolved ? (int)dbgDst.offsetX : 0,
+              resolved ? (int)dbgDst.offsetY : 0);
+    }
+#endif
 #if X11_TRACE_LIFECYCLE_ENABLED
     {
       x11::DrawableRW dbgDst{};
@@ -311,6 +352,13 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
 #endif
     mappedKids.push_back(kid);
   }
+
+#ifndef NDEBUG
+  if (hostIsOR) {
+    fprintf(stderr, "[OR_EXPOSE_SUBTREE] host=0x%08X sending Expose to %zu mapped kids + host\n",
+            (unsigned)hostXid, mappedKids.size());
+  }
+#endif
 
   // Send Expose events.  count=0 because we send exactly one Expose per
   // window (full-window rect).  X11 spec: count is per-WINDOW ("number of
@@ -343,6 +391,24 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
         // ------------------- SetPresentable
         case HostCmdType::SetPresentable: {
+          // Guard: if already presentable, skip the expensive
+          // sendExposeSubtree (which fills backgrounds and re-exposes all
+          // children).  A redundant SetPresentable was previously caused by
+          // both X11Renderer.handleDrawableSize and X11View.scheduleAttachSettle
+          // posting x11_post_window_presentable independently.  The second
+          // sendExposeSubtree's background fill erased text drawn by the client
+          // in response to the first Expose, causing blank popup menus.
+          {
+            x11::WindowView pCheck{};
+            if (ctx.windows().snapshot(c.xid, pCheck) && pCheck.presentable) {
+#ifndef NDEBUG
+              fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X SKIP (already presentable)\n",
+                      (unsigned)c.xid);
+#endif
+              break;
+            }
+          }
+
 #if X11_TRACE_LIFECYCLE_ENABLED
           fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X\n", (unsigned)c.xid);
           {

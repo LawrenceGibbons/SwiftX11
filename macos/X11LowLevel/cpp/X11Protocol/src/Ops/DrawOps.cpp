@@ -1060,6 +1060,22 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     int32_t penX            = (int16_t)br.readU16();
     const int32_t baseY     = (int16_t)br.readU16();
 
+#ifndef NDEBUG
+    {
+      x11::WindowView wv{};
+      if (ctx.windows().snapshot(drawable, wv) && wv.parent_xid != 0 && wv.parent_xid != 1) {
+        // Child window text draw — check if host is OR (popup menu text)
+        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+        x11::WindowView hv{};
+        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
+          fprintf(stderr, "[OR_TEXT] PolyText8 child=0x%08X host=0x%08X at (%d,%d) childWH=%ux%u\n",
+                  (unsigned)drawable, (unsigned)host,
+                  (int)penX, (int)baseY,
+                  (unsigned)wv.w, (unsigned)wv.h);
+        }
+      }
+    }
+#endif
 #if X11_TRACE_FONT_ENABLED
     {
       x11::WindowView wv{};
@@ -1075,6 +1091,16 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
+#ifndef NDEBUG
+      {
+        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+        x11::WindowView hv{};
+        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
+          fprintf(stderr, "[OR_TEXT_FAIL] PolyText8 resolve FAILED child=0x%08X host=0x%08X\n",
+                  (unsigned)drawable, (unsigned)host);
+        }
+      }
+#endif
       br.skip(br.remaining());
       if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
         ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText8);
@@ -1259,6 +1285,22 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     for (uint8_t i = 0; i < n; i++) text[i] = br.readU8();
     br.skip(br.remaining());
 
+#ifndef NDEBUG
+    {
+      x11::WindowView wv{};
+      if (ctx.windows().snapshot(drawable, wv) && wv.parent_xid != 0 && wv.parent_xid != 1) {
+        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+        x11::WindowView hv{};
+        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
+          std::string txt(text.begin(), text.end());
+          fprintf(stderr, "[OR_TEXT] ImageText8 child=0x%08X host=0x%08X text=\"%s\" at (%d,%d) childWH=%ux%u\n",
+                  (unsigned)drawable, (unsigned)host,
+                  txt.c_str(), (int)x, (int)y,
+                  (unsigned)wv.w, (unsigned)wv.h);
+        }
+      }
+    }
+#endif
 #if X11_TRACE_FONT_ENABLED
     {
       // Diagnostic: show text drawn into each drawable with window geometry
@@ -1279,6 +1321,17 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
+#ifndef NDEBUG
+      {
+        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+        x11::WindowView hv{};
+        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
+          std::string txt(text.begin(), text.end());
+          fprintf(stderr, "[OR_TEXT_FAIL] ImageText8 resolve FAILED child=0x%08X host=0x%08X text=\"%s\"\n",
+                  (unsigned)drawable, (unsigned)host, txt.c_str());
+        }
+      }
+#endif
       if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
         ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText8);
       return;

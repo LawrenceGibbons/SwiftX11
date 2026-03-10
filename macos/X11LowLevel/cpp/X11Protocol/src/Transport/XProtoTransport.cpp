@@ -526,6 +526,10 @@ bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
   }
 
   if (wv->owner_fd <= 0 || wv->owner_fd != client_fd_) {
+#ifndef NDEBUG
+    fprintf(stderr, "[EVENT_DROP] sendEvent32 owner mismatch wid=0x%08X type=%u owner_fd=%d client_fd=%d\n",
+            (unsigned)targetWid, (unsigned)ev[0], wv->owner_fd, client_fd_);
+#endif
     ctx_.tracef("[XProtoTransport] sendEvent32 DROP owner mismatch wid=0x%08X owner_fd=%d client_fd=%d\n",
                 (unsigned)targetWid, wv->owner_fd, client_fd_);
     return false;
