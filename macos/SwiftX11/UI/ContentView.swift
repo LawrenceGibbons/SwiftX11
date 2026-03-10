@@ -57,8 +57,6 @@ struct ContentView: View {
       Toggle("Show Motion events", isOn: $settings.showMotionLogs)
       
       
-      Toggle("Use Metal rendering", isOn: $settings.useMetal)
-      
       Toggle("Show Damage events", isOn: $settings.showDamageLogs)
 
       Divider()
@@ -97,17 +95,6 @@ struct ContentView: View {
           showQueueStats: { settings.showQueueStats }
       )
 
-      Task { @MainActor in
-        WindowRegistry.shared.useMetalForNewWindows = settings.useMetal
-        WindowRegistry.shared.setUseMetalForAllWindows(settings.useMetal)
-      }
-
-      
-    }
-    .onChange(of: settings.useMetal) { _, newValue in
-      Task { @MainActor in
-        WindowRegistry.shared.setUseMetalForAllWindows(newValue)
-      }
     }
   }
 }

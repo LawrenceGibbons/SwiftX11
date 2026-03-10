@@ -9,7 +9,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   var shouldLogQueueStats: (() -> Bool)?
 
   init(xid: UInt32, title: String, x: Int = 0, y: Int = 0, width: Int, height: Int,
-       useMetal: Bool, overrideRedirect: Bool = false) {
+       overrideRedirect: Bool = false) {
     self.xid = xid
 
     // Create X11View directly as the window's contentView — NO SwiftUI hosting.
@@ -57,25 +57,20 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
 
     let view = X11View(frame: contentRect)
     view.xid = xid
-    view.wantsMetal = useMetal
     view.autoresizingMask = [.width, .height]
     window.contentView = view
 
     super.init(window: window)
 
     self.x11View = view
-    view.setUseMetal(useMetal)
+    view.ensureMetalSetup()
 
     window.acceptsMouseMovedEvents = true
     window.delegate = self
   }
-  
+
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
-  }
-  
-  func setUseMetal(_ enabled: Bool) {
-    x11View?.setUseMetal(enabled)
   }
   
   func windowDidResize(_ notification: Notification) {

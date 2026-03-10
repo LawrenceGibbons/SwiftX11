@@ -30,10 +30,10 @@ SwiftX11 is an X11 protocol server running natively on macOS. It implements the 
 
 ## What Was Accomplished Recently (v1.9.3 - v1.10.0)
 
-### v1.10.0: Rendering Performance
-- **Software present partial copy**: `presentSoftwarePartial()` maintains a persistent backing buffer (`swBackingBuffer`) and only copies damaged rows from the source framebuffer. 3-frame full-copy countdown on resize (matches Metal's `fullUploadCountdown`). Avoids copying the entire surface (potentially 4MB+) on every present when only a small region changed.
+### v1.10.0: Rendering Performance + Metal-Only
+- **Metal rendering required**: Software (CGImage/CALayer) rendering path removed entirely. SwiftX11 now requires a Metal-capable GPU (all Macs since 2012). Removed ~200 lines of software fallback code, `setupSoftwareLayer()`, `presentSoftware()`, `presentSoftwarePartial()`, `makeCGImage()`, `imageLayer`, `usingMetal`/`wantsMetal` flags, and the "Use Metal Rendering" settings toggle. `setUseMetal()` replaced with `ensureMetalSetup()` (lazy one-time init).
 - **PutImage bulk memcpy**: GXcopy fast path now uses `std::memcpy` for the full row, then 4-pixel-unrolled alpha forcing (`dp[i] |= 0xFF000000u`), instead of per-pixel copy-and-OR. System memcpy is SIMD-optimized, yielding significant speedup for large PutImage calls (Vivado waveform/schematic renders).
-- **Expose coalescing**: `sendExposeSubtree()` and `ExposeChildren` handler now set the X11 Expose `count` field correctly — count=N-1 for the first event, decrementing to count=0 for the last. This allows X11 clients to defer redrawing until the final Expose event arrives. Backgrounds and borders are pre-filled for all windows before any Expose events are sent.
+- **Expose two-pass optimization**: `sendExposeSubtree()` and `ExposeChildren` handler restructured to fill all backgrounds/borders first, then send all Expose events. Ensures children have correct visual state before clients begin redrawing.
 
 ### v1.9.7: Multi-Monitor Support
 - ScreenLayout cache, dynamic RANDR/Xinerama, coordinate conversion fixes

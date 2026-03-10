@@ -7,10 +7,6 @@ final class SettingsStore: ObservableObject {
       didSet { UserDefaults.standard.set(displayNumber, forKey: "displayNumber") }
   }
 
-  @Published var useMetal: Bool {
-      didSet { UserDefaults.standard.set(useMetal, forKey: "useMetal") }
-  }
-
   @Published var antialiasedFonts: Bool {
       didSet {
           UserDefaults.standard.set(antialiasedFonts, forKey: "antialiasedFonts")
@@ -20,8 +16,6 @@ final class SettingsStore: ObservableObject {
 
   init() {
     self.displayNumber = UserDefaults.standard.object(forKey: "displayNumber") as? Int ?? 0
-    //self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? false
-    self.useMetal = UserDefaults.standard.object(forKey: "useMetal") as? Bool ?? true
     self.antialiasedFonts = UserDefaults.standard.object(forKey: "antialiasedFonts") as? Bool ?? true
     self.enableTCP = UserDefaults.standard.object(forKey: "enableTCP") as? Bool ?? true
     self.enableUnixSocket = UserDefaults.standard.object(forKey: "enableUnixSocket") as? Bool ?? true

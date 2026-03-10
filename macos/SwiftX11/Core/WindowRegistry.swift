@@ -147,8 +147,7 @@ final class WindowRegistry {
   // because the geometry wasn't available yet. moveWindow() will show them.
   private var pendingORShow = Set<UInt32>()
   
-  //var useMetalForNewWindows: Bool = false  // set from UI on launch / changes
-  var useMetalForNewWindows: Bool = true  // set from UI on launch / changes
+  // Metal is now required — no software fallback.
   
   private func installWindowObservers(xid: UInt32, window: NSWindow) {
     removeWindowObservers(xid: xid)
@@ -444,7 +443,6 @@ final class WindowRegistry {
       y: info.y,
       width: info.width,
       height: info.height,
-      useMetal: useMetalForNewWindows,
       overrideRedirect: info.overrideRedirect
     )
     ignoreCocoaResizeUntilMapped.insert(xid)
@@ -1060,26 +1058,6 @@ final class WindowRegistry {
     return false
   }
 
-  func setUseMetalForAllWindows(_ enabled: Bool) {
-    useMetalForNewWindows = enabled
-
-    for (xid, controller) in windows {
-      controller.setUseMetal(enabled)
-
-      guard let win = controller.window else { continue }
-      let sizePoints = win.contentLayoutRect.size
-
-      let wX11 = Int32(max(1, Int(sizePoints.width.rounded(.down))))
-      let hX11 = Int32(max(1, Int(sizePoints.height.rounded(.down))))
-
-      let host = hostXid(xid)
-      guard mappedXids.contains(host) else { continue }
-
-      // X11 units are points now
-      sendConfigureAsync(xid: host, w: wX11, h: hX11)
-    }
-  }
-  
   func noteDamage(xid: UInt32, x: Int32, y: Int32, w: Int32, h: Int32) {
     // later: union dirty rects here (preferably per-host)
     let host = topLevelAncestor(of: xid)

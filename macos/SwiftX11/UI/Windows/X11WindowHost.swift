@@ -55,26 +55,9 @@ final class X11MTKView: MTKView {
 }
 
 final class X11View: NSView {
-  // MARK: - Mode
-  var usingMetal: Bool = false
-  var wantsMetal: Bool = false
-  
-  // MARK: - Software path
-  private var imageLayer: CALayer?
-  private var lastFrameData: Data?
-  /// Persistent backing buffer for software present — avoids full-surface copy
-  /// when damage is small.  Only the damaged rows are memcpy'd from the source.
-  private var swBackingBuffer: UnsafeMutableRawPointer?
-  private var swBackingSize: Int = 0      // allocated byte count
-  private var swBackingWidth: Int = 0
-  private var swBackingHeight: Int = 0
-  private var swBackingBPR: Int = 0
-  /// Countdown: force full-buffer copy for the first N frames after resize,
-  /// matching the Metal renderer's fullUploadCountdown pattern.
-  private var swFullCopyCountdown: Int = 0
   private var trackingArea: NSTrackingArea?
-  
-  // MARK: - Metal path
+
+  // MARK: - Metal rendering
   private var mtkView: X11MTKView?
   private var device: MTLDevice?
   private weak var trackingHost: NSView?
@@ -83,7 +66,7 @@ final class X11View: NSView {
   // Avoid triggering MTKView delegate callbacks during NSView.layout (can cause layout recursion).
   private var pendingDrawableSize: CGSize?
   private var drawableSizeUpdateScheduled: Bool = false
-  private var pendingEnableMetal = false
+  private var metalSetupDone = false
   
   // MARK: -- interface to X11
   private var buttonMask: UInt32 = 0
@@ -118,11 +101,6 @@ final class X11View: NSView {
   }
   private var didNotifyPresentable = false
   override var acceptsFirstResponder: Bool { true }
-
-  deinit {
-    swBackingBuffer?.deallocate()
-    swBackingBuffer = nil
-  }
   
   
   // MARK: -- suppress circular rootless resize calls
@@ -152,8 +130,8 @@ final class X11View: NSView {
     let needBytes = Int(bpr * hPx)
 
     // Gated: fires on every resize step; too noisy for normal debug.
-    // print(String(format: "[ENSURE_SURFACE] xid=0x%08X wPx=%d hPx=%d bpr=%d usingMetal=%d",
-    //       self.xid, wPx, hPx, bpr, self.usingMetal ? 1 : 0))
+    // print(String(format: "[ENSURE_SURFACE] xid=0x%08X wPx=%d hPx=%d bpr=%d",
+    //       self.xid, wPx, hPx, bpr))
 
     let needsAlloc =
       hostSurface == nil ||
@@ -286,15 +264,11 @@ final class X11View: NSView {
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
     wantsLayer = true
-    setupSoftwareLayer()
-    // Don’t setup metal yet until setUseMetal() is called.
+    // Metal setup is deferred to ensureMetalSetup() — requires window & bounds.
   }
   
   
   // MARK: -- debug
-#if DEBUG
-  private var swFrameSeq: UInt64 = 0
-#endif
   
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
@@ -368,50 +342,18 @@ final class X11View: NSView {
     // layout() and trigger _NSDetectedLayoutRecursion.
     let b = bounds
 
-    // CALayer: suppress implicit animations that could re-trigger layout.
-    if let il = imageLayer, il.frame != b {
-      CATransaction.begin()
-      CATransaction.setDisableActions(true)
-      il.frame = b
-      CATransaction.commit()
-    }
-
     // MTKView frame — notifications already suppressed above.
     if let mv, mv.frame != b {
       mv.frame = b
     }
 
-    if pendingEnableMetal, wantsMetal,
+    // Deferred Metal setup: if Metal hasn't been initialized yet (e.g., we
+    // were in a layout pass when the window was created), do it now.
+    if !metalSetupDone,
        self.window != nil,
        b.width >= 1, b.height >= 1 {
-      pendingEnableMetal = false
       DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
-        self.setUseMetal(true)
-      }
-    }
-
-    // Software mode: resize the host surface when bounds change.
-    // In Metal mode, the MTKViewDelegate callback (handleDrawableSize)
-    // handles this; software mode has no equivalent, so we do it here.
-    // Defer surface registration out of layout() to avoid cross-boundary
-    // C++ calls (x11_surface_update, x11_post_window_presentable) that
-    // could re-enter layout through UI command dispatch.
-    if !usingMetal, xid != 0, window != nil {
-      let wX11 = Int32(max(1, Int(bounds.width.rounded(.down))))
-      let hX11 = Int32(max(1, Int(bounds.height.rounded(.down))))
-      if wX11 >= 16, hX11 >= 16,
-         (wX11 != hostSurfaceW || hX11 != hostSurfaceH) {
-        DispatchQueue.main.async { [weak self] in
-          guard let self else { return }
-          // Re-check conditions after async dispatch (bounds may have changed again).
-          let w = Int32(max(1, Int(self.bounds.width.rounded(.down))))
-          let h = Int32(max(1, Int(self.bounds.height.rounded(.down))))
-          guard w >= 16, h >= 16 else { return }
-          guard w != self.hostSurfaceW || h != self.hostSurfaceH else { return }
-          self.ensureHostSurface(wPx: w, hPx: h)
-          self.notifyPresentableOnce()
-        }
+        self?.ensureMetalSetup()
       }
     }
   }
@@ -505,17 +447,15 @@ final class X11View: NSView {
   }
   
   
-  private func syncSoftwareLayerScale() {
+  private func syncLayerScale() {
     let s = window?.backingScaleFactor ?? 1.0
-    // Make both the root layer and the image sublayer match.
     self.layer?.contentsScale = s
-    self.imageLayer?.contentsScale = s
   }
   
   
   override func viewDidChangeBackingProperties() {
     super.viewDidChangeBackingProperties()
-    syncSoftwareLayerScale()
+    syncLayerScale()
   }
   
   
@@ -524,8 +464,8 @@ final class X11View: NSView {
     guard self.window != nil else { return }
     guard xid != 0 else { return }
     didNotifyPresentable = true
-    if X11Trace.lifecycle { print(String(format: "[PRESENTABLE_ONCE] xid=0x%08X usingMetal=%d bounds=%.0fx%.0f",
-          self.xid, self.usingMetal ? 1 : 0, bounds.width, bounds.height)) }
+    if X11Trace.lifecycle { print(String(format: "[PRESENTABLE_ONCE] xid=0x%08X bounds=%.0fx%.0f",
+          self.xid, bounds.width, bounds.height)) }
     x11_post_window_presentable(xid)
   }
   
@@ -538,7 +478,7 @@ final class X11View: NSView {
       self.attachSettleScheduled = false
       
       // fix scale once we truly have a window
-      self.syncSoftwareLayerScale()
+      self.syncLayerScale()
       
       // All “attach-time” mutating work happens here, never inside viewDidMoveToWindow.
       self.window?.acceptsMouseMovedEvents = true
@@ -561,12 +501,10 @@ final class X11View: NSView {
         if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds OK %dx%d — registering surface",
               self.xid, wX11, hX11)) }
         ensureHostSurface(wPx: wX11, hPx: hX11)
-        // make host presentable in software or metal mode
         self.notifyPresentableOnce()
       } else {
         // Bounds too small — setContentSize hasn't taken effect yet.
-        // Retry shortly.  This is essential for software rendering which has
-        // no handleDrawableSize fallback.
+        // Retry shortly.
         if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds too small %dx%d — retrying in 50ms",
               self.xid, wX11, hX11)) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -609,56 +547,31 @@ final class X11View: NSView {
   }  
   
   override func hitTest(_ point: NSPoint) -> NSView? {
-    // When Metal is active, route input to the MTKView so it can forward to us.
-    if usingMetal, let mv = mtkView {
-      return mv
-    }
+    // Route input to the MTKView so it can forward to us.
+    if let mv = mtkView { return mv }
     return super.hitTest(point)
   }
   
-  // MARK: - Public
-  func setUseMetal(_ enabled: Bool) {
-    wantsMetal = enabled
+  // MARK: - Metal setup (Metal is required)
+  func ensureMetalSetup() {
+    guard !metalSetupDone else { return }
 
-    if !enabled {
-      pendingEnableMetal = false   // ✅ cancel any deferred enable
+    // Never run setupMetal during a layout pass — addSubview mutates the
+    // view hierarchy which posts frame-change notifications and re-enters
+    // layout(), triggering _NSDetectedLayoutRecursion.
+    guard !inLayout else { return }
+
+    // Defer Metal until we have a real AppKit window and non-zero bounds
+    guard self.window != nil else { return }
+    guard bounds.width >= 1, bounds.height >= 1 else { return }
+
+    guard let dev = MTLCreateSystemDefaultDevice() else {
+      fatalError("SwiftX11 requires a Metal-capable GPU")
     }
 
-    if enabled {
-      // Never run setupMetal during a layout pass — addSubview mutates the
-      // view hierarchy which posts frame-change notifications and re-enters
-      // layout(), triggering _NSDetectedLayoutRecursion.
-      if inLayout {
-        pendingEnableMetal = true
-        return
-      }
-      // Defer Metal until we have a real AppKit window and non-zero bounds
-      guard self.window != nil else {
-        pendingEnableMetal = true
-        return
-      }
-      guard bounds.width >= 1, bounds.height >= 1 else {
-        pendingEnableMetal = true
-        return
-      }
-    }
-    
-    if enabled, let dev = MTLCreateSystemDefaultDevice() {
-      // Switch to Metal
-      if !usingMetal {
-        setupMetal(device: dev)
-        usingMetal = true
-      }
-      imageLayer?.isHidden = true
-      mtkView?.isHidden = false
-    } else {
-      // Switch to Software
-      usingMetal = false
-      mtkView?.isHidden = true
-      imageLayer?.isHidden = false
-    }
-    
-    // refreshTrackingArea()
+    setupMetal(device: dev)
+    metalSetupDone = true
+    mtkView?.isHidden = false
     requestTrackingRefreshCoalesced()
   }
   
@@ -684,9 +597,10 @@ final class X11View: NSView {
     let byteCount = bytesPerRow * height
     guard byteCount > 0 else { return }
 
-    // SHAPE extension needs full copy + alpha masking regardless of path
+    // SHAPE extension needs full copy + alpha masking
+    var data: Data
     if isShaped {
-      var data = Data(bytes: framebuffer, count: byteCount)
+      data = Data(bytes: framebuffer, count: byteCount)
       applyShapeMask(to: &data, width: width, height: height, bytesPerRow: bytesPerRow)
 
       // Ensure renderer and layer stay in sync (MTKView may reset layer properties)
@@ -700,55 +614,28 @@ final class X11View: NSView {
         shapeDebugDumped = true
         dumpLayerHierarchy()
       }
+    } else {
+      data = Data(bytes: framebuffer, count: byteCount)
+    }
 
-      if usingMetal {
-        guard let mv = self.mtkView else { return }
-        guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
-          retryPresentIfNeeded()
-          return
-        }
-        presentRetryCount = 0
-        self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
-                                     damageRect: damageRect)
-        mv.setNeedsDisplay(mv.bounds)
-      } else {
-        // Shaped software path: use shaped data (full copy already done)
-        presentSoftware(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
-      }
+    // Metal present path
+    guard let mv = self.mtkView else {
+      #if DEBUG
+      print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) mtkView=nil")
+      #endif
       return
     }
-
-    // Non-shaped paths
-    if usingMetal {
-      // Metal path: copy to Data, upload texture
-      let data = Data(bytes: framebuffer, count: byteCount)
-      guard let mv = self.mtkView else {
-        print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) mtkView=nil")
-        return
-      }
-      guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
-        print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) drawableSize=\(mv.drawableSize) frame=\(mv.frame) retry=\(presentRetryCount)/\(Self.maxPresentRetries)")
-        retryPresentIfNeeded()
-        return
-      }
-      presentRetryCount = 0
-      self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
-                                   damageRect: damageRect)
-      mv.setNeedsDisplay(mv.bounds)
-    } else {
+    guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
       #if DEBUG
-      swFrameSeq &+= 1
-      if X11Trace.present {
-        let tid = pthread_mach_thread_np(pthread_self())
-        print(String(format: "[SWFRAME] recv xid=0x%08X seq=%llu wh=%dx%d bpr=%d tid=0x%X main=%d",
-                     xid, swFrameSeq, width, height, bytesPerRow, tid, Thread.isMainThread ? 1 : 0))
-      }
+      print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) drawableSize=\(mv.drawableSize) frame=\(mv.frame) retry=\(presentRetryCount)/\(Self.maxPresentRetries)")
       #endif
-      // Software path: partial-copy only the damaged rows into the persistent
-      // backing buffer, then build a CGImage and update the layer.
-      presentSoftwarePartial(source: framebuffer, width: width, height: height,
-                             bytesPerRow: bytesPerRow, damageRect: damageRect)
+      retryPresentIfNeeded()
+      return
     }
+    presentRetryCount = 0
+    self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
+                                 damageRect: damageRect)
+    mv.setNeedsDisplay(mv.bounds)
   }
 
   /// Schedule a re-present when the Metal drawable isn't ready yet.
@@ -905,110 +792,6 @@ final class X11View: NSView {
     print("[SHAPE_DBG] === end ===")
   }
 
-  // MARK: - Software rendering
-  private func setupSoftwareLayer() {
-    let layer = CALayer()
-    layer.frame = bounds
-    layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-    layer.contentsGravity = .resize
-    layer.magnificationFilter = .nearest
-    layer.minificationFilter = .nearest
-    self.layer?.addSublayer(layer)
-    imageLayer = layer
-  }
-  
-  /// Software present for shaped windows (full Data copy already done by applyShapeMask).
-  private func presentSoftware(data: Data, width: Int, height: Int, bytesPerRow: Int) {
-    guard let cgImage = makeCGImage(from: data, width: width, height: height, bytesPerRow: bytesPerRow) else { return }
-
-    lastFrameData = data
-    syncSoftwareLayerScale()
-    CATransaction.begin()
-    CATransaction.setDisableActions(true)
-    imageLayer?.contents = cgImage
-    CATransaction.commit()
-  }
-
-  /// Optimized software present: maintains a persistent backing buffer and only
-  /// copies the damaged rows from the source, avoiding a full-surface memcpy
-  /// on every frame.  Falls back to full copy when the surface size changes or
-  /// the damage rect is unknown.
-  private func presentSoftwarePartial(source: UnsafeRawPointer, width: Int, height: Int,
-                                      bytesPerRow: Int, damageRect: DamageRect?) {
-    let byteCount = bytesPerRow * height
-
-    // Reallocate backing buffer on size change.
-    let sizeChanged = (width != swBackingWidth || height != swBackingHeight || bytesPerRow != swBackingBPR)
-    if sizeChanged || swBackingBuffer == nil {
-      swBackingBuffer?.deallocate()
-      swBackingBuffer = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 64)
-      swBackingSize = byteCount
-      swBackingWidth = width
-      swBackingHeight = height
-      swBackingBPR = bytesPerRow
-      // Force full copy for a few frames after resize (matches Metal's fullUploadCountdown).
-      swFullCopyCountdown = 3
-    }
-
-    guard let backing = swBackingBuffer else { return }
-
-    if swFullCopyCountdown > 0 {
-      // Full copy during stabilization period.
-      swFullCopyCountdown -= 1
-      memcpy(backing, source, byteCount)
-    } else if let dr = damageRect,
-              dr.w > 0, dr.h > 0,
-              dr.x >= 0, dr.y >= 0,
-              dr.x + dr.w <= width, dr.y + dr.h <= height {
-      // Partial copy: only the damaged rows.
-      let rowStart = dr.y
-      let rowEnd = dr.y + dr.h
-      let srcOffset = rowStart * bytesPerRow
-      let copyBytes = (rowEnd - rowStart) * bytesPerRow
-      memcpy(backing.advanced(by: srcOffset), source.advanced(by: srcOffset), copyBytes)
-    } else {
-      // Unknown damage — full copy.
-      memcpy(backing, source, byteCount)
-    }
-
-    // Build CGImage from the persistent backing buffer.
-    let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: backing),
-                    count: byteCount, deallocator: .none)
-    guard let cgImage = makeCGImage(from: data, width: width, height: height, bytesPerRow: bytesPerRow) else { return }
-
-    // Keep a copy for lastFrameData (retained display buffer on resize).
-    lastFrameData = Data(bytes: backing, count: byteCount)
-
-    syncSoftwareLayerScale()
-    CATransaction.begin()
-    CATransaction.setDisableActions(true)
-    imageLayer?.contents = cgImage
-    CATransaction.commit()
-  }
-
-  /// Helper: create a CGImage from BGRA8888 data.
-  private func makeCGImage(from data: Data, width: Int, height: Int, bytesPerRow: Int) -> CGImage? {
-    let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let bitmapInfo: CGBitmapInfo = [
-      .byteOrder32Little,
-      CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
-    ]
-    guard let provider = CGDataProvider(data: data as CFData) else { return nil }
-    return CGImage(
-      width: width,
-      height: height,
-      bitsPerComponent: 8,
-      bitsPerPixel: 32,
-      bytesPerRow: bytesPerRow,
-      space: colorSpace,
-      bitmapInfo: bitmapInfo,
-      provider: provider,
-      decode: nil,
-      shouldInterpolate: false,
-      intent: .defaultIntent
-    )
-  }
-  
   // MARK: - Metal setup
   private func setupMetal(device: MTLDevice) {
     self.device = device
@@ -1068,7 +851,7 @@ final class X11View: NSView {
   }
   
   private func kickMetalOnceIfReady() {
-    guard usingMetal, let mv = mtkView else { return }
+    guard let mv = mtkView else { return }
     guard mv.window != nil else { return }
     let ds = mv.drawableSize
     guard ds.width >= 1, ds.height >= 1 else { return }
@@ -1082,17 +865,17 @@ final class X11View: NSView {
       requestTrackingRefreshCoalesced()
       return
     }
-    
-    logIfInLayout("refreshTrackingArea (usingMetal=\(usingMetal))", view: self)
-    
+
+    logIfInLayout("refreshTrackingArea", view: self)
+
     if let trackingArea {
       trackingHost?.removeTrackingArea(trackingArea)
       self.trackingArea = nil
       trackingHost = nil
     }
-    
-    let target: NSView = (usingMetal ? (mtkView ?? self) : self)
-    
+
+    let target: NSView = mtkView ?? self
+
     let opts: NSTrackingArea.Options = [
       .mouseEnteredAndExited,
       .mouseMoved,
@@ -1101,7 +884,7 @@ final class X11View: NSView {
       .enabledDuringMouseDrag,
       .inVisibleRect
     ]
-    
+
     let area = NSTrackingArea(rect: .zero, options: opts, owner: self, userInfo: nil)
     target.addTrackingArea(area)
     self.trackingArea = area
@@ -1123,7 +906,6 @@ final class X11View: NSView {
   fileprivate func metalDraw(in view: MTKView) {
     // Single, authoritative presentation path:
     // MTKView calls X11Renderer.draw(in:), which forwards here.
-    guard usingMetal else { return }
     guard view.drawableSize.width >= 1, view.drawableSize.height >= 1 else { return }
     guard let renderer = self.renderer else { return }
     // Gated: fires on every Metal draw call; too noisy.
@@ -1483,7 +1265,6 @@ final class X11View: NSView {
   
   override func resetCursorRects() {
     super.resetCursorRects()
-    // This covers the software path (and is harmless if metal is on top)
     addCursorRect(bounds, cursor: currentCursor)
   }
 

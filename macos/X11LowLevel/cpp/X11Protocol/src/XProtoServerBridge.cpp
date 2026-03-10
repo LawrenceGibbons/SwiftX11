@@ -312,14 +312,12 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
     mappedKids.push_back(kid);
   }
 
-  // Send Expose events with correct count field.  count=N means N more
-  // Expose events will follow for this client, allowing the client to
-  // defer redrawing until count==0 (the last one).
-  const size_t total = 1 + mappedKids.size();   // host + children
-  sendExposeNow(ctx, evOps, hostXid, (uint16_t)(total - 1));
-  for (size_t i = 0; i < mappedKids.size(); i++) {
-    uint16_t remaining = (uint16_t)(mappedKids.size() - 1 - i);
-    sendExposeNow(ctx, evOps, mappedKids[i], remaining);
+  // Send Expose events.  count=0 because we send exactly one Expose per
+  // window (full-window rect).  X11 spec: count is per-WINDOW ("number of
+  // Expose events to follow for this window"), NOT per-client-batch.
+  sendExposeNow(ctx, evOps, hostXid);
+  for (uint32_t kid : mappedKids) {
+    sendExposeNow(ctx, evOps, kid);
   }
 }
 
@@ -440,25 +438,17 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // Fill + Expose the host and all mapped descendants.
           fillWindowBackgroundIfReady(ctx, c.xid);
 
-          // Collect mapped kids, fill borders/backgrounds, then send
-          // Expose events with coalesced count field.
+          // Collect mapped kids, fill borders/backgrounds, then send Expose.
+          // count=0: one Expose per window (count is per-window, not per-batch).
           auto kids = ctx.windows().descendantsOf(c.xid);
-          std::vector<uint32_t> mappedKids;
-          mappedKids.reserve(kids.size());
+          sendExposeNow(ctx, srv->eventOps(), c.xid);
           for (uint32_t kid : kids) {
             x11::WindowView kv{};
             if (!ctx.windows().snapshot(kid, kv)) continue;
             if (!kv.mapped) continue;
             fillWindowBorderIfReady(ctx, kid);
             fillWindowBackgroundIfReady(ctx, kid);
-            mappedKids.push_back(kid);
-          }
-
-          const size_t total = 1 + mappedKids.size();
-          sendExposeNow(ctx, srv->eventOps(), c.xid, (uint16_t)(total - 1));
-          for (size_t i = 0; i < mappedKids.size(); i++) {
-            uint16_t remaining = (uint16_t)(mappedKids.size() - 1 - i);
-            sendExposeNow(ctx, srv->eventOps(), mappedKids[i], remaining);
+            sendExposeNow(ctx, srv->eventOps(), kid);
           }
           {
             x11::WindowView sv{};
