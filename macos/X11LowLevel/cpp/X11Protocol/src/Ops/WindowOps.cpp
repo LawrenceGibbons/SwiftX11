@@ -749,10 +749,15 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     ctx.transport().queueNotify(wid, /*wantConfigure=*/wantCfg, /*wantExpose=*/true);
 
 
-    // 6) If anything drew before presentable, flush once now (route to host)
+    // 6) If anything drew before presentable, flush once now (route to host).
+    //    Skip for override-redirect windows: the surface doesn't exist yet at
+    //    MapWindow time (Swift hasn't created the NSWindow/MTKView), so this
+    //    damage push triggers a premature present with blank (white) content.
+    //    The SetPresentable handler (after surface registration) will push
+    //    damage that triggers the first real present with actual client content.
     if (host != 0) {
       x11::WindowView mv2{};
-      if (ctx.windows().snapshot(host, mv2)) {
+      if (ctx.windows().snapshot(host, mv2) && !mv2.override_redirect) {
         x11_shared_damage_union(host, 0, 0, (int32_t)mv2.w, (int32_t)mv2.h);
         x11_ui_push_damage(host, 0, 0, (int32_t)mv2.w, (int32_t)mv2.h);
       }

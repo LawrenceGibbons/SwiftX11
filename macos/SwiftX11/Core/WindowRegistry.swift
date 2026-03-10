@@ -563,10 +563,42 @@ final class WindowRegistry {
   /// If this xid is an OR (popup) window waiting to be shown, show it now.
   /// Called after a successful presentBGRA so the window becomes visible
   /// only after Metal has content to display — eliminates blank popup flash.
-  private func showPendingORWindowIfNeeded(xid: UInt32) {
-    if pendingORShow.remove(xid) != nil {
-      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) showing after first present")
+  ///
+  /// As an extra safety check, scans the presented data for non-white pixels.
+  /// If the surface is all white (0xFFFFFFFF), the client hasn't drawn yet and
+  /// we defer showing to the next present cycle.
+  private func showPendingORWindowIfNeeded(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int) {
+    guard pendingORShow.contains(xid) else { return }
+
+    // Quick scan: check a few sample locations for non-white pixels.
+    // White = 0xFFFFFFFF (BGRA opaque white). If ALL samples are white,
+    // the client likely hasn't drawn yet — keep the window hidden.
+    let hasContent: Bool = data.withUnsafeBytes { raw in
+      let p = raw.bindMemory(to: UInt32.self)
+      let stride = bytesPerRow / 4
+      guard stride > 0, height > 0 else { return false }
+      // Sample center, quarters, and a few more locations
+      let sampleYs = [height / 4, height / 2, (height * 3) / 4]
+      let sampleXs = [width / 4, width / 2, (width * 3) / 4]
+      for sy in sampleYs {
+        for sx in sampleXs {
+          let idx = sy * stride + sx
+          if idx < p.count && p[idx] != 0xFFFFFFFF {
+            return true
+          }
+        }
+      }
+      return false
+    }
+
+    if hasContent {
+      pendingORShow.remove(xid)
+      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) showing after present with content")
       windows[xid]?.window?.orderFront(nil)
+    } else {
+      #if DEBUG
+      print("[POPUP_DEFER] xid=0x\(String(format:"%X", xid)) surface still blank — deferring show")
+      #endif
     }
   }
 
@@ -587,7 +619,8 @@ final class WindowRegistry {
       presentBGRA(xid: presentXid, data: df.data,
                   width: df.width, height: df.height, bytesPerRow: df.bytesPerRow,
                   damageRect: nil)
-      showPendingORWindowIfNeeded(xid: presentXid)
+      showPendingORWindowIfNeeded(xid: presentXid, data: df.data,
+                                  width: df.width, height: df.height, bytesPerRow: df.bytesPerRow)
       return
     }
 
@@ -645,7 +678,8 @@ final class WindowRegistry {
       presentBGRA(xid: presentXid, data: dataToPresent,
                   width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr),
                   damageRect: nil)
-      showPendingORWindowIfNeeded(xid: presentXid)
+      showPendingORWindowIfNeeded(xid: presentXid, data: dataToPresent,
+                                  width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
       return
     }
 
@@ -667,7 +701,8 @@ final class WindowRegistry {
     presentBGRA(xid: presentXid, data: dataToPresent,
                 width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr),
                 damageRect: damageRect)
-    showPendingORWindowIfNeeded(xid: presentXid)
+    showPendingORWindowIfNeeded(xid: presentXid, data: dataToPresent,
+                                width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
   }
 
 
