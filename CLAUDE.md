@@ -137,6 +137,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `X11LowLevel/cpp/X11Protocol/include/Core/PropertyTable.hpp` | Shared property storage (used by PropOps + SelectionOps) |
 | `X11LowLevel/cpp/X11Protocol/include/Core/ClipboardAtoms.hpp` | Well-known atom constants (CLIPBOARD, TARGETS, UTF8_STRING, etc.) |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/SelectionOps.cpp` | Selection protocol + macOS clipboard bridge |
+| `X11LowLevel/cpp/X11Protocol/include/Core/ScreenLayout.hpp` | Multi-monitor layout cache (MonitorInfo, ScreenLayout) |
+| `X11LowLevel/cpp/X11Protocol/src/Core/ScreenLayout.cpp` | CGDisplay query, CGDisplayReconfigurationCallback |
 | `docs/TODO.md` | Comprehensive project roadmap |
 
 ## Build & Run
@@ -187,7 +189,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.5.8)
+### Current State (v1.9.7)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -215,7 +217,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **WarpPointer** (v1.4.0, opcode 41): Routes via UICommandQueue → Swift → CGWarpMouseCursorPosition. Translates X11 coordinates to screen coordinates.
 - **BIG-REQUESTS** (v1.4.0): Per-client `big_req_enabled_` flag. Extended-length parsing in readAndDispatch (phase 0.5: len_words==0 → read 4 extra bytes as 32-bit length). BigReqEnable (opcode 133) replies with max_request_length=1M words (4MB).
 - **16-bit text** (v1.4.0): PolyText16 (opcode 75) and ImageText16 (opcode 77) with CHAR2B encoding (byte1 high, byte2 low).
-- **Extension stubs** (v1.4.0→v1.7.5): Handler code for XFIXES (134, v5.0), SHAPE (135, v1.1), RANDR (136, v1.3), Xinerama (137, v1.1 + IsActive + QueryScreens), GE (138, v1.0). Opcodes defined in X11ExtOpcodes.hpp. **All now advertised** (v1.7.4–v1.7.5). RANDR reports single-screen configuration (1 output "Virtual-1", 1 CRTC, 1 mode 1920×1080). SHAPE fully implemented with actual clipping (v1.7.5).
+- **Extension stubs** (v1.4.0→v1.7.5): Handler code for XFIXES (134, v5.0), SHAPE (135, v1.1), RANDR (136, v1.3), Xinerama (137, v1.1 + IsActive + QueryScreens), GE (138, v1.0). Opcodes defined in X11ExtOpcodes.hpp. **All now advertised** (v1.7.4–v1.7.5). RANDR dynamically reports real multi-monitor configuration via ScreenLayout (v1.9.7). SHAPE fully implemented with actual clipping (v1.7.5).
 - **RENDER extension** (v1.4.0, major 139): Handler code for QueryPictFormats (ARGB32/RGB24/A8/A4/A1), CreatePicture/FreePicture, Composite (PictOpSrc/Over/Add/Clear), FillRectangles, CreateSolidFill, QueryFilters. Glyph ops are stubs (consume silently). Picture table tracks drawable/format/solid state. **NOT advertised to clients** — needs Trapezoids + CompositeGlyphs rendering before enabling.
 - **Selections/clipboard bridge** (v1.5.0): Pre-registered atoms 69-77 (CLIPBOARD, TARGETS, UTF8_STRING, TIMESTAMP, TEXT, MULTIPLE, INCR, WM_PROTOCOLS, WM_DELETE_WINDOW). PropertyTable extracted to shared header. Swift registers get/set callbacks via `x11_clipboard_register()`. ConvertSelection reads NSPasteboard when no X11 owner. SendEvent intercepts SelectionNotify for CLIPBOARD → NSPasteboard write. TARGETS returns supported types.
 - **GC fill-style rendering** (v1.5.0): FillSolid/FillTiled/FillStippled/FillOpaqueStippled implemented in PolyFillRectangle, FillPoly, PolyFillArc via `Utils/FillStyle.hpp` helper. Tile pixmaps sampled at `(px-ts_x_origin)%tile_w`. Stipple bitmaps bit-tested with proper modulo wrapping. Solid fill fast path preserved (zero overhead when fill_style==0).
@@ -253,7 +255,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Monotonic wire-sequence floor** (v1.7.3): `XProtoTransport::sendAll()` enforces that response sequences never go backwards on the wire. Tracks `max_wire_seq_` and bumps stale sequences forward. Payload-aware: `payload_remaining_` counter distinguishes reply payload chunks from response headers. Fixes xcalc resize crash caused by `drainHostCommands()` interleaving with `readAndDispatch()`.
 - **ExposeChildren border/background fix** (v1.7.3): `ExposeChildren` handler now calls `fillWindowBorderIfReady()` and `fillWindowBackgroundIfReady()` for each child, matching `sendExposeSubtree` behavior. Fixes button borders disappearing after window resize.
 
-- **RANDR/Xinerama/GE advertised** (v1.7.4): RANDR (RRQueryVersion 1.3, GetScreenResources, GetOutputInfo, GetCrtcInfo, GetOutputPrimary, SelectInput, SetCrtcConfig, GetScreenSizeRange, ListOutputProperties, GetCrtcGammaSize), Xinerama (QueryVersion, IsActive, QueryScreens), and GE (QueryVersion) now return present=1 in QueryExtension and are listed in ListExtensions. Total advertised: 6 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE).
+- **RANDR/Xinerama/GE advertised** (v1.7.4, dynamic v1.9.7): RANDR (RRQueryVersion 1.3, GetScreenResources/Current, GetOutputInfo, GetCrtcInfo, GetCrtcTransform, GetPanning, SetPanning, GetOutputPrimary, GetProviders, SelectInput, SetCrtcConfig, GetScreenSizeRange, ListOutputProperties, GetCrtcGammaSize), Xinerama (QueryVersion, IsActive, QueryScreens), and GE (QueryVersion) now return present=1 in QueryExtension and are listed in ListExtensions. RANDR and Xinerama dynamically report real multi-monitor layout via ScreenLayout cache (v1.9.7). Total advertised: 6 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE).
 
 - **SHAPE extension with actual clipping** (v1.7.5): Full SHAPE implementation — non-rectangular windows with real visual clipping and transparent backgrounds. ShapeRegion data structure stores bounding/clip/input regions per window. Wire protocol parsing for ShapeRectangles (minor 1), ShapeMask (minor 2), ShapeCombine (minor 3), ShapeOffset (minor 4). ShapeQueryExtents (minor 5) and ShapeGetRectangles (minor 8) return real data. Depth-1 pixmap drawing added to PolyFillArc and PolyFillRectangle (xeyes creates elliptical masks via XFillArc on depth-1 bitmaps). Hit testing respects shape regions (InputRouting + XProtoNotifyBridge). Present-time alpha masking in Swift: premultiplied alpha (transparent pixels = 0x00000000), shape rects queried via bridge. NSWindow + CAMetalLayer + SwiftUI layer hierarchy all set non-opaque for shaped windows. Metal pipeline uses alpha blending (sourceAlpha/oneMinusSourceAlpha). Retained display buffer skipped for shaped windows during resize. Total advertised extensions: 7 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE).
 
@@ -273,6 +275,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **UX bug fixes** (v1.9.6): Three fixes: (1) **Ctrl+click → button 3** — macOS Ctrl+click now correctly maps to X11 right-click (button 3), matching macOS convention. Previously Ctrl+click sent button 1 with Ctrl modifier. (2) **Window persistence fix** — `windowDidChangeOcclusionState` no longer unmaps windows when other macOS apps obscure them. Previously, switching to another app permanently hid X11 windows via `orderOut(nil)`. (3) **QueryTree root children** — `queryTree()` now handles root window (XID 1) which isn't in WindowTable's `map_` but has children in `children_order_`. `xwininfo -root -tree` and `xprop` now correctly show top-level X11 windows.
 
+- **Multi-monitor support** (v1.9.7): ScreenLayout cache queries `CGGetActiveDisplayList` for real per-monitor data (position, size in points, pixel dimensions, physical mm). Auto-refreshes via `CGDisplayRegisterReconfigurationCallback`. Dynamic RANDR: `RRGetScreenResources/Current` reports N outputs/CRTCs/modes from real displays. `RRGetOutputInfo` uses 36-byte reply (not 32). New handlers: `RRGetCrtcTransform` (96-byte identity reply), `RRGetPanning/SetPanning`, `RRGetProviders`. Fixed 4 wrong RANDR minor opcode numbers. Dynamic Xinerama: `QueryScreens` returns N real screens. X11↔macOS coordinate conversion uses virtual desktop union bounds (`NSScreen.screens` min/max) for all 4 conversion sites. `GetGeometry` on root returns actual virtual desktop dimensions. `WarpPointer` uses virtual desktop bounds. OR window Metal drawable retry (up to 5×50ms) when `drawableSize == 0` after cross-screen `setFrame`. `xrandr --query` works. New files: `ScreenLayout.hpp/cpp`.
+
 ### Known Issues (v1.9.0)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
@@ -286,3 +290,4 @@ See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phas
 3. ~~**Error handling**~~ — ✅ Done (v1.9.3): X11 error generation across ~50 handlers
 4. ~~**Container networking**~~ — ✅ Done (v1.9.4): TCP + Unix socket for Docker workflow
 5. ~~**Window management + wire protocol**~~ — ✅ Done (v1.9.5): WM attributes (override-redirect, gravity, backing store) + wire correctness verification
+6. ~~**Multi-monitor support**~~ — ✅ Done (v1.9.7): ScreenLayout, dynamic RANDR/Xinerama, coordinate fixes

@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-06 (v1.9.4 — Container/network support)
+Last updated: 2026-03-09 (v1.9.7 — Multi-monitor support)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -17,6 +17,16 @@ Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK r
 - [x] background_pixel stored in WindowTable, applied on MapWindow, used in ClearArea
 - [x] CWBackPixmap (bit 0): ParentRelative resolves nearest ancestor's background_pixel; None clears background (v1.5.2)
 - [x] clearBackground() and resolveParentRelativeBackground() in WindowTable (v1.5.2)
+
+### Multi-Monitor Support (v1.9.7)
+- [x] ScreenLayout cache with CGDisplayRegisterReconfigurationCallback auto-refresh
+- [x] X11↔macOS coordinate conversion using virtual desktop union bounds (all screens)
+- [x] Dynamic RANDR: per-monitor output/CRTC/mode from real CGDisplay data
+- [x] Dynamic Xinerama: per-monitor screen entries from real CGDisplay data
+- [x] GetGeometry on root returns actual virtual desktop dimensions
+- [x] WarpPointer uses virtual desktop bounds (not just NSScreen.main)
+- [x] Override-redirect window Metal drawable retry for cross-screen presentation
+- [x] RANDR protocol compliance: RRGetCrtcTransform (minor 27), RRGetPanning (minor 28), RRSetPanning (minor 29), RRGetProviders (minor 32), correct minor opcode numbers, 36-byte RRGetOutputInfo reply
 
 ### Damage / Present Pipeline
 - [x] Shared damage accumulator (x11_shared_damage_union/consume) bypasses UI queue latency
@@ -125,7 +135,7 @@ Vivado/Vitis need clipboard for copy/paste between X11 apps and potentially with
 
 ## Phase 2: X11 Extensions (Required for Modern Toolkits)
 
-Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.7.5)**: **BIG-REQUESTS**, **RENDER**, **XFIXES**, **RANDR**, **XINERAMA**, **Generic Event Extension (GE)**, and **SHAPE** are all advertised as present (7 total). All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. RANDR reports single-screen configuration (1 output, 1 CRTC, 1 mode). Xinerama reports single screen. SHAPE fully implemented with actual pixel-level clipping, transparent backgrounds, and hit testing.
+Java 2D, GTK/Cairo, and Pango all query for extensions. **Current state (v1.9.7)**: **BIG-REQUESTS**, **RENDER**, **XFIXES**, **RANDR**, **XINERAMA**, **Generic Event Extension (GE)**, and **SHAPE** are all advertised as present (7 total). All RENDER operations fully implemented including Trapezoids, Triangles, gradient sources. RANDR dynamically reports real multi-monitor configuration via ScreenLayout cache (v1.9.7). Xinerama reports real per-monitor screens. SHAPE fully implemented with actual pixel-level clipping, transparent backgrounds, and hit testing.
 
 ### 2.1 RENDER Extension (HIGH — anti-aliased fonts, alpha compositing) — ADVERTISED (v1.6.0)
 The single most impactful extension. Java 2D's XRender pipeline, GTK/Cairo's rendering, and Pango's font rendering all use RENDER. Without it, clients fall back to core protocol (bitmap fonts, no alpha blending).
@@ -184,8 +194,8 @@ Full SHAPE implementation with actual pixel-level clipping, transparent backgrou
 ### 2.5 Other Extensions (LOW — query but don't need full impl)
 These are frequently queried. Return present=0 with correct reply format, or minimal stubs:
 - [x] **MIT-SHM**: Not applicable over network/container — returns present=0 (intentional, v1.4.0).
-- [x] **RANDR**: Advertised (v1.7.4). RRQueryVersion returns 1.3. Single-screen stubs: GetScreenResources/Current (1 CRTC, 1 output, 1 mode 1920×1080), GetOutputInfo (Connected, "Virtual-1"), GetCrtcInfo (position 0,0), GetScreenSizeRange, GetOutputPrimary, ListOutputProperties, SelectInput, SetCrtcConfig, GetCrtcGammaSize.
-- [x] **Xinerama**: Advertised (v1.7.4). QueryVersion returns 1.1, IsActive=1, QueryScreens returns 1 screen 1920×1080.
+- [x] **RANDR**: Advertised (v1.7.4). RRQueryVersion returns 1.3. Dynamic multi-monitor (v1.9.7): ScreenLayout cache queries CGGetActiveDisplayList, reports real per-monitor outputs/CRTCs/modes. Handlers: GetScreenResources/Current, GetOutputInfo (36-byte reply), GetCrtcInfo, GetCrtcTransform (identity), GetPanning/SetPanning, GetScreenSizeRange, GetOutputPrimary, GetProviders, ListOutputProperties, SelectInput, SetCrtcConfig, GetCrtcGammaSize. `xrandr --query` works.
+- [x] **Xinerama**: Advertised (v1.7.4). QueryVersion returns 1.1, IsActive=1. Dynamic multi-monitor (v1.9.7): QueryScreens returns real per-monitor entries from ScreenLayout.
 - [x] **DPMS**: Display power management — returns present=0 (intentional, not applicable on macOS, v1.4.0).
 - [x] **Generic Event Extension (GE)**: Advertised (v1.7.4). GEQueryVersion returns 1.0.
 
@@ -416,11 +426,14 @@ rendercheck                 # RENDER extension tests
 
 ~~20. **SHAPE extension actual clipping** — DONE (v1.7.5): Full SHAPE implementation with ShapeRegion storage, wire protocol parsing (ShapeRectangles/Mask/Combine/Offset), depth-1 pixmap drawing (PolyFillArc/PolyFillRectangle), hit testing, present-time alpha masking, Metal transparency. xeyes displays with transparent eye-shaped windows. 7 extensions now advertised.~~
 
+~~21. **Multi-monitor support** — DONE (v1.9.7): ScreenLayout cache (CGGetActiveDisplayList + CGDisplayRegisterReconfigurationCallback), dynamic RANDR (per-monitor outputs/CRTCs/modes), dynamic Xinerama (per-monitor screens), virtual desktop coordinate conversion, root geometry fix, WarpPointer fix, OR window present retry. `xrandr --query` works.~~
+
 ### Remaining priorities
 1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
 2. ~~**Window close → client kill**~~ — ✅ Done (v1.9.0): WM_DELETE_WINDOW ClientMessage + forceful disconnect fallback (Phase 5.4)
 3. ~~**Error handling**~~ — ✅ Done (v1.9.3): X11 error generation across ~50 handlers in 14 files (Phase 4.1)
 4. ~~**Container networking**~~ — ✅ Done (v1.9.4): TCP + Unix socket multi-listener for Docker workflow (Phase 5.2)
+5. ~~**Multi-monitor support**~~ — ✅ Done (v1.9.7): ScreenLayout cache, dynamic RANDR/Xinerama, coordinate fixes, OR window present retry
 
 ### Phase 2+3 Status Assessment (v1.7.5)
 **Phase 2 is complete; Phase 3 is mostly complete.** All RENDER operations are implemented: Composite (with mask + gradient sources), CompositeGlyphs8/16/32, Trapezoids, Triangles/TriStrip/TriFan, FillRectangles, all Porter-Duff blend modes, gradient source pictures (Linear/Radial/Conical). **Seven extensions now advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR (v1.3 single-screen), XINERAMA (1 screen), GE (v1.0), and SHAPE (v1.1 with actual clipping). SHAPE is fully implemented with ShapeRegion storage, depth-1 pixmap drawing, hit testing, and present-time alpha masking — xeyes displays with transparent eye-shaped windows. Fonts: XLFD wildcard matching, PCF font loading, Symbol encoding, ListFontsWithInfo all work. 3.3 (TrueType/CoreText) has unchecked items (client-side Xft/fontconfig verification, optional CoreText bridge).
@@ -445,7 +458,13 @@ rendercheck                 # RENDER extension tests
 
 **v1.9.4 adds container/network support** — Multi-listener architecture for Docker workflow. XProtoDaemon supports simultaneous TCP (0.0.0.0 bind) and Unix domain socket (/tmp/.X11-unix/X{display}) listeners. Settings UI wired with TCP/Unix toggles and Docker usage instructions. New `x11_start_server_ex()` bridge function.
 
-**Next priority**: Phase 5.3 (keyboard) or Phase 5.1 (performance).
+**v1.9.5 adds window management attributes** — Full parsing, storage, and reporting of override_redirect (bit 9), win_gravity (bit 5), bit_gravity (bit 4), and backing_store (bit 6). Override-redirect windows create borderless floating NSWindows that don't steal focus.
+
+**v1.9.6 adds UX bug fixes** — Ctrl+click → button 3 (right-click), window persistence fix (occluded windows no longer unmapped), QueryTree root children support.
+
+**v1.9.7 adds multi-monitor support** — ScreenLayout cache queries CGGetActiveDisplayList for real per-monitor data (position, size, physical mm, pixel dimensions). Dynamic RANDR: RRGetScreenResources/Current reports N outputs, N CRTCs, N modes. RRGetOutputInfo (36-byte reply with correct nClones/nameLength). RRGetCrtcInfo returns per-monitor position/size/mode. New handlers: RRGetCrtcTransform (identity, 96-byte reply), RRGetPanning/SetPanning, RRGetProviders. Fixed 4 wrong RANDR minor opcode case numbers (19→25, 13→20, 14→21, 15→22). Dynamic Xinerama: QueryScreens returns N real screens. X11↔macOS coordinate conversion uses virtual desktop union bounds (all screens, not just NSScreen.main). GetGeometry on root returns actual virtual desktop dimensions. WarpPointer uses virtual desktop bounds. Override-redirect window Metal drawable retry mechanism (up to 5 retries when drawable isn't ready after cross-screen setFrame). `xrandr --query` now works and reports real monitor configuration.
+
+**Next priority**: Phase 5.1 (rendering performance) or Phase 5.3 (keyboard).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
@@ -465,8 +484,8 @@ rendercheck                 # RENDER extension tests
 - **Gradient source pictures**: CreateLinearGradient, CreateRadialGradient, CreateConicalGradient now create real gradient Pictures. Composite samples gradient per-pixel with color stop interpolation.
 
 ### Features (v1.7.4)
-- **RANDR extension advertised**: QueryExtension("RANDR") now returns present=1, major opcode 136. RRQueryVersion returns 1.3 (downgraded from 1.5 to limit surface area). Single-screen stubs: RRGetScreenResources/Current (1 CRTC, 1 output "Virtual-1", 1 mode 1920×1080@60Hz), RRGetOutputInfo (Connected), RRGetCrtcInfo (position 0,0), RRGetScreenSizeRange (1×1 to 8192×8192), RRGetOutputPrimary, RRListOutputProperties (empty), RRSelectInput (void), RRSetCrtcConfig (success), RRGetCrtcGammaSize (0). Unhandled RANDR sub-opcodes still send BadRequest error (safety net).
-- **Xinerama extension advertised**: QueryExtension("XINERAMA") and alias "PANORAMIX" now return present=1, major opcode 137. XineramaQueryVersion returns 1.1, IsActive=1, QueryScreens returns 1 screen 1920×1080.
+- **RANDR extension advertised**: QueryExtension("RANDR") now returns present=1, major opcode 136. RRQueryVersion returns 1.3. Originally single-screen stubs (v1.7.4), upgraded to dynamic multi-monitor (v1.9.7) — see v1.9.7 features below.
+- **Xinerama extension advertised**: QueryExtension("XINERAMA") and alias "PANORAMIX" now return present=1, major opcode 137. XineramaQueryVersion returns 1.1, IsActive=1. Originally single-screen (v1.7.4), upgraded to dynamic multi-monitor (v1.9.7).
 - **Generic Event Extension (GE) advertised**: QueryExtension("Generic Event Extension") now returns present=1, major opcode 138. GEQueryVersion returns 1.0.
 - **Total advertised extensions**: 6 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE). Updated to 7 in v1.7.5 (adds SHAPE).
 
