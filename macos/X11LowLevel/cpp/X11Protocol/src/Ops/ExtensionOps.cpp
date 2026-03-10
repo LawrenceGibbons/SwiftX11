@@ -26,6 +26,7 @@
 #include "Transport/XProtoTransport.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
+#include "Utils/WireErrors.hpp"
 #include "Core/X11ExtOpcodes.hpp"
 
 // Bridge function (defined in UICommandQueue.cpp)
@@ -507,6 +508,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // -------------------------------------------------------------------
 
   if (major == ext::kRANDR) {
+#ifndef NDEBUG
+    fprintf(stderr, "[RANDR] minor=%u seq=%u remaining=%zu\n",
+            (unsigned)minor, (unsigned)seq, br.remaining());
+#endif
     switch (minor) {
 
     case 0: {
@@ -625,6 +630,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     case 9: {
       // RRGetOutputInfo — look up requested output
+      // Reply is 36 bytes (not 32): has nClones and nameLength after nPreferred
       if (br.remaining() < 4) { br.skip(br.remaining()); return; }
       const uint32_t requested_output = br.readU32();
       br.skip(br.remaining());
@@ -642,31 +648,38 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const auto& mon = *found;
       const uint16_t nameLen = static_cast<uint16_t>(std::strlen(mon.name));
 
-      // Payload: crtcs(4) + modes(4) + name(nameLen) + pad
+      // Payload after 36-byte header: crtcs(4) + modes(4) + clones(0) + name(nameLen) + pad
       size_t nameWithPad = (nameLen + 3u) & ~3u;
-      size_t payloadBytes = 4 + 4 + nameWithPad;
+      size_t payloadBytes = 4 + 4 + nameWithPad;  // crtc_id + mode_id + name
       std::vector<uint8_t> payload(payloadBytes, 0);
-      wire::wr32_le(payload.data() + 0, mon.crtc_xid);  // crtcs[0]
-      wire::wr32_le(payload.data() + 4, mon.mode_xid);   // modes[0]
-      std::memcpy(payload.data() + 8, mon.name, nameLen); // name
+      wire::wr32_le(payload.data() + 0, mon.crtc_xid);   // crtcs[0]
+      wire::wr32_le(payload.data() + 4, mon.mode_xid);    // modes[0]
+      // clones: 0 entries (nothing to write)
+      std::memcpy(payload.data() + 8, mon.name, nameLen);  // name
 
-      const uint32_t replyLen = static_cast<uint32_t>(payloadBytes / 4);
-      const uint32_t crtcXid = mon.crtc_xid;
-      const uint32_t mmW = mon.w_mm;
-      const uint32_t mmH = mon.h_mm;
-      (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
-        rep[1] = 0; // status = RRSetConfigSuccess
-        wire::wr32_le(rep.data() + 4, replyLen);
-        wire::wr32_le(rep.data() + 8, 0);          // timestamp
-        wire::wr32_le(rep.data() + 12, crtcXid);   // crtc
-        wire::wr32_le(rep.data() + 16, mmW);        // mm_width
-        wire::wr32_le(rep.data() + 20, mmH);        // mm_height
-        rep[24] = 0; // connection = Connected
-        rep[25] = 0; // subpixel_order = Unknown
-        wire::wr16_le(rep.data() + 26, 1); // num_crtcs
-        wire::wr16_le(rep.data() + 28, 1); // num_modes
-        wire::wr16_le(rep.data() + 30, 1); // num_preferred
-      });
+      // 36-byte header (sz_xRRGetOutputInfoReply = 36)
+      // length field = (36 - 32 + payloadBytes) / 4 = (4 + payloadBytes) / 4
+      // which is 1 + payloadBytes/4
+      const uint32_t replyLen = static_cast<uint32_t>((4 + payloadBytes) / 4);
+
+      uint8_t rep[36] = {};
+      rep[0] = 1;                                          // reply type
+      rep[1] = 0;                                          // status = RRSetConfigSuccess
+      wire::wr16_le(rep + 2, seq);                         // sequence
+      wire::wr32_le(rep + 4, replyLen);                    // length
+      wire::wr32_le(rep + 8, 0);                           // timestamp
+      wire::wr32_le(rep + 12, mon.crtc_xid);              // crtc
+      wire::wr32_le(rep + 16, mon.w_mm);                   // mm_width
+      wire::wr32_le(rep + 20, mon.h_mm);                   // mm_height
+      rep[24] = 0;                                          // connection = Connected
+      rep[25] = 0;                                          // subpixel_order = Unknown
+      wire::wr16_le(rep + 26, 1);                          // num_crtcs
+      wire::wr16_le(rep + 28, 1);                          // num_modes
+      wire::wr16_le(rep + 30, 1);                          // num_preferred
+      wire::wr16_le(rep + 32, 0);                          // num_clones
+      wire::wr16_le(rep + 34, nameLen);                    // nameLength
+
+      ctx.reply().sendReplyRaw(rep, sizeof(rep));
       ctx.reply().sendBytes(payload.data(), payloadBytes);
       return;
     }
@@ -778,7 +791,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     default:
       fprintf(stderr, "[RANDR] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq);
       br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+      {
+        // Send error with actual minor opcode (not 0) so client reports correctly
+        auto e = x11::wireerr::buildError32(x11::error::BadRequest, seq, 0, minor, major);
+        ctx.transport().sendAll(e.data(), e.size());
+      }
       return;
     }
   }
