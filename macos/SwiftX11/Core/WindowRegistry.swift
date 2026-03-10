@@ -816,11 +816,11 @@ final class WindowRegistry {
         x11X: CGFloat(x11X), x11Y: CGFloat(x11Y), height: CGFloat(x11h))
       win.setFrameOrigin(origin)
 
-      // If mapWindow() deferred showing this OR window, show it now that
-      // we have the correct position.
-      if pendingORShow.remove(xid) != nil {
-        print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) deferred show at (\(x11X),\(x11Y))")
-        win.orderFront(nil)
+      // Position updated. Don't show the window here — let
+      // snapshotAndPresentNow reveal it via pendingORShow once the
+      // client has drawn actual content (prevents blank popup flash).
+      if pendingORShow.contains(xid) {
+        print("[POPUP_MOVE] xid=0x\(String(format:"%X", xid)) position updated to (\(x11X),\(x11Y)) — still waiting for content")
       }
     }
   }
