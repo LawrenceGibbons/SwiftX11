@@ -270,11 +270,21 @@ final class WindowRegistry {
                            size: NSSize(width: CGFloat(x11w), height: CGFloat(x11h)))
         print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
         win.setFrame(frame, display: true)
-        // Position is known — show immediately.
-        // display:true above forces a layout pass, ensuring the Metal drawable
-        // is created before the first schedulePresent fires (fixes blank OR
-        // windows when mapped on a secondary monitor with different backing scale).
-        win.orderFront(nil)
+        // Defer orderFront until the first present succeeds so the popup
+        // doesn't flash blank.  Metal needs at least one frame uploaded before
+        // the window becomes visible.  snapshotAndPresentNow will call
+        // orderFront via pendingORShow once content is ready.
+        pendingORShow.insert(host)
+        // Safety: force-show after 150ms in case present never arrives
+        // (defensive against edge cases like drawable creation failure).
+        let hostCopy = host
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+          guard let self else { return }
+          if self.pendingORShow.remove(hostCopy) != nil {
+            print("[POPUP_SAFETY] xid=0x\(String(format:"%X", hostCopy)) force-showing after 150ms timeout")
+            self.windows[hostCopy]?.window?.orderFront(nil)
+          }
+        }
       } else {
         print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) geometry query FAILED — deferring show to moveWindow")
         // Don't show yet. The X11_UI_MOVE command (pushed by MapWindow handler)
@@ -285,7 +295,13 @@ final class WindowRegistry {
       win.makeKeyAndOrderFront(nil)
     }
 
-    schedulePresent(xid: host)
+    // For OR windows, skip the initial present — the surface is blank at this point
+    // because the client hasn't received Expose yet.  The damage-triggered present
+    // (after client draws) will show content AND reveal the window via pendingORShow.
+    // For non-OR windows, present immediately to show the window contents.
+    if infoByXid[host]?.overrideRedirect != true {
+      schedulePresent(xid: host)
+    }
   }
 
   @MainActor
@@ -544,6 +560,16 @@ final class WindowRegistry {
   }
   
   
+  /// If this xid is an OR (popup) window waiting to be shown, show it now.
+  /// Called after a successful presentBGRA so the window becomes visible
+  /// only after Metal has content to display — eliminates blank popup flash.
+  private func showPendingORWindowIfNeeded(xid: UInt32) {
+    if pendingORShow.remove(xid) != nil {
+      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) showing after first present")
+      windows[xid]?.window?.orderFront(nil)
+    }
+  }
+
   private func snapshotAndPresentNow(sourceXid: UInt32, presentXid: UInt32, damageRect: DamageRect? = nil) {
     guard let controller = windows[presentXid] else { return }
     guard !closingXids.contains(presentXid) else { return }
@@ -561,6 +587,7 @@ final class WindowRegistry {
       presentBGRA(xid: presentXid, data: df.data,
                   width: df.width, height: df.height, bytesPerRow: df.bytesPerRow,
                   damageRect: nil)
+      showPendingORWindowIfNeeded(xid: presentXid)
       return
     }
 
@@ -618,6 +645,7 @@ final class WindowRegistry {
       presentBGRA(xid: presentXid, data: dataToPresent,
                   width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr),
                   damageRect: nil)
+      showPendingORWindowIfNeeded(xid: presentXid)
       return
     }
 
@@ -639,9 +667,10 @@ final class WindowRegistry {
     presentBGRA(xid: presentXid, data: dataToPresent,
                 width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr),
                 damageRect: damageRect)
+    showPendingORWindowIfNeeded(xid: presentXid)
   }
-  
-  
+
+
   private func snapshotAndPresentNow(xid: UInt32) {
     guard windows[xid] != nil else { return }
     guard !closingXids.contains(xid) else { return }

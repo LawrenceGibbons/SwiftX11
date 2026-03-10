@@ -639,11 +639,12 @@ final class X11View: NSView {
   }
 
   /// Schedule a re-present when the Metal drawable isn't ready yet.
+  /// Uses a short 10ms delay (down from 50ms) so popup menus appear quickly.
   private func retryPresentIfNeeded() {
     if presentRetryCount < Self.maxPresentRetries {
       presentRetryCount += 1
       let xid = self.xid
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
         x11_ui_push_damage(xid, 0, 0, 1, 1)
       }
     }
@@ -820,34 +821,19 @@ final class X11View: NSView {
     
     addSubview(view, positioned: .above, relativeTo: nil)
     self.mtkView = view
-    
-    //if let win = self.window {
-    //  let scale = win.backingScaleFactor
-    //  let wF = bounds.width * scale
-    //  let hF = bounds.height * scale
-    //  if wF >= 1, hF >= 1 {
-    //    view.drawableSize = CGSize(width: floor(wF), height: floor(hF))
-    //  }
-    //}
-    
-    // DO NOT touch drawableSize or setNeedsDisplay here.
-    // Wait for MTKViewDelegate.mtkView(_:drawableSizeWillChange:) once the view is real.
-    //// ✅ DO NOT kick draw synchronously here
-    //DispatchQueue.main.async { [weak self] in
-    //  guard let self else { return }
-    //  guard let mv = self.mtkView else { return }
-    //  guard mv.window != nil else { return }
-    //
-    //  let scale = mv.window?.backingScaleFactor ?? 1.0
-    //  let wF = mv.bounds.width * scale
-    //  let hF = mv.bounds.height * scale
-    //  guard wF >= 1, hF >= 1 else { return }
-    //
-    //  let ds = CGSize(width: floor(wF), height: floor(hF))
-    //  if mv.drawableSize != ds { mv.drawableSize = ds }
-    //
-    //  mv.setNeedsDisplay(mv.bounds)
-    //}
+
+    // Set drawableSize immediately so the Metal drawable is ready for the first
+    // present.  Without this, drawableSize stays 0×0 until the next layout cycle,
+    // causing presentBGRA to fail and retry with a 10ms delay.  For OR windows
+    // (popup menus) this was the root cause of blank-window flash.
+    if let win = self.window {
+      let scale = win.backingScaleFactor
+      let wF = bounds.width * scale
+      let hF = bounds.height * scale
+      if wF >= 1, hF >= 1 {
+        view.drawableSize = CGSize(width: floor(wF), height: floor(hF))
+      }
+    }
   }
   
   private func kickMetalOnceIfReady() {
