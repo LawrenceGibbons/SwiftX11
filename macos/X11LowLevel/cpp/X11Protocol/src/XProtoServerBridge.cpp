@@ -391,23 +391,17 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
         // ------------------- SetPresentable
         case HostCmdType::SetPresentable: {
-          // Guard: if already presentable, skip the expensive
-          // sendExposeSubtree (which fills backgrounds and re-exposes all
-          // children).  A redundant SetPresentable was previously caused by
-          // both X11Renderer.handleDrawableSize and X11View.scheduleAttachSettle
-          // posting x11_post_window_presentable independently.  The second
-          // sendExposeSubtree's background fill erased text drawn by the client
-          // in response to the first Expose, causing blank popup menus.
-          {
-            x11::WindowView pCheck{};
-            if (ctx.windows().snapshot(c.xid, pCheck) && pCheck.presentable) {
-#ifndef NDEBUG
-              fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X SKIP (already presentable)\n",
-                      (unsigned)c.xid);
-#endif
-              break;
-            }
-          }
+          // NOTE: Do NOT guard with "if already presentable, skip".
+          // updateSurface() (called from x11_surface_update on the Swift main
+          // thread) sets setPresentable(true) when registering the surface.
+          // That happens BEFORE this host command is processed on the server
+          // thread.  A guard checking presentable would ALWAYS skip, and
+          // sendExposeSubtree would never run — no Expose events would be
+          // sent to popup menu children, causing blank popup text.
+          //
+          // Duplicate SetPresentable is prevented on the Swift side: X11View
+          // has a single didNotifyPresentable flag, and X11Renderer delegates
+          // to owner?.notifyPresentableOnce() instead of posting independently.
 
 #if X11_TRACE_LIFECYCLE_ENABLED
           fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X\n", (unsigned)c.xid);
