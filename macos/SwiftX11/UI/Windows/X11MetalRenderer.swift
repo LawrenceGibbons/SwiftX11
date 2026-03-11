@@ -31,6 +31,14 @@ final class X11MetalRenderer {
   private var inFlight: Bool = false
   private var pendingDraw: Bool = false
 
+  // Retry counter for draws that fail because the Metal drawable/RPD isn't
+  // available yet (e.g., OR popup window appearing on a different screen —
+  // CAMetalLayer needs to reconfigure for the new screen's properties).
+  // Since the MTKView is paused + on-demand, a failed draw won't be retried
+  // automatically.  We schedule a delayed setNeedsDisplay to retry.
+  private var drawRetryCount: Int = 0
+  private static let maxDrawRetries = 10
+
   // SHAPE extension: when true, alpha blending is active and clear color uses alpha=0
   var isShaped: Bool = false
 
@@ -234,10 +242,20 @@ final class X11MetalRenderer {
     guard view.window != nil else { return }
 
     guard let srcTex = texture else { return }
-    guard let rpd = view.currentRenderPassDescriptor else { return }
-    guard let drawable = view.currentDrawable else { return }
+    guard let rpd = view.currentRenderPassDescriptor else {
+      // RPD not available — CAMetalLayer may be reconfiguring (e.g., window
+      // moved to a different screen).  Schedule retry since MTKView is paused.
+      scheduleDrawRetry(view: view)
+      return
+    }
+    guard let drawable = view.currentDrawable else {
+      // Drawable not available — same reconfiguration scenario.
+      scheduleDrawRetry(view: view)
+      return
+    }
     guard let cmdBuf = commandQueue.makeCommandBuffer() else { return }
 
+    drawRetryCount = 0  // drawable obtained — reset retry counter
     inFlight = true
 
     if let ca = rpd.colorAttachments[0] {
@@ -276,5 +294,27 @@ final class X11MetalRenderer {
 
     cmdBuf.present(drawable)
     cmdBuf.commit()
+  }
+
+  /// Schedule a retry when currentDrawable/currentRenderPassDescriptor is nil.
+  /// This happens when CAMetalLayer reconfigures (e.g., OR popup appearing on a
+  /// different screen in a multi-monitor setup).  Without this retry, content in
+  /// the texture is never rendered because the MTKView is paused + on-demand.
+  private func scheduleDrawRetry(view: MTKView) {
+    guard drawRetryCount < Self.maxDrawRetries else {
+      #if DEBUG
+      print("[DRAW_RETRY] EXHAUSTED retries (\(Self.maxDrawRetries)) — giving up")
+      #endif
+      return
+    }
+    drawRetryCount += 1
+    #if DEBUG
+    print("[DRAW_RETRY] drawable/RPD nil, retry \(drawRetryCount)/\(Self.maxDrawRetries)")
+    #endif
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak view] in
+      guard let view else { return }
+      guard view.window != nil else { return }
+      view.setNeedsDisplay(view.bounds)
+    }
   }
 }
