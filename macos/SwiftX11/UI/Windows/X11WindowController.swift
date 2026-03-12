@@ -76,6 +76,12 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   func windowDidMove(_ notification: Notification) {
     assert(Thread.isMainThread)
     guard let win = window else { return }
+    // Only sync position for mapped, non-OR windows.  OR windows are positioned
+    // by the server (ConfigureWindow/MapWindow), not by macOS window management.
+    // Unmapped windows may fire windowDidMove during initial setup before the
+    // X11 lifecycle is ready.
+    guard WindowRegistry.shared.isMapped(xid: xid) else { return }
+    guard !(WindowRegistry.shared.isOverrideRedirect(xid: xid)) else { return }
     // Sync the NSWindow's actual screen position back to X11 WindowTable.
     // Without this, TranslateCoordinates returns stale root coordinates
     // and popup menus (override-redirect windows) appear at wrong positions.

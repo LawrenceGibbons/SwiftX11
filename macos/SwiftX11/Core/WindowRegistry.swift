@@ -165,6 +165,14 @@ final class WindowRegistry {
     return true
   }
   
+  func isMapped(xid: UInt32) -> Bool {
+    mappedXids.contains(xid)
+  }
+
+  func isOverrideRedirect(xid: UInt32) -> Bool {
+    infoByXid[xid]?.overrideRedirect ?? false
+  }
+
   func setSettingsHooks(showDamageLogs: @escaping () -> Bool) {
     self.showDamageLogs = showDamageLogs
   }
@@ -365,10 +373,19 @@ final class WindowRegistry {
       // macOS may place the window at a position different from CreateWindow's (x,y)
       // (cascading, centering, etc.).  Without this sync, TranslateCoordinates
       // returns stale root coordinates and popup menus appear at wrong positions.
-      let contentFrame = win.contentView?.frame ?? win.contentLayoutRect
-      let (x11X, x11Y) = WindowRegistry.macOSOriginToX11Root(
-        macOrigin: win.frame.origin, height: contentFrame.size.height)
-      x11_set_window_position(host, x11X, x11Y)
+      // Deferred: wait one run-loop cycle so the window has been fully laid out
+      // by AppKit before reading its frame.  Also serves as a fallback in case
+      // windowDidMove doesn't fire (e.g. window stays at its initial position).
+      let hostCopy = host
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        guard let controller = self.windows[hostCopy],
+              let win = controller.window else { return }
+        let contentFrame = win.contentView?.frame ?? win.contentLayoutRect
+        let (x11X, x11Y) = WindowRegistry.macOSOriginToX11Root(
+          macOrigin: win.frame.origin, height: contentFrame.size.height)
+        x11_set_window_position(hostCopy, x11X, x11Y)
+      }
     }
 
     // For OR windows, skip the initial present — the surface is blank at this point
