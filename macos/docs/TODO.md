@@ -286,11 +286,12 @@ Convert the SwiftX11 main window from a spawnable `WindowGroup` into a single pe
 - [ ] **Log output display**: Keep the existing monospace log view for server output. Consider filtering by trace category.
 - [ ] **Remove obsolete features**: Audit current ContentView for obsolete controls (e.g., "Freeze Log", "Pause Drain" if no longer useful) and simplify.
 
-### 5.7 ICCCM / Window Manager Compliance (LOW)
-- [ ] **WM_HINTS**: Read and honor WM_HINTS property (icon, initial state, input model).
-- [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio).
-- [ ] **WM_PROTOCOLS**: Support WM_DELETE_WINDOW (send ClientMessage instead of destroying).
-- [ ] **_NET_WM_* (EWMH)**: Basic Extended Window Manager Hints support.
+### 5.7 ICCCM / Window Manager Compliance (MEDIUM)
+- [ ] **Minimum window size floor**: Enforce a server-side minimum NSWindow size (e.g., 200x100) so dialog boxes are always large enough to read and click OK/Cancel buttons. XQuartz allowed tiny/invisible dialogs that forced blind Return key presses — extremely frustrating for Vivado/Vitis confirmation dialogs.
+- [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio). Use client-specified PMinSize as the NSWindow minimum size; fall back to server floor if unset. Increment size hints improve terminal resize behavior.
+- [ ] **WM_HINTS**: Read and honor WM_HINTS property (icon, initial state, input model). Initial state (IconicState) determines whether window starts minimized. Input model (input=True + WM_TAKE_FOCUS) affects focus policy.
+- [ ] **WM_PROTOCOLS**: Support WM_TAKE_FOCUS (send ClientMessage on focus). WM_DELETE_WINDOW already implemented (v1.9.0).
+- [ ] **_NET_WM_* (EWMH)**: Basic Extended Window Manager Hints — _NET_WM_WINDOW_TYPE (dialog, toolbar, menu affect NSWindow style), _NET_WM_STATE (fullscreen, maximized, modal), _NET_FRAME_EXTENTS.
 
 ---
 
@@ -305,18 +306,43 @@ Items moved from higher phases — not blocking Vivado/Vitis.
 - [ ] **XKB extension**: Full X Keyboard Extension for multi-layout support, compose/dead keys, per-key type definitions. Java Swing/GTK fall back to core keyboard protocol gracefully. Return not-present is acceptable.
 - [ ] **Option key compose**: Pass macOS Option-key-interpreted characters (e.g., Option+e → é) through to X11 keysym table columns 3-4.
 
-### 7.1 XInput / XInput2 (MEDIUM)
-Extended input devices (tablets, multi-touch). Some GTK apps query for XInput2.
-- [ ] **XInput2 QueryVersion**: Return version or present=0. Assess whether GTK hard-requires XI2 or falls back gracefully.
-- [ ] **XIQueryDevice**: List input devices (keyboard + pointer minimum).
-- [ ] **XISelectEvents**: Accept and track event selections.
+### 7.1 XC-MISC Extension (HIGH — prevents XID exhaustion crash)
+Long-running clients (Vivado sessions that run for hours/days) exhaust their 2^21 XID range and need `XC-MiscGetXIDRange` to get more. Without it, the client crashes when XIDs run out. Very simple extension (2 requests).
+- [ ] **XC-MiscGetVersion**: Return version 1.1. Advertise in QueryExtension + ListExtensions.
+- [ ] **XC-MiscGetXIDRange**: Return a new XID range (start + count) from the server's free pool. Server needs to track per-client XID allocation and provide fresh ranges.
+- [ ] **XC-MiscGetXIDList**: Return a list of individual free XIDs (alternative to range allocation).
 
-### 7.2 SYNC Extension (LOW)
+### 7.2 XInput / XInput2 (MEDIUM-HIGH — GTK3/4 apps)
+GTK3/4 queries XI2 at startup. Without it, GTK falls back but loses multi-pointer awareness and some event handling. Most impactful missing extension for broader GTK app support.
+- [ ] **XInput2 QueryVersion**: Return version 2.0+ or present=0. Test whether GTK3-demo and GTK4-demo work without XI2 or if stubs are needed.
+- [ ] **XIQueryDevice**: List input devices (virtual core pointer + keyboard minimum). GTK queries this during init.
+- [ ] **XISelectEvents**: Accept and track XI2 event selections. GTK uses this for input event routing.
+- [ ] **XI2 events**: Map core events to XI2 format if GTK requires XI2 events to function.
+
+### 7.3 XTEST Extension (MEDIUM — automation/accessibility)
+Synthesizes keyboard/mouse events. Used by accessibility tools (AT-SPI), automation (xdotool, xte), and test frameworks. GTK accessibility stack queries for it.
+- [ ] **XTestQueryExtension**: Return version. Advertise in QueryExtension + ListExtensions.
+- [ ] **XTestFakeInput**: Synthesize ButtonPress/Release, MotionNotify, KeyPress/Release events. Route through existing InputState + event delivery.
+- [ ] **XTestGrabControl**: Allow XTEST events to bypass grabs.
+
+### 7.4 SYNC Extension (LOW)
 Synchronization primitives. Some compositors and toolkits use SYNC for frame synchronization.
 - [ ] **SYNC QueryVersion**: Return present=0 initially, implement if needed.
 - [ ] **SYNC counters/fences**: Full implementation if required by specific apps.
 
-### 7.3 Window Shape AA Compositing (LOW)
+### 7.5 DAMAGE Extension (LOW — compositor awareness)
+Tracks window content changes. Some GTK apps query for it but fall back gracefully. SwiftX11 already tracks damage internally; this would expose it to clients.
+- [ ] **DamageQueryVersion**: Return version or present=0. Assess whether any target apps require it.
+- [ ] **DamageCreate/Destroy**: Track damage objects per drawable.
+- [ ] **DamageNotify events**: Send DamageNotify events to subscribed clients when drawable content changes.
+
+### 7.6 DBE — Double Buffer Extension (LOW — flicker-free legacy apps)
+Some older Xaw/Motif apps (and `xclock -render`) use DBE for flicker-free rendering. Front/back buffer swap.
+- [ ] **DBE QueryVersion**: Return version or present=0.
+- [ ] **DBEAllocateBackBuffer / DeallocateBackBuffer**: Create/destroy back buffer for a window.
+- [ ] **DBESwapBuffers**: Copy back buffer to front buffer and present.
+
+### 7.7 Window Shape AA Compositing (LOW)
 Antialiased window shape borders at the macOS compositing level. Currently SHAPE uses binary masking (pixel is inside or outside the shape region). XQuartz produces softer window outlines because its compositor may antialias the shape boundary.
 - [ ] **Shape mask AA**: Generate antialiased alpha mask from shape rects in the Swift present path (e.g., signed-distance-field or multi-sample approach for shape boundary pixels).
 - [ ] **Metal blending**: Ensure the alpha channel in the Metal texture reflects shape coverage, producing smooth window outlines against the desktop.
