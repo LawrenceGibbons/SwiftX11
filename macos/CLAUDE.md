@@ -189,7 +189,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.10.0)
+### Current State (v1.10.7)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -279,7 +279,9 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **Metal-only rendering + performance** (v1.10.0): Software (CGImage/CALayer) rendering path removed entirely — Metal is now required. Removed `setupSoftwareLayer()`, `presentSoftware()`, `presentSoftwarePartial()`, `makeCGImage()`, `imageLayer`, `usingMetal`/`wantsMetal` flags, and "Use Metal Rendering" settings toggle. `setUseMetal()` replaced with `ensureMetalSetup()` (lazy one-time init). **PutImage bulk memcpy** — GXcopy fast path uses `std::memcpy` for row data then 4-pixel-unrolled alpha forcing, instead of per-pixel copy-and-OR. **Expose two-pass** — `sendExposeSubtree` and `ExposeChildren` restructured to fill all backgrounds/borders first, then send Expose events.
 
-### Known Issues (v1.9.0)
+- **Multi-monitor popup fix** (v1.10.7): Three fixes for override-redirect (popup) windows on multi-monitor setups: (1) **Blank popup text on external monitors** — `CAMetalLayer.contentsScale` stayed 0.0 for `.borderless` NSWindows on external monitors (AppKit doesn't auto-inherit backingScaleFactor). Fixed by explicit `contentsScale = window.backingScaleFactor` in `ensureMetalSetup()` + `viewDidChangeBackingProperties`. (2) **Hot-plug popup positioning** — xterm doesn't query RANDR so Xlib's `WidthOfScreen`/`HeightOfScreen` remain stale after monitor changes, causing popups on wrong screen. Server-side `adjustOROriginForCursorScreen()` detects popup landing on different screen than cursor and repositions. `x11_set_window_position()` syncs X11 WindowTable geometry so input coordinates stay correct. (3) **ScreenLayoutChanged host command** — `CGDisplayReconfigurationCallback` triggers broadcast of ConfigureNotify + RRScreenChangeNotify to all connected clients on monitor hot-plug/unplug.
+
+### Known Issues (v1.10.7)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
 
@@ -294,3 +296,4 @@ See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phas
 5. ~~**Window management + wire protocol**~~ — ✅ Done (v1.9.5): WM attributes (override-redirect, gravity, backing store) + wire correctness verification
 6. ~~**Multi-monitor support**~~ — ✅ Done (v1.9.7): ScreenLayout, dynamic RANDR/Xinerama, coordinate fixes
 7. ~~**Rendering performance**~~ — ✅ Done (v1.10.0): Metal-only (software path removed), PutImage bulk memcpy, Expose two-pass
+8. ~~**Multi-monitor popup fix**~~ — ✅ Done (v1.10.7): contentsScale fix, hot-plug positioning, ScreenLayoutChanged broadcast

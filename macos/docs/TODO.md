@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-09 (v1.10.0 — Rendering performance)
+Last updated: 2026-03-11 (v1.10.7 — Multi-monitor popup fix)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -464,7 +464,14 @@ rendercheck                 # RENDER extension tests
 
 **v1.9.7 adds multi-monitor support** — ScreenLayout cache queries CGGetActiveDisplayList for real per-monitor data (position, size, physical mm, pixel dimensions). Dynamic RANDR: RRGetScreenResources/Current reports N outputs, N CRTCs, N modes. RRGetOutputInfo (36-byte reply with correct nClones/nameLength). RRGetCrtcInfo returns per-monitor position/size/mode. New handlers: RRGetCrtcTransform (identity, 96-byte reply), RRGetPanning/SetPanning, RRGetProviders. Fixed 4 wrong RANDR minor opcode case numbers (19→25, 13→20, 14→21, 15→22). Dynamic Xinerama: QueryScreens returns N real screens. X11↔macOS coordinate conversion uses virtual desktop union bounds (all screens, not just NSScreen.main). GetGeometry on root returns actual virtual desktop dimensions. WarpPointer uses virtual desktop bounds. Override-redirect window Metal drawable retry mechanism (up to 5 retries when drawable isn't ready after cross-screen setFrame). `xrandr --query` now works and reports real monitor configuration.
 
-**Next priority**: Phase 5.1 (rendering performance) or Phase 5.3 (keyboard).
+6. ~~**Rendering performance**~~ — ✅ Done (v1.10.0): Metal-only rendering (software path removed), PutImage bulk memcpy, Expose two-pass (Phase 5.1)
+7. ~~**Multi-monitor popup fix**~~ — ✅ Done (v1.10.7): Fix blank popup text on external monitors (contentsScale), hot-plug popup positioning (server-side adjustment + X11 position sync)
+
+**v1.10.0 adds rendering performance** — Metal-only rendering (software CGImage/CALayer path removed entirely). PutImage bulk memcpy for GXcopy fast path. Expose two-pass restructuring (backgrounds/borders first, then Expose events).
+
+**v1.10.7 fixes multi-monitor popup menus** — Three bugs fixed: (1) Blank popup text on external monitors — `CAMetalLayer.contentsScale=0.0` for borderless NSWindows, fixed by explicit backingScaleFactor propagation. (2) Hot-plug popup positioning — xterm doesn't query RANDR so Xlib's WidthOfScreen/HeightOfScreen remain stale after monitor changes, causing popups on wrong screen. Fixed with server-side `adjustOROriginForCursorScreen()` + `x11_set_window_position()` to sync X11 geometry. (3) ScreenLayoutChanged host command broadcasts ConfigureNotify + RRScreenChangeNotify on display reconfiguration.
+
+**Next priority**: Phase 5.3 (keyboard — XKB extension stubs, compose/dead keys).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
@@ -521,3 +528,13 @@ rendercheck                 # RENDER extension tests
 
 ### Features (v1.9.0)
 - **Window close kills client**: Red close button and Cmd+W now terminate X11 clients instead of just hiding the NSWindow. ICCCM-compliant: reads WM_PROTOCOLS property on the window, checks for WM_DELETE_WINDOW atom. If present, sends ClientMessage event (type=WM_PROTOCOLS, data[0]=WM_DELETE_WINDOW, data[1]=timestamp) so the client can exit gracefully. If WM_DELETE_WINDOW not in WM_PROTOCOLS, forcefully disconnects the client by closing the socket (same path as `removeClient()`). New `HostCmdType::WindowClose` host command type, `x11_post_window_close()` bridge function, and `windowSupportsDeleteProtocol()`/`sendDeleteWindowMessage()` helpers in XProtoDaemon.cpp. Atoms already pre-registered: kWM_PROTOCOLS=76, kWM_DELETE_WINDOW=77.
+
+### Features (v1.10.0)
+- **Metal-only rendering**: Software (CGImage/CALayer) rendering path removed entirely — Metal is now required. Removed `setupSoftwareLayer()`, `presentSoftware()`, `presentSoftwarePartial()`, `makeCGImage()`, `imageLayer`, `usingMetal`/`wantsMetal` flags, and "Use Metal Rendering" settings toggle. `setUseMetal()` replaced with `ensureMetalSetup()` (lazy one-time init).
+- **PutImage bulk memcpy**: GXcopy fast path uses `std::memcpy` for row data then 4-pixel-unrolled alpha forcing, instead of per-pixel copy-and-OR.
+- **Expose two-pass**: `sendExposeSubtree` and `ExposeChildren` restructured to fill all backgrounds/borders first, then send Expose events. Prevents background fill from overwriting sibling content during re-expose.
+
+### Bug fixes (v1.10.7)
+- **Blank popup text on external monitors**: Override-redirect (popup) windows on external monitors rendered blank — text was present but invisible. Root cause: `CAMetalLayer.contentsScale` stayed at 0.0 for borderless NSWindows on external monitors (AppKit doesn't auto-inherit `backingScaleFactor` for `.borderless` style mask). Fixed by explicitly setting `contentsScale = window.backingScaleFactor` in `ensureMetalSetup()` and updating on `viewDidChangeBackingProperties`.
+- **Hot-plug monitor popup positioning**: After monitor hot-plug/unplug, popup menus appeared on the wrong screen because xterm doesn't query RANDR (Xlib caches `WidthOfScreen`/`HeightOfScreen` from connection setup permanently). Fixed with three-part approach: (1) `ScreenLayoutChanged` host command broadcasts ConfigureNotify + RRScreenChangeNotify to all clients on display reconfiguration (helps RANDR-aware clients); (2) Server-side `adjustOROriginForCursorScreen()` detects when a popup would land on a different macOS screen than the cursor and repositions it; (3) `x11_set_window_position()` syncs X11 WindowTable geometry after adjustment so input event coordinates (event_xy = root_xy - window_origin) remain consistent.
+- **Diagnostic trace cleanup**: Removed ~217 lines of verbose per-frame OR popup traces (OR_RENDER, OR_METAL_UPLOAD, OR_TEXT, OR_SNAP, OR_PRESENT*). Kept lifecycle and error traces gated behind `#ifndef NDEBUG`.
