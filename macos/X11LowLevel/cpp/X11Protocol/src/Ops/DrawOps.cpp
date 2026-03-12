@@ -1063,15 +1063,30 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 #ifndef NDEBUG
     {
       x11::WindowView wv{};
-      if (ctx.windows().snapshot(drawable, wv) && wv.parent_xid != 0 && wv.parent_xid != 1) {
-        // Child window text draw — check if host is OR (popup menu text)
+      if (ctx.windows().snapshot(drawable, wv)) {
+        // Check if drawable is an OR window itself or child of one
         uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+        if (host == 0) host = drawable;  // host is the drawable itself
         x11::WindowView hv{};
         if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
-          fprintf(stderr, "[OR_TEXT] PolyText8 child=0x%08X host=0x%08X at (%d,%d) childWH=%ux%u\n",
+          x11::DrawableRW dbgDst{};
+          bool dbgResolved = x11::resolveDrawableRW(ctx, drawable, dbgDst);
+          x11::SurfaceDesc dbgS{};
+          bool dbgHasSurf = ctx.surfaces().get(host, dbgS);
+          fprintf(stderr, "[OR_TEXT] PolyText8 draw=0x%08X host=0x%08X at (%d,%d) "
+                  "drawWH=%ux%u resolved=%d dstWH=%ux%u dstOff=(%d,%d) "
+                  "dstStride=%u hasSurf=%d surfWH=%ux%u\n",
                   (unsigned)drawable, (unsigned)host,
                   (int)penX, (int)baseY,
-                  (unsigned)wv.w, (unsigned)wv.h);
+                  (unsigned)wv.w, (unsigned)wv.h,
+                  (int)dbgResolved,
+                  dbgResolved ? (unsigned)dbgDst.w : 0u,
+                  dbgResolved ? (unsigned)dbgDst.h : 0u,
+                  dbgResolved ? (int)dbgDst.offsetX : 0,
+                  dbgResolved ? (int)dbgDst.offsetY : 0,
+                  dbgResolved ? (unsigned)dbgDst.stridePixels : 0u,
+                  (int)dbgHasSurf,
+                  (unsigned)dbgS.w, (unsigned)dbgS.h);
         }
       }
     }
@@ -1288,15 +1303,30 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 #ifndef NDEBUG
     {
       x11::WindowView wv{};
-      if (ctx.windows().snapshot(drawable, wv) && wv.parent_xid != 0 && wv.parent_xid != 1) {
+      if (ctx.windows().snapshot(drawable, wv)) {
         uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
+        if (host == 0) host = drawable;
         x11::WindowView hv{};
         if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
+          x11::DrawableRW dbgDst{};
+          bool dbgResolved = x11::resolveDrawableRW(ctx, drawable, dbgDst);
+          x11::SurfaceDesc dbgS{};
+          bool dbgHasSurf = ctx.surfaces().get(host, dbgS);
           std::string txt(text.begin(), text.end());
-          fprintf(stderr, "[OR_TEXT] ImageText8 child=0x%08X host=0x%08X text=\"%s\" at (%d,%d) childWH=%ux%u\n",
+          fprintf(stderr, "[OR_TEXT] ImageText8 draw=0x%08X host=0x%08X text=\"%s\" "
+                  "at (%d,%d) drawWH=%ux%u resolved=%d dstWH=%ux%u dstOff=(%d,%d) "
+                  "dstStride=%u hasSurf=%d surfWH=%ux%u\n",
                   (unsigned)drawable, (unsigned)host,
                   txt.c_str(), (int)x, (int)y,
-                  (unsigned)wv.w, (unsigned)wv.h);
+                  (unsigned)wv.w, (unsigned)wv.h,
+                  (int)dbgResolved,
+                  dbgResolved ? (unsigned)dbgDst.w : 0u,
+                  dbgResolved ? (unsigned)dbgDst.h : 0u,
+                  dbgResolved ? (int)dbgDst.offsetX : 0,
+                  dbgResolved ? (int)dbgDst.offsetY : 0,
+                  dbgResolved ? (unsigned)dbgDst.stridePixels : 0u,
+                  (int)dbgHasSurf,
+                  (unsigned)dbgS.w, (unsigned)dbgS.h);
         }
       }
     }

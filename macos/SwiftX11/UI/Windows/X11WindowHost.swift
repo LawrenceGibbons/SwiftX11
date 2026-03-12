@@ -139,6 +139,14 @@ final class X11View: NSView {
       hostSurface!.count != needBytes
 
     if needsAlloc {
+      #if DEBUG
+      // OR window = borderless style
+      if window?.styleMask == .borderless {
+        print("[OR_SURFACE_ALLOC] xid=0x\(String(format:"%X", xid)) " +
+              "old=\(hostSurfaceW)x\(hostSurfaceH) new=\(wPx)x\(hPx) " +
+              "hadSurface=\(hostSurface != nil)")
+      }
+      #endif
       let old = hostSurface
       let oldW = hostSurfaceW
       let oldH = hostSurfaceH
@@ -450,6 +458,12 @@ final class X11View: NSView {
   private func syncLayerScale() {
     let s = window?.backingScaleFactor ?? 1.0
     self.layer?.contentsScale = s
+    // Also sync the MTKView's CAMetalLayer contentsScale.  On multi-monitor
+    // setups, moving a window between screens with different backing scale
+    // factors requires updating the Metal layer to match.
+    if let metalLayer = mtkView?.layer as? CAMetalLayer {
+      metalLayer.contentsScale = s
+    }
   }
   
   
@@ -633,8 +647,22 @@ final class X11View: NSView {
       return
     }
     presentRetryCount = 0
+    #if DEBUG
+    if window?.styleMask == .borderless {
+      let texSize = renderer?.texture.map { "\($0.width)x\($0.height)" } ?? "nil"
+      print("[OR_METAL_UPLOAD] xid=0x\(String(format:"%X", xid)) " +
+            "data=\(width)x\(height) drawableSize=\(Int(mv.drawableSize.width))x\(Int(mv.drawableSize.height)) " +
+            "texBefore=\(texSize)")
+    }
+    #endif
     self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
                                  damageRect: damageRect)
+    #if DEBUG
+    if window?.styleMask == .borderless {
+      let texSize = renderer?.texture.map { "\($0.width)x\($0.height)" } ?? "nil"
+      print("[OR_METAL_UPLOAD_DONE] xid=0x\(String(format:"%X", xid)) texAfter=\(texSize)")
+    }
+    #endif
     mv.setNeedsDisplay(mv.bounds)
   }
 
@@ -822,12 +850,21 @@ final class X11View: NSView {
     addSubview(view, positioned: .above, relativeTo: nil)
     self.mtkView = view
 
-    // Set drawableSize immediately so the Metal drawable is ready for the first
-    // present.  Without this, drawableSize stays 0×0 until the next layout cycle,
-    // causing presentBGRA to fail and retry with a 10ms delay.  For OR windows
-    // (popup menus) this was the root cause of blank-window flash.
+    // Set drawableSize and contentsScale immediately so the Metal drawable is
+    // ready for the first present.  Without this, drawableSize stays 0×0 until
+    // the next layout cycle, causing presentBGRA to fail and retry with a 10ms
+    // delay.  For OR windows (popup menus) this was the root cause of blank-
+    // window flash.
+    //
+    // contentsScale MUST be set explicitly on the CAMetalLayer.  On multi-monitor
+    // setups, borderless windows created on an external monitor (but not yet
+    // ordered front) don't auto-inherit the screen's backingScaleFactor —
+    // contentsScale stays 0.0, which makes the Metal content invisible.
     if let win = self.window {
       let scale = win.backingScaleFactor
+      if let metalLayer = view.layer as? CAMetalLayer {
+        metalLayer.contentsScale = scale
+      }
       let wF = bounds.width * scale
       let hF = bounds.height * scale
       if wF >= 1, hF >= 1 {
@@ -1257,7 +1294,17 @@ final class X11View: NSView {
   fileprivate var hasMetalTexture: Bool {
     return renderer?.hasTexture ?? false
   }
-  
+
+  #if DEBUG
+  /// Diagnostic: Metal pipeline state for OR window debugging
+  var metalDiagnostics: (drawableSize: CGSize, metalSetup: Bool, hasTexture: Bool) {
+    let ds = mtkView?.drawableSize ?? .zero
+    return (ds, metalSetupDone, renderer?.hasTexture ?? false)
+  }
+
+  var mtkViewForDiag: MTKView? { mtkView }
+  #endif
+
 }
 
 
@@ -1318,6 +1365,11 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     guard ds.width >= 1, ds.height >= 1 else { return }
     guard view.currentDrawable != nil else { return }
     guard owner?.hasMetalTexture == true else { return } // <- prevents clear-color overwrite
+    #if DEBUG
+    if owner?.window?.styleMask == .borderless {
+      print("[OR_METAL_DRAW] xid=0x\(String(format:"%X", xid)) drawableSize=\(Int(ds.width))x\(Int(ds.height))")
+    }
+    #endif
     owner?.metalDraw(in: view)
   }
   

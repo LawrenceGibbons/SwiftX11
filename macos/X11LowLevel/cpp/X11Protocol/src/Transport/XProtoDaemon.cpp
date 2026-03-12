@@ -34,6 +34,9 @@
 #include "Core/InputState.hpp"
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
+#include "Core/ScreenLayout.hpp"
+#include "Core/XConstants.hpp"
+#include "Core/X11ExtOpcodes.hpp"
 #include "Core/timestamp.hpp"
 #include "Ops/EventOps.hpp"
 #include "Transport/X11Setup.hpp"
@@ -598,6 +601,69 @@ void XProtoDaemon::drainHostCommands() {
     }
 
     ClientSession* cs = (owner_fd > 0) ? findClient(owner_fd) : nullptr;
+
+    // ---- ScreenLayoutChanged: notify ALL clients of new screen dimensions ----
+    // Sends both ConfigureNotify on root (for raw X11 / Xt) AND
+    // RRScreenChangeNotify (so Xlib's XRRUpdateConfiguration() updates
+    // the cached WidthOfScreen / HeightOfScreen used for popup clipping).
+    if (c.type == HostCmdType::ScreenLayoutChanged) {
+      const auto layout = x11::getScreenLayout();
+      const uint16_t rw = layout.virtual_w;
+      const uint16_t rh = layout.virtual_h;
+      const uint16_t rw_mm = layout.virtual_w_mm;
+      const uint16_t rh_mm = layout.virtual_h_mm;
+      fprintf(stderr, "[SCREEN_NOTIFY] sending ConfigureNotify + RRScreenChangeNotify "
+              "to %zu client(s), new size=%dx%d mm=%dx%d\n",
+              clients_.size(), (int)rw, (int)rh, (int)rw_mm, (int)rh_mm);
+
+      const uint32_t now = x11_now_ms_monotonic();
+
+      for (auto& [fd, session] : clients_) {
+        activateClient(session);
+
+        // 1) ConfigureNotify on root window (event type 22)
+        {
+          std::array<uint8_t, 32> ev{};
+          ev[0] = 22; // ConfigureNotify
+          ev[1] = 0;
+          wire::wr16_le(ev.data() + 2, session.seq);
+          wire::wr32_le(ev.data() + 4, kRootXid);  // event
+          wire::wr32_le(ev.data() + 8, kRootXid);  // window
+          wire::wr32_le(ev.data() + 12, 0);         // above-sibling: None
+          wire::wr16_le(ev.data() + 16, 0);         // x
+          wire::wr16_le(ev.data() + 18, 0);         // y
+          wire::wr16_le(ev.data() + 20, rw);        // width
+          wire::wr16_le(ev.data() + 22, rh);        // height
+          wire::wr16_le(ev.data() + 24, 0);         // border_width
+          ev[26] = 0; // override_redirect = false
+          server_->ctx().transport().sendAll(ev.data(), 32);
+        }
+
+        // 2) RRScreenChangeNotify (event type = RANDR first_event + 0 = 89)
+        //    This causes Xlib's XRRUpdateConfiguration() to update cached
+        //    screen dimensions (WidthOfScreen/HeightOfScreen).
+        {
+          std::array<uint8_t, 32> ev{};
+          ev[0] = ext::kRANDR_FirstEvent; // 89 = RRScreenChangeNotify
+          ev[1] = 0;  // rotation (0 = RR_Rotate_0)
+          wire::wr16_le(ev.data() + 2, session.seq);
+          wire::wr32_le(ev.data() + 4, now);        // timestamp
+          wire::wr32_le(ev.data() + 8, now);        // configTimestamp
+          wire::wr32_le(ev.data() + 12, kRootXid);  // root
+          wire::wr32_le(ev.data() + 16, kRootXid);  // requestWindow (root)
+          wire::wr16_le(ev.data() + 20, 0);         // sizeID
+          wire::wr16_le(ev.data() + 22, 0);         // subpixelOrder
+          wire::wr16_le(ev.data() + 24, rw);        // widthInPixels
+          wire::wr16_le(ev.data() + 26, rh);        // heightInPixels
+          wire::wr16_le(ev.data() + 28, rw_mm);     // widthInMillimeters
+          wire::wr16_le(ev.data() + 30, rh_mm);     // heightInMillimeters
+          server_->ctx().transport().sendAll(ev.data(), 32);
+        }
+
+        deactivateClient();
+      }
+      continue;
+    }
 
     // ---- WindowClose: special handling (needs daemon-level removeClient) ----
     if (c.type == HostCmdType::WindowClose) {

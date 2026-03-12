@@ -42,6 +42,7 @@
 #include "Core/HostCommandQueue.hpp"
 #include "Core/XClient.hpp"
 #include "Core/ClipboardAtoms.hpp"
+#include "Core/XConstants.hpp"
 #include "Utils/WireLE.hpp"
 #include "Utils/TraceDefs.hpp"
 
@@ -255,7 +256,27 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
                                    0, 0,
                                    wv->w, wv->h,
                                    count);
-  ctx.transport().sendEvent32(wid, ev.data());
+  bool sent = ctx.transport().sendEvent32(wid, ev.data());
+
+#ifndef NDEBUG
+  // Check if this window (or its host) is OR — helps diagnose blank popup text.
+  {
+    bool isOR = wv->override_redirect;
+    if (!isOR && wv->parent_xid != 0 && wv->parent_xid != 1) {
+      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+      x11::WindowView hv{};
+      if (host && ctx.windows().snapshot(host, hv)) isOR = hv.override_redirect;
+    }
+    if (isOR) {
+      fprintf(stderr, "[OR_EXPOSE] Expose wid=0x%08X wh=%ux%u sent=%d "
+              "owner_fd=%d client_fd=%d evmask=0x%08X\n",
+              (unsigned)wid,
+              (unsigned)wv->w, (unsigned)wv->h,
+              (int)sent, wv->owner_fd, ctx.transport().clientFd(),
+              (unsigned)wv->event_mask);
+    }
+  }
+#endif
 }
 
 // Re-expose a host window AND all its mapped descendants.
@@ -1004,6 +1025,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
         case HostCmdType::WindowClose:
           break;
 
+        // ------------------- ScreenLayoutChanged
+        // Handled directly in XProtoDaemon::drainHostCommands() (needs
+        // iteration over all clients).  Listed here to silence -Wswitch.
+        case HostCmdType::ScreenLayoutChanged:
+          break;
+
   } // switch
 }
 
@@ -1230,6 +1257,16 @@ extern "C" void x11_proto_bridge_expose_children(uint32_t xid)
   auto* srv = x11_proto_bridge_get_server();
   if (!srv) return;
   srv->hostCmds().push(HostCmd{HostCmdType::ExposeChildren, xid, 0, 0});
+}
+
+extern "C" void x11_proto_bridge_screen_layout_changed(void)
+{
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return;
+  HostCmd c{};
+  c.type = HostCmdType::ScreenLayoutChanged;
+  c.xid = x11::kRootXid;
+  srv->hostCmds().push(c);
 }
 
 

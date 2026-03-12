@@ -228,9 +228,16 @@ final class X11MetalRenderer {
   // MARK: - Draw
 
   func draw(on view: MTKView) {
+    let isBorderless = view.window?.styleMask == .borderless
+
     // Coalesce bursts safely.
     if inFlight {
       pendingDraw = true
+      #if DEBUG
+      if isBorderless {
+        print("[OR_RENDER] BLOCKED by inFlight — pendingDraw=true")
+      }
+      #endif
       return
     }
 
@@ -241,22 +248,64 @@ final class X11MetalRenderer {
     // Avoid rendering before the view is attached to a window.
     guard view.window != nil else { return }
 
-    guard let srcTex = texture else { return }
+    guard let srcTex = texture else {
+      #if DEBUG
+      if isBorderless { print("[OR_RENDER] NO TEXTURE") }
+      #endif
+      return
+    }
     guard let rpd = view.currentRenderPassDescriptor else {
       // RPD not available — CAMetalLayer may be reconfiguring (e.g., window
       // moved to a different screen).  Schedule retry since MTKView is paused.
+      #if DEBUG
+      if isBorderless { print("[OR_RENDER] RPD nil — scheduling retry \(drawRetryCount)") }
+      #endif
       scheduleDrawRetry(view: view)
       return
     }
     guard let drawable = view.currentDrawable else {
       // Drawable not available — same reconfiguration scenario.
+      #if DEBUG
+      if isBorderless { print("[OR_RENDER] DRAWABLE nil — scheduling retry \(drawRetryCount)") }
+      #endif
       scheduleDrawRetry(view: view)
       return
     }
-    guard let cmdBuf = commandQueue.makeCommandBuffer() else { return }
+    guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+      #if DEBUG
+      if isBorderless { print("[OR_RENDER] cmdBuf nil") }
+      #endif
+      return
+    }
 
     drawRetryCount = 0  // drawable obtained — reset retry counter
     inFlight = true
+
+    #if DEBUG
+    if isBorderless {
+      let metalLayer = view.layer as? CAMetalLayer
+      let layerDevice = metalLayer?.device?.name ?? "nil"
+      let rendererDevice = device.name
+      let contentsScale = metalLayer?.contentsScale ?? -1
+      let backingScale = view.window?.backingScaleFactor ?? -1
+      let drawableTexSize = "\(drawable.texture.width)x\(drawable.texture.height)"
+      let srcTexSize = "\(srcTex.width)x\(srcTex.height)"
+      let viewFrame = view.frame
+      let viewBounds = view.bounds
+      let winFrame = view.window?.frame ?? .zero
+      let winScreen = view.window?.screen?.frame ?? .zero
+      let viewHidden = view.isHidden
+      let viewHiddenAncestor = view.isHiddenOrHasHiddenAncestor
+      let viewSuperview = view.superview != nil
+      print("[OR_RENDER] COMMIT tex=\(srcTexSize) drawable=\(drawableTexSize) " +
+            "layerDev=\(layerDevice) rendDev=\(rendererDevice) " +
+            "contentsScale=\(contentsScale) backingScale=\(backingScale) " +
+            "viewFrame=\(viewFrame) viewBounds=\(viewBounds) " +
+            "winFrame=\(winFrame) winScreen=\(winScreen) " +
+            "viewHidden=\(viewHidden) hiddenAncestor=\(viewHiddenAncestor) " +
+            "hasSuperview=\(viewSuperview)")
+    }
+    #endif
 
     if let ca = rpd.colorAttachments[0] {
       ca.loadAction = .clear

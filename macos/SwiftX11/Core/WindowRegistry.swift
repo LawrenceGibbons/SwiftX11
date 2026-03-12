@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MetalKit
 import QuartzCore
 import X11LowLevel
 
@@ -46,6 +47,55 @@ final class WindowRegistry {
     let vminX = screens.map { $0.frame.minX }.min() ?? 0
     let vmaxY = screens.map { $0.frame.maxY }.max() ?? 0
     return NSPoint(x: x11X + vminX, y: vmaxY - x11Y - height)
+  }
+
+  /// Adjust an OR (popup) window origin so it appears on the same macOS screen
+  /// as the mouse cursor.  Clients that don't use RANDR (e.g. xterm) keep stale
+  /// WidthOfScreen/HeightOfScreen from connection setup, so after a monitor
+  /// hot-plug the popup X11 coords may be clipped to the old screen bounds and
+  /// land on the wrong macOS monitor.
+  ///
+  /// Strategy: if the computed macOS origin falls on a different NSScreen than
+  /// the current mouse cursor, translate the origin so the popup appears at the
+  /// same relative position on the cursor's screen.
+  static func adjustOROriginForCursorScreen(
+    origin: NSPoint, size: NSSize
+  ) -> NSPoint {
+    let screens = NSScreen.screens
+    guard screens.count > 1 else { return origin }
+
+    let mouseLocation = NSEvent.mouseLocation  // macOS global coords
+
+    // Find which screen the mouse is on
+    guard let cursorScreen = screens.first(where: { $0.frame.contains(mouseLocation) })
+            ?? screens.first  // fallback to primary
+    else { return origin }
+
+    // Find which screen the popup center would land on
+    let popupCenter = NSPoint(x: origin.x + size.width / 2,
+                              y: origin.y + size.height / 2)
+    let popupScreen = screens.first(where: { $0.frame.contains(popupCenter) })
+
+    // If popup is on the same screen as cursor, no adjustment needed
+    if let ps = popupScreen, ps === cursorScreen { return origin }
+
+    // Popup is on a different screen (or off-screen entirely).
+    // Place the popup near the cursor on its screen, clamped to screen bounds.
+    // Prefer: cursor.x (left-aligned), cursor.y - height (above cursor).
+    let cs = cursorScreen.visibleFrame
+    var newX = mouseLocation.x
+    var newY = mouseLocation.y - size.height
+
+    // Clamp to cursor screen bounds
+    if newX + size.width > cs.maxX { newX = cs.maxX - size.width }
+    if newX < cs.minX { newX = cs.minX }
+    if newY < cs.minY { newY = cs.minY }
+    if newY + size.height > cs.maxY { newY = cs.maxY - size.height }
+
+    print("[POPUP_ADJUST] cursor on screen \(cursorScreen.frame), " +
+          "popup was at \(origin) (screen \(popupScreen?.frame.debugDescription ?? "none")), " +
+          "adjusted to (\(newX), \(newY))")
+    return NSPoint(x: newX, y: newY)
   }
 
   /// Virtual desktop max-Y in macOS global screen coordinates.
@@ -264,10 +314,12 @@ final class WindowRegistry {
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
       if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
-        let origin = WindowRegistry.x11RootToMacOSOrigin(
+        let rawOrigin = WindowRegistry.x11RootToMacOSOrigin(
           x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(x11h))
-        let frame = NSRect(origin: origin,
-                           size: NSSize(width: CGFloat(x11w), height: CGFloat(x11h)))
+        let popupSize = NSSize(width: CGFloat(x11w), height: CGFloat(x11h))
+        let origin = WindowRegistry.adjustOROriginForCursorScreen(
+          origin: rawOrigin, size: popupSize)
+        let frame = NSRect(origin: origin, size: popupSize)
         print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
         win.setFrame(frame, display: true)
         // Defer orderFront until the first present succeeds so the popup
@@ -593,8 +645,27 @@ final class WindowRegistry {
 
     if hasContent {
       pendingORShow.remove(xid)
-      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) showing after present with content")
-      windows[xid]?.window?.orderFront(nil)
+      let win = windows[xid]?.window
+      let screenFrame = win?.screen?.frame ?? .zero
+      let winFrame = win?.frame ?? .zero
+      let x11v = windows[xid]?.x11View
+      let mv = x11v?.mtkViewForDiag
+      let mtkFrame = mv?.frame ?? .zero
+      let mtkBounds = mv?.bounds ?? .zero
+      let mtkDS = mv?.drawableSize ?? .zero
+      let mtkHidden = mv?.isHidden ?? true
+      let mtkHiddenAnc = mv?.isHiddenOrHasHiddenAncestor ?? true
+      let mtkHasSuperv = mv?.superview != nil
+      let metalLayer = mv?.layer as? CAMetalLayer
+      let layerFrame = metalLayer?.frame ?? .zero
+      let layerOpaque = metalLayer?.isOpaque ?? false
+      let layerHidden = metalLayer?.isHidden ?? true
+      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) winFrame=\(winFrame) " +
+            "screen=\(screenFrame) mtkFrame=\(mtkFrame) mtkBounds=\(mtkBounds) " +
+            "mtkDS=\(mtkDS) mtkHidden=\(mtkHidden) mtkHiddenAnc=\(mtkHiddenAnc) " +
+            "hasSuperv=\(mtkHasSuperv) layerFrame=\(layerFrame) " +
+            "layerOpaque=\(layerOpaque) layerHidden=\(layerHidden)")
+      win?.orderFront(nil)
     } else {
       #if DEBUG
       print("[POPUP_DEFER] xid=0x\(String(format:"%X", xid)) surface still blank — deferring show")
@@ -685,6 +756,28 @@ final class WindowRegistry {
 
     let dataToPresent = a1.data
     let scan = scanBGRA(dataToPresent, width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
+    #if DEBUG
+    if infoByXid[presentXid]?.overrideRedirect == true {
+      // Count non-white pixels in a band at 1/3 height (where text would be)
+      let textY = Int(sz.h) / 3
+      var nonWhiteInRow = 0
+      dataToPresent.withUnsafeBytes { raw in
+        let p = raw.bindMemory(to: UInt32.self)
+        let stride = Int(sz.bpr) / 4
+        if textY < Int(sz.h) && stride > 0 {
+          for x in 0..<Int(sz.w) {
+            let idx = textY * stride + x
+            if idx < p.count && p[idx] != 0xFFFFFFFF {
+              nonWhiteInRow += 1
+            }
+          }
+        }
+      }
+      print("[OR_SNAP] xid=0x\(String(format:"%X", presentXid)) sz=\(sz.w)x\(sz.h) " +
+            "nonwhite_total=\(scan.nonwhite) nonwhite_row\(textY)=\(nonWhiteInRow) " +
+            "pendingOR=\(pendingORShow.contains(presentXid))")
+    }
+    #endif
     if debugSnapshotRouting {
       let samplesStr = scan.samples
         .map { String(format: "0x%08X", $0) }
@@ -812,8 +905,19 @@ final class WindowRegistry {
     if x11_get_window_geometry(xid, &dummy1, &dummy2, &x11w, &x11h, &dummyOR) {
       // Convert X11 root coords (y-down) to macOS screen coords (y-up)
       // Uses virtual desktop union bounds so windows on any monitor work correctly.
-      let origin = WindowRegistry.x11RootToMacOSOrigin(
+      let rawOrigin = WindowRegistry.x11RootToMacOSOrigin(
         x11X: CGFloat(x11X), x11Y: CGFloat(x11Y), height: CGFloat(x11h))
+      // For OR (popup) windows, adjust position if cursor is on a different screen
+      // (handles clients with stale screen dimensions after monitor hot-plug)
+      let isOR = infoByXid[xid]?.overrideRedirect ?? false
+      let origin: NSPoint
+      if isOR {
+        origin = WindowRegistry.adjustOROriginForCursorScreen(
+          origin: rawOrigin,
+          size: NSSize(width: CGFloat(x11w), height: CGFloat(x11h)))
+      } else {
+        origin = rawOrigin
+      }
       win.setFrameOrigin(origin)
 
       // Position updated. Don't show the window here — let
@@ -1174,8 +1278,20 @@ final class WindowRegistry {
     }
 
     // De-dupe per-host present scheduling
-    if pendingPresentByXid.contains(host) { return }
+    if pendingPresentByXid.contains(host) {
+      #if DEBUG
+      if infoByXid[host]?.overrideRedirect == true {
+        print("[OR_PRESENT_DEDUP] xid=0x\(String(format:"%X", host)) — present already pending, skipping")
+      }
+      #endif
+      return
+    }
     pendingPresentByXid.insert(host)
+    #if DEBUG
+    if infoByXid[host]?.overrideRedirect == true {
+      print("[OR_PRESENT_SCHED] xid=0x\(String(format:"%X", host)) — scheduling 20ms present timer")
+    }
+    #endif
 
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
       guard let self else { return }
@@ -1207,6 +1323,12 @@ final class WindowRegistry {
         damage = nil  // full-frame upload
       }
 
+      #if DEBUG
+      if self.infoByXid[host]?.overrideRedirect == true {
+        let dmgStr = damage.map { "(\($0.x),\($0.y),\($0.w)x\($0.h))" } ?? "nil(full)"
+        print("[OR_PRESENT_FIRE] xid=0x\(String(format:"%X", host)) damage=\(dmgStr) pendingOR=\(self.pendingORShow.contains(host))")
+      }
+      #endif
       // Always snapshot/present the HOST. The C side composites children onto host.
       self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: damage)
     }
@@ -1251,8 +1373,32 @@ final class WindowRegistry {
 extension WindowRegistry {
   func presentBGRA(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int,
                    damageRect: DamageRect? = nil) {
-    guard let controller = windows[xid] else { return }
-    guard let view = controller.x11View else { return }
+    guard let controller = windows[xid] else {
+      #if DEBUG
+      if infoByXid[xid]?.overrideRedirect == true {
+        print("[OR_PRESENT_SKIP] xid=0x\(String(format:"%X", xid)) — no controller")
+      }
+      #endif
+      return
+    }
+    guard let view = controller.x11View else {
+      #if DEBUG
+      if infoByXid[xid]?.overrideRedirect == true {
+        print("[OR_PRESENT_SKIP] xid=0x\(String(format:"%X", xid)) — no x11View")
+      }
+      #endif
+      return
+    }
+
+    #if DEBUG
+    if infoByXid[xid]?.overrideRedirect == true {
+      let diag = view.metalDiagnostics
+      let dmgStr = damageRect.map { "(\($0.x),\($0.y),\($0.w)x\($0.h))" } ?? "nil(full)"
+      print("[OR_PRESENT] xid=0x\(String(format:"%X", xid)) \(width)x\(height) " +
+            "drawableSize=\(Int(diag.drawableSize.width))x\(Int(diag.drawableSize.height)) " +
+            "metalSetup=\(diag.metalSetup) hasTex=\(diag.hasTexture) damage=\(dmgStr)")
+    }
+    #endif
 
     // `X11View.presentBGRA` copies the bytes internally, so it’s safe to pass a pointer
     // that’s only valid for the duration of this closure.

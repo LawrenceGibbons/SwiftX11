@@ -8,6 +8,8 @@
 //
 
 #include "Core/ScreenLayout.hpp"
+#include "Core/HostCommandQueue.hpp"
+#include "Core/XConstants.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -15,6 +17,10 @@
 #include <mutex>
 
 #include <CoreGraphics/CoreGraphics.h>
+
+// Forward: push a ScreenLayoutChanged host command so the server thread
+// can send ConfigureNotify on the root window.
+extern "C" void x11_proto_bridge_screen_layout_changed(void);
 
 namespace x11 {
 
@@ -254,6 +260,17 @@ void refreshScreenLayout() {
     fprintf(stderr, "[SCREEN] layout refreshed: %dx%d, %zu monitor(s)\n",
             (int)s_layout.virtual_w, (int)s_layout.virtual_h,
             s_layout.monitors.size());
+    for (auto& m : s_layout.monitors) {
+        fprintf(stderr, "[SCREEN]   %s: pos=(%d,%d) size=%dx%d px=%dx%d mm=%dx%d%s\n",
+                m.name, (int)m.x, (int)m.y,
+                (int)m.w, (int)m.h,
+                (int)m.w_px, (int)m.h_px,
+                (int)m.w_mm, (int)m.h_mm,
+                m.is_primary ? " [primary]" : "");
+    }
+
+    // Notify the X11 server thread to send ConfigureNotify on root window.
+    x11_proto_bridge_screen_layout_changed();
 }
 
 // CGDisplayReconfigurationCallback signature
