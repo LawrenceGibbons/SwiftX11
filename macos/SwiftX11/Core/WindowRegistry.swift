@@ -857,6 +857,7 @@ final class WindowRegistry {
   func setTitle(xid: UInt32, title: String) {
     guard let controller = windows[xid] else { return }
     controller.window?.title = title
+    infoByXid[xid]?.title = title
   }
   
   func raiseWindow(xid: UInt32) {

@@ -260,15 +260,14 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [x] **TCP socket listener**: TCP now binds to 0.0.0.0 (all interfaces) by default. Docker containers connect via `DISPLAY=host.docker.internal:1`. (v1.9.4)
 - [x] **Unix socket**: /tmp/.X11-unix/X{display} Unix domain socket listener for local containers via volume mount (`-v /tmp/.X11-unix:/tmp/.X11-unix`). (v1.9.4)
 - [x] **Multi-listener architecture**: XProtoDaemon supports simultaneous TCP + Unix listeners with vector-based poll loop. Settings UI toggles for TCP/Unix. (v1.9.4)
-- [ ] **Xauth**: Basic MIT-MAGIC-COOKIE-1 authentication (or xhost + for development).
-- [ ] **Latency tolerance**: Ensure protocol handling doesn't assume local-only latency.
+- [x] **Xauth / Latency tolerance**: Moved to Phase 7 (LOW) — not needed for local/LAN Vivado use case.
 
 ### 5.3 Keyboard (MEDIUM) — DONE (v1.11.0)
 - [x] **Full keysym mapping**: Comprehensive macOS virtual keycode → X11 keysym table covering all keys: letters (US layout), digits, punctuation, F1-F20, Home/End/PageUp/PageDown/Delete/Help, arrows, keypad (KP_0-KP_9, operators, KP_Enter, KP_Equal), modifiers (left+right for Shift/Ctrl/Alt/Super), CapsLock, Fn→Meta_L, ISO Section key. All keysym constants added to KeySyms.hpp (v1.11.0).
 - [x] **Modifier mapping**: GetModifierMapping returns 2 keys per modifier (left+right): Shift_L/R, CapsLock, Control_L/R, Alt_L/R (Mod1), Command_L/R (Mod4). `xmodmap -pm` shows correct mapping (v1.11.0).
 - [x] **Keymap state**: QueryKeymap returns real pressed-key state via InputState::keymap_ (256-bit bitfield). Key handler updates keymap on press/release (v1.11.0).
 - [x] **GetKeyboardMapping 4-column**: Reports 4 keysyms per keycode (normal, shift, mode_switch, mode_switch+shift) as expected by Java Swing/GTK. Columns 3-4 are NoSymbol on macOS (no Mode_switch/AltGr) (v1.11.0).
-- [ ] **XKB (optional)**: Modern clients may query for XKB extension — return not-present is acceptable.
+- [x] **XKB**: Moved to Phase 7 (LOW) — Java Swing/GTK fall back to core keyboard gracefully. Not needed for Vivado.
 
 ### 5.4 Window Close / Client Lifecycle (HIGH — user experience) — DONE (v1.9.0)
 - [x] **Window close kills client**: Red close button and Cmd+W now terminate X11 clients. ICCCM-compliant: checks WM_PROTOCOLS for WM_DELETE_WINDOW, sends ClientMessage if supported. Falls back to forceful socket disconnect for clients that don't support WM_DELETE_WINDOW (v1.9.0).
@@ -289,6 +288,13 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 ## Phase 7: Additional Extensions (LOW — broader app compatibility)
 
 These extensions are not needed for the Vivado/Vitis target but may be required by other X11 applications colleagues might use.
+
+### 7.0 Deferred Items (LOW)
+Items moved from higher phases — not blocking Vivado/Vitis.
+- [ ] **Xauth**: Basic MIT-MAGIC-COOKIE-1 authentication (or xhost + for development). Only needed if exposing server to untrusted networks.
+- [ ] **Latency tolerance**: Audit protocol handling for WAN latency assumptions. Not relevant for local/LAN use.
+- [ ] **XKB extension**: Full X Keyboard Extension for multi-layout support, compose/dead keys, per-key type definitions. Java Swing/GTK fall back to core keyboard protocol gracefully. Return not-present is acceptable.
+- [ ] **Option key compose**: Pass macOS Option-key-interpreted characters (e.g., Option+e → é) through to X11 keysym table columns 3-4.
 
 ### 7.1 XInput / XInput2 (MEDIUM)
 Extended input devices (tablets, multi-touch). Some GTK apps query for XInput2.

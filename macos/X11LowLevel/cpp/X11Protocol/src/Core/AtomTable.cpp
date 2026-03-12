@@ -118,6 +118,7 @@ struct AtomTableState {
       { "WM_PROTOCOLS",     x11::atom::kWM_PROTOCOLS },
       { "WM_DELETE_WINDOW", x11::atom::kWM_DELETE_WINDOW },
       { "_SWIFTX11_CLIPBOARD", x11::atom::kSWIFTX11_CLIP },
+      { "_NET_WM_NAME",       x11::atom::k_NET_WM_NAME },
     };
     for (const auto& e : kExtra) {
       name_to_atom.emplace(std::string(e.name), e.id);

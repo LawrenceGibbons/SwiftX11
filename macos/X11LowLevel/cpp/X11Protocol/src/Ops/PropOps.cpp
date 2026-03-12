@@ -12,15 +12,19 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "Core/XProtoContext.hpp"
 #include "Core/WindowTable.hpp"
 #include "Core/XConstants.hpp"
+#include "Core/ClipboardAtoms.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+
+extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8);
 
 namespace x11 {
 
@@ -113,6 +117,14 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     PropertyTable::instance().setAppend(wid, atom, type, fmt, data, dataBytes, /*append*/true);
   } else {
     PropertyTable::instance().setReplace(wid, atom, type, fmt, data, dataBytes);
+  }
+
+  // Push title update to UI when WM_NAME or _NET_WM_NAME is set
+  if (atom == x11::atom::kWM_NAME || atom == x11::atom::k_NET_WM_NAME) {
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+    std::string title(reinterpret_cast<const char*>(data), dataBytes);
+    x11_ui_push_title(host, title.c_str());
   }
 }
 
