@@ -647,22 +647,8 @@ final class X11View: NSView {
       return
     }
     presentRetryCount = 0
-    #if DEBUG
-    if window?.styleMask == .borderless {
-      let texSize = renderer?.texture.map { "\($0.width)x\($0.height)" } ?? "nil"
-      print("[OR_METAL_UPLOAD] xid=0x\(String(format:"%X", xid)) " +
-            "data=\(width)x\(height) drawableSize=\(Int(mv.drawableSize.width))x\(Int(mv.drawableSize.height)) " +
-            "texBefore=\(texSize)")
-    }
-    #endif
     self.renderer?.updateTexture(with: data, width: width, height: height, bytesPerRow: bytesPerRow,
                                  damageRect: damageRect)
-    #if DEBUG
-    if window?.styleMask == .borderless {
-      let texSize = renderer?.texture.map { "\($0.width)x\($0.height)" } ?? "nil"
-      print("[OR_METAL_UPLOAD_DONE] xid=0x\(String(format:"%X", xid)) texAfter=\(texSize)")
-    }
-    #endif
     mv.setNeedsDisplay(mv.bounds)
   }
 
@@ -1302,7 +1288,6 @@ final class X11View: NSView {
     return (ds, metalSetupDone, renderer?.hasTexture ?? false)
   }
 
-  var mtkViewForDiag: MTKView? { mtkView }
   #endif
 
 }
@@ -1365,11 +1350,6 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     guard ds.width >= 1, ds.height >= 1 else { return }
     guard view.currentDrawable != nil else { return }
     guard owner?.hasMetalTexture == true else { return } // <- prevents clear-color overwrite
-    #if DEBUG
-    if owner?.window?.styleMask == .borderless {
-      print("[OR_METAL_DRAW] xid=0x\(String(format:"%X", xid)) drawableSize=\(Int(ds.width))x\(Int(ds.height))")
-    }
-    #endif
     owner?.metalDraw(in: view)
   }
   

@@ -1060,37 +1060,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     int32_t penX            = (int16_t)br.readU16();
     const int32_t baseY     = (int16_t)br.readU16();
 
-#ifndef NDEBUG
-    {
-      x11::WindowView wv{};
-      if (ctx.windows().snapshot(drawable, wv)) {
-        // Check if drawable is an OR window itself or child of one
-        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
-        if (host == 0) host = drawable;  // host is the drawable itself
-        x11::WindowView hv{};
-        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
-          x11::DrawableRW dbgDst{};
-          bool dbgResolved = x11::resolveDrawableRW(ctx, drawable, dbgDst);
-          x11::SurfaceDesc dbgS{};
-          bool dbgHasSurf = ctx.surfaces().get(host, dbgS);
-          fprintf(stderr, "[OR_TEXT] PolyText8 draw=0x%08X host=0x%08X at (%d,%d) "
-                  "drawWH=%ux%u resolved=%d dstWH=%ux%u dstOff=(%d,%d) "
-                  "dstStride=%u hasSurf=%d surfWH=%ux%u\n",
-                  (unsigned)drawable, (unsigned)host,
-                  (int)penX, (int)baseY,
-                  (unsigned)wv.w, (unsigned)wv.h,
-                  (int)dbgResolved,
-                  dbgResolved ? (unsigned)dbgDst.w : 0u,
-                  dbgResolved ? (unsigned)dbgDst.h : 0u,
-                  dbgResolved ? (int)dbgDst.offsetX : 0,
-                  dbgResolved ? (int)dbgDst.offsetY : 0,
-                  dbgResolved ? (unsigned)dbgDst.stridePixels : 0u,
-                  (int)dbgHasSurf,
-                  (unsigned)dbgS.w, (unsigned)dbgS.h);
-        }
-      }
-    }
-#endif
+    // Verbose OR_TEXT trace removed (was diagnostic-only for v1.10.4–v1.10.7).
+    // The trace checked every PolyText8 on OR windows for surface resolution status.
 #if X11_TRACE_FONT_ENABLED
     {
       x11::WindowView wv{};
@@ -1106,16 +1077,6 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
-#ifndef NDEBUG
-      {
-        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
-        x11::WindowView hv{};
-        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
-          fprintf(stderr, "[OR_TEXT_FAIL] PolyText8 resolve FAILED child=0x%08X host=0x%08X\n",
-                  (unsigned)drawable, (unsigned)host);
-        }
-      }
-#endif
       br.skip(br.remaining());
       if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
         ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::PolyText8);
@@ -1300,37 +1261,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     for (uint8_t i = 0; i < n; i++) text[i] = br.readU8();
     br.skip(br.remaining());
 
-#ifndef NDEBUG
-    {
-      x11::WindowView wv{};
-      if (ctx.windows().snapshot(drawable, wv)) {
-        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
-        if (host == 0) host = drawable;
-        x11::WindowView hv{};
-        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
-          x11::DrawableRW dbgDst{};
-          bool dbgResolved = x11::resolveDrawableRW(ctx, drawable, dbgDst);
-          x11::SurfaceDesc dbgS{};
-          bool dbgHasSurf = ctx.surfaces().get(host, dbgS);
-          std::string txt(text.begin(), text.end());
-          fprintf(stderr, "[OR_TEXT] ImageText8 draw=0x%08X host=0x%08X text=\"%s\" "
-                  "at (%d,%d) drawWH=%ux%u resolved=%d dstWH=%ux%u dstOff=(%d,%d) "
-                  "dstStride=%u hasSurf=%d surfWH=%ux%u\n",
-                  (unsigned)drawable, (unsigned)host,
-                  txt.c_str(), (int)x, (int)y,
-                  (unsigned)wv.w, (unsigned)wv.h,
-                  (int)dbgResolved,
-                  dbgResolved ? (unsigned)dbgDst.w : 0u,
-                  dbgResolved ? (unsigned)dbgDst.h : 0u,
-                  dbgResolved ? (int)dbgDst.offsetX : 0,
-                  dbgResolved ? (int)dbgDst.offsetY : 0,
-                  dbgResolved ? (unsigned)dbgDst.stridePixels : 0u,
-                  (int)dbgHasSurf,
-                  (unsigned)dbgS.w, (unsigned)dbgS.h);
-        }
-      }
-    }
-#endif
+    // Verbose OR_TEXT trace for ImageText8 removed (was diagnostic-only for v1.10.4–v1.10.7).
 #if X11_TRACE_FONT_ENABLED
     {
       // Diagnostic: show text drawn into each drawable with window geometry
@@ -1351,17 +1282,6 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
-#ifndef NDEBUG
-      {
-        uint32_t host = ctx.windows().topLevelAncestorOf(drawable);
-        x11::WindowView hv{};
-        if (host && ctx.windows().snapshot(host, hv) && hv.override_redirect) {
-          std::string txt(text.begin(), text.end());
-          fprintf(stderr, "[OR_TEXT_FAIL] ImageText8 resolve FAILED child=0x%08X host=0x%08X text=\"%s\"\n",
-                  (unsigned)drawable, (unsigned)host, txt.c_str());
-        }
-      }
-#endif
       if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
         ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::ImageText8);
       return;

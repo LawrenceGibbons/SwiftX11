@@ -281,31 +281,8 @@ final class X11MetalRenderer {
     drawRetryCount = 0  // drawable obtained — reset retry counter
     inFlight = true
 
-    #if DEBUG
-    if isBorderless {
-      let metalLayer = view.layer as? CAMetalLayer
-      let layerDevice = metalLayer?.device?.name ?? "nil"
-      let rendererDevice = device.name
-      let contentsScale = metalLayer?.contentsScale ?? -1
-      let backingScale = view.window?.backingScaleFactor ?? -1
-      let drawableTexSize = "\(drawable.texture.width)x\(drawable.texture.height)"
-      let srcTexSize = "\(srcTex.width)x\(srcTex.height)"
-      let viewFrame = view.frame
-      let viewBounds = view.bounds
-      let winFrame = view.window?.frame ?? .zero
-      let winScreen = view.window?.screen?.frame ?? .zero
-      let viewHidden = view.isHidden
-      let viewHiddenAncestor = view.isHiddenOrHasHiddenAncestor
-      let viewSuperview = view.superview != nil
-      print("[OR_RENDER] COMMIT tex=\(srcTexSize) drawable=\(drawableTexSize) " +
-            "layerDev=\(layerDevice) rendDev=\(rendererDevice) " +
-            "contentsScale=\(contentsScale) backingScale=\(backingScale) " +
-            "viewFrame=\(viewFrame) viewBounds=\(viewBounds) " +
-            "winFrame=\(winFrame) winScreen=\(winScreen) " +
-            "viewHidden=\(viewHidden) hiddenAncestor=\(viewHiddenAncestor) " +
-            "hasSuperview=\(viewSuperview)")
-    }
-    #endif
+    // Verbose OR_RENDER COMMIT trace removed (was diagnostic-only for v1.10.4–v1.10.7).
+    // Re-add temporarily if debugging blank popup issues on multi-monitor setups.
 
     if let ca = rpd.colorAttachments[0] {
       ca.loadAction = .clear

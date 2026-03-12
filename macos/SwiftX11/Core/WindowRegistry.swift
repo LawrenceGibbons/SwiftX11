@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import MetalKit
 import QuartzCore
 import X11LowLevel
 
@@ -662,27 +661,10 @@ final class WindowRegistry {
 
     if hasContent {
       pendingORShow.remove(xid)
-      let win = windows[xid]?.window
-      let screenFrame = win?.screen?.frame ?? .zero
-      let winFrame = win?.frame ?? .zero
-      let x11v = windows[xid]?.x11View
-      let mv = x11v?.mtkViewForDiag
-      let mtkFrame = mv?.frame ?? .zero
-      let mtkBounds = mv?.bounds ?? .zero
-      let mtkDS = mv?.drawableSize ?? .zero
-      let mtkHidden = mv?.isHidden ?? true
-      let mtkHiddenAnc = mv?.isHiddenOrHasHiddenAncestor ?? true
-      let mtkHasSuperv = mv?.superview != nil
-      let metalLayer = mv?.layer as? CAMetalLayer
-      let layerFrame = metalLayer?.frame ?? .zero
-      let layerOpaque = metalLayer?.isOpaque ?? false
-      let layerHidden = metalLayer?.isHidden ?? true
-      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) winFrame=\(winFrame) " +
-            "screen=\(screenFrame) mtkFrame=\(mtkFrame) mtkBounds=\(mtkBounds) " +
-            "mtkDS=\(mtkDS) mtkHidden=\(mtkHidden) mtkHiddenAnc=\(mtkHiddenAnc) " +
-            "hasSuperv=\(mtkHasSuperv) layerFrame=\(layerFrame) " +
-            "layerOpaque=\(layerOpaque) layerHidden=\(layerHidden)")
-      win?.orderFront(nil)
+      #if DEBUG
+      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) showing after present with content")
+      #endif
+      windows[xid]?.window?.orderFront(nil)
     } else {
       #if DEBUG
       print("[POPUP_DEFER] xid=0x\(String(format:"%X", xid)) surface still blank — deferring show")
@@ -773,28 +755,7 @@ final class WindowRegistry {
 
     let dataToPresent = a1.data
     let scan = scanBGRA(dataToPresent, width: Int(sz.w), height: Int(sz.h), bytesPerRow: Int(sz.bpr))
-    #if DEBUG
-    if infoByXid[presentXid]?.overrideRedirect == true {
-      // Count non-white pixels in a band at 1/3 height (where text would be)
-      let textY = Int(sz.h) / 3
-      var nonWhiteInRow = 0
-      dataToPresent.withUnsafeBytes { raw in
-        let p = raw.bindMemory(to: UInt32.self)
-        let stride = Int(sz.bpr) / 4
-        if textY < Int(sz.h) && stride > 0 {
-          for x in 0..<Int(sz.w) {
-            let idx = textY * stride + x
-            if idx < p.count && p[idx] != 0xFFFFFFFF {
-              nonWhiteInRow += 1
-            }
-          }
-        }
-      }
-      print("[OR_SNAP] xid=0x\(String(format:"%X", presentXid)) sz=\(sz.w)x\(sz.h) " +
-            "nonwhite_total=\(scan.nonwhite) nonwhite_row\(textY)=\(nonWhiteInRow) " +
-            "pendingOR=\(pendingORShow.contains(presentXid))")
-    }
-    #endif
+    // Verbose OR_SNAP trace removed (was diagnostic-only for v1.10.4–v1.10.7).
     if debugSnapshotRouting {
       let samplesStr = scan.samples
         .map { String(format: "0x%08X", $0) }
@@ -1302,20 +1263,8 @@ final class WindowRegistry {
     }
 
     // De-dupe per-host present scheduling
-    if pendingPresentByXid.contains(host) {
-      #if DEBUG
-      if infoByXid[host]?.overrideRedirect == true {
-        print("[OR_PRESENT_DEDUP] xid=0x\(String(format:"%X", host)) — present already pending, skipping")
-      }
-      #endif
-      return
-    }
+    if pendingPresentByXid.contains(host) { return }
     pendingPresentByXid.insert(host)
-    #if DEBUG
-    if infoByXid[host]?.overrideRedirect == true {
-      print("[OR_PRESENT_SCHED] xid=0x\(String(format:"%X", host)) — scheduling 20ms present timer")
-    }
-    #endif
 
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
       guard let self else { return }
@@ -1347,12 +1296,6 @@ final class WindowRegistry {
         damage = nil  // full-frame upload
       }
 
-      #if DEBUG
-      if self.infoByXid[host]?.overrideRedirect == true {
-        let dmgStr = damage.map { "(\($0.x),\($0.y),\($0.w)x\($0.h))" } ?? "nil(full)"
-        print("[OR_PRESENT_FIRE] xid=0x\(String(format:"%X", host)) damage=\(dmgStr) pendingOR=\(self.pendingORShow.contains(host))")
-      }
-      #endif
       // Always snapshot/present the HOST. The C side composites children onto host.
       self.snapshotAndPresentNow(sourceXid: host, presentXid: host, damageRect: damage)
     }
@@ -1397,32 +1340,8 @@ final class WindowRegistry {
 extension WindowRegistry {
   func presentBGRA(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int,
                    damageRect: DamageRect? = nil) {
-    guard let controller = windows[xid] else {
-      #if DEBUG
-      if infoByXid[xid]?.overrideRedirect == true {
-        print("[OR_PRESENT_SKIP] xid=0x\(String(format:"%X", xid)) — no controller")
-      }
-      #endif
-      return
-    }
-    guard let view = controller.x11View else {
-      #if DEBUG
-      if infoByXid[xid]?.overrideRedirect == true {
-        print("[OR_PRESENT_SKIP] xid=0x\(String(format:"%X", xid)) — no x11View")
-      }
-      #endif
-      return
-    }
-
-    #if DEBUG
-    if infoByXid[xid]?.overrideRedirect == true {
-      let diag = view.metalDiagnostics
-      let dmgStr = damageRect.map { "(\($0.x),\($0.y),\($0.w)x\($0.h))" } ?? "nil(full)"
-      print("[OR_PRESENT] xid=0x\(String(format:"%X", xid)) \(width)x\(height) " +
-            "drawableSize=\(Int(diag.drawableSize.width))x\(Int(diag.drawableSize.height)) " +
-            "metalSetup=\(diag.metalSetup) hasTex=\(diag.hasTexture) damage=\(dmgStr)")
-    }
-    #endif
+    guard let controller = windows[xid] else { return }
+    guard let view = controller.x11View else { return }
 
     // `X11View.presentBGRA` copies the bytes internally, so it’s safe to pass a pointer
     // that’s only valid for the duration of this closure.
