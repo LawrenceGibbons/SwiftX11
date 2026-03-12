@@ -189,7 +189,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.11.0)
+### Current State (v1.11.1)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -283,7 +283,9 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **Comprehensive keyboard support** (v1.11.0): Full macOS virtual keycode → X11 keysym mapping covering all keys: letters (US), digits, punctuation, F1-F20, Home/End/PageUp/PageDown/Delete/Help, arrows, keypad (KP_0-9, operators, Enter, Equal), modifiers (left+right), CapsLock, Fn→Meta_L, ISO Section key. GetKeyboardMapping returns 4 keysyms per keycode (normal/shift/mode_switch/mode_switch+shift) for Java Swing/GTK compatibility. GetModifierMapping returns 2 keys per modifier (left+right: Shift_L/R, Control_L/R, Alt_L/R→Mod1, Super_L/R→Mod4). QueryKeymap returns real pressed-key state via InputState::keymap_ bitfield. ~90 keysym constants added to KeySyms.hpp.
 
-### Known Issues (v1.11.0)
+- **Window menu + WM_NAME title sync** (v1.11.1): macOS Window menu via `NSApp.windowsMenu` in AppDelegate — AppKit auto-lists all X11 NSWindows and brings selected window to front. WM_NAME (atom 39) and `_NET_WM_NAME` (atom 79) property changes in PropOps trigger `x11_ui_push_title()` → NSWindow title update. Child window titles route through `topLevelAncestorOf()`. `_NET_WM_NAME` pre-registered as atom 79 in AtomTable.
+
+### Known Issues (v1.11.1)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
 
@@ -300,3 +302,4 @@ See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phas
 7. ~~**Rendering performance**~~ — ✅ Done (v1.10.0): Metal-only (software path removed), PutImage bulk memcpy, Expose two-pass
 8. ~~**Multi-monitor popup fix**~~ — ✅ Done (v1.10.7): contentsScale fix, hot-plug positioning, ScreenLayoutChanged broadcast
 9. ~~**Keyboard support**~~ — ✅ Done (v1.11.0): Full keysym table, 4-column GetKeyboardMapping, 2-key GetModifierMapping, real QueryKeymap
+10. ~~**Window menu + title sync**~~ — ✅ Done (v1.11.1): macOS Window menu, WM_NAME/_NET_WM_NAME title sync

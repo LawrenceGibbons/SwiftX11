@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-12 (v1.11.0 — Comprehensive keyboard support)
+Last updated: 2026-03-12 (v1.11.1 — Window menu integration + WM_NAME title sync)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -273,11 +273,20 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [x] **Window close kills client**: Red close button and Cmd+W now terminate X11 clients. ICCCM-compliant: checks WM_PROTOCOLS for WM_DELETE_WINDOW, sends ClientMessage if supported. Falls back to forceful socket disconnect for clients that don't support WM_DELETE_WINDOW (v1.9.0).
 - [x] **Keyboard shortcut**: Cmd+W triggers `performClose` on the key NSWindow, which fires `windowWillClose` → `x11_post_window_close`. Works automatically because X11 windows have `.closable` style (v1.9.0).
 
-### 5.5 Window Menu Integration (MEDIUM — user experience)
-- [ ] **Window menu entries**: Each X11 client window should appear as an entry in SwiftX11's macOS "Window" menu. Selecting the entry should bring the window to the front and give it focus (makeKeyAndOrderFront).
-- [ ] **Dynamic updates**: Entries added on MapWindow, removed on DestroyWindow/UnmapWindow. Use WM_NAME property (or fallback to XID) as the menu item title.
+### 5.5 Window Menu Integration (MEDIUM — user experience) — DONE (v1.11.1)
+- [x] **Window menu entries**: macOS Window menu via `NSApp.windowsMenu` — AppKit automatically lists all X11 NSWindows with correct titles and brings them to front on selection (v1.11.1).
+- [x] **WM_NAME title sync**: PropOps hooks WM_NAME (atom 39) and `_NET_WM_NAME` (atom 79) property changes → `x11_ui_push_title()` → NSWindow title update. Child window titles route through `topLevelAncestorOf()` (v1.11.1).
+- [x] **Dynamic updates**: AppKit handles add/remove automatically when NSWindows are created/destroyed (v1.11.1).
 
-### 5.6 ICCCM / Window Manager Compliance (LOW)
+### 5.6 SwiftX11 Debug Panel Redesign (LOW — UX improvement)
+Convert the SwiftX11 main window from a spawnable `WindowGroup` into a single persistent debug/control panel.
+- [ ] **Single persistent window**: Replace `WindowGroup` with a single non-spawnable window (e.g., `Window` with `id`). Remove "New SwiftX11 Window" from File menu.
+- [ ] **View menu show/hide**: Add "Show Debug Panel" / "Hide Debug Panel" toggle under View menu instead of spawning new windows.
+- [ ] **Debug logging controls**: Consolidate debug logging level controls (trace categories, verbose mode) into the panel. Wire to C++ trace flags at runtime.
+- [ ] **Log output display**: Keep the existing monospace log view for server output. Consider filtering by trace category.
+- [ ] **Remove obsolete features**: Audit current ContentView for obsolete controls (e.g., "Freeze Log", "Pause Drain" if no longer useful) and simplify.
+
+### 5.7 ICCCM / Window Manager Compliance (LOW)
 - [ ] **WM_HINTS**: Read and honor WM_HINTS property (icon, initial state, input model).
 - [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio).
 - [ ] **WM_PROTOCOLS**: Support WM_DELETE_WINDOW (send ClientMessage instead of destroying).
@@ -478,7 +487,7 @@ rendercheck                 # RENDER extension tests
 
 **v1.10.7 fixes multi-monitor popup menus** — Three bugs fixed: (1) Blank popup text on external monitors — `CAMetalLayer.contentsScale=0.0` for borderless NSWindows, fixed by explicit backingScaleFactor propagation. (2) Hot-plug popup positioning — xterm doesn't query RANDR so Xlib's WidthOfScreen/HeightOfScreen remain stale after monitor changes, causing popups on wrong screen. Fixed with server-side `adjustOROriginForCursorScreen()` + `x11_set_window_position()` to sync X11 geometry. (3) ScreenLayoutChanged host command broadcasts ConfigureNotify + RRScreenChangeNotify on display reconfiguration.
 
-**Next priority**: Phase 5.6 (ICCCM/WM compliance — WM_HINTS, WM_NORMAL_HINTS, EWMH for Vivado/Vitis Java Swing).
+**Next priority**: Phase 5.7 (ICCCM/WM compliance — WM_HINTS, WM_NORMAL_HINTS, EWMH for Vivado/Vitis Java Swing).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
