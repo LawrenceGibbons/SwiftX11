@@ -49,27 +49,38 @@ final class WindowRegistry {
     return NSPoint(x: x11X + vminX, y: vmaxY - x11Y - height)
   }
 
+  /// Convert macOS global screen origin (bottom-left, y-up) back to X11 root
+  /// coordinates (top-left, y-down).  Inverse of x11RootToMacOSOrigin().
+  static func macOSOriginToX11Root(macOrigin: NSPoint, height: CGFloat) -> (Int32, Int32) {
+    let screens = NSScreen.screens
+    let vminX = screens.map { $0.frame.minX }.min() ?? 0
+    let vmaxY = screens.map { $0.frame.maxY }.max() ?? 0
+    let x11X = Int32((macOrigin.x - vminX).rounded(.toNearestOrAwayFromZero))
+    let x11Y = Int32((vmaxY - macOrigin.y - height).rounded(.toNearestOrAwayFromZero))
+    return (x11X, x11Y)
+  }
+
   /// Adjust an OR (popup) window origin so it appears on the same macOS screen
   /// as the mouse cursor.  Clients that don't use RANDR (e.g. xterm) keep stale
   /// WidthOfScreen/HeightOfScreen from connection setup, so after a monitor
   /// hot-plug the popup X11 coords may be clipped to the old screen bounds and
   /// land on the wrong macOS monitor.
   ///
-  /// Strategy: if the computed macOS origin falls on a different NSScreen than
-  /// the current mouse cursor, translate the origin so the popup appears at the
-  /// same relative position on the cursor's screen.
+  /// Returns the (possibly adjusted) origin and whether an adjustment was made.
+  /// When adjusted, the caller must also update the X11 WindowTable position
+  /// so that input event coordinates are consistent.
   static func adjustOROriginForCursorScreen(
     origin: NSPoint, size: NSSize
-  ) -> NSPoint {
+  ) -> (origin: NSPoint, adjusted: Bool) {
     let screens = NSScreen.screens
-    guard screens.count > 1 else { return origin }
+    guard screens.count > 1 else { return (origin, false) }
 
     let mouseLocation = NSEvent.mouseLocation  // macOS global coords
 
     // Find which screen the mouse is on
     guard let cursorScreen = screens.first(where: { $0.frame.contains(mouseLocation) })
             ?? screens.first  // fallback to primary
-    else { return origin }
+    else { return (origin, false) }
 
     // Find which screen the popup center would land on
     let popupCenter = NSPoint(x: origin.x + size.width / 2,
@@ -77,7 +88,7 @@ final class WindowRegistry {
     let popupScreen = screens.first(where: { $0.frame.contains(popupCenter) })
 
     // If popup is on the same screen as cursor, no adjustment needed
-    if let ps = popupScreen, ps === cursorScreen { return origin }
+    if let ps = popupScreen, ps === cursorScreen { return (origin, false) }
 
     // Popup is on a different screen (or off-screen entirely).
     // Place the popup near the cursor on its screen, clamped to screen bounds.
@@ -95,7 +106,7 @@ final class WindowRegistry {
     print("[POPUP_ADJUST] cursor on screen \(cursorScreen.frame), " +
           "popup was at \(origin) (screen \(popupScreen?.frame.debugDescription ?? "none")), " +
           "adjusted to (\(newX), \(newY))")
-    return NSPoint(x: newX, y: newY)
+    return (NSPoint(x: newX, y: newY), true)
   }
 
   /// Virtual desktop max-Y in macOS global screen coordinates.
@@ -317,10 +328,16 @@ final class WindowRegistry {
         let rawOrigin = WindowRegistry.x11RootToMacOSOrigin(
           x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(x11h))
         let popupSize = NSSize(width: CGFloat(x11w), height: CGFloat(x11h))
-        let origin = WindowRegistry.adjustOROriginForCursorScreen(
+        let (origin, adjusted) = WindowRegistry.adjustOROriginForCursorScreen(
           origin: rawOrigin, size: popupSize)
+        if adjusted {
+          // Sync X11 WindowTable so input event coordinates match the adjusted position
+          let (newX11X, newX11Y) = WindowRegistry.macOSOriginToX11Root(
+            macOrigin: origin, height: popupSize.height)
+          x11_set_window_position(host, newX11X, newX11Y)
+        }
         let frame = NSRect(origin: origin, size: popupSize)
-        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame)")
+        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame) adjusted=\(adjusted)")
         win.setFrame(frame, display: true)
         // Defer orderFront until the first present succeeds so the popup
         // doesn't flash blank.  Metal needs at least one frame uploaded before
@@ -912,9 +929,16 @@ final class WindowRegistry {
       let isOR = infoByXid[xid]?.overrideRedirect ?? false
       let origin: NSPoint
       if isOR {
-        origin = WindowRegistry.adjustOROriginForCursorScreen(
-          origin: rawOrigin,
-          size: NSSize(width: CGFloat(x11w), height: CGFloat(x11h)))
+        let popupSize = NSSize(width: CGFloat(x11w), height: CGFloat(x11h))
+        let (adj, adjusted) = WindowRegistry.adjustOROriginForCursorScreen(
+          origin: rawOrigin, size: popupSize)
+        origin = adj
+        if adjusted {
+          // Sync X11 WindowTable so input event coordinates match the adjusted position
+          let (newX11X, newX11Y) = WindowRegistry.macOSOriginToX11Root(
+            macOrigin: origin, height: popupSize.height)
+          x11_set_window_position(xid, newX11X, newX11Y)
+        }
       } else {
         origin = rawOrigin
       }

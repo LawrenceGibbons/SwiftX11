@@ -387,6 +387,25 @@ extern "C" bool x11_get_window_geometry(uint32_t xid, int32_t* out_x, int32_t* o
   return true;
 }
 
+extern "C" void x11_set_window_position(uint32_t xid, int32_t x, int32_t y) {
+  auto* srv = x11_proto_bridge_get_server();
+  if (!srv) return;
+
+  x11::WindowView vw;
+  if (!srv->windows().snapshot(xid, vw)) return;
+
+  // Update position only — keep existing width/height
+  srv->windows().setGeometry(xid,
+                             static_cast<int16_t>(x),
+                             static_cast<int16_t>(y),
+                             vw.w, vw.h);
+#ifndef NDEBUG
+  fprintf(stderr, "[GEO_SET] xid=0x%08X pos=(%d,%d) → (%d,%d) size=%dx%d\n",
+          (unsigned)xid, (int)vw.x, (int)vw.y, (int)x, (int)y,
+          (int)vw.w, (int)vw.h);
+#endif
+}
+
 extern "C" int32_t x11_shape_get_rects(uint32_t xid, int16_t* out_xywh, int32_t max_rects) {
   auto* srv = x11_proto_bridge_get_server();
   if (!srv || !out_xywh || max_rects <= 0) return 0;

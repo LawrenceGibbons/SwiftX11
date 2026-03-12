@@ -110,6 +110,10 @@ bool x11_get_window_geometry(uint32_t xid, int32_t* out_x, int32_t* out_y,
                              int32_t* out_w, int32_t* out_h,
                              bool* out_override_redirect);
 
+// Update X11 window position in WindowTable (called by Swift when server-side
+// adjusts OR popup position to match cursor screen after monitor hot-plug).
+void x11_set_window_position(uint32_t xid, int32_t x, int32_t y);
+
 // -------------------------------------------------------------------------------------
 // Input injection
 // -------------------------------------------------------------------------------------
