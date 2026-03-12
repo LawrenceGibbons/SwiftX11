@@ -74,105 +74,168 @@ namespace x11 {
   }
   
   // MARK: - Helpers
-  struct KeySyms2 { uint32_t lo; uint32_t hi; }; // unshifted, shifted
-  
+  // 4 keysyms per keycode: normal, shift, mode_switch, mode_switch+shift
+  // Java Swing / GTK expect 4 columns; Mode_switch columns are NoSymbol on macOS.
+  struct KeySyms4 { uint32_t syms[4]; };
+
+  static constexpr uint8_t kKeysymsPerKeycode = 4;
+
   static inline uint8_t macToX11Keycode(uint8_t mac_vk) {
-    // Your current detail mapping uses mac_vk + 8
     return (uint8_t)(mac_vk + 8u);
   }
-  
-  static const KeySyms2* getUSMacKeymap2() {
-    static KeySyms2 map[256];
+
+  static const KeySyms4* getUSMacKeymap4() {
+    static KeySyms4 map[256];
     static bool inited = false;
     if (inited) return map;
     inited = true;
-    
-    // Default: NoSymbol
-    for (auto &e : map) { e.lo = XK_NoSymbol; e.hi = XK_NoSymbol; }
-    
+
+    // Default: NoSymbol for all columns
+    for (auto &e : map) { e.syms[0] = e.syms[1] = e.syms[2] = e.syms[3] = XK_NoSymbol; }
+
+    // Set a key with normal and shifted keysyms (columns 3-4 = NoSymbol)
     auto setMac = [&](uint8_t mac_vk, uint32_t lo, uint32_t hi) {
       const uint8_t kc = macToX11Keycode(mac_vk);
-      map[kc].lo = lo;
-      map[kc].hi = hi;
+      map[kc].syms[0] = lo;
+      map[kc].syms[1] = hi;
     };
-    
-    // Letters (US layout)
-    setMac(0,  'a', 'A');
-    setMac(1,  's', 'S');
-    setMac(2,  'd', 'D');
-    setMac(3,  'f', 'F');
-    setMac(4,  'h', 'H');
-    setMac(5,  'g', 'G');
-    setMac(6,  'z', 'Z');
-    setMac(7,  'x', 'X');
-    setMac(8,  'c', 'C');
-    setMac(9,  'v', 'V');
-    setMac(11, 'b', 'B');
-    setMac(12, 'q', 'Q');
-    setMac(13, 'w', 'W');
-    setMac(14, 'e', 'E');
-    setMac(15, 'r', 'R');
-    setMac(16, 'y', 'Y');
-    setMac(17, 't', 'T');
-    setMac(31, 'o', 'O');
-    setMac(32, 'u', 'U');
-    setMac(34, 'i', 'I');
-    setMac(35, 'p', 'P');
-    setMac(37, 'l', 'L');
-    setMac(38, 'j', 'J');
-    setMac(40, 'k', 'K');
-    setMac(45, 'n', 'N');
-    setMac(46, 'm', 'M');
-    
-    // Digits & symbols
-    setMac(18, '1', '!');
-    setMac(19, '2', '@');
-    setMac(20, '3', '#');
-    setMac(21, '4', '$');
-    setMac(22, '6', '^');
-    setMac(23, '5', '%');
-    setMac(24, '=', '+');
-    setMac(25, '9', '(');
-    setMac(26, '7', '&');
-    setMac(27, '-', '_');
-    setMac(28, '8', '*');
-    setMac(29, '0', ')');
-    
-    // Punctuation
-    setMac(30, ']', '}');
-    setMac(33, '[', '{');
-    setMac(39, '\'', '"');
-    setMac(41, ';', ':');
-    setMac(42, '\\', '|');
-    setMac(43, ',', '<');
-    setMac(44, '/', '?');
-    setMac(47, '.', '>');
-    setMac(50, '`', '~');
-    
-    // Whitespace / control
-    setMac(36, XK_Return, XK_Return);
-    setMac(48, XK_Tab, XK_Tab);
-    setMac(49, XK_space, XK_space);
-    setMac(51, XK_BackSpace, XK_BackSpace);
-    setMac(53, XK_Escape, XK_Escape);
-    
-    // Modifiers (keysyms; keycodes are used for GetModifierMapping)
-    setMac(56, XK_Shift_L, XK_Shift_L);
-    setMac(60, XK_Shift_R, XK_Shift_R);
-    setMac(59, XK_Control_L, XK_Control_L);
-    setMac(62, XK_Control_R, XK_Control_R);
-    setMac(58, XK_Alt_L, XK_Alt_L);
-    setMac(61, XK_Alt_R, XK_Alt_R);
-    setMac(55, XK_Super_L, XK_Super_L);   // Command_L
-    setMac(54, XK_Super_R, XK_Super_R);   // Command_R (if you ever emit it)
-    setMac(57, XK_Caps_Lock, XK_Caps_Lock);
-    
-    // Arrow keys
-    setMac(123, XK_Left, XK_Left);
-    setMac(124, XK_Right, XK_Right);
-    setMac(125, XK_Down, XK_Down);
-    setMac(126, XK_Up, XK_Up);
-    
+
+    // Set a key with same keysym for normal and shifted
+    auto setMac1 = [&](uint8_t mac_vk, uint32_t sym) {
+      const uint8_t kc = macToX11Keycode(mac_vk);
+      map[kc].syms[0] = sym;
+      map[kc].syms[1] = sym;
+    };
+
+    // ---------- Letters (US layout) ----------
+    setMac(0,  'a', 'A');   // kVK_ANSI_A
+    setMac(1,  's', 'S');   // kVK_ANSI_S
+    setMac(2,  'd', 'D');   // kVK_ANSI_D
+    setMac(3,  'f', 'F');   // kVK_ANSI_F
+    setMac(4,  'h', 'H');   // kVK_ANSI_H
+    setMac(5,  'g', 'G');   // kVK_ANSI_G
+    setMac(6,  'z', 'Z');   // kVK_ANSI_Z
+    setMac(7,  'x', 'X');   // kVK_ANSI_X
+    setMac(8,  'c', 'C');   // kVK_ANSI_C
+    setMac(9,  'v', 'V');   // kVK_ANSI_V
+    setMac(11, 'b', 'B');   // kVK_ANSI_B
+    setMac(12, 'q', 'Q');   // kVK_ANSI_Q
+    setMac(13, 'w', 'W');   // kVK_ANSI_W
+    setMac(14, 'e', 'E');   // kVK_ANSI_E
+    setMac(15, 'r', 'R');   // kVK_ANSI_R
+    setMac(16, 'y', 'Y');   // kVK_ANSI_Y
+    setMac(17, 't', 'T');   // kVK_ANSI_T
+    setMac(31, 'o', 'O');   // kVK_ANSI_O
+    setMac(32, 'u', 'U');   // kVK_ANSI_U
+    setMac(34, 'i', 'I');   // kVK_ANSI_I
+    setMac(35, 'p', 'P');   // kVK_ANSI_P
+    setMac(37, 'l', 'L');   // kVK_ANSI_L
+    setMac(38, 'j', 'J');   // kVK_ANSI_J
+    setMac(40, 'k', 'K');   // kVK_ANSI_K
+    setMac(45, 'n', 'N');   // kVK_ANSI_N
+    setMac(46, 'm', 'M');   // kVK_ANSI_M
+
+    // ---------- Digits & symbols ----------
+    setMac(18, '1', '!');   // kVK_ANSI_1
+    setMac(19, '2', '@');   // kVK_ANSI_2
+    setMac(20, '3', '#');   // kVK_ANSI_3
+    setMac(21, '4', '$');   // kVK_ANSI_4
+    setMac(22, '6', '^');   // kVK_ANSI_6
+    setMac(23, '5', '%');   // kVK_ANSI_5
+    setMac(24, '=', '+');   // kVK_ANSI_Equal
+    setMac(25, '9', '(');   // kVK_ANSI_9
+    setMac(26, '7', '&');   // kVK_ANSI_7
+    setMac(27, '-', '_');   // kVK_ANSI_Minus
+    setMac(28, '8', '*');   // kVK_ANSI_8
+    setMac(29, '0', ')');   // kVK_ANSI_0
+
+    // ---------- Punctuation ----------
+    setMac(30, ']', '}');   // kVK_ANSI_RightBracket
+    setMac(33, '[', '{');   // kVK_ANSI_LeftBracket
+    setMac(39, '\'', '"');  // kVK_ANSI_Quote
+    setMac(41, ';', ':');   // kVK_ANSI_Semicolon
+    setMac(42, '\\', '|'); // kVK_ANSI_Backslash
+    setMac(43, ',', '<');   // kVK_ANSI_Comma
+    setMac(44, '/', '?');   // kVK_ANSI_Slash
+    setMac(47, '.', '>');   // kVK_ANSI_Period
+    setMac(50, '`', '~');   // kVK_ANSI_Grave
+    setMac(10, XK_section, XK_plusminus); // kVK_ISO_Section (§/±)
+
+    // ---------- Whitespace / control ----------
+    setMac1(36, XK_Return);    // kVK_Return
+    setMac1(48, XK_Tab);       // kVK_Tab
+    setMac1(49, XK_space);     // kVK_Space
+    setMac1(51, XK_BackSpace); // kVK_Delete (backspace)
+    setMac1(53, XK_Escape);    // kVK_Escape
+
+    // ---------- Modifiers ----------
+    setMac1(56, XK_Shift_L);    // kVK_Shift
+    setMac1(60, XK_Shift_R);    // kVK_RightShift
+    setMac1(59, XK_Control_L);  // kVK_Control
+    setMac1(62, XK_Control_R);  // kVK_RightControl
+    setMac1(58, XK_Alt_L);      // kVK_Option
+    setMac1(61, XK_Alt_R);      // kVK_RightOption
+    setMac1(55, XK_Super_L);    // kVK_Command
+    setMac1(54, XK_Super_R);    // kVK_RightCommand
+    setMac1(57, XK_Caps_Lock);  // kVK_CapsLock
+    setMac1(63, XK_Meta_L);     // kVK_Function (Fn key → Meta_L)
+
+    // ---------- Arrow keys ----------
+    setMac1(123, XK_Left);   // kVK_LeftArrow
+    setMac1(124, XK_Right);  // kVK_RightArrow
+    setMac1(125, XK_Down);   // kVK_DownArrow
+    setMac1(126, XK_Up);     // kVK_UpArrow
+
+    // ---------- Navigation ----------
+    setMac1(115, XK_Home);      // kVK_Home
+    setMac1(117, XK_End);       // kVK_End
+    setMac1(116, XK_Page_Up);   // kVK_PageUp
+    setMac1(121, XK_Page_Down); // kVK_PageDown
+    setMac1(119, XK_Delete);    // kVK_ForwardDelete
+    setMac1(114, XK_Help);      // kVK_Help (Insert on PC keyboards)
+
+    // ---------- Function keys ----------
+    setMac1(122, XK_F1);   // kVK_F1
+    setMac1(120, XK_F2);   // kVK_F2
+    setMac1(99,  XK_F3);   // kVK_F3
+    setMac1(118, XK_F4);   // kVK_F4
+    setMac1(96,  XK_F5);   // kVK_F5
+    setMac1(97,  XK_F6);   // kVK_F6
+    setMac1(98,  XK_F7);   // kVK_F7
+    setMac1(100, XK_F8);   // kVK_F8
+    setMac1(101, XK_F9);   // kVK_F9
+    setMac1(109, XK_F10);  // kVK_F10
+    setMac1(103, XK_F11);  // kVK_F11
+    setMac1(111, XK_F12);  // kVK_F12
+    setMac1(105, XK_F13);  // kVK_F13
+    setMac1(107, XK_F14);  // kVK_F14
+    setMac1(113, XK_F15);  // kVK_F15
+    setMac1(106, XK_F16);  // kVK_F16
+    setMac1(64,  XK_F17);  // kVK_F17
+    setMac1(79,  XK_F18);  // kVK_F18
+    setMac1(80,  XK_F19);  // kVK_F19
+    setMac1(90,  XK_F20);  // kVK_F20
+
+    // ---------- Keypad ----------
+    setMac1(82,  XK_KP_0);        // kVK_ANSI_Keypad0
+    setMac1(83,  XK_KP_1);        // kVK_ANSI_Keypad1
+    setMac1(84,  XK_KP_2);        // kVK_ANSI_Keypad2
+    setMac1(85,  XK_KP_3);        // kVK_ANSI_Keypad3
+    setMac1(86,  XK_KP_4);        // kVK_ANSI_Keypad4
+    setMac1(87,  XK_KP_5);        // kVK_ANSI_Keypad5
+    setMac1(88,  XK_KP_6);        // kVK_ANSI_Keypad6
+    setMac1(89,  XK_KP_7);        // kVK_ANSI_Keypad7
+    setMac1(91,  XK_KP_8);        // kVK_ANSI_Keypad8
+    setMac1(92,  XK_KP_9);        // kVK_ANSI_Keypad9
+    setMac1(65,  XK_KP_Decimal);  // kVK_ANSI_KeypadDecimal
+    setMac1(67,  XK_KP_Multiply); // kVK_ANSI_KeypadMultiply
+    setMac1(69,  XK_KP_Add);      // kVK_ANSI_KeypadPlus
+    setMac1(71,  XK_Clear);       // kVK_ANSI_KeypadClear (NumLock on PC)
+    setMac1(75,  XK_KP_Divide);   // kVK_ANSI_KeypadDivide
+    setMac1(76,  XK_KP_Enter);    // kVK_ANSI_KeypadEnter
+    setMac1(78,  XK_KP_Subtract); // kVK_ANSI_KeypadMinus
+    setMac1(81,  XK_KP_Equal);    // kVK_ANSI_KeypadEquals
+
     return map;
   }
   
@@ -645,36 +708,36 @@ namespace x11 {
   void QueryOps::handleGetKeyboardMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br)
   {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
-    
+
     const uint8_t first = br.readU8();
     const uint8_t count = br.readU8();
     br.skip(2);
     br.skip(br.remaining());
-    
-    const uint8_t kSymsPerCode = 2;
-    const uint32_t nSyms = (uint32_t)count * (uint32_t)kSymsPerCode;
+
+    const uint32_t nSyms = (uint32_t)count * (uint32_t)kKeysymsPerKeycode;
     const uint32_t payloadBytes = nSyms * 4u;
     const uint32_t payloadWords = payloadBytes / 4u;
-    
+
     std::vector<uint8_t> payload(payloadBytes, 0);
-    
-    const KeySyms2* map = getUSMacKeymap2();
-    
+
+    const KeySyms4* map = getUSMacKeymap4();
+
     for (uint32_t i = 0; i < count; i++) {
       const uint8_t kc = (uint8_t)(first + (uint8_t)i);
-      const KeySyms2 ks = map[kc];
-      
-      uint8_t* out = payload.data() + i * 8u; // 2 * 4 bytes
-      wire::wr32_le(out + 0, ks.lo);
-      wire::wr32_le(out + 4, ks.hi);
+      const KeySyms4& ks = map[kc];
+
+      uint8_t* out = payload.data() + i * (kKeysymsPerKeycode * 4u);
+      for (uint8_t col = 0; col < kKeysymsPerKeycode; col++) {
+        wire::wr32_le(out + col * 4u, ks.syms[col]);
+      }
     }
-    
+
     const bool ok = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      rep[1] = kSymsPerCode;
+      rep[1] = kKeysymsPerKeycode;
       wire::wr32_le(rep.data() + 4, payloadWords);
     });
     if (!ok) return;
-    
+
     if (!payload.empty()) {
       (void)ctx.reply().sendBytes(payload.data(), payload.size());
     }
@@ -859,7 +922,8 @@ void QueryOps::handleQueryKeymap(XProtoContext& ctx, uint16_t seq, ByteReader& b
   rep[2] = (uint8_t)(seq & 0xFF);
   rep[3] = (uint8_t)((seq >> 8) & 0xFF);
   rep[4] = 2; // length in 4-byte units (8 extra bytes / 4)
-  // Bytes 8..39 = all zeros (no keys pressed)
+  // Copy real key state into bytes 8..39 (32 bytes = 256 bits)
+  std::memcpy(rep.data() + 8, ctx.input().getKeymap(), 32);
   (void)ctx.reply().sendReplyRaw(rep.data(), rep.size());
 }
 

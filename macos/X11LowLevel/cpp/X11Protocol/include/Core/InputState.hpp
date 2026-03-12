@@ -7,6 +7,7 @@
 
 #pragma once
 #include <cstdint>
+#include <cstring>
 #include <unordered_map>
 #include <utility>
 
@@ -149,7 +150,21 @@ namespace x11 {
       if (focus_xid) return focus_xid;
       return from_xid;
     }
-    
+
+    // MARK: -- Keymap state (QueryKeymap)
+    // 256 bits (one per X11 keycode 0-255), packed as 32 bytes.
+    uint8_t keymap_[32] = {};
+
+    void keyDown(uint8_t x11_kc) {
+      keymap_[x11_kc >> 3] |= (uint8_t)(1u << (x11_kc & 7u));
+    }
+
+    void keyUp(uint8_t x11_kc) {
+      keymap_[x11_kc >> 3] &= (uint8_t)~(1u << (x11_kc & 7u));
+    }
+
+    const uint8_t* getKeymap() const { return keymap_; }
+
   };
-  
+
 } // namespace x11

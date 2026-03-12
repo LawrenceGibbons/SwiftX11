@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-11 (v1.10.7 — Multi-monitor popup fix)
+Last updated: 2026-03-12 (v1.11.0 — Comprehensive keyboard support)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -263,10 +263,11 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [ ] **Xauth**: Basic MIT-MAGIC-COOKIE-1 authentication (or xhost + for development).
 - [ ] **Latency tolerance**: Ensure protocol handling doesn't assume local-only latency.
 
-### 5.3 Keyboard (MEDIUM)
-- [ ] **Full keysym mapping**: Map macOS virtual keycodes to X11 keysyms comprehensively (currently minimal).
-- [ ] **Modifier mapping**: GetModifierMapping should return a mapping that matches macOS keyboard layout.
-- [ ] **Keymap state**: QueryKeymap returns current key state (currently not implemented).
+### 5.3 Keyboard (MEDIUM) — DONE (v1.11.0)
+- [x] **Full keysym mapping**: Comprehensive macOS virtual keycode → X11 keysym table covering all keys: letters (US layout), digits, punctuation, F1-F20, Home/End/PageUp/PageDown/Delete/Help, arrows, keypad (KP_0-KP_9, operators, KP_Enter, KP_Equal), modifiers (left+right for Shift/Ctrl/Alt/Super), CapsLock, Fn→Meta_L, ISO Section key. All keysym constants added to KeySyms.hpp (v1.11.0).
+- [x] **Modifier mapping**: GetModifierMapping returns 2 keys per modifier (left+right): Shift_L/R, CapsLock, Control_L/R, Alt_L/R (Mod1), Command_L/R (Mod4). `xmodmap -pm` shows correct mapping (v1.11.0).
+- [x] **Keymap state**: QueryKeymap returns real pressed-key state via InputState::keymap_ (256-bit bitfield). Key handler updates keymap on press/release (v1.11.0).
+- [x] **GetKeyboardMapping 4-column**: Reports 4 keysyms per keycode (normal, shift, mode_switch, mode_switch+shift) as expected by Java Swing/GTK. Columns 3-4 are NoSymbol on macOS (no Mode_switch/AltGr) (v1.11.0).
 - [ ] **XKB (optional)**: Modern clients may query for XKB extension — return not-present is acceptable.
 
 ### 5.4 Window Close / Client Lifecycle (HIGH — user experience) — DONE (v1.9.0)
@@ -471,7 +472,7 @@ rendercheck                 # RENDER extension tests
 
 **v1.10.7 fixes multi-monitor popup menus** — Three bugs fixed: (1) Blank popup text on external monitors — `CAMetalLayer.contentsScale=0.0` for borderless NSWindows, fixed by explicit backingScaleFactor propagation. (2) Hot-plug popup positioning — xterm doesn't query RANDR so Xlib's WidthOfScreen/HeightOfScreen remain stale after monitor changes, causing popups on wrong screen. Fixed with server-side `adjustOROriginForCursorScreen()` + `x11_set_window_position()` to sync X11 geometry. (3) ScreenLayoutChanged host command broadcasts ConfigureNotify + RRScreenChangeNotify on display reconfiguration.
 
-**Next priority**: Phase 5.3 (keyboard — XKB extension stubs, compose/dead keys).
+**Next priority**: Phase 5.6 (ICCCM/WM compliance — WM_HINTS, WM_NORMAL_HINTS, EWMH for Vivado/Vitis Java Swing).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.

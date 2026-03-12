@@ -60,24 +60,33 @@ static inline uint8_t macToX11Keycode(uint8_t mac_vk) {
   return (uint8_t)(mac_vk + 8u);
 }
 
-// Seed a reasonable default modifier map (n=1 key per modifier).
+// Seed a reasonable default modifier map (n=2 keys per modifier: left + right).
 static void initDefaultModifierMapIfEmpty() {
   // If we've already been set to something nonzero, don't clobber it.
   // (This preserves SetModifierMapping behavior across runs if you later persist it.)
   if (g_modMapN != 0) return;
 
-  g_modMapN = 1;
+  g_modMapN = 2;
   g_modMap.fill(0);
 
+  // Layout: g_modMap[modifier_index * n + key_index]
   // Order: Shift, Lock, Control, Mod1, Mod2, Mod3, Mod4, Mod5
-  g_modMap[0] = macToX11Keycode(56); // Shift_L
-  g_modMap[1] = macToX11Keycode(57); // CapsLock
-  g_modMap[2] = macToX11Keycode(59); // Control_L
-  g_modMap[3] = macToX11Keycode(58); // Option_L  -> Mod1 (Alt)
-  g_modMap[4] = 0;                   // Mod2
-  g_modMap[5] = 0;                   // Mod3
-  g_modMap[6] = macToX11Keycode(55); // Command_L -> Mod4 (Super)
-  g_modMap[7] = 0;                   // Mod5
+  g_modMap[0*2 + 0] = macToX11Keycode(56);  // Shift_L
+  g_modMap[0*2 + 1] = macToX11Keycode(60);  // Shift_R
+  g_modMap[1*2 + 0] = macToX11Keycode(57);  // CapsLock
+  g_modMap[1*2 + 1] = 0;                    // (no second Lock key)
+  g_modMap[2*2 + 0] = macToX11Keycode(59);  // Control_L
+  g_modMap[2*2 + 1] = macToX11Keycode(62);  // Control_R
+  g_modMap[3*2 + 0] = macToX11Keycode(58);  // Option_L  -> Mod1 (Alt)
+  g_modMap[3*2 + 1] = macToX11Keycode(61);  // Option_R  -> Mod1 (Alt)
+  g_modMap[4*2 + 0] = 0;                    // Mod2 (unused)
+  g_modMap[4*2 + 1] = 0;
+  g_modMap[5*2 + 0] = 0;                    // Mod3 (unused)
+  g_modMap[5*2 + 1] = 0;
+  g_modMap[6*2 + 0] = macToX11Keycode(55);  // Command_L -> Mod4 (Super)
+  g_modMap[6*2 + 1] = macToX11Keycode(54);  // Command_R -> Mod4 (Super)
+  g_modMap[7*2 + 0] = 0;                    // Mod5 (unused)
+  g_modMap[7*2 + 1] = 0;
 }
   
 static inline uint32_t pad4_u32(uint32_t nbytes) {

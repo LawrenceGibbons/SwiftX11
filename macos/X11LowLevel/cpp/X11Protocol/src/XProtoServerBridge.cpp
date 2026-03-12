@@ -934,6 +934,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           if (kc32 > 255u) kc32 = 255u;
           const uint8_t x11_kc = (uint8_t)kc32;
 
+          // Track key state for QueryKeymap
+          if (c.isDown) ctx.input().keyDown(x11_kc);
+          else          ctx.input().keyUp(x11_kc);
+
           // Keep canonical mods in sync
           ctx.input().mods = c.modsMask;
 
