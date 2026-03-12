@@ -929,6 +929,7 @@ final class X11View: NSView {
     if flags.contains(.control) { m |= 1 << 1 }
     if flags.contains(.option) { m |= 1 << 2 }
     if flags.contains(.command) { m |= 1 << 3 }
+    if flags.contains(.capsLock) { m |= 1 << 4 }
     return m
   }
   
@@ -1209,7 +1210,8 @@ final class X11View: NSView {
       (.shift, "shift"),
       (.control, "control"),
       (.option, "option"),
-      (.command, "command")
+      (.command, "command"),
+      (.capsLock, "capslock")
     ]
     
     for (flag, _) in tracked {
