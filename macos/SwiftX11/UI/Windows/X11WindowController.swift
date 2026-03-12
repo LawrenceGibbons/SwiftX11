@@ -73,6 +73,18 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     fatalError("init(coder:) has not been implemented")
   }
   
+  func windowDidMove(_ notification: Notification) {
+    assert(Thread.isMainThread)
+    guard let win = window else { return }
+    // Sync the NSWindow's actual screen position back to X11 WindowTable.
+    // Without this, TranslateCoordinates returns stale root coordinates
+    // and popup menus (override-redirect windows) appear at wrong positions.
+    let contentFrame = win.contentView?.frame ?? win.contentLayoutRect
+    let (x11X, x11Y) = WindowRegistry.macOSOriginToX11Root(
+      macOrigin: win.frame.origin, height: contentFrame.size.height)
+    x11_set_window_position(xid, x11X, x11Y)
+  }
+
   func windowDidResize(_ notification: Notification) {
     assert(Thread.isMainThread)
     if WindowRegistry.shared.shouldSuppressResizeFromCocoa(xid: xid) {

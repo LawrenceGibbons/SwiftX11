@@ -771,7 +771,9 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
     }
   }
 
-  // Compute absolute position of point in src window
+  // Compute absolute (root) position of point in src window.
+  // X11 spec: a window's content origin is at (x + border_width, y + border_width)
+  // in parent coordinates.  We must include border_width at each level.
   int32_t absX = (int32_t)srcX;
   int32_t absY = (int32_t)srcY;
   {
@@ -779,8 +781,8 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
     for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
       WindowView vw{};
       if (!ctx.windows().snapshot(cur, vw)) break;
-      absX += (int32_t)vw.x;
-      absY += (int32_t)vw.y;
+      absX += (int32_t)vw.x + (int32_t)vw.border_width;
+      absY += (int32_t)vw.y + (int32_t)vw.border_width;
       cur = vw.parent_xid;
     }
   }
@@ -793,8 +795,8 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
     for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
       WindowView vw{};
       if (!ctx.windows().snapshot(cur, vw)) break;
-      dstX -= (int32_t)vw.x;
-      dstY -= (int32_t)vw.y;
+      dstX -= (int32_t)vw.x + (int32_t)vw.border_width;
+      dstY -= (int32_t)vw.y + (int32_t)vw.border_width;
       cur = vw.parent_xid;
     }
   }

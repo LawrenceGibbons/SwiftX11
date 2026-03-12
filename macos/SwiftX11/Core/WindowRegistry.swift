@@ -361,6 +361,14 @@ final class WindowRegistry {
       }
     } else {
       win.makeKeyAndOrderFront(nil)
+      // Sync NSWindow's actual screen position back to X11 WindowTable.
+      // macOS may place the window at a position different from CreateWindow's (x,y)
+      // (cascading, centering, etc.).  Without this sync, TranslateCoordinates
+      // returns stale root coordinates and popup menus appear at wrong positions.
+      let contentFrame = win.contentView?.frame ?? win.contentLayoutRect
+      let (x11X, x11Y) = WindowRegistry.macOSOriginToX11Root(
+        macOrigin: win.frame.origin, height: contentFrame.size.height)
+      x11_set_window_position(host, x11X, x11Y)
     }
 
     // For OR windows, skip the initial present — the surface is blank at this point
