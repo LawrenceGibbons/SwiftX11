@@ -371,6 +371,29 @@ final class WindowRegistry {
         pendingORShow.insert(host)
       }
     } else {
+      // Sync NSWindow size and position to current X11 geometry BEFORE showing.
+      // WM_NORMAL_HINTS may have resized/repositioned the window via UI commands
+      // that are deferred (DispatchQueue.main.asyncAfter in applyX11Resize).
+      // Without this sync, the window briefly appears at the stale 200×100 floor
+      // size before the deferred resize applies (visible as a grey ghost).
+      var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
+      var isOR: Bool = false
+      if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
+        let newSize = NSSize(width: max(1, CGFloat(x11w)), height: max(1, CGFloat(x11h)))
+        let curSize = win.contentView?.frame.size ?? win.contentLayoutRect.size
+        if abs(curSize.width - newSize.width) > 1 || abs(curSize.height - newSize.height) > 1 {
+          // Apply size synchronously before showing
+          suppressCocoaResizeExpected[host] = (wX11: x11w, hX11: x11h)
+          suppressCocoaResizeBudget[host] = 12
+          suppressNextResizeFromCocoa.insert(host)
+          win.setContentSize(newSize)
+        }
+        // Apply position: convert X11 root coords to macOS screen coords
+        let origin = WindowRegistry.x11RootToMacOSOrigin(
+          x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: newSize.height)
+        win.setFrameOrigin(origin)
+      }
+
       // Activate the app so the window appears above other apps (Terminal, etc.).
       // Without this, makeKeyAndOrderFront only orders within SwiftX11's own
       // window stack, leaving windows hidden behind the frontmost macOS app.
