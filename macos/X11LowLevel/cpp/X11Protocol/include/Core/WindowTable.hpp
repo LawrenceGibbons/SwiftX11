@@ -146,6 +146,8 @@ public:
   void setWinGravity(uint32_t xid, uint8_t v);
   void setBitGravity(uint32_t xid, uint8_t v);
   void setBackingStore(uint32_t xid, uint8_t v);
+  void setWantsInput(uint32_t xid, bool v);
+  void setWantsTakeFocus(uint32_t xid, bool v);
   
   // Bring-up behavior: keep each descendant’s x/y (relative to parent) unchanged,
   // but clamp w/h so the child fits within its *direct* parent’s bounds.
@@ -192,6 +194,10 @@ private:
     uint8_t  win_gravity = 1;   // CWWinGravity (bit 5): default NorthWest=1
     uint8_t  bit_gravity = 0;   // CWBitGravity (bit 4): default Forget=0
     uint8_t  backing_store = 0; // CWBackingStore (bit 6): default NotUseful=0
+
+    // ICCCM WM_HINTS / WM_PROTOCOLS cached flags
+    bool     wants_input = true;     // WM_HINTS input hint (default: passively focusable)
+    bool     wants_take_focus = false; // WM_PROTOCOLS contains WM_TAKE_FOCUS
 
     // SHAPE extension regions
     ShapeRegion shape_bounding;  // visual clipping

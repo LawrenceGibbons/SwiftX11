@@ -257,6 +257,8 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.win_gravity = st->win_gravity;
   out.bit_gravity = st->bit_gravity;
   out.backing_store = st->backing_store;
+  out.wants_input = st->wants_input;
+  out.wants_take_focus = st->wants_take_focus;
   out.bounding_shaped = st->shape_bounding.shaped;
   out.clip_shaped = st->shape_clip.shaped;
   out.input_shaped = st->shape_input.shaped;
@@ -459,6 +461,24 @@ void WindowTable::setBackingStore(uint32_t xid, uint8_t v) {
   WindowState* st = findLocked(xid);
   if (!st) return;
   st->backing_store = v;
+  st->serial++;
+}
+
+void WindowTable::setWantsInput(uint32_t xid, bool v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->wants_input = v;
+  st->serial++;
+}
+
+void WindowTable::setWantsTakeFocus(uint32_t xid, bool v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->wants_take_focus = v;
   st->serial++;
 }
 

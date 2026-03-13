@@ -26,6 +26,11 @@
 
 extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8);
 extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
+extern "C" void x11_ui_push_size_hints(uint32_t xid, int32_t min_w, int32_t min_h,
+                                       int32_t max_w, int32_t max_h,
+                                       int32_t inc_w, int32_t inc_h);
+extern "C" void x11_ui_push_window_type(uint32_t xid, uint32_t type_atom);
+extern "C" void x11_ui_push_initial_state(uint32_t xid, uint32_t state);
 
 namespace x11 {
 
@@ -128,26 +133,38 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     x11_ui_push_title(host, title.c_str());
   }
 
-  // WM_NORMAL_HINTS: parse size hints and resize tiny windows.
-  // ICCCM §4.1.2.3: XSizeHints struct is 18 CARD32s (format=32).
-  // flags field: PSize=0x08, PMinSize=0x10, PBaseSize=0x100
-  // Layout: [0]=flags [1]=x [2]=y [3]=width [4]=height
-  //         [5]=min_width [6]=min_height [7]=max_width [8]=max_height ...
+  // -----------------------------------------------------------------------
+  // WM_NORMAL_HINTS (ICCCM §4.1.2.3): XSizeHints, 18 CARD32s (format=32)
+  // Layout: [0]=flags [1]=pad_x [2]=pad_y [3]=pad_width [4]=pad_height
+  //         [5]=min_width [6]=min_height [7]=max_width [8]=max_height
+  //         [9]=width_inc [10]=height_inc [11-14]=aspect
   //         [15]=base_width [16]=base_height [17]=win_gravity
+  // flags: USPosition=1 USSize=2 PPosition=4 PSize=8 PMinSize=0x10
+  //        PMaxSize=0x20 PResizeInc=0x40 PAspect=0x80 PBaseSize=0x100 PWinGravity=0x200
+  // -----------------------------------------------------------------------
   if (atom == x11::atom::kWM_NORMAL_HINTS && fmt == 32 && dataBytes >= 5 * 4) {
     const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
     const uint32_t flags = d32[0];
 
-    // Determine desired size: prefer PSize, then PMinSize, then PBaseSize
+    // Extract size constraints
     int32_t desired_w = 0, desired_h = 0;
+    int32_t min_w = 0, min_h = 0, max_w = 0, max_h = 0;
+    int32_t inc_w = 0, inc_h = 0;
+
     if ((flags & 0x08) && dataBytes >= 5 * 4) {       // PSize
       desired_w = (int32_t)d32[3];
       desired_h = (int32_t)d32[4];
     }
     if ((flags & 0x10) && dataBytes >= 7 * 4) {       // PMinSize
-      int32_t mw = (int32_t)d32[5], mh = (int32_t)d32[6];
-      if (mw > desired_w) desired_w = mw;
-      if (mh > desired_h) desired_h = mh;
+      min_w = (int32_t)d32[5]; min_h = (int32_t)d32[6];
+      if (min_w > desired_w) desired_w = min_w;
+      if (min_h > desired_h) desired_h = min_h;
+    }
+    if ((flags & 0x20) && dataBytes >= 9 * 4) {       // PMaxSize
+      max_w = (int32_t)d32[7]; max_h = (int32_t)d32[8];
+    }
+    if ((flags & 0x40) && dataBytes >= 11 * 4) {      // PResizeInc
+      inc_w = (int32_t)d32[9]; inc_h = (int32_t)d32[10];
     }
     if ((flags & 0x100) && dataBytes >= 17 * 4) {     // PBaseSize
       int32_t bw = (int32_t)d32[15], bh = (int32_t)d32[16];
@@ -155,27 +172,125 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       if (bh > desired_h) desired_h = bh;
     }
 
-    // If we have a desired size, check if the host window is currently tiny
-    // and resize it (acting as WM). This handles the "create 1×1 then set hints" pattern.
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+
+    // If the window is tiny and we have a desired size, resize it (WM role)
     if (desired_w > 0 && desired_h > 0) {
-      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
-      if (host == 0) host = wid;
       WindowView vw{};
       if (ctx.windows().snapshot(host, vw)) {
         if (vw.w < 50 || vw.h < 50) {
-          // Resize the window to the hinted size
           uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
           uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
           ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
           x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
 #ifndef NDEBUG
-          fprintf(stderr, "[WM_HINTS] xid=0x%08X host=0x%08X resize %dx%d → %dx%d (flags=0x%X)\n",
+          fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X resize %dx%d → %dx%d (flags=0x%X)\n",
                   (unsigned)wid, (unsigned)host, (int)vw.w, (int)vw.h,
                   (int)nw, (int)nh, (unsigned)flags);
 #endif
         }
       }
     }
+
+    // Push size constraints to Swift for NSWindow contentMinSize/contentMaxSize/resizeIncrements
+    x11_ui_push_size_hints(host, min_w, min_h, max_w, max_h, inc_w, inc_h);
+#ifndef NDEBUG
+    fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X min=%dx%d max=%dx%d inc=%dx%d flags=0x%X\n",
+            (unsigned)wid, min_w, min_h, max_w, max_h, inc_w, inc_h, (unsigned)flags);
+#endif
+  }
+
+  // -----------------------------------------------------------------------
+  // WM_HINTS (ICCCM §4.1.2.4): XWMHints, 9 CARD32s (format=32, atom=35)
+  // Layout: [0]=flags [1]=input [2]=initial_state [3]=icon_pixmap
+  //         [4]=icon_window [5]=icon_x [6]=icon_y [7]=icon_mask [8]=window_group
+  // flags: InputHint=1 StateHint=2 IconPixmapHint=4 ...
+  // -----------------------------------------------------------------------
+  if (atom == x11::atom::kWM_HINTS && fmt == 32 && dataBytes >= 3 * 4) {
+    const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
+    const uint32_t flags = d32[0];
+
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+
+    // InputHint: store whether client wants input focus
+    if (flags & 1) {
+      bool wants_input = (d32[1] != 0);
+      ctx.windows().setWantsInput(host, wants_input);
+    }
+
+    // StateHint: initial_state (1=NormalState, 3=IconicState)
+    if (flags & 2) {
+      uint32_t initial_state = d32[2];
+      x11_ui_push_initial_state(host, initial_state);
+#ifndef NDEBUG
+      fprintf(stderr, "[WM_HINTS] xid=0x%08X host=0x%08X initial_state=%u input=%u flags=0x%X\n",
+              (unsigned)wid, (unsigned)host, (unsigned)initial_state,
+              (unsigned)((flags & 1) ? d32[1] : 0xFFFF), (unsigned)flags);
+#endif
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // WM_PROTOCOLS: check for WM_TAKE_FOCUS and cache in WindowTable
+  // -----------------------------------------------------------------------
+  if (atom == x11::atom::kWM_PROTOCOLS && fmt == 32) {
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+    bool has_take_focus = false;
+    bool has_delete_window = false;
+    const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
+    const size_t nAtoms = dataBytes / 4;
+    for (size_t i = 0; i < nAtoms; i++) {
+      if (d32[i] == x11::atom::kWM_TAKE_FOCUS)    has_take_focus = true;
+      if (d32[i] == x11::atom::kWM_DELETE_WINDOW)  has_delete_window = true;
+    }
+    ctx.windows().setWantsTakeFocus(host, has_take_focus);
+#ifndef NDEBUG
+    fprintf(stderr, "[WM_PROTOCOLS] xid=0x%08X host=0x%08X take_focus=%d delete_window=%d\n",
+            (unsigned)wid, (unsigned)host, has_take_focus, has_delete_window);
+#endif
+  }
+
+  // -----------------------------------------------------------------------
+  // _NET_WM_WINDOW_TYPE (EWMH): atom value(s) → NSWindow style mapping
+  // -----------------------------------------------------------------------
+  if (atom == x11::atom::k_NET_WM_WINDOW_TYPE && fmt == 32 && dataBytes >= 4) {
+    const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
+    uint32_t type_atom = d32[0]; // first (primary) type
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+    x11_ui_push_window_type(host, type_atom);
+#ifndef NDEBUG
+    fprintf(stderr, "[NET_WM_TYPE] xid=0x%08X host=0x%08X type_atom=%u\n",
+            (unsigned)wid, (unsigned)host, (unsigned)type_atom);
+#endif
+  }
+
+  // -----------------------------------------------------------------------
+  // _NET_WM_STATE (EWMH): modal, fullscreen, etc.
+  // For now, just parse and push modal/fullscreen flags to Swift.
+  // -----------------------------------------------------------------------
+  if (atom == x11::atom::k_NET_WM_STATE && fmt == 32) {
+    const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
+    const size_t nAtoms = dataBytes / 4;
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+    bool modal = false, fullscreen = false;
+    for (size_t i = 0; i < nAtoms; i++) {
+      if (d32[i] == x11::atom::k_NET_WM_STATE_MODAL)      modal = true;
+      if (d32[i] == x11::atom::k_NET_WM_STATE_FULLSCREEN) fullscreen = true;
+    }
+    // Encode state flags in a window_type push: use a synthetic type atom
+    // Modal → push as window type with flag 0x80000001
+    // Fullscreen → push as window type with flag 0x80000002
+    if (modal)      x11_ui_push_window_type(host, 0x80000001);
+    if (fullscreen)  x11_ui_push_window_type(host, 0x80000002);
+#ifndef NDEBUG
+    fprintf(stderr, "[NET_WM_STATE] xid=0x%08X modal=%d fullscreen=%d\n",
+            (unsigned)wid, modal, fullscreen);
+#endif
   }
 }
 

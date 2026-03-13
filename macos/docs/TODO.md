@@ -286,12 +286,12 @@ Convert the SwiftX11 main window from a spawnable `WindowGroup` into a single pe
 - [ ] **Log output display**: Keep the existing monospace log view for server output. Consider filtering by trace category.
 - [ ] **Remove obsolete features**: Audit current ContentView for obsolete controls (e.g., "Freeze Log", "Pause Drain" if no longer useful) and simplify.
 
-### 5.7 ICCCM / Window Manager Compliance (MEDIUM)
-- [ ] **Minimum window size floor**: Enforce a server-side minimum NSWindow size (e.g., 200x100) so dialog boxes are always large enough to read and click OK/Cancel buttons. XQuartz allowed tiny/invisible dialogs that forced blind Return key presses — extremely frustrating for Vivado/Vitis confirmation dialogs.
-- [ ] **WM_NORMAL_HINTS**: Read and honor size hints (min/max/increment size, aspect ratio). Use client-specified PMinSize as the NSWindow minimum size; fall back to server floor if unset. Increment size hints improve terminal resize behavior.
-- [ ] **WM_HINTS**: Read and honor WM_HINTS property (icon, initial state, input model). Initial state (IconicState) determines whether window starts minimized. Input model (input=True + WM_TAKE_FOCUS) affects focus policy.
-- [ ] **WM_PROTOCOLS**: Support WM_TAKE_FOCUS (send ClientMessage on focus). WM_DELETE_WINDOW already implemented (v1.9.0).
-- [ ] **_NET_WM_* (EWMH)**: Basic Extended Window Manager Hints — _NET_WM_WINDOW_TYPE (dialog, toolbar, menu affect NSWindow style), _NET_WM_STATE (fullscreen, maximized, modal), _NET_FRAME_EXTENTS.
+### 5.7 ICCCM / Window Manager Compliance (MEDIUM) — DONE (v1.12.0)
+- [x] **Minimum window size floor**: Top-level windows created below 200×100 are enlarged in C++ CreateWindow before WindowTable upsert. Swift NSWindow applies matching floor. Fixes Vivado 1×1 splash screen (v1.12.0).
+- [x] **WM_NORMAL_HINTS**: Full ICCCM XSizeHints parser — PSize, PMinSize, PMaxSize, PResizeInc, PBaseSize. Tiny windows auto-resized. Min/max/increment pushed to Swift → NSWindow.contentMinSize/contentMaxSize/contentResizeIncrements (v1.12.0).
+- [x] **WM_HINTS**: Parses InputHint (wants_input stored in WindowTable) and StateHint (IconicState → miniaturize on map). Icon hints skipped (v1.12.0).
+- [x] **WM_PROTOCOLS**: WM_TAKE_FOCUS implemented — Focus handler sends ClientMessage(WM_PROTOCOLS, WM_TAKE_FOCUS) before FocusIn when client advertises it. wants_take_focus cached in WindowTable for fast lookup. WM_DELETE_WINDOW already implemented (v1.9.0) (v1.12.0).
+- [x] **_NET_WM_* (EWMH)**: Pre-registered atoms 81-92. _NET_WM_WINDOW_TYPE → NSWindow style mapping (NORMAL/DIALOG/TOOLBAR/UTILITY/MENU/TOOLTIP/SPLASH). _NET_WM_STATE MODAL → .modalPanel level, FULLSCREEN → toggleFullScreen. _NET_FRAME_EXTENTS set proactively on MapWindow (left=0, right=0, top=28 for titled, bottom=0) (v1.12.0).
 
 ---
 

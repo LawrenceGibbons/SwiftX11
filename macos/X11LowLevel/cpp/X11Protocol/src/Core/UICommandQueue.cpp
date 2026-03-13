@@ -290,6 +290,43 @@ extern "C" void x11_ui_push_move(uint32_t xid, int32_t x_px, int32_t y_px) {
   push_cmd(c);
 }
 
+// ICCCM: WM_NORMAL_HINTS size hints
+extern "C" void x11_ui_push_size_hints(uint32_t xid, int32_t min_w, int32_t min_h,
+                                       int32_t max_w, int32_t max_h,
+                                       int32_t inc_w, int32_t inc_h) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_SIZE_HINTS;
+  c.xid = xid;
+  c.min_w = min_w;
+  c.min_h = min_h;
+  c.max_w = max_w;
+  c.max_h = max_h;
+  c.inc_w = inc_w;
+  c.inc_h = inc_h;
+  push_cmd(c);
+}
+
+// EWMH: _NET_WM_WINDOW_TYPE
+extern "C" void x11_ui_push_window_type(uint32_t xid, uint32_t type_atom) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_WINDOW_TYPE;
+  c.xid = xid;
+  c.flags = type_atom;
+  push_cmd(c);
+}
+
+// ICCCM: WM_HINTS initial_state
+extern "C" void x11_ui_push_initial_state(uint32_t xid, uint32_t state) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_INITIAL_STATE;
+  c.xid = xid;
+  c.flags = state;
+  push_cmd(c);
+}
+
 // =============================================================================
 // Shared damage accumulator — bypasses UI command queue latency.
 // C++ writes here from the server thread; Swift reads at present time.

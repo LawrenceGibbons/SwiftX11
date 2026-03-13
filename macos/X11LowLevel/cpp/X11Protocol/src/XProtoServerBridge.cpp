@@ -624,7 +624,29 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             if (oldFocus && oldFocus != host) {
               srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
             }
-            // FocusIn to HOST — always delivered (bypass mask check)
+
+            // ICCCM WM_TAKE_FOCUS: if client advertises it in WM_PROTOCOLS,
+            // send ClientMessage so the client calls SetInputFocus itself.
+            // Globally active input model (input=False + WM_TAKE_FOCUS) uses
+            // this instead of direct FocusIn for focus acquisition.
+            x11::WindowView hostView{};
+            if (ctx.windows().snapshot(host, hostView) && hostView.wants_take_focus) {
+              uint8_t ev[32] = {0};
+              ev[0] = 33;       // ClientMessage
+              ev[1] = 32;       // format = 32
+              x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+              x11::wire::wr32_le(ev + 4, host);
+              x11::wire::wr32_le(ev + 8, x11::atom::kWM_PROTOCOLS);
+              x11::wire::wr32_le(ev + 12, x11::atom::kWM_TAKE_FOCUS);
+              x11::wire::wr32_le(ev + 16, x11_now_ms_monotonic());
+              (void)ctx.transport().sendEvent32(host, ev);
+#ifndef NDEBUG
+              fprintf(stderr, "[WM_TAKE_FOCUS] sent to host=0x%08X\n", (unsigned)host);
+#endif
+            }
+
+            // FocusIn to HOST — always delivered (bypass mask check).
+            // Even with WM_TAKE_FOCUS, passively focusable clients need FocusIn.
             srv->eventOps().sendFocusEventDirect(ctx, host, /*is_in=*/true);
 
           } else {

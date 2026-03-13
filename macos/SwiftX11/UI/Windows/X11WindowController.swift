@@ -26,10 +26,14 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     if overrideRedirect {
       // Convert X11 root coords (top-left, y-down) to macOS global coords.
       // Uses virtual desktop union bounds so windows on any monitor work correctly.
+      // WM minimum size floor applies to OR windows too — splash screens (e.g., Vivado
+      // startup banner) may be created at 1×1 expecting WM resize via WM_NORMAL_HINTS.
+      let effW = max(width, 200)
+      let effH = max(height, 100)
       let origin = WindowRegistry.x11RootToMacOSOrigin(
-        x11X: CGFloat(x), x11Y: CGFloat(y), height: CGFloat(height))
+        x11X: CGFloat(x), x11Y: CGFloat(y), height: CGFloat(effH))
       contentRect = NSRect(origin: origin,
-                           size: NSSize(width: CGFloat(width), height: CGFloat(height)))
+                           size: NSSize(width: CGFloat(effW), height: CGFloat(effH)))
     } else {
       // WM minimum size floor: X11 clients (e.g., Vivado) may create windows at
       // 1×1 expecting the WM to resize them based on WM_NORMAL_HINTS.  Enforce a

@@ -119,6 +119,21 @@ struct AtomTableState {
       { "WM_DELETE_WINDOW", x11::atom::kWM_DELETE_WINDOW },
       { "_SWIFTX11_CLIPBOARD", x11::atom::kSWIFTX11_CLIP },
       { "_NET_WM_NAME",       x11::atom::k_NET_WM_NAME },
+      // ICCCM
+      { "WM_TAKE_FOCUS",      x11::atom::kWM_TAKE_FOCUS },
+      // EWMH
+      { "_NET_WM_WINDOW_TYPE",        x11::atom::k_NET_WM_WINDOW_TYPE },
+      { "_NET_WM_WINDOW_TYPE_NORMAL", x11::atom::k_NET_WM_WINDOW_TYPE_NORMAL },
+      { "_NET_WM_WINDOW_TYPE_DIALOG", x11::atom::k_NET_WM_WINDOW_TYPE_DIALOG },
+      { "_NET_WM_WINDOW_TYPE_TOOLBAR",x11::atom::k_NET_WM_WINDOW_TYPE_TOOLBAR },
+      { "_NET_WM_WINDOW_TYPE_UTILITY",x11::atom::k_NET_WM_WINDOW_TYPE_UTILITY },
+      { "_NET_WM_WINDOW_TYPE_MENU",   x11::atom::k_NET_WM_WINDOW_TYPE_MENU },
+      { "_NET_WM_WINDOW_TYPE_TOOLTIP",x11::atom::k_NET_WM_WINDOW_TYPE_TOOLTIP },
+      { "_NET_WM_WINDOW_TYPE_SPLASH", x11::atom::k_NET_WM_WINDOW_TYPE_SPLASH },
+      { "_NET_WM_STATE",              x11::atom::k_NET_WM_STATE },
+      { "_NET_WM_STATE_MODAL",        x11::atom::k_NET_WM_STATE_MODAL },
+      { "_NET_WM_STATE_FULLSCREEN",   x11::atom::k_NET_WM_STATE_FULLSCREEN },
+      { "_NET_FRAME_EXTENTS",         x11::atom::k_NET_FRAME_EXTENTS },
     };
     for (const auto& e : kExtra) {
       name_to_atom.emplace(std::string(e.name), e.id);

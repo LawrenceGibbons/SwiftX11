@@ -16,6 +16,9 @@
 #include "Core/XConstants.hpp"
 #include "UI/UICommandQueue.hpp"
 #include "Utils/WireEvents.hpp"
+#include "Core/PropertyTable.hpp"
+#include "Core/ClipboardAtoms.hpp"
+#include "Utils/WireLE.hpp"
 
 // util
 #include "Damage.hpp"
@@ -474,8 +477,22 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
 
   // ---- CREATE (server state only) ----
+  // WM minimum size floor: top-level windows created at tiny sizes (e.g. 1×1)
+  // are enlarged to a usable minimum.  Vivado and other apps create windows at
+  // 1×1 expecting the WM to resize via WM_NORMAL_HINTS or ConfigureRequest.
+  // Without a floor, surfaces never allocate properly and windows are invisible.
+  uint16_t eff_w = wpx, eff_h = hpx;
+  if (parent == x11::kRootXid && (wpx < 200 || hpx < 100)) {
+    if (eff_w < 200) eff_w = 200;
+    if (eff_h < 100) eff_h = 100;
+#ifndef NDEBUG
+    fprintf(stderr, "[WM_FLOOR] wid=0x%08X %ux%u → %ux%u (top-level minimum)\n",
+            (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (unsigned)eff_w, (unsigned)eff_h);
+#endif
+  }
+
   const int owner_fd = ctx.transport().clientFd();
-  ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
+  ctx.windows().upsert(wid, parent, x, y, eff_w, eff_h, event_mask, owner_fd);
   if (borderWidth > 0) {
     ctx.windows().setBorderWidth(wid, borderWidth);
   }
@@ -533,7 +550,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
 
   uint32_t createFlags = 0;
   if (override_redirect) createFlags |= X11_UI_FLAG_OVERRIDE_REDIRECT;
-  ctx.ui().pushCreate(wid, parent, title, (int32_t)x, (int32_t)y, (int32_t)wpx, (int32_t)hpx, createFlags);
+  ctx.ui().pushCreate(wid, parent, title, (int32_t)x, (int32_t)y, (int32_t)eff_w, (int32_t)eff_h, createFlags);
 
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
@@ -724,6 +741,24 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
                   (unsigned)wid, (int)vw.x, (int)vw.y, (unsigned)vw.w, (unsigned)vw.h);
 #endif
           x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
+        }
+
+        // _NET_FRAME_EXTENTS: proactively set WM frame decoration sizes.
+        // EWMH §_NET_FRAME_EXTENTS: left, right, top, bottom (4 CARD32s).
+        // OR windows have no decoration (0,0,0,0).
+        // Titled windows have a title bar (~28px on macOS).
+        {
+          uint8_t extents[16] = {0};
+          if (!vw.override_redirect) {
+            // Approximate macOS title bar height = 28 pixels
+            x11::wire::wr32_le(extents + 0, 0);   // left
+            x11::wire::wr32_le(extents + 4, 0);   // right
+            x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
+            x11::wire::wr32_le(extents + 12, 0);  // bottom
+          }
+          PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
+                                               x11::atom::kATOM /*CARDINAL*/, 32,
+                                               extents, 16);
         }
       }
     }

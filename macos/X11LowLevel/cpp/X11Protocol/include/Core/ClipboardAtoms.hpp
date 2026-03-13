@@ -25,16 +25,34 @@ static constexpr uint32_t kWM_DELETE_WINDOW  = 77;
 static constexpr uint32_t kSWIFTX11_CLIP    = 78; // internal: proactive clipboard capture property
 static constexpr uint32_t k_NET_WM_NAME     = 79;
 
+// ICCCM / WM protocol atoms (80+)
+static constexpr uint32_t kWM_TAKE_FOCUS              = 80;
+
+// EWMH atoms
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE        = 81;
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE_NORMAL = 82;
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE_DIALOG = 83;
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE_TOOLBAR= 84;
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE_UTILITY= 85;
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE_MENU   = 86;
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE_TOOLTIP= 87;
+static constexpr uint32_t k_NET_WM_WINDOW_TYPE_SPLASH = 88;
+static constexpr uint32_t k_NET_WM_STATE              = 89;
+static constexpr uint32_t k_NET_WM_STATE_MODAL        = 90;
+static constexpr uint32_t k_NET_WM_STATE_FULLSCREEN   = 91;
+static constexpr uint32_t k_NET_FRAME_EXTENTS         = 92;
+
 // Predefined atoms (1-68) commonly needed
 static constexpr uint32_t kPRIMARY           = 1;
 static constexpr uint32_t kSECONDARY         = 2;
 static constexpr uint32_t kATOM              = 4;
 static constexpr uint32_t kSTRING            = 31;
+static constexpr uint32_t kWM_HINTS          = 35;
 static constexpr uint32_t kWM_NAME           = 39;
-static constexpr uint32_t kWM_NORMAL_HINTS  = 41;
+static constexpr uint32_t kWM_NORMAL_HINTS   = 41;
 
 static constexpr uint32_t kFirstPreRegistered = 69;
-static constexpr uint32_t kLastPreRegistered  = 79;
+static constexpr uint32_t kLastPreRegistered  = 92;
 
 } // namespace atom
 } // namespace x11

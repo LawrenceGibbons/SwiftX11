@@ -37,6 +37,9 @@ typedef enum {
   X11_UI_WARP_POINTER,
   X11_UI_SHAPE_CHANGED,
   X11_UI_MOVE,
+  X11_UI_SIZE_HINTS,      // WM_NORMAL_HINTS: min/max/increment via size_hints
+  X11_UI_WINDOW_TYPE,     // _NET_WM_WINDOW_TYPE: type_atom in flags
+  X11_UI_INITIAL_STATE,   // WM_HINTS initial_state: state in flags (1=Normal, 3=Iconic)
 } x11_ui_cmd_type_t;
 
 // SwiftX11Bridge.h
@@ -62,6 +65,9 @@ typedef struct {
 
   // explicit cursor payload (only meaningful for X11_UI_SET_CURSOR)
   x11_ui_cursor_t   cursor;
+
+  // WM_NORMAL_HINTS size hints (only meaningful for X11_UI_SIZE_HINTS)
+  int32_t min_w, min_h, max_w, max_h, inc_w, inc_h;
 
 } x11_ui_cmd_t;
 
@@ -98,6 +104,12 @@ void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, int32_t shap
 void x11_ui_push_warp_pointer(uint32_t host_xid, int32_t x, int32_t y);
 void x11_ui_push_shape_changed(uint32_t host_xid);
 void x11_ui_push_move(uint32_t xid, int32_t x_px, int32_t y_px);
+// ICCCM / EWMH: WM_NORMAL_HINTS, WM_HINTS, _NET_WM_WINDOW_TYPE
+void x11_ui_push_size_hints(uint32_t xid, int32_t min_w, int32_t min_h,
+                            int32_t max_w, int32_t max_h,
+                            int32_t inc_w, int32_t inc_h);
+void x11_ui_push_window_type(uint32_t xid, uint32_t type_atom);
+void x11_ui_push_initial_state(uint32_t xid, uint32_t state);
 
 // SHAPE extension — query shape data from C++ (called by Swift at present time)
 bool x11_shape_is_shaped(uint32_t xid);

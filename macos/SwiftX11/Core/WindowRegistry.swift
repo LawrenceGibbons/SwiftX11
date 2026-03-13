@@ -332,9 +332,12 @@ final class WindowRegistry {
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
       if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
+        // WM minimum size floor for OR windows (splash screens created at 1×1)
+        let effW = max(x11w, 200)
+        let effH = max(x11h, 100)
         let rawOrigin = WindowRegistry.x11RootToMacOSOrigin(
-          x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(x11h))
-        let popupSize = NSSize(width: CGFloat(x11w), height: CGFloat(x11h))
+          x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(effH))
+        let popupSize = NSSize(width: CGFloat(effW), height: CGFloat(effH))
         let (origin, adjusted) = WindowRegistry.adjustOROriginForCursorScreen(
           origin: rawOrigin, size: popupSize)
         if adjusted {
@@ -394,6 +397,15 @@ final class WindowRegistry {
     // For non-OR windows, present immediately to show the window contents.
     if infoByXid[host]?.overrideRedirect != true {
       schedulePresent(xid: host)
+    }
+
+    // WM_HINTS IconicState: if client requested iconic (minimized) start, minimize now
+    if pendingIconicState.remove(host) != nil {
+      if let win = windows[host]?.window {
+        DispatchQueue.main.async {
+          win.miniaturize(nil)
+        }
+      }
     }
   }
 
@@ -545,6 +557,9 @@ final class WindowRegistry {
     if windows[xid] != nil { return }
     guard let info = infoByXid[xid] else { return }
 
+    // C++ CreateWindow already applies the WM minimum size floor (200×100)
+    // in WindowOps::handleCreateWindow, so info.width/height are pre-enlarged.
+    // X11WindowController applies a matching floor as a safety net.
     let controller = X11WindowController(
       xid: xid,
       title: info.title,
@@ -1190,7 +1205,137 @@ final class WindowRegistry {
       win.setContentSize(NSSize(width: sz.w, height: sz.h))
     }
   }
-  
+
+  // MARK: - ICCCM / EWMH WM compliance
+
+  /// WM_NORMAL_HINTS: apply min/max size and resize increment to NSWindow.
+  @MainActor
+  func applySizeHints(xid: UInt32, minW: Int, minH: Int, maxW: Int, maxH: Int, incW: Int, incH: Int) {
+    let host = topLevelAncestor(of: xid)
+    guard let controller = windows[host], let win = controller.window else { return }
+
+    // Apply minimum size (use server floor as absolute minimum)
+    if minW > 0 || minH > 0 {
+      let effMinW = max(CGFloat(minW), 100)
+      let effMinH = max(CGFloat(minH), 50)
+      win.contentMinSize = NSSize(width: effMinW, height: effMinH)
+    }
+
+    // Apply maximum size
+    if maxW > 0 && maxH > 0 {
+      win.contentMaxSize = NSSize(width: CGFloat(maxW), height: CGFloat(maxH))
+    }
+
+    // Apply resize increment (e.g., xterm character cell size)
+    if incW > 0 && incH > 0 {
+      win.contentResizeIncrements = NSSize(width: CGFloat(incW), height: CGFloat(incH))
+    }
+
+    print("[WM_SIZE_HINTS] xid=0x\(String(format:"%X", host)) min=\(minW)x\(minH) max=\(maxW)x\(maxH) inc=\(incW)x\(incH)")
+  }
+
+  /// _NET_WM_WINDOW_TYPE: adjust NSWindow style based on EWMH window type.
+  /// Also handles _NET_WM_STATE encoded as synthetic type atoms (0x80000001=modal, 0x80000002=fullscreen).
+  @MainActor
+  func applyWindowType(xid: UInt32, typeAtom: UInt32) {
+    let host = topLevelAncestor(of: xid)
+    guard let controller = windows[host], let win = controller.window else { return }
+
+    // _NET_WM_STATE synthetic flags
+    if typeAtom == 0x80000001 {
+      // MODAL: raise to modal panel level
+      win.level = .modalPanel
+      print("[NET_WM_STATE] xid=0x\(String(format:"%X", host)) → modal")
+      return
+    }
+    if typeAtom == 0x80000002 {
+      // FULLSCREEN
+      if !win.styleMask.contains(.fullScreen) {
+        win.toggleFullScreen(nil)
+      }
+      print("[NET_WM_STATE] xid=0x\(String(format:"%X", host)) → fullscreen")
+      return
+    }
+
+    // _NET_WM_WINDOW_TYPE atoms (values from ClipboardAtoms.hpp)
+    let typeNormal:  UInt32 = 82
+    let typeDialog:  UInt32 = 83
+    let typeToolbar: UInt32 = 84
+    let typeUtility: UInt32 = 85
+    let typeMenu:    UInt32 = 86
+    let typeTooltip: UInt32 = 87
+    let typeSplash:  UInt32 = 88
+
+    switch typeAtom {
+    case typeDialog:
+      // Dialog: titled, closable, non-resizable, floating if appropriate
+      win.styleMask = [.titled, .closable]
+      win.level = .floating
+      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → dialog")
+
+    case typeToolbar, typeUtility:
+      // Toolbar/Utility: titled, closable, utility level
+      win.styleMask = [.titled, .closable, .resizable]
+      win.level = .floating
+      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → toolbar/utility")
+
+    case typeMenu:
+      // Menu: borderless, floating (same as override-redirect)
+      win.styleMask = [.borderless]
+      win.level = .floating
+      win.hasShadow = true
+      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → menu")
+
+    case typeTooltip:
+      // Tooltip: borderless, floating, no shadow
+      win.styleMask = [.borderless]
+      win.level = .floating
+      win.hasShadow = false
+      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → tooltip")
+
+    case typeSplash:
+      // Splash: borderless, floating, centered
+      win.styleMask = [.borderless]
+      win.level = .floating
+      win.hasShadow = true
+      // Center on the screen where the window currently appears
+      win.center()
+      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → splash")
+
+    case typeNormal:
+      // Normal: standard decoration
+      win.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+      win.level = .normal
+      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → normal")
+
+    default:
+      // Unknown type atom — treat as normal
+      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) unknown type_atom=\(typeAtom)")
+    }
+  }
+
+  /// WM_HINTS initial_state: 1=NormalState, 3=IconicState (start minimized).
+  /// If IconicState and window hasn't been mapped yet, queue miniaturization.
+  @MainActor
+  func applyInitialState(xid: UInt32, state: UInt32) {
+    let host = topLevelAncestor(of: xid)
+    if state == 3 { // IconicState
+      // Queue miniaturize for when the window maps.
+      // If already mapped, miniaturize immediately.
+      if mappedXids.contains(host) {
+        if let win = windows[host]?.window {
+          win.miniaturize(nil)
+        }
+      } else {
+        pendingIconicState.insert(host)
+      }
+      print("[WM_HINTS] xid=0x\(String(format:"%X", host)) initial_state=IconicState(3)")
+    }
+  }
+
+  /// Track windows that should start minimized (WM_HINTS IconicState)
+  private var pendingIconicState = Set<UInt32>()
+
   func flushRepaintNow(xid: UInt32) {
     let host = hostXid(xid)
 

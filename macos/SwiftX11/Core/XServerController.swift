@@ -410,6 +410,23 @@ final class XServerController: ObservableObject {
         view.setWindowTransparency(shaped)
       }
 
+    case X11_UI_SIZE_HINTS:
+      // WM_NORMAL_HINTS: apply min/max/increment to NSWindow
+      WindowRegistry.shared.applySizeHints(
+        xid: cmd.xid,
+        minW: Int(cmd.min_w), minH: Int(cmd.min_h),
+        maxW: Int(cmd.max_w), maxH: Int(cmd.max_h),
+        incW: Int(cmd.inc_w), incH: Int(cmd.inc_h)
+      )
+
+    case X11_UI_WINDOW_TYPE:
+      // _NET_WM_WINDOW_TYPE or _NET_WM_STATE encoded as type atom
+      WindowRegistry.shared.applyWindowType(xid: cmd.xid, typeAtom: cmd.flags)
+
+    case X11_UI_INITIAL_STATE:
+      // WM_HINTS initial_state: 3 = IconicState (start minimized)
+      WindowRegistry.shared.applyInitialState(xid: cmd.xid, state: cmd.flags)
+
     default:
       break
     }

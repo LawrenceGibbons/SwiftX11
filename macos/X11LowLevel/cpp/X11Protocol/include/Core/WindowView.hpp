@@ -53,6 +53,10 @@ struct WindowView {
   // client socket for this window
   int  owner_fd = -1;
 
+  // ICCCM WM_HINTS / WM_PROTOCOLS cached flags
+  bool wants_input = true;       // WM_HINTS input hint (default: passively focusable)
+  bool wants_take_focus = false;  // WM_PROTOCOLS contains WM_TAKE_FOCUS
+
   // SHAPE extension: non-rectangular window flags
   bool bounding_shaped = false;
   bool clip_shaped = false;
