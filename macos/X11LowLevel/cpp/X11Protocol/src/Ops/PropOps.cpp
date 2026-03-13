@@ -23,6 +23,7 @@
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/ScreenLayout.hpp"
 
 extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8);
 extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
@@ -196,6 +197,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     //       or PMinSize and expects the WM to honour it.
     //
     // Don't resize if the desired size would shrink the window below the floor.
+    bool did_resize = false;
     if (desired_w > 0 && desired_h > 0) {
       WindowView vw{};
       if (ctx.windows().snapshot(host, vw)) {
@@ -212,6 +214,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
           if (nw != vw.w || nh != vw.h) {
             ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
             x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
+            did_resize = true;
 #ifndef NDEBUG
             fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X resize %dx%d → %dx%d (flags=0x%X)\n",
                     (unsigned)wid, (unsigned)host, (int)vw.w, (int)vw.h,
@@ -222,9 +225,12 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       }
     }
 
-    // Apply position hint if present (PPosition/USPosition).
-    // This positions the window at the client's requested location (e.g., splash
-    // banners centered on screen by the client).
+    // Position the window.
+    //   - If PPosition/USPosition is set, use that.
+    //   - If we just resized from the floor (window was 1×1 → floor → real size)
+    //     and no position hint was given, center on the primary monitor.
+    //     This emulates standard WM placement for windows that were created tiny
+    //     and depend on WM_NORMAL_HINTS for sizing (e.g., Vivado splash banner).
     if (has_position) {
       WindowView vw{};
       if (ctx.windows().snapshot(host, vw)) {
@@ -234,6 +240,32 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
         fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X position → (%d,%d) (flags=0x%X)\n",
                 (unsigned)wid, (unsigned)host, pos_x, pos_y, (unsigned)flags);
 #endif
+      }
+    } else if (did_resize) {
+      // No explicit position — center on primary monitor.
+      WindowView vw{};
+      if (ctx.windows().snapshot(host, vw)) {
+        auto layout = x11::getScreenLayout();
+        // Find primary monitor (or first if none marked primary)
+        const x11::MonitorInfo* primary = nullptr;
+        for (auto& m : layout.monitors) {
+          if (m.is_primary) { primary = &m; break; }
+        }
+        if (!primary && !layout.monitors.empty())
+          primary = &layout.monitors[0];
+        if (primary) {
+          int32_t cx = primary->x + ((int32_t)primary->w - (int32_t)vw.w) / 2;
+          int32_t cy = primary->y + ((int32_t)primary->h - (int32_t)vw.h) / 2;
+          if (cx < primary->x) cx = primary->x;
+          if (cy < primary->y) cy = primary->y;
+          ctx.windows().setGeometry(host, (int16_t)cx, (int16_t)cy, vw.w, vw.h);
+          x11_ui_push_move(host, cx, cy);
+#ifndef NDEBUG
+          fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X center → (%d,%d) on %s (%dx%d)\n",
+                  (unsigned)wid, (unsigned)host, cx, cy,
+                  primary->name, (int)primary->w, (int)primary->h);
+#endif
+        }
       }
     }
 
