@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-12 (v1.11.1 — Window menu integration + WM_NAME title sync)
+Last updated: 2026-03-13 (v1.12.2 — ICCCM/WM compliance + Vivado banner/menu fixes)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -508,12 +508,25 @@ rendercheck                 # RENDER extension tests
 
 6. ~~**Rendering performance**~~ — ✅ Done (v1.10.0): Metal-only rendering (software path removed), PutImage bulk memcpy, Expose two-pass (Phase 5.1)
 7. ~~**Multi-monitor popup fix**~~ — ✅ Done (v1.10.7): Fix blank popup text on external monitors (contentsScale), hot-plug popup positioning (server-side adjustment + X11 position sync)
+8. ~~**Keyboard support**~~ — ✅ Done (v1.11.0): Full keysym table, 4-column GetKeyboardMapping, 2-key GetModifierMapping, real QueryKeymap (Phase 5.3)
+9. ~~**Window menu + title sync**~~ — ✅ Done (v1.11.1): macOS Window menu, WM_NAME/_NET_WM_NAME title sync (Phase 5.5)
+10. ~~**ICCCM/WM compliance**~~ — ✅ Done (v1.12.0): WM_NORMAL_HINTS, WM_HINTS, WM_TAKE_FOCUS, EWMH window types/state, minimum size floor (Phase 5.7)
+11. ~~**Vivado banner + menu fixes**~~ — ✅ Done (v1.12.2): Deferred show for floor-sized windows, ConfigureNotify on user window drag
+12. **Vivado confirmed working** (v1.12.2): Full GUI with menus, dialogs, banner — all functional on multi-monitor setup
 
 **v1.10.0 adds rendering performance** — Metal-only rendering (software CGImage/CALayer path removed entirely). PutImage bulk memcpy for GXcopy fast path. Expose two-pass restructuring (backgrounds/borders first, then Expose events).
 
 **v1.10.7 fixes multi-monitor popup menus** — Three bugs fixed: (1) Blank popup text on external monitors — `CAMetalLayer.contentsScale=0.0` for borderless NSWindows, fixed by explicit backingScaleFactor propagation. (2) Hot-plug popup positioning — xterm doesn't query RANDR so Xlib's WidthOfScreen/HeightOfScreen remain stale after monitor changes, causing popups on wrong screen. Fixed with server-side `adjustOROriginForCursorScreen()` + `x11_set_window_position()` to sync X11 geometry. (3) ScreenLayoutChanged host command broadcasts ConfigureNotify + RRScreenChangeNotify on display reconfiguration.
 
-**Next priority**: Phase 5.7 (ICCCM/WM compliance — WM_HINTS, WM_NORMAL_HINTS, EWMH for Vivado/Vitis Java Swing).
+**v1.11.0 adds comprehensive keyboard support** — Full macOS virtual keycode → X11 keysym mapping. 4-column GetKeyboardMapping, 2-key GetModifierMapping, real QueryKeymap.
+
+**v1.11.1 adds Window menu + WM_NAME title sync** — macOS Window menu via NSApp.windowsMenu, WM_NAME/`_NET_WM_NAME` → NSWindow title.
+
+**v1.12.0 adds ICCCM/WM compliance** — Phase 5.7 complete. WM minimum size floor (200×100 for top-level windows). Full WM_NORMAL_HINTS parser (PSize, PMinSize, PMaxSize, PResizeInc → NSWindow contentMinSize/contentMaxSize/contentResizeIncrements). WM_HINTS (InputHint → wants_input, StateHint → miniaturize on map). WM_TAKE_FOCUS protocol (focus delivery via ClientMessage when client advertises it). EWMH: `_NET_WM_WINDOW_TYPE` → NSWindow style mapping (NORMAL/DIALOG/TOOLBAR/UTILITY/MENU/TOOLTIP/SPLASH), `_NET_WM_STATE` (MODAL/FULLSCREEN), `_NET_FRAME_EXTENTS` set proactively. Pre-registered atoms 78-92.
+
+**v1.12.2 fixes Vivado banner + cross-monitor menus** — (1) Banner race fix: floor-sized (200×100) windows stay hidden until applyX11Resize, first present, or 500ms timeout (`pendingNonORShow` deferred show mechanism). (2) ConfigureNotify on user window drag: new `WindowMoved` HostCmdType sends ConfigureNotify when user drags NSWindow, fixing Java/Swing stale root coordinate cache that broke menu tracking after cross-monitor window moves. Vivado confirmed working.
+
+**Next priority**: Vitis testing (Eclipse SWT/GTK from ALMA 9 container). Phase 7 extensions as needed.
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
@@ -580,3 +593,27 @@ rendercheck                 # RENDER extension tests
 - **Blank popup text on external monitors**: Override-redirect (popup) windows on external monitors rendered blank — text was present but invisible. Root cause: `CAMetalLayer.contentsScale` stayed at 0.0 for borderless NSWindows on external monitors (AppKit doesn't auto-inherit `backingScaleFactor` for `.borderless` style mask). Fixed by explicitly setting `contentsScale = window.backingScaleFactor` in `ensureMetalSetup()` and updating on `viewDidChangeBackingProperties`.
 - **Hot-plug monitor popup positioning**: After monitor hot-plug/unplug, popup menus appeared on the wrong screen because xterm doesn't query RANDR (Xlib caches `WidthOfScreen`/`HeightOfScreen` from connection setup permanently). Fixed with three-part approach: (1) `ScreenLayoutChanged` host command broadcasts ConfigureNotify + RRScreenChangeNotify to all clients on display reconfiguration (helps RANDR-aware clients); (2) Server-side `adjustOROriginForCursorScreen()` detects when a popup would land on a different macOS screen than the cursor and repositions it; (3) `x11_set_window_position()` syncs X11 WindowTable geometry after adjustment so input event coordinates (event_xy = root_xy - window_origin) remain consistent.
 - **Diagnostic trace cleanup**: Removed ~217 lines of verbose per-frame OR popup traces (OR_RENDER, OR_METAL_UPLOAD, OR_TEXT, OR_SNAP, OR_PRESENT*). Kept lifecycle and error traces gated behind `#ifndef NDEBUG`.
+
+### Features (v1.11.0)
+- **Comprehensive keyboard support**: Full macOS virtual keycode → X11 keysym mapping covering all keys: letters (US layout), digits, punctuation, F1-F20, navigation keys, keypad, modifiers (left+right), CapsLock, Fn→Meta_L, ISO Section key. GetKeyboardMapping returns 4 keysyms per keycode (normal/shift/mode_switch/mode_switch+shift) for Java Swing/GTK. GetModifierMapping returns 2 keys per modifier (left+right). QueryKeymap returns real pressed-key state. ~90 keysym constants added.
+
+### Features (v1.11.1)
+- **Window menu integration**: macOS Window menu via `NSApp.windowsMenu` — AppKit auto-lists all X11 NSWindows.
+- **WM_NAME title sync**: WM_NAME (atom 39) and `_NET_WM_NAME` (atom 79) property changes trigger NSWindow title update via `x11_ui_push_title()`. Child window titles route through `topLevelAncestorOf()`.
+
+### Features (v1.12.0)
+- **ICCCM/WM compliance suite** (Phase 5.7):
+  - **Minimum window size floor**: Top-level windows created below 200×100 enlarged in C++ CreateWindow. Swift NSWindow applies matching floor + contentMinSize(100×50).
+  - **WM_NORMAL_HINTS**: Full ICCCM XSizeHints parser (PSize, PMinSize, PMaxSize, PResizeInc, PBaseSize). Auto-resizes tiny windows. Push to Swift → NSWindow contentMinSize/contentMaxSize/contentResizeIncrements.
+  - **WM_HINTS**: Parses InputHint (wants_input stored in WindowView), StateHint (IconicState → miniaturize on map). Icon hints skipped.
+  - **WM_TAKE_FOCUS**: Focus handler sends ClientMessage(WM_PROTOCOLS, WM_TAKE_FOCUS, timestamp) before FocusIn when advertised. `wants_take_focus` cached in WindowView for fast lookup.
+  - **_NET_WM_WINDOW_TYPE**: NSWindow style mapping — DIALOG (titled+closable, floating if transient), TOOLBAR/UTILITY (titled+closable, floating), MENU/TOOLTIP (borderless+floating), SPLASH (borderless+centered+floating), NORMAL (default).
+  - **_NET_WM_STATE**: MODAL → modalPanel level, FULLSCREEN → toggleFullScreen.
+  - **_NET_FRAME_EXTENTS**: Set proactively on MapWindow (left=0, right=0, top=28 for titled, bottom=0).
+  - Pre-registered atoms 78-92 (WM_TAKE_FOCUS through _NET_WM_STATE_FULLSCREEN).
+
+### Bug fixes (v1.12.2)
+- **Vivado banner race condition**: Floor-sized (200×100) windows briefly appeared at minimum size before real ConfigureWindow arrived. Root cause: mapWindow called makeKeyAndOrderFront before client's ConfigureWindow/WM_NORMAL_HINTS set the actual size. Fixed with deferred show mechanism: `pendingNonORShow` set tracks floor-sized windows; show triggered by (a) applyX11Resize (ConfigureWindow arrived), (b) first present succeeds (client drew content), or (c) 500ms safety timeout. Window stays hidden until one of these triggers fires.
+- **Cross-monitor menu tracking**: After dragging Vivado's main window from one monitor to another, menus appeared correctly but items didn't highlight or respond to clicks. Root cause: Java/Swing caches root window coordinates and only updates on ConfigureNotify. No ConfigureNotify was sent when user dragged the NSWindow. Fixed by adding `WindowMoved` HostCmdType: `x11_set_window_position()` (called from Swift `windowDidMove`) now pushes a WindowMoved host command; `XProtoDaemon::drainHostCommands` sends ConfigureNotify with updated x/y to the owning client. Skip no-op updates when position hasn't changed.
+- **mapWindow geometry sync**: Before showing non-OR windows, mapWindow now queries X11 geometry via `x11_get_window_geometry()` and synchronously applies `setContentSize` + `setFrameOrigin` to avoid flash of wrong-sized/positioned window.
+- **NSApp.activate on mapWindow**: Calls `NSApp.activate(ignoringOtherApps: true)` to ensure X11 windows appear above other macOS apps.
