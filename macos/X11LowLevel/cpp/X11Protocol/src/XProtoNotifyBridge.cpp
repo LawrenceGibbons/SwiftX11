@@ -106,18 +106,6 @@ void postMotion(uint32_t host_xid,
     }
   }
   const bool hostCorrected = (host_xid != originalHost);
-#ifndef NDEBUG
-  if (hostCorrected) {
-    x11::WindowView corrVw{};
-    ctx->windows().snapshot(host_xid, corrVw);
-    fprintf(stderr,
-            "[MOTION_CORRECT] orig=0x%08X → corrected=0x%08X root=(%d,%d) vw=(%d,%d,%dx%d) win=(%d,%d)\n",
-            (unsigned)originalHost, (unsigned)host_xid,
-            (int)root_x, (int)root_y,
-            (int)corrVw.x, (int)corrVw.y, (int)corrVw.w, (int)corrVw.h,
-            (int)win_x, (int)win_y);
-  }
-#endif
 
   // ---- Check for active pointer grab (GrabPointer) ----
   x11::PointerGrab activeGrab{};

@@ -417,21 +417,6 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
                      rootW, rootH,
                      abs);
 
-#ifndef NDEBUG
-  {
-    // Trace motion event coords for debugging cross-monitor popup issues
-    x11::WindowView tv{};
-    bool isOR = false;
-    if (ctx.windows().snapshot(wid, tv)) isOR = tv.override_redirect;
-    if (isOR) {
-      fprintf(stderr,
-              "[MOTION_OR] wid=0x%08X event=(%d,%d) root=(%d,%d) wid_pos=(%d,%d,%dx%d)\n",
-              (unsigned)wid, (int)ex, (int)ey,
-              (int)root_x, (int)root_y,
-              (int)tv.x, (int)tv.y, (int)tv.w, (int)tv.h);
-    }
-  }
-#endif
   ctx.transport().sendEvent32(wid, ev);
 }
 
