@@ -386,13 +386,15 @@ final class WindowRegistry {
       let isAtFloor = gotGeom && x11w == 200 && x11h == 100
 
       // If the window is still at the WM floor size (200×100), it was likely
-      // created at 1×1 and WM_NORMAL_HINTS hasn't been processed yet (the
-      // client sent MapWindow before ChangeProperty).  Defer showing by 50ms
-      // to let WM_NORMAL_HINTS arrive with the real size — avoids a visual
-      // flash at the floor size followed by a resize to the real dimensions.
+      // created at 1×1 and the client hasn't sent ConfigureWindow or
+      // WM_NORMAL_HINTS with the real size yet.  Defer showing until:
+      //   (a) applyX11Resize fires (ConfigureWindow/WM_NORMAL_HINTS arrived), or
+      //   (b) first present succeeds (client drew content at floor size), or
+      //   (c) 500ms safety timeout (fallback — show at whatever size we have).
+      // This avoids the visual flash of a 200×100 ghost window.
       if isAtFloor {
         pendingNonORShow.insert(hostCopy)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
           guard let self else { return }
           guard self.pendingNonORShow.remove(hostCopy) != nil else { return }
           self.showNonORWindow(host: hostCopy)
@@ -734,6 +736,12 @@ final class WindowRegistry {
   /// If the surface is all white (0xFFFFFFFF), the client hasn't drawn yet and
   /// we defer showing to the next present cycle.
   private func showPendingORWindowIfNeeded(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int) {
+    // Non-OR deferred show: if this window was waiting for content (floor-sized
+    // window whose mapWindow was deferred), show it now that content is ready.
+    if pendingNonORShow.remove(xid) != nil {
+      showNonORWindow(host: xid)
+    }
+
     guard pendingORShow.contains(xid) else { return }
 
     // Quick scan: check a few sample locations for non-white pixels.
