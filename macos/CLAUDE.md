@@ -189,7 +189,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.11.1)
+### Current State (v1.12.2)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -285,7 +285,11 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **Window menu + WM_NAME title sync** (v1.11.1): macOS Window menu via `NSApp.windowsMenu` in AppDelegate — AppKit auto-lists all X11 NSWindows and brings selected window to front. WM_NAME (atom 39) and `_NET_WM_NAME` (atom 79) property changes in PropOps trigger `x11_ui_push_title()` → NSWindow title update. Child window titles route through `topLevelAncestorOf()`. `_NET_WM_NAME` pre-registered as atom 79 in AtomTable.
 
-### Known Issues (v1.11.1)
+- **ICCCM/WM compliance** (v1.12.0): Full ICCCM WM_NORMAL_HINTS parser (PSize/PMinSize/PMaxSize/PResizeInc/PBaseSize → NSWindow contentMinSize/contentMaxSize/contentResizeIncrements). WM_HINTS (InputHint → wants_input, StateHint → miniaturize on map). WM_TAKE_FOCUS protocol (ClientMessage before FocusIn, `wants_take_focus` cached in WindowView). EWMH: `_NET_WM_WINDOW_TYPE` → NSWindow style (DIALOG/TOOLBAR/UTILITY/MENU/TOOLTIP/SPLASH/NORMAL). `_NET_WM_STATE` MODAL/FULLSCREEN. `_NET_FRAME_EXTENTS` set proactively on MapWindow. WM minimum size floor: top-level windows below 200×100 enlarged in C++ CreateWindow. Pre-registered atoms 78-92.
+
+- **Vivado banner + menu fixes** (v1.12.2): Deferred show for floor-sized windows (`pendingNonORShow` — show triggered by applyX11Resize, first present, or 500ms timeout). ConfigureNotify on user window drag (`WindowMoved` HostCmdType → fixes Java/Swing stale root coordinates after cross-monitor window move). mapWindow geometry sync (query X11 geometry before makeKeyAndOrderFront). **Vivado confirmed working** — full GUI with menus, dialogs, banner on multi-monitor setup.
+
+### Known Issues (v1.12.2)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
 
@@ -303,3 +307,6 @@ See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phas
 8. ~~**Multi-monitor popup fix**~~ — ✅ Done (v1.10.7): contentsScale fix, hot-plug positioning, ScreenLayoutChanged broadcast
 9. ~~**Keyboard support**~~ — ✅ Done (v1.11.0): Full keysym table, 4-column GetKeyboardMapping, 2-key GetModifierMapping, real QueryKeymap
 10. ~~**Window menu + title sync**~~ — ✅ Done (v1.11.1): macOS Window menu, WM_NAME/_NET_WM_NAME title sync
+11. ~~**ICCCM/WM compliance**~~ — ✅ Done (v1.12.0): WM_NORMAL_HINTS, WM_HINTS, WM_TAKE_FOCUS, EWMH, min size floor
+12. ~~**Vivado confirmed working**~~ — ✅ Done (v1.12.2): Banner, menus, dialogs all functional on multi-monitor
+13. **Vitis testing** — Next: Eclipse SWT/GTK from ALMA 9 container
