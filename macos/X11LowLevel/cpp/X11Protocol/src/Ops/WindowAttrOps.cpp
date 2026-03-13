@@ -371,8 +371,16 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     const int16_t  x = clamp_i16(x32);
     const int16_t  y = clamp_i16(y32);
-    const uint16_t w = clamp_u16_nonzero(w32);
-    const uint16_t h = clamp_u16_nonzero(h32);
+    uint16_t w = clamp_u16_nonzero(w32);
+    uint16_t h = clamp_u16_nonzero(h32);
+
+    // WM minimum size floor for top-level windows — prevent clients from
+    // resizing host windows below 200×100 via ConfigureWindow (matches the
+    // CreateWindow floor in WindowOps.cpp).
+    if (host != 0 && host == wid) {
+      if (w < 200) w = 200;
+      if (h < 100) h = 100;
+    }
 
     ctx.tracef("[CONFIGURE] wid=0x%08X x=%d y=%d w=%u h=%u bw=%u host=0x%08X\n",
                wid, (int)x, (int)y, (unsigned)w, (unsigned)h, (unsigned)borderW, host);

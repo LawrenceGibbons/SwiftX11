@@ -371,6 +371,10 @@ final class WindowRegistry {
         pendingORShow.insert(host)
       }
     } else {
+      // Activate the app so the window appears above other apps (Terminal, etc.).
+      // Without this, makeKeyAndOrderFront only orders within SwiftX11's own
+      // window stack, leaving windows hidden behind the frontmost macOS app.
+      NSApp.activate(ignoringOtherApps: true)
       win.makeKeyAndOrderFront(nil)
       // Sync NSWindow's actual screen position back to X11 WindowTable.
       // macOS may place the window at a position different from CreateWindow's (x,y)
@@ -904,13 +908,14 @@ final class WindowRegistry {
     let host = topLevelAncestor(of: xid)
 
     guard let controller = windows[xid], let win = controller.window else { return }
-    
+
     X11View.logIfInLayout("raiseWindow: makeKeyAndOrderFront host=0x\(String(host, radix: 16))", view: controller.x11View)
 
     // Suppress the next didBecomeKey notification since we're causing it.
     suppressNextRaiseFromCocoa.insert(xid)
     if X11Trace.lifecycle { print("[MAKEKEY] about to makeKeyAndOrderFront window=\(String(describing: win))") }
 
+    NSApp.activate(ignoringOtherApps: true)
     win.makeKeyAndOrderFront(nil)
   }
 

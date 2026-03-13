@@ -180,6 +180,11 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       WindowView vw{};
       if (ctx.windows().snapshot(host, vw)) {
         if (vw.w < 50 || vw.h < 50) {
+          // Enforce WM minimum size floor — never shrink below 200×100 for
+          // top-level windows.  Without this, a client that sets WM_NORMAL_HINTS
+          // with PSize=(1,1) would override the CreateWindow floor.
+          if (desired_w < 200) desired_w = 200;
+          if (desired_h < 100) desired_h = 100;
           uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
           uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
           ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
