@@ -25,6 +25,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 
 extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8);
+extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
 
 namespace x11 {
 
@@ -125,6 +126,56 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     if (host == 0) host = wid;
     std::string title(reinterpret_cast<const char*>(data), dataBytes);
     x11_ui_push_title(host, title.c_str());
+  }
+
+  // WM_NORMAL_HINTS: parse size hints and resize tiny windows.
+  // ICCCM §4.1.2.3: XSizeHints struct is 18 CARD32s (format=32).
+  // flags field: PSize=0x08, PMinSize=0x10, PBaseSize=0x100
+  // Layout: [0]=flags [1]=x [2]=y [3]=width [4]=height
+  //         [5]=min_width [6]=min_height [7]=max_width [8]=max_height ...
+  //         [15]=base_width [16]=base_height [17]=win_gravity
+  if (atom == x11::atom::kWM_NORMAL_HINTS && fmt == 32 && dataBytes >= 5 * 4) {
+    const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
+    const uint32_t flags = d32[0];
+
+    // Determine desired size: prefer PSize, then PMinSize, then PBaseSize
+    int32_t desired_w = 0, desired_h = 0;
+    if ((flags & 0x08) && dataBytes >= 5 * 4) {       // PSize
+      desired_w = (int32_t)d32[3];
+      desired_h = (int32_t)d32[4];
+    }
+    if ((flags & 0x10) && dataBytes >= 7 * 4) {       // PMinSize
+      int32_t mw = (int32_t)d32[5], mh = (int32_t)d32[6];
+      if (mw > desired_w) desired_w = mw;
+      if (mh > desired_h) desired_h = mh;
+    }
+    if ((flags & 0x100) && dataBytes >= 17 * 4) {     // PBaseSize
+      int32_t bw = (int32_t)d32[15], bh = (int32_t)d32[16];
+      if (bw > desired_w) desired_w = bw;
+      if (bh > desired_h) desired_h = bh;
+    }
+
+    // If we have a desired size, check if the host window is currently tiny
+    // and resize it (acting as WM). This handles the "create 1×1 then set hints" pattern.
+    if (desired_w > 0 && desired_h > 0) {
+      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+      if (host == 0) host = wid;
+      WindowView vw{};
+      if (ctx.windows().snapshot(host, vw)) {
+        if (vw.w < 50 || vw.h < 50) {
+          // Resize the window to the hinted size
+          uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
+          uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
+          ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
+          x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
+#ifndef NDEBUG
+          fprintf(stderr, "[WM_HINTS] xid=0x%08X host=0x%08X resize %dx%d → %dx%d (flags=0x%X)\n",
+                  (unsigned)wid, (unsigned)host, (int)vw.w, (int)vw.h,
+                  (int)nw, (int)nh, (unsigned)flags);
+#endif
+        }
+      }
+    }
   }
 }
 

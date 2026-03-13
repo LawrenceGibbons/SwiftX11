@@ -690,13 +690,22 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             }
           }
 
+          // ---- Check for active pointer grab (GrabPointer) ----
+          x11::PointerGrab activeGrab{};
+          const bool haveActiveGrab = ctx.grabs().getPointerGrab(activeGrab) && activeGrab.active;
+
           // ---- STEP 1: Pick the deepest window BEFORE updating drag state ----
           // This is critical: InputState::button() sets drag_xid on the
           // 0→nonzero button transition. We must pick the child under the
           // pointer first, so drag_xid gets set to the correct child window
           // (not the host).
           uint32_t under = 0;
-          if (ctx.input().drag_xid && !hostCorrected) {
+
+          if (haveActiveGrab && !activeGrab.ownerEvents) {
+            // Active GrabPointer with owner_events=False:
+            // All button events go to the grab window, filtered by grab eventMask.
+            under = activeGrab.grabWindow;
+          } else if (ctx.input().drag_xid && !hostCorrected) {
             // Already in an active grab/drag, pointer still over same host
             under = ctx.input().drag_xid;
           } else {
@@ -710,7 +719,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // ancestor for a matching passive grab. If found, the grab
             // window becomes the button event target and the implicit
             // pointer grab owner (via drag_xid).
-            if (c.isDown) {
+            if (c.isDown && !haveActiveGrab) {
               x11::PassiveGrab pg{};
               uint32_t checkWin = under;
               bool foundGrab = false;

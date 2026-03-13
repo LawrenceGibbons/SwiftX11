@@ -31,7 +31,13 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       contentRect = NSRect(origin: origin,
                            size: NSSize(width: CGFloat(width), height: CGFloat(height)))
     } else {
-      contentRect = NSRect(x: 0, y: 0, width: width, height: height)
+      // WM minimum size floor: X11 clients (e.g., Vivado) may create windows at
+      // 1×1 expecting the WM to resize them based on WM_NORMAL_HINTS.  Enforce a
+      // minimum so the NSWindow is usable (visible, clickable close/cancel buttons).
+      // The client gets ConfigureNotify with the actual size once the surface is allocated.
+      let minW = max(width, 200)
+      let minH = max(height, 100)
+      contentRect = NSRect(x: 0, y: 0, width: minW, height: minH)
     }
 
     // Override-redirect windows (menus, tooltips, popups) get no WM decoration.
@@ -53,6 +59,8 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
       window.hasShadow = true
     } else {
       window.title = title.isEmpty ? "SwiftX11 Window" : title
+      // WM minimum size: prevent the user from resizing below a usable size.
+      window.contentMinSize = NSSize(width: 100, height: 50)
     }
 
     let view = X11View(frame: contentRect)

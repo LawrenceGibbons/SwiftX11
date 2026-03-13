@@ -31,6 +31,7 @@ static constexpr uint32_t kSECONDARY         = 2;
 static constexpr uint32_t kATOM              = 4;
 static constexpr uint32_t kSTRING            = 31;
 static constexpr uint32_t kWM_NAME           = 39;
+static constexpr uint32_t kWM_NORMAL_HINTS  = 41;
 
 static constexpr uint32_t kFirstPreRegistered = 69;
 static constexpr uint32_t kLastPreRegistered  = 79;
