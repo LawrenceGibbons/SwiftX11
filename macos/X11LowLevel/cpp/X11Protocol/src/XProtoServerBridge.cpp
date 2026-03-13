@@ -1066,6 +1066,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
         case HostCmdType::ScreenLayoutChanged:
           break;
 
+        case HostCmdType::WindowMoved:
+          // Handled in XProtoDaemon::drainHostCommands (needs per-client transport)
+          break;
+
   } // switch
 }
 

@@ -28,6 +28,7 @@ enum class HostCmdType : uint8_t {
   ClipboardCapture,  // proactive selection request: xid=owner, keyCode=selection atom
   WindowClose,       // user closed Cocoa window (red button or Cmd+W)
   ScreenLayoutChanged, // monitor hot-plug/unplug — send ConfigureNotify on root
+  WindowMoved,         // user dragged NSWindow — send ConfigureNotify with new position
 };
 
 struct HostCmd {

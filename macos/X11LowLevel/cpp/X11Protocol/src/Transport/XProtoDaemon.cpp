@@ -665,6 +665,40 @@ void XProtoDaemon::drainHostCommands() {
       continue;
     }
 
+    // ---- WindowMoved: user dragged NSWindow — send ConfigureNotify ----
+    // Java/Swing (Vivado) caches the window's root position and only updates
+    // it when it receives ConfigureNotify. Without this, menu item tracking
+    // uses stale coordinates after a cross-monitor drag.
+    if (c.type == HostCmdType::WindowMoved) {
+      if (!cs) continue;
+      activateClient(*cs);
+
+      x11::WindowView vw{};
+      if (server_->ctx().windows().snapshot(c.xid, vw)) {
+        std::array<uint8_t, 32> ev{};
+        ev[0] = 22; // ConfigureNotify
+        ev[1] = 0;
+        wire::wr16_le(ev.data() + 2, cs->seq);
+        wire::wr32_le(ev.data() + 4, c.xid);  // event
+        wire::wr32_le(ev.data() + 8, c.xid);  // window
+        wire::wr32_le(ev.data() + 12, 0);      // above-sibling: None
+        wire::wr16_le(ev.data() + 16, static_cast<uint16_t>(vw.x));
+        wire::wr16_le(ev.data() + 18, static_cast<uint16_t>(vw.y));
+        wire::wr16_le(ev.data() + 20, vw.w);
+        wire::wr16_le(ev.data() + 22, vw.h);
+        wire::wr16_le(ev.data() + 24, vw.border_width);
+        ev[26] = vw.override_redirect ? 1 : 0;
+        server_->ctx().transport().sendAll(ev.data(), 32);
+#ifndef NDEBUG
+        fprintf(stderr, "[WM_MOVE_NOTIFY] xid=0x%08X ConfigureNotify pos=(%d,%d) size=%dx%d\n",
+                (unsigned)c.xid, (int)vw.x, (int)vw.y, (int)vw.w, (int)vw.h);
+#endif
+      }
+
+      deactivateClient();
+      continue;
+    }
+
     // ---- WindowClose: special handling (needs daemon-level removeClient) ----
     if (c.type == HostCmdType::WindowClose) {
       if (!cs) continue;

@@ -394,6 +394,9 @@ extern "C" void x11_set_window_position(uint32_t xid, int32_t x, int32_t y) {
   x11::WindowView vw;
   if (!srv->windows().snapshot(xid, vw)) return;
 
+  // Skip if position hasn't actually changed
+  if (vw.x == static_cast<int16_t>(x) && vw.y == static_cast<int16_t>(y)) return;
+
   // Update position only — keep existing width/height
   srv->windows().setGeometry(xid,
                              static_cast<int16_t>(x),
@@ -404,6 +407,19 @@ extern "C" void x11_set_window_position(uint32_t xid, int32_t x, int32_t y) {
           (unsigned)xid, (int)vw.x, (int)vw.y, (int)x, (int)y,
           (int)vw.w, (int)vw.h);
 #endif
+
+  // Send ConfigureNotify to the X11 client so it knows the window moved.
+  // Without this, toolkits (Java/Swing, GTK) cache stale root coordinates
+  // and fail to compute correct mouse positions for menu tracking after
+  // the user drags the NSWindow between monitors.
+  x11::HostCmd hc{};
+  hc.type = x11::HostCmdType::WindowMoved;
+  hc.xid = xid;
+  hc.win_x_u = x;
+  hc.win_y_u = y;
+  hc.w_px = vw.w;
+  hc.h_px = vw.h;
+  srv->hostCmds().push(hc);
 }
 
 extern "C" int32_t x11_shape_get_rects(uint32_t xid, int16_t* out_xywh, int32_t max_rects) {
