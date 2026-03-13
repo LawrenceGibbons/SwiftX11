@@ -112,13 +112,17 @@ void postMotion(uint32_t host_xid,
   const bool haveGrab = ctx->grabs().getPointerGrab(activeGrab) && activeGrab.active;
 
   // ---- Child-to-child crossing events ----
-  // When not dragging, pick the deepest mapped child under the pointer
-  // and generate EnterNotify/LeaveNotify if the pointer moved to a
-  // different window.  Xaw Command widgets rely on these for hover
-  // highlighting (highlight on enter, unhighlight on leave).
-  // Without this, crossing events only fire on NSWindow enter/leave,
-  // leaving button highlighting stuck on the first button entered.
-  if (ctx->input().drag_xid == 0) {
+  // Pick the deepest mapped child under the pointer and generate
+  // EnterNotify/LeaveNotify if the pointer moved to a different window.
+  // Xaw Command widgets rely on these for hover highlighting.
+  //
+  // Generate crossing events when:
+  //   - No drag is active (normal mouse movement), OR
+  //   - An active GrabPointer exists (X11 spec: crossing events still
+  //     generated during grabs — needed for menu item highlighting), OR
+  //   - The host was corrected (pointer moved to a different top-level
+  //     window, e.g., from xterm to popup menu during button drag)
+  if (ctx->input().drag_xid == 0 || haveGrab || hostCorrected) {
     uint32_t under = pickDeepestMappedWindowAtHostPoint(*ctx, host_xid,
                                                         win_x, win_y);
     if (!under) under = host_xid;
@@ -198,7 +202,7 @@ void postMotion(uint32_t host_xid,
   // Trace drag-routed or grab-routed motion (high-frequency, but only during grab/drag)
   if (ctx->input().drag_xid || haveGrab) {
     static int dragMotionCount = 0;
-    if (++dragMotionCount <= 5) { // first 5 only, to avoid flood
+    if (++dragMotionCount <= 20) { // first 20 only, to avoid flood
       fprintf(stderr,
               "[DRAG_MOTION] host=0x%08X target=0x%08X drag=0x%08X grab=%s grabWin=0x%08X win=(%d,%d)\n",
               (unsigned)host_xid, (unsigned)target, (unsigned)ctx->input().drag_xid,
@@ -206,7 +210,7 @@ void postMotion(uint32_t host_xid,
               haveGrab ? (unsigned)activeGrab.grabWindow : 0u,
               (int)win_x, (int)win_y);
     }
-    if (dragMotionCount == 5) {
+    if (dragMotionCount == 20) {
       fprintf(stderr, "[DRAG_MOTION] (further traces suppressed)\n");
     }
   }
