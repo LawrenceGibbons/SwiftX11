@@ -29,6 +29,7 @@ extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
 extern "C" void x11_ui_push_size_hints(uint32_t xid, int32_t min_w, int32_t min_h,
                                        int32_t max_w, int32_t max_h,
                                        int32_t inc_w, int32_t inc_h);
+extern "C" void x11_ui_push_move(uint32_t xid, int32_t x_px, int32_t y_px);
 extern "C" void x11_ui_push_window_type(uint32_t xid, uint32_t type_atom);
 extern "C" void x11_ui_push_initial_state(uint32_t xid, uint32_t state);
 
@@ -146,6 +147,15 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
     const uint32_t flags = d32[0];
 
+    // Extract position hints (fields [1]-[2], used with USPosition/PPosition)
+    int32_t pos_x = 0, pos_y = 0;
+    bool has_position = false;
+    if ((flags & (0x01 | 0x04)) && dataBytes >= 3 * 4) { // USPosition or PPosition
+      pos_x = (int32_t)d32[1];
+      pos_y = (int32_t)d32[2];
+      has_position = true;
+    }
+
     // Extract size constraints
     int32_t desired_w = 0, desired_h = 0;
     int32_t min_w = 0, min_h = 0, max_w = 0, max_h = 0;
@@ -175,34 +185,64 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
 
-    // If the window is tiny and we have a desired size, resize it (WM role)
+    // If we have a desired size and the window should be resized, do it (WM role).
+    //
+    // Resize when:
+    //   (a) window is tiny (<50px) — original case; or
+    //   (b) window is at the WM floor size (200×100) and desired is LARGER —
+    //       the floor was applied in CreateWindow for a 1×1 window, and now the
+    //       client's WM_NORMAL_HINTS tells us the real intended size; or
+    //   (c) window size doesn't match desired — the client explicitly set PSize
+    //       or PMinSize and expects the WM to honour it.
+    //
+    // Don't resize if the desired size would shrink the window below the floor.
     if (desired_w > 0 && desired_h > 0) {
       WindowView vw{};
       if (ctx.windows().snapshot(host, vw)) {
-        if (vw.w < 50 || vw.h < 50) {
+        const bool isTiny = (vw.w < 50 || vw.h < 50);
+        const bool isAtFloor = (vw.w == 200 && vw.h == 100);
+        const bool desiredLarger = (desired_w > (int32_t)vw.w || desired_h > (int32_t)vw.h);
+        if (isTiny || (isAtFloor && desiredLarger) || desiredLarger) {
           // Enforce WM minimum size floor — never shrink below 200×100 for
-          // top-level windows.  Without this, a client that sets WM_NORMAL_HINTS
-          // with PSize=(1,1) would override the CreateWindow floor.
+          // top-level windows.
           if (desired_w < 200) desired_w = 200;
           if (desired_h < 100) desired_h = 100;
           uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
           uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
-          ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
-          x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
+          if (nw != vw.w || nh != vw.h) {
+            ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
+            x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
 #ifndef NDEBUG
-          fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X resize %dx%d → %dx%d (flags=0x%X)\n",
-                  (unsigned)wid, (unsigned)host, (int)vw.w, (int)vw.h,
-                  (int)nw, (int)nh, (unsigned)flags);
+            fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X resize %dx%d → %dx%d (flags=0x%X)\n",
+                    (unsigned)wid, (unsigned)host, (int)vw.w, (int)vw.h,
+                    (int)nw, (int)nh, (unsigned)flags);
 #endif
+          }
         }
+      }
+    }
+
+    // Apply position hint if present (PPosition/USPosition).
+    // This positions the window at the client's requested location (e.g., splash
+    // banners centered on screen by the client).
+    if (has_position) {
+      WindowView vw{};
+      if (ctx.windows().snapshot(host, vw)) {
+        ctx.windows().setGeometry(host, (int16_t)pos_x, (int16_t)pos_y, vw.w, vw.h);
+        x11_ui_push_move(host, pos_x, pos_y);
+#ifndef NDEBUG
+        fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X position → (%d,%d) (flags=0x%X)\n",
+                (unsigned)wid, (unsigned)host, pos_x, pos_y, (unsigned)flags);
+#endif
       }
     }
 
     // Push size constraints to Swift for NSWindow contentMinSize/contentMaxSize/resizeIncrements
     x11_ui_push_size_hints(host, min_w, min_h, max_w, max_h, inc_w, inc_h);
 #ifndef NDEBUG
-    fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X min=%dx%d max=%dx%d inc=%dx%d flags=0x%X\n",
-            (unsigned)wid, min_w, min_h, max_w, max_h, inc_w, inc_h, (unsigned)flags);
+    fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X min=%dx%d max=%dx%d inc=%dx%d pos=%s(%d,%d) flags=0x%X\n",
+            (unsigned)wid, min_w, min_h, max_w, max_h, inc_w, inc_h,
+            has_position ? "YES" : "no", pos_x, pos_y, (unsigned)flags);
 #endif
   }
 
