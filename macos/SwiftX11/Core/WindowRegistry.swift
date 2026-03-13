@@ -214,7 +214,10 @@ final class WindowRegistry {
   // Override-redirect windows whose mapWindow() deferred orderFront
   // because the geometry wasn't available yet. moveWindow() will show them.
   private var pendingORShow = Set<UInt32>()
-  
+  // Non-OR windows at floor size whose show is deferred 50ms to let
+  // WM_NORMAL_HINTS arrive with the real size.
+  private var pendingNonORShow = Set<UInt32>()
+
   // Metal is now required — no software fallback.
   
   private func installWindowObservers(xid: UInt32, window: NSWindow) {
@@ -376,45 +379,26 @@ final class WindowRegistry {
       // that are deferred (DispatchQueue.main.asyncAfter in applyX11Resize).
       // Without this sync, the window briefly appears at the stale 200×100 floor
       // size before the deferred resize applies (visible as a grey ghost).
+      let hostCopy = host
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
-      if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
-        let newSize = NSSize(width: max(1, CGFloat(x11w)), height: max(1, CGFloat(x11h)))
-        let curSize = win.contentView?.frame.size ?? win.contentLayoutRect.size
-        if abs(curSize.width - newSize.width) > 1 || abs(curSize.height - newSize.height) > 1 {
-          // Apply size synchronously before showing
-          suppressCocoaResizeExpected[host] = (wX11: x11w, hX11: x11h)
-          suppressCocoaResizeBudget[host] = 12
-          suppressNextResizeFromCocoa.insert(host)
-          win.setContentSize(newSize)
-        }
-        // Apply position: convert X11 root coords to macOS screen coords
-        let origin = WindowRegistry.x11RootToMacOSOrigin(
-          x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: newSize.height)
-        win.setFrameOrigin(origin)
-      }
+      let gotGeom = x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR)
+      let isAtFloor = gotGeom && x11w == 200 && x11h == 100
 
-      // Activate the app so the window appears above other apps (Terminal, etc.).
-      // Without this, makeKeyAndOrderFront only orders within SwiftX11's own
-      // window stack, leaving windows hidden behind the frontmost macOS app.
-      NSApp.activate(ignoringOtherApps: true)
-      win.makeKeyAndOrderFront(nil)
-      // Sync NSWindow's actual screen position back to X11 WindowTable.
-      // macOS may place the window at a position different from CreateWindow's (x,y)
-      // (cascading, centering, etc.).  Without this sync, TranslateCoordinates
-      // returns stale root coordinates and popup menus appear at wrong positions.
-      // Deferred: wait one run-loop cycle so the window has been fully laid out
-      // by AppKit before reading its frame.  Also serves as a fallback in case
-      // windowDidMove doesn't fire (e.g. window stays at its initial position).
-      let hostCopy = host
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
-        guard let controller = self.windows[hostCopy],
-              let win = controller.window else { return }
-        let contentFrame = win.contentView?.frame ?? win.contentLayoutRect
-        let (x11X, x11Y) = WindowRegistry.macOSOriginToX11Root(
-          macOrigin: win.frame.origin, height: contentFrame.size.height)
-        x11_set_window_position(hostCopy, x11X, x11Y)
+      // If the window is still at the WM floor size (200×100), it was likely
+      // created at 1×1 and WM_NORMAL_HINTS hasn't been processed yet (the
+      // client sent MapWindow before ChangeProperty).  Defer showing by 50ms
+      // to let WM_NORMAL_HINTS arrive with the real size — avoids a visual
+      // flash at the floor size followed by a resize to the real dimensions.
+      if isAtFloor {
+        pendingNonORShow.insert(hostCopy)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+          guard let self else { return }
+          guard self.pendingNonORShow.remove(hostCopy) != nil else { return }
+          self.showNonORWindow(host: hostCopy)
+        }
+      } else {
+        syncAndShowNonORWindow(host: hostCopy, x11x: x11x, x11y: x11y, x11w: x11w, x11h: x11h)
       }
     }
 
@@ -433,6 +417,53 @@ final class WindowRegistry {
           win.miniaturize(nil)
         }
       }
+    }
+  }
+
+  /// Sync NSWindow to current X11 geometry and show it (non-OR path).
+  /// Called either immediately (if geometry is known) or after a 50ms defer.
+  private func showNonORWindow(host: UInt32) {
+    guard let controller = windows[host], let win = controller.window else { return }
+    var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
+    var isOR: Bool = false
+    if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
+      syncAndShowNonORWindow(host: host, x11x: x11x, x11y: x11y, x11w: x11w, x11h: x11h)
+    } else {
+      // Fallback: show at whatever size the NSWindow has
+      NSApp.activate(ignoringOtherApps: true)
+      win.makeKeyAndOrderFront(nil)
+    }
+  }
+
+  /// Apply X11 geometry to NSWindow and make it visible.
+  private func syncAndShowNonORWindow(host: UInt32, x11x: Int32, x11y: Int32, x11w: Int32, x11h: Int32) {
+    guard let controller = windows[host], let win = controller.window else { return }
+
+    let newSize = NSSize(width: max(1, CGFloat(x11w)), height: max(1, CGFloat(x11h)))
+    let curSize = win.contentView?.frame.size ?? win.contentLayoutRect.size
+    if abs(curSize.width - newSize.width) > 1 || abs(curSize.height - newSize.height) > 1 {
+      suppressCocoaResizeExpected[host] = (wX11: x11w, hX11: x11h)
+      suppressCocoaResizeBudget[host] = 12
+      suppressNextResizeFromCocoa.insert(host)
+      win.setContentSize(newSize)
+    }
+    // Apply position: convert X11 root coords to macOS screen coords
+    let origin = WindowRegistry.x11RootToMacOSOrigin(
+      x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: newSize.height)
+    win.setFrameOrigin(origin)
+
+    NSApp.activate(ignoringOtherApps: true)
+    win.makeKeyAndOrderFront(nil)
+    // Sync NSWindow's actual screen position back to X11 WindowTable.
+    let hostCopy = host
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      guard let controller = self.windows[hostCopy],
+            let win = controller.window else { return }
+      let contentFrame = win.contentView?.frame ?? win.contentLayoutRect
+      let (x11X, x11Y) = WindowRegistry.macOSOriginToX11Root(
+        macOrigin: win.frame.origin, height: contentFrame.size.height)
+      x11_set_window_position(hostCopy, x11X, x11Y)
     }
   }
 
@@ -1169,12 +1200,20 @@ final class WindowRegistry {
   
   @MainActor
   func applyX11Resize(xid: UInt32, wX11: Int32, hX11: Int32) {
-    
+
     let host = topLevelAncestor(of: xid)
 
     guard let controller = windows[host],
           let win = controller.window,
           let _ = controller.x11View else { return }
+
+    // If this window's show was deferred (pendingNonORShow) waiting for
+    // WM_NORMAL_HINTS, the real size just arrived — show it now.
+    if pendingNonORShow.remove(host) != nil {
+      showNonORWindow(host: host)
+      // showNonORWindow will handle setContentSize, so skip the deferred path below
+      // if the window is already at the correct size.
+    }
 
     // Suppress Cocoa echo immediately
     suppressCocoaResizeExpected[host] = (wX11: wX11, hX11: hX11)
