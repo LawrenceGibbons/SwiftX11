@@ -19,33 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
       StatusItemController.shared.install()
     }
-    installViewMenu()
     installWindowMenu()
-  }
-
-  /// Install a "View" menu with "Show Control Panel" (Cmd+0).
-  private func installViewMenu() {
-    guard let mainMenu = NSApp.mainMenu else { return }
-
-    let viewMenu = NSMenu(title: "View")
-    let showPanel = NSMenuItem(title: "Show Control Panel",
-                               action: #selector(showControlPanel),
-                               keyEquivalent: "0")
-    showPanel.target = self
-    viewMenu.addItem(showPanel)
-
-    let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
-    viewMenuItem.submenu = viewMenu
-    // Insert after Edit (index ~2) or at position 2 if menu is short
-    let insertIndex = min(2, mainMenu.items.count)
-    mainMenu.insertItem(viewMenuItem, at: insertIndex)
-  }
-
-  @objc private func showControlPanel() {
-    NSApp.activate(ignoringOtherApps: true)
-    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11" }) {
-      win.makeKeyAndOrderFront(nil)
-    }
   }
 
   /// Install a standard macOS "Window" menu so all X11 NSWindows appear in

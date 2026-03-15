@@ -34,18 +34,6 @@ struct ContentView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
-        Toggle(isOn: Binding(
-          get: { server.isRunning },
-          set: { $0 ? server.start() : server.stop() }
-        )) {
-          Text(server.isRunning ? "Server Running" : "Server Stopped")
-        }
-        Spacer()
-        Stepper("Display :\(server.display)", value: $server.display, in: 0...63)
-      }
-      .padding(.bottom, 8)
-
-      HStack {
         Text("Log verbosity:")
         Picker("", selection: $settings.logVerbosity) {
           Text("Errors only").tag(0)
