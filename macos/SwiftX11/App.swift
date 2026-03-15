@@ -7,6 +7,10 @@ struct SwiftX11: App {
     @StateObject private var settings = SettingsStore()
     @Environment(\.openWindow) private var openWindow
 
+    private var logWindowVisible: Bool {
+        NSApp.windows.first(where: { $0.title == "SwiftX11 Log" })?.isVisible ?? false
+    }
+
     var body: some Scene {
         Window("SwiftX11 Log", id: "log-window") {
             ContentView()
@@ -21,9 +25,14 @@ struct SwiftX11: App {
         .commands {
             CommandGroup(replacing: .appInfo) { }
             CommandMenu("View") {
-                Button("Show Log Window") {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: "log-window")
+                Button(logWindowVisible ? "Hide Log Window" : "Show Log Window") {
+                    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }),
+                       win.isVisible {
+                        win.orderOut(nil)
+                    } else {
+                        NSApp.activate(ignoringOtherApps: true)
+                        openWindow(id: "log-window")
+                    }
                 }
                 .keyboardShortcut("0", modifiers: .command)
             }

@@ -1,4 +1,5 @@
 import Cocoa
+import X11LowLevel
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private var statusItemController: StatusItemController?
@@ -12,6 +13,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     return false
+  }
+
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    // Stop the X11 server first to close all client sockets and the poll loop.
+    // Without this, windowWillClose posts host commands that can deadlock if the
+    // server thread is blocked on socket I/O with a connected client.
+    x11_stop_server()
+    // Small delay to let the server thread exit its poll loop before we tear
+    // down windows and sockets from under it.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+      NSApp.reply(toApplicationShouldTerminate: true)
+    }
+    return .terminateLater
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {

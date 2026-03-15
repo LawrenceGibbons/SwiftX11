@@ -1,10 +1,11 @@
 import Cocoa
 
-final class StatusItemController {
+final class StatusItemController: NSObject, NSMenuDelegate {
   static let shared = StatusItemController()
 
   private var installed = false
   private var statusItem: NSStatusItem?
+  private var logWindowItem: NSMenuItem?
   
   func install() {
     guard !installed else { return }
@@ -32,10 +33,15 @@ final class StatusItemController {
     add("Start Server", #selector(startServer))
     add("Stop Server",  #selector(stopServer))
     menu.addItem(.separator())
-    add("Show Log Window", #selector(showLogWindow), key: "0")
+    let logItem = NSMenuItem(title: "Show Log Window", action: #selector(toggleLogWindow), keyEquivalent: "0")
+    logItem.target = self
+    menu.addItem(logItem)
+    self.logWindowItem = logItem
     add("Preferences…", #selector(openPreferences), key: ",")
     menu.addItem(.separator())
     add("Quit SwiftX11", #selector(quit), key: "q")
+
+    menu.delegate = self
 
     // Defer menu attachment one tick to avoid sizing during creation
     DispatchQueue.main.async { [weak self] in
@@ -46,11 +52,24 @@ final class StatusItemController {
   
   @objc private func startServer() { NotificationCenter.default.post(name: .x11StartRequested, object: nil) }
   @objc private func stopServer()  { NotificationCenter.default.post(name: .x11StopRequested, object: nil) }
-  @objc private func showLogWindow() {
-    NSApp.activate(ignoringOtherApps: true)
-    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }) {
-      win.makeKeyAndOrderFront(nil)
+  @objc private func toggleLogWindow() {
+    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }),
+       win.isVisible {
+      win.orderOut(nil)
+    } else {
+      NSApp.activate(ignoringOtherApps: true)
+      if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }) {
+        win.makeKeyAndOrderFront(nil)
+      }
     }
+  }
+
+  // MARK: - NSMenuDelegate
+
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    // Update log window menu item title based on current visibility
+    let isVisible = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" })?.isVisible ?? false
+    logWindowItem?.title = isVisible ? "Hide Log Window" : "Show Log Window"
   }
   @objc private func openPreferences() {
     NSApp.activate(ignoringOtherApps: true)
