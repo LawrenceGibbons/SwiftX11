@@ -1,8 +1,9 @@
 import Cocoa
 import X11LowLevel
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   private var statusItemController: StatusItemController?
+  private var logWindowMenuItem: NSMenuItem?
 
   func applicationWillFinishLaunching(_ notification: Notification) {
     // Install the layout recursion guard before any windows are created.
@@ -33,7 +34,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
       StatusItemController.shared.install()
     }
-    installWindowMenu()
+    // Delay menu installation so SwiftUI has finished setting up its menu bar.
+    // SwiftUI overwrites menus installed before it renders.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+      self?.installViewMenu()
+      self?.installWindowMenu()
+    }
+  }
+
+  /// Install a "View" menu with "Show/Hide Log Window" (Cmd+0).
+  /// Uses NSMenuDelegate to toggle the title based on current window visibility.
+  private func installViewMenu() {
+    guard let mainMenu = NSApp.mainMenu else { return }
+
+    let viewMenu = NSMenu(title: "View")
+    viewMenu.delegate = self
+
+    let logItem = NSMenuItem(title: "Show Log Window",
+                             action: #selector(toggleLogWindow),
+                             keyEquivalent: "0")
+    logItem.target = self
+    viewMenu.addItem(logItem)
+    self.logWindowMenuItem = logItem
+
+    let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+    viewMenuItem.submenu = viewMenu
+    // Insert after Edit (index ~2) or at position 2 if menu is short
+    let insertIndex = min(2, mainMenu.items.count)
+    mainMenu.insertItem(viewMenuItem, at: insertIndex)
+  }
+
+  @objc private func toggleLogWindow() {
+    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }),
+       win.isVisible {
+      win.orderOut(nil)
+    } else {
+      NSApp.activate(ignoringOtherApps: true)
+      if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }) {
+        win.makeKeyAndOrderFront(nil)
+      }
+    }
+  }
+
+  // MARK: - NSMenuDelegate
+
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    let isVisible = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" })?.isVisible ?? false
+    logWindowMenuItem?.title = isVisible ? "Hide Log Window" : "Show Log Window"
   }
 
   /// Install a standard macOS "Window" menu so all X11 NSWindows appear in
