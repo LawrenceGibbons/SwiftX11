@@ -108,6 +108,49 @@ final class WindowRegistry {
     return (NSPoint(x: newX, y: newY), true)
   }
 
+  /// Adjust a non-OR (normal) window origin so it appears on the main screen
+  /// (the screen with the key window / menu bar) when the X11 client used the
+  /// default position (0,0).  Most X11 clients (xterm, xeyes, xcalc) don't
+  /// specify explicit geometry and create windows at (0,0), which maps to the
+  /// top-left of the virtual desktop — often the laptop screen when an external
+  /// monitor is primary.  A real WM would place new windows on the focused screen.
+  ///
+  /// Only adjusts when x11x==0 && x11y==0 (default position).  Windows with
+  /// explicit positions (e.g. Vivado main window) are left unchanged.
+  static func adjustNonOROriginForMainScreen(
+    origin: NSPoint, size: NSSize, x11x: Int32, x11y: Int32
+  ) -> (origin: NSPoint, adjusted: Bool) {
+    let screens = NSScreen.screens
+    guard screens.count > 1 else { return (origin, false) }
+
+    // Only adjust default-position windows (client didn't specify geometry)
+    guard x11x == 0 && x11y == 0 else { return (origin, false) }
+
+    // Use NSScreen.main (screen with key window / menu bar) as target
+    guard let mainScreen = NSScreen.main else { return (origin, false) }
+
+    // Check if window center already lands on the main screen
+    let center = NSPoint(x: origin.x + size.width / 2,
+                         y: origin.y + size.height / 2)
+    if mainScreen.frame.contains(center) { return (origin, false) }
+
+    // Place window at the top-left of the main screen's visible area,
+    // offset slightly (like a WM cascade placement).
+    let vs = mainScreen.visibleFrame
+    var newX = vs.minX + 40
+    var newY = vs.maxY - size.height - 40  // below menu bar, accounting for title bar
+
+    // Clamp to screen bounds
+    if newX + size.width > vs.maxX { newX = vs.maxX - size.width }
+    if newX < vs.minX { newX = vs.minX }
+    if newY < vs.minY { newY = vs.minY }
+
+    #if DEBUG
+    print("[WM_PLACE] window at X11(0,0) adjusted from \(origin) to (\(newX), \(newY)) on main screen \(mainScreen.frame)")
+    #endif
+    return (NSPoint(x: newX, y: newY), true)
+  }
+
   /// Virtual desktop max-Y in macOS global screen coordinates.
   /// Used by WarpPointer to convert macOS screen coords to CG coords.
   static var virtualDesktopMaxY: CGFloat {
@@ -391,11 +434,9 @@ final class WindowRegistry {
       // This avoids the visual flash of a 200×100 ghost window.
       if isAtFloor {
         pendingNonORShow.insert(hostCopy)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-          guard let self else { return }
-          guard self.pendingNonORShow.remove(hostCopy) != nil else { return }
-          self.showNonORWindow(host: hostCopy)
-        }
+        // Retry loop: check every 500ms if geometry has changed from the floor.
+        // Show immediately once real geometry arrives, or force-show after 3s max.
+        self.deferredShowRetry(host: hostCopy, attempt: 1, maxAttempts: 6)
       } else {
         syncAndShowNonORWindow(host: hostCopy, x11x: x11x, x11y: x11y, x11w: x11w, x11h: x11h)
       }
@@ -434,6 +475,34 @@ final class WindowRegistry {
     }
   }
 
+  /// Retry loop for deferred show of floor-sized (200×100) windows.
+  /// Checks every 500ms if the geometry has changed from the WM floor.
+  /// Shows immediately once real geometry arrives; force-shows after max attempts.
+  private func deferredShowRetry(host: UInt32, attempt: Int, maxAttempts: Int) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+      guard let self else { return }
+      // Window already shown by applyX11Resize or present path
+      guard self.pendingNonORShow.contains(host) else { return }
+
+      var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
+      var isOR: Bool = false
+      let gotGeom = x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR)
+      let stillAtFloor = gotGeom && x11w == 200 && x11h == 100
+
+      if stillAtFloor && attempt < maxAttempts {
+        // Still at floor size — retry
+        #if DEBUG
+        print("[DEFER_SHOW] xid=0x\(String(format:"%X", host)) still at floor 200×100, retry \(attempt)/\(maxAttempts)")
+        #endif
+        self.deferredShowRetry(host: host, attempt: attempt + 1, maxAttempts: maxAttempts)
+      } else {
+        // Either geometry changed or max attempts reached — show now
+        self.pendingNonORShow.remove(host)
+        self.showNonORWindow(host: host)
+      }
+    }
+  }
+
   /// Apply X11 geometry to NSWindow and make it visible.
   private func syncAndShowNonORWindow(host: UInt32, x11x: Int32, x11y: Int32, x11w: Int32, x11h: Int32) {
     guard let controller = windows[host], let win = controller.window else { return }
@@ -447,8 +516,17 @@ final class WindowRegistry {
       win.setContentSize(newSize)
     }
     // Apply position: convert X11 root coords to macOS screen coords
-    let origin = WindowRegistry.x11RootToMacOSOrigin(
+    let rawOrigin = WindowRegistry.x11RootToMacOSOrigin(
       x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: newSize.height)
+    // For default-position windows (0,0), place on the main screen instead
+    // of the top-left of the virtual desktop (which may be the laptop screen).
+    let (origin, adjusted) = WindowRegistry.adjustNonOROriginForMainScreen(
+      origin: rawOrigin, size: newSize, x11x: x11x, x11y: x11y)
+    if adjusted {
+      let (newX11X, newX11Y) = WindowRegistry.macOSOriginToX11Root(
+        macOrigin: origin, height: newSize.height)
+      x11_set_window_position(host, newX11X, newX11Y)
+    }
     win.setFrameOrigin(origin)
 
     NSApp.activate(ignoringOtherApps: true)
