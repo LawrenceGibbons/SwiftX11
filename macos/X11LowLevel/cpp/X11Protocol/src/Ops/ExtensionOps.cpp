@@ -80,6 +80,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       });
       return;
     }
+    case 1: // XFixesChangeSaveSet — extended save-set with map/target modes (void)
+      br.skip(br.remaining());
+      return;
+    case 2: // XFixesSelectSelectionInput — selection change event mask (void)
+      br.skip(br.remaining());
+      return;
     case 3: // SelectCursorInput — consume silently (cursor event selection)
       br.skip(br.remaining());
       return;
@@ -694,6 +700,20 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, 0);
         wire::wr16_le(rep.data() + 8, 0); // num_atoms
+      });
+      return;
+    }
+
+    case 15: {
+      // RRGetOutputProperty — return empty (no RANDR output properties stored)
+      // Request: output(4) + property(4) + type(4) + long_offset(4) + long_length(4) + delete(1) + pending(1) + pad(2)
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 0;                            // format = 0 (property not found)
+        wire::wr32_le(rep.data() + 4, 0);      // length = 0
+        wire::wr32_le(rep.data() + 8, 0);      // type = None
+        wire::wr32_le(rep.data() + 12, 0);     // bytes_after = 0
+        wire::wr32_le(rep.data() + 16, 0);     // num_items = 0
       });
       return;
     }
