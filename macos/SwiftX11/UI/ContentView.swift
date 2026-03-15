@@ -30,7 +30,6 @@ struct LogTextView: NSViewRepresentable {
 struct ContentView: View {
   @EnvironmentObject var server: XServerController
   @EnvironmentObject var settings: SettingsStore
-  @State private var lastXid: UInt32?
   
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -45,14 +44,6 @@ struct ContentView: View {
         Stepper("Display :\(server.display)", value: $server.display, in: 0...63)
       }
       .padding(.bottom, 8)
-      
-      
-      Toggle("Freeze log output", isOn: $settings.pauseLogAppend)
-
-      Toggle("Show Motion events", isOn: $settings.showMotionLogs)
-      
-      
-      Toggle("Show Damage events", isOn: $settings.showDamageLogs)
 
       HStack {
         Text("Log verbosity:")
@@ -86,21 +77,14 @@ struct ContentView: View {
     .padding(16)
     .frame(minWidth: 560, minHeight: 360)
     
-    // preferences hooks
     .onAppear {
       guard !server.didInstallLogControls else { return }
       server.didInstallLogControls = true
 
-      server.setLogControls(
-        isPaused: { settings.pauseLogAppend },
-        showMotion: { settings.showMotionLogs }
-      )
-
       WindowRegistry.shared.attachLogHooks(
           logAppend: { line in server.append(line) },
-          isLogPaused: { settings.pauseLogAppend }
+          isLogPaused: { false }
       )
-
     }
   }
 }

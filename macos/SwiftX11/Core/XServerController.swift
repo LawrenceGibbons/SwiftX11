@@ -12,21 +12,8 @@ final class XServerController: ObservableObject {
   @Published var didInstallLogControls = false
 
   private var drainTimer: DispatchSourceTimer?
-  private var isPaused:    (() -> Bool)?
-  private var showMotion:  (() -> Bool)?
 
-  
   init() {
-    // // Register Swift callbacks with the C shim
-    // x11_register_callbacks(
-    //   swiftX11CreateCallback,
-    //   swiftX11CloseCallback
-    // )
-    // append("Registered X11 callbacks")
-    
-//    x11_register_frame_presenter(swiftX11PresentFrame)
-//    append("Registered frame presenter")
-    
     registerLogBridge()
 
     NotificationCenter.default.addObserver(
@@ -176,9 +163,7 @@ final class XServerController: ObservableObject {
     guard let msg = note.userInfo?["message"] as? String else { return }
     // Strip trailing newline if present (append() adds its own)
     let trimmed = msg.hasSuffix("\n") ? String(msg.dropLast()) : msg
-    if !isLogPausedNow() {
-      append(trimmed)
-    }
+    append(trimmed)
   }
   
   func stop() {
@@ -201,14 +186,6 @@ final class XServerController: ObservableObject {
     String(format: "%.6f", CACurrentMediaTime())
   }
   
-  func setLogControls(
-    isPaused:    @escaping () -> Bool,
-    showMotion:  @escaping () -> Bool
-  ) {
-    self.isPaused = isPaused
-    self.showMotion = showMotion
-  }
-
   @MainActor
   func append(_ line: String) {
     let s = "[\(tstamp())] \(line)"
@@ -301,11 +278,6 @@ final class XServerController: ObservableObject {
       }
     }
   }
-  
-  private func isLogPausedNow() -> Bool {
-    isPaused?() ?? false
-  }
-  
   
   @MainActor
   private func handleUICommand(_ cmd: x11_ui_cmd_t) {

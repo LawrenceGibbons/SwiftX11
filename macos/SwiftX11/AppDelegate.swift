@@ -10,6 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     NSView.installLayoutRecursionGuard()
   }
 
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    return false
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     statusItemController = StatusItemController()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

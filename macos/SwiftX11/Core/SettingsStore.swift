@@ -37,10 +37,6 @@ final class SettingsStore: ObservableObject {
     didSet { UserDefaults.standard.set(tcpBindAddress, forKey: "tcpBindAddress") }
   }
   
-  @Published var pauseLogAppend: Bool = false     // freeze the log history
-  @Published var showMotionLogs: Bool = false     // suppress the motion logging
-  @Published var showDamageLogs: Bool = true     // show/suppress the damage logging
-
   @Published var logVerbosity: Int {
     didSet {
       UserDefaults.standard.set(logVerbosity, forKey: "logVerbosity")
