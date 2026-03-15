@@ -6,7 +6,6 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
   private let xid: UInt32
   
   var logAppend: ((String) -> Void)?
-  var shouldLogQueueStats: (() -> Bool)?
 
   init(xid: UInt32, title: String, x: Int = 0, y: Int = 0, width: Int, height: Int,
        overrideRedirect: Bool = false) {
@@ -233,20 +232,12 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
       // Cocoa → X11 event injection (intentionally NOT using client API)
       // This reflects a native window-manager action, not a client request.
       x11_post_window_raise(xid)
-    
-      if shouldLogQueueStats?() == true {
-          logAppend?("EVQ (focus in)")
-      }
   }
 
   func windowDidResignKey(_ notification: Notification) {
       assert(Thread.isMainThread)
       postSyntheticLeaveForCurrentMouseLocation()
       x11_post_focus_event(xid, false)
-    
-      if shouldLogQueueStats?() == true {
-          logAppend?("EVQ (focus out)")
-      }
   }
 
   @objc

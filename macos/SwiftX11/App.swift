@@ -7,7 +7,7 @@ struct SwiftX11: App {
     @StateObject private var settings = SettingsStore()
 
     var body: some Scene {
-        WindowGroup("SwiftX11") {
+        Window("SwiftX11", id: "control-panel") {
             ContentView()
                 .environmentObject(server)
                 .environmentObject(settings)

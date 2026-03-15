@@ -14,9 +14,6 @@ final class XServerController: ObservableObject {
   private var drainTimer: DispatchSourceTimer?
   private var isPaused:    (() -> Bool)?
   private var showMotion:  (() -> Bool)?
-  private var showStats:   (() -> Bool)?
-  private var drainPaused: (() -> Bool)?
-  private var didLogDrainPaused = false
 
   
   init() {
@@ -172,14 +169,10 @@ final class XServerController: ObservableObject {
   
   func setLogControls(
     isPaused:    @escaping () -> Bool,
-    showMotion:  @escaping () -> Bool,
-    showStats:   @escaping () -> Bool,
-    drainPaused: @escaping () -> Bool
+    showMotion:  @escaping () -> Bool
   ) {
     self.isPaused = isPaused
     self.showMotion = showMotion
-    self.showStats = showStats
-    self.drainPaused = drainPaused
   }
 
   @MainActor
@@ -219,18 +212,8 @@ final class XServerController: ObservableObject {
     drainTimer = nil
   }
   
-  private var lastStatsPrintTime: CFTimeInterval = 0
 
   private func drainEvents(max: Int) {
-    if isDrainPausedNow() {
-      if !didLogDrainPaused {
-        didLogDrainPaused = true
-        Task { @MainActor in self.append("drain paused; not popping events") }
-      }
-      return
-    }
-    didLogDrainPaused = false
-    
     // 1) Pop off the C queue here
     var batch: [x11_ui_cmd_t] = []
     batch.reserveCapacity(max)
@@ -285,27 +268,8 @@ final class XServerController: ObservableObject {
     }
   }
   
-  private func shouldShowStats() -> Bool {
-    showStats?() ?? false
-  }
-
   private func isLogPausedNow() -> Bool {
     isPaused?() ?? false
-  }
-
-  private func isDrainPausedNow() -> Bool {
-    drainPaused?() ?? false
-  }
-
-  private func maybeAppendQueueStats(qBefore: Int, drained: Int) {
-      guard shouldShowStats() else { return }          // your toggle
-      guard !isLogPausedNow() else { return }          // your “Freeze log output” toggle
-
-      let now = CACurrentMediaTime()
-      guard now - lastStatsPrintTime >= 1.0 else { return }
-      lastStatsPrintTime = now
-
-      append("EVQ qBefore=\(qBefore) drained=\(drained)")
   }
   
   

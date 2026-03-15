@@ -38,6 +38,4 @@ final class SettingsStore: ObservableObject {
   @Published var pauseLogAppend: Bool = false     // freeze the log history
   @Published var showMotionLogs: Bool = false     // suppress the motion logging 
   @Published var showDamageLogs: Bool = true     // show/suppress the damage logging
-  @Published var pauseDrain:     Bool = false     // stop draining queue
-  @Published var showQueueStats: Bool = false
 }

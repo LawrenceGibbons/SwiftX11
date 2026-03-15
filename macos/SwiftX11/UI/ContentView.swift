@@ -49,11 +49,6 @@ struct ContentView: View {
       
       Toggle("Freeze log output", isOn: $settings.pauseLogAppend)
 
-      Toggle("Show queue stats (1/sec)", isOn: $settings.showQueueStats)
-      
-      Toggle("Pause draining (danger: queue can fill)", isOn: $settings.pauseDrain)
-          .toggleStyle(.switch)
-      
       Toggle("Show Motion events", isOn: $settings.showMotionLogs)
       
       
@@ -84,15 +79,12 @@ struct ContentView: View {
 
       server.setLogControls(
         isPaused: { settings.pauseLogAppend },
-        showMotion: { settings.showMotionLogs },
-        showStats: { settings.showQueueStats },
-        drainPaused: { settings.pauseDrain }
+        showMotion: { settings.showMotionLogs }
       )
 
       WindowRegistry.shared.attachLogHooks(
           logAppend: { line in server.append(line) },
-          isLogPaused: { settings.pauseLogAppend },
-          showQueueStats: { settings.showQueueStats }
+          isLogPaused: { settings.pauseLogAppend }
       )
 
     }

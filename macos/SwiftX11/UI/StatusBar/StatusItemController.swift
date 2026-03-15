@@ -32,7 +32,9 @@ final class StatusItemController {
     add("Start Server", #selector(startServer))
     add("Stop Server",  #selector(stopServer))
     menu.addItem(.separator())
+    add("Show Control Panel", #selector(showControlPanel), key: "0")
     add("Preferences…", #selector(openPreferences), key: ",")
+    menu.addItem(.separator())
     add("Quit SwiftX11", #selector(quit), key: "q")
 
     // Defer menu attachment one tick to avoid sizing during creation
@@ -44,7 +46,16 @@ final class StatusItemController {
   
   @objc private func startServer() { NotificationCenter.default.post(name: .x11StartRequested, object: nil) }
   @objc private func stopServer()  { NotificationCenter.default.post(name: .x11StopRequested, object: nil) }
-  @objc private func openPreferences() { PreferencesWindow.open() }
+  @objc private func showControlPanel() {
+    NSApp.activate(ignoringOtherApps: true)
+    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11" }) {
+      win.makeKeyAndOrderFront(nil)
+    }
+  }
+  @objc private func openPreferences() {
+    NSApp.activate(ignoringOtherApps: true)
+    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+  }
   @objc private func quit() { NSApp.terminate(nil) }
 }
 

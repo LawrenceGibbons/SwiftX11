@@ -119,7 +119,6 @@ final class WindowRegistry {
   // injected hooks (set once from SwiftUI/XServerController)
   private var logAppend: ((String) -> Void)?
   private var isLogPaused: (() -> Bool)?
-  private var showQueueStats: (() -> Bool)?
   private var pendingPresentByXid: Set<UInt32> = []
   
   // xid relationship tracking
@@ -185,12 +184,10 @@ final class WindowRegistry {
   // call this once at startup
   func attachLogHooks(
     logAppend: @escaping (String) -> Void,
-    isLogPaused: @escaping () -> Bool,
-    showQueueStats: @escaping () -> Bool
+    isLogPaused: @escaping () -> Bool
   ) {
     self.logAppend = logAppend
     self.isLogPaused = isLogPaused
-    self.showQueueStats = showQueueStats
   }
   
   private init() {}
@@ -636,10 +633,6 @@ final class WindowRegistry {
       guard self.isLogPaused?() != true else { return }
       self.logAppend?(line)
     }
-    controller.shouldLogQueueStats = { [weak self] in
-      self?.showQueueStats?() ?? false
-    }
-
     windows[xid] = controller
     controller.window?.orderOut(nil) // start hidden/unmapped
 
