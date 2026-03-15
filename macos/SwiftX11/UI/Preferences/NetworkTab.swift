@@ -10,9 +10,11 @@ struct NetworkTab: View {
             Section {
                 Toggle("Enable TCP Listener (port \(6000 + displayNum))",
                        isOn: $settings.enableTCP)
+                    .help("Listen for X11 connections on TCP port \(6000 + displayNum). Required for Docker containers.")
 
                 Toggle("Enable Unix Socket (/tmp/.X11-unix/X\(displayNum))",
                        isOn: $settings.enableUnixSocket)
+                    .help("Listen on /tmp/.X11-unix/X\(displayNum). Works for native macOS X11 clients only (not Docker).")
             }
 
             Section {

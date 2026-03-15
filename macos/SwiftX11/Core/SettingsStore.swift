@@ -20,8 +20,10 @@ final class SettingsStore: ObservableObject {
     self.enableTCP = UserDefaults.standard.object(forKey: "enableTCP") as? Bool ?? true
     self.enableUnixSocket = UserDefaults.standard.object(forKey: "enableUnixSocket") as? Bool ?? true
     self.tcpBindAddress = UserDefaults.standard.object(forKey: "tcpBindAddress") as? String ?? "0.0.0.0"
-    // Sync initial AA state to C++
+    self.logVerbosity = UserDefaults.standard.object(forKey: "logVerbosity") as? Int ?? 0
+    // Sync initial state to C++
     x11_set_font_antialiased(self.antialiasedFonts ? 1 : 0)
+    x11_set_log_verbosity(Int32(self.logVerbosity))
   }
 
   @Published var enableClipboard: Bool = true
@@ -36,6 +38,13 @@ final class SettingsStore: ObservableObject {
   }
   
   @Published var pauseLogAppend: Bool = false     // freeze the log history
-  @Published var showMotionLogs: Bool = false     // suppress the motion logging 
+  @Published var showMotionLogs: Bool = false     // suppress the motion logging
   @Published var showDamageLogs: Bool = true     // show/suppress the damage logging
+
+  @Published var logVerbosity: Int {
+    didSet {
+      UserDefaults.standard.set(logVerbosity, forKey: "logVerbosity")
+      x11_set_log_verbosity(Int32(logVerbosity))
+    }
+  }
 }

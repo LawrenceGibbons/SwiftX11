@@ -205,19 +205,21 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
   }
 
   if (!e.fn) {
-#ifndef NDEBUG
-    fprintf(stderr,
-            "[DISPATCH] UNHANDLED major=%u minor=%u seq=%u (no C++ handler)\n",
-            (unsigned)major,
-            (unsigned)minor,
-            (unsigned)seq);
-#endif
+    {
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] UNHANDLED major=%u minor=%u seq=%u (no C++ handler)\n",
+               (unsigned)major, (unsigned)minor, (unsigned)seq);
+      x11_ui_push_log(1, buf);
+    }
     // Safety net: if this was a reply-bearing opcode, send an error reply
     // to prevent XCB sequence desync crash.
     if (ctx_.hasClient() && isReplyBearingCore(major)) {
-      fprintf(stderr,
-              "[DISPATCH] MISSING REPLY — sending BadImplementation for major=%u seq=%u\n",
-              (unsigned)major, (unsigned)seq);
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] MISSING REPLY — sending BadImplementation for major=%u seq=%u\n",
+               (unsigned)major, (unsigned)seq);
+      x11_ui_push_log(0, buf);
       ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
     }
     return 0;

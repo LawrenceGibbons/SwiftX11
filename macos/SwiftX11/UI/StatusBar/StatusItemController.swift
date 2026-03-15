@@ -62,4 +62,5 @@ final class StatusItemController {
 extension Notification.Name {
   static let x11StartRequested = Notification.Name("x11StartRequested")
   static let x11StopRequested  = Notification.Name("x11StopRequested")
+  static let x11LogMessage     = Notification.Name("x11LogMessage")
 }

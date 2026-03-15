@@ -15,6 +15,10 @@
 
 #include "Utils/TraceDefs.hpp"
 
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
+
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -1981,8 +1985,8 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   }
 
   default:
-    fprintf(stderr, "[RENDER] unhandled minor=%u seq=%u remain=%zu — sending BadRequest\n",
-            (unsigned)minor, (unsigned)seq, br.remaining());
+    { char buf[128]; snprintf(buf, sizeof(buf), "[RENDER] unhandled minor=%u seq=%u remain=%zu — sending BadRequest\n",
+              (unsigned)minor, (unsigned)seq, br.remaining()); x11_ui_push_log(1, buf); }
     br.skip(br.remaining());
     // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
     ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, ext::kRENDER);

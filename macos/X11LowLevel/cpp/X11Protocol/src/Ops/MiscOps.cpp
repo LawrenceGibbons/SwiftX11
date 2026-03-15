@@ -7,6 +7,11 @@
 
 #include <array>
 #include <cstring>
+#include <cstdio>
+
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
 
 #include "Core/XProtoContext.hpp"
 #include "Utils/ByteReader.hpp"
@@ -70,7 +75,7 @@ void MiscOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 // =============================================================================
 void MiscOps::handleChangeKeyboardMapping(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] ChangeKeyboardMapping (100) stub\n");
+  x11_ui_push_log(1, "[MiscOps] ChangeKeyboardMapping (100) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -80,7 +85,7 @@ void MiscOps::handleChangeKeyboardMapping(XProtoContext& ctx, uint16_t /*seq*/, 
 // =============================================================================
 void MiscOps::handleChangeKeyboardControl(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] ChangeKeyboardControl (102) stub\n");
+  x11_ui_push_log(1, "[MiscOps] ChangeKeyboardControl (102) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -130,7 +135,7 @@ void MiscOps::handleGetKeyboardControl(XProtoContext& ctx, uint16_t seq, ByteRea
 // =============================================================================
 void MiscOps::handleBell(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] Bell (104) stub\n");
+  x11_ui_push_log(1, "[MiscOps] Bell (104) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -140,7 +145,7 @@ void MiscOps::handleBell(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 // =============================================================================
 void MiscOps::handleChangePointerControl(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] ChangePointerControl (105) stub\n");
+  x11_ui_push_log(1, "[MiscOps] ChangePointerControl (105) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -166,7 +171,7 @@ void MiscOps::handleGetPointerControl(XProtoContext& ctx, uint16_t seq, ByteRead
 // =============================================================================
 void MiscOps::handleSetScreenSaver(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] SetScreenSaver (107) stub\n");
+  x11_ui_push_log(1, "[MiscOps] SetScreenSaver (107) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -193,7 +198,7 @@ void MiscOps::handleGetScreenSaver(XProtoContext& ctx, uint16_t seq, ByteReader&
 // =============================================================================
 void MiscOps::handleChangeHosts(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] ChangeHosts (109) stub\n");
+  x11_ui_push_log(1, "[MiscOps] ChangeHosts (109) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -219,7 +224,7 @@ void MiscOps::handleListHosts(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
 // =============================================================================
 void MiscOps::handleSetAccessControl(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] SetAccessControl (111) stub\n");
+  x11_ui_push_log(1, "[MiscOps] SetAccessControl (111) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -229,7 +234,7 @@ void MiscOps::handleSetAccessControl(XProtoContext& ctx, uint16_t /*seq*/, ByteR
 // =============================================================================
 void MiscOps::handleSetCloseDownMode(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] SetCloseDownMode (112) stub\n");
+  x11_ui_push_log(1, "[MiscOps] SetCloseDownMode (112) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -239,7 +244,7 @@ void MiscOps::handleSetCloseDownMode(XProtoContext& ctx, uint16_t /*seq*/, ByteR
 // =============================================================================
 void MiscOps::handleKillClient(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] KillClient (113) stub\n");
+  x11_ui_push_log(1, "[MiscOps] KillClient (113) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -249,7 +254,7 @@ void MiscOps::handleKillClient(XProtoContext& ctx, uint16_t /*seq*/, ByteReader&
 // =============================================================================
 void MiscOps::handleForceScreenSaver(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] ForceScreenSaver (115) stub\n");
+  x11_ui_push_log(1, "[MiscOps] ForceScreenSaver (115) stub\n");
 #endif
   br.skip(br.remaining());
 }
@@ -259,7 +264,7 @@ void MiscOps::handleForceScreenSaver(XProtoContext& ctx, uint16_t /*seq*/, ByteR
 // =============================================================================
 void MiscOps::handleNoOperation(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 #ifdef X11_TRACE_VERBOSE
-  ctx.tracef("[MiscOps] NoOperation (127)\n");
+  x11_ui_push_log(2, "[MiscOps] NoOperation (127)\n");
 #endif
   br.skip(br.remaining());
 }

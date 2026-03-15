@@ -27,6 +27,8 @@ final class XServerController: ObservableObject {
 //    x11_register_frame_presenter(swiftX11PresentFrame)
 //    append("Registered frame presenter")
     
+    registerLogBridge()
+
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(_handleStartRequested(_:)),
@@ -40,7 +42,14 @@ final class XServerController: ObservableObject {
       name: .x11StopRequested,
       object: nil
     )
-    
+
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(_handleLogMessage(_:)),
+      name: .x11LogMessage,
+      object: nil
+    )
+
     start()
   }
   
@@ -145,6 +154,31 @@ final class XServerController: ObservableObject {
     x11_clipboard_register(getter, setter)
     x11_clipboard_register_change_count(changeCounter)
     append("Clipboard bridge registered")
+  }
+
+  /// Register C++ → Swift log callback so protocol traces appear in the UI log panel.
+  private func registerLogBridge() {
+    let callback: x11_log_callback_fn = { level, msg in
+      guard let msg = msg else { return }
+      let str = String(cString: msg)
+      DispatchQueue.main.async {
+        NotificationCenter.default.post(
+          name: .x11LogMessage,
+          object: nil,
+          userInfo: ["message": str, "level": level as Any]
+        )
+      }
+    }
+    x11_register_log_callback(callback)
+  }
+
+  @objc private func _handleLogMessage(_ note: Notification) {
+    guard let msg = note.userInfo?["message"] as? String else { return }
+    // Strip trailing newline if present (append() adds its own)
+    let trimmed = msg.hasSuffix("\n") ? String(msg.dropLast()) : msg
+    if !isLogPausedNow() {
+      append(trimmed)
+    }
   }
   
   func stop() {

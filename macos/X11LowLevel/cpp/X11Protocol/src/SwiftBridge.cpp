@@ -331,6 +331,43 @@ extern "C" int64_t x11_clipboard_get_change_count(void)
 }
 
 // -------------------------------------------------------------------------------------
+// Log bridge (C++ → Swift debug panel)
+// -------------------------------------------------------------------------------------
+#include <atomic>
+
+static x11_log_callback_fn g_log_cb = nullptr;
+static std::atomic<int> g_log_verbosity{0};
+
+extern "C" void x11_register_log_callback(x11_log_callback_fn fn)
+{
+  g_log_cb = fn;
+}
+
+extern "C" void x11_ui_push_log(int level, const char* message)
+{
+  if (level > g_log_verbosity.load(std::memory_order_relaxed)) return;
+  if (!message) return;
+
+  // If a Swift callback is registered, send to the UI log panel.
+  if (g_log_cb) {
+    g_log_cb(level, message);
+  } else {
+    // Fallback: stderr (pre-registration or if Swift didn't register)
+    fprintf(stderr, "%s", message);
+  }
+}
+
+extern "C" void x11_set_log_verbosity(int level)
+{
+  g_log_verbosity.store(level, std::memory_order_relaxed);
+}
+
+extern "C" int x11_get_log_verbosity(void)
+{
+  return g_log_verbosity.load(std::memory_order_relaxed);
+}
+
+// -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
 extern "C" void x11_set_font_antialiased(int enabled)

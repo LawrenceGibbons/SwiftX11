@@ -54,6 +54,17 @@ struct ContentView: View {
       
       Toggle("Show Damage events", isOn: $settings.showDamageLogs)
 
+      HStack {
+        Text("Log verbosity:")
+        Picker("", selection: $settings.logVerbosity) {
+          Text("Errors only").tag(0)
+          Text("Info (stubs & unhandled)").tag(1)
+          Text("Verbose").tag(2)
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 320)
+      }
+
       Divider()
 
       Text("Logs").font(.headline)
@@ -62,6 +73,9 @@ struct ContentView: View {
         Button("Copy All") {
           NSPasteboard.general.clearContents()
           NSPasteboard.general.setString(server.logText, forType: .string)
+        }
+        Button("Clear") {
+          server.logText = ""
         }
         Spacer()
       }

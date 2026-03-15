@@ -6,8 +6,13 @@
 //
 
 #include <cstddef>
+#include <cstdio>
 
 #include "XRenderOps.hpp"
+
+extern "C" {
+#include "SwiftX11Bridge.h"
+}
 
 namespace x11 {
 
@@ -23,8 +28,10 @@ public:
 };
 
 void XRenderOps::handle(uint8_t minorOpcode, ByteReader& br) {
-  ctx_.tracef("[XRenderOps] unhandled minor=%u (stub) skip=%zu\n",
-              (unsigned)minorOpcode, br.remaining());
+  char buf[128];
+  snprintf(buf, sizeof(buf), "[XRenderOps] unhandled minor=%u (stub) skip=%zu\n",
+           (unsigned)minorOpcode, br.remaining());
+  x11_ui_push_log(1, buf);
   br.skip(br.remaining());
 }
 

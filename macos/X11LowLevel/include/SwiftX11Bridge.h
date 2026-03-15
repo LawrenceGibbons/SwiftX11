@@ -264,6 +264,16 @@ void x11_clipboard_register_change_count(x11_clipboard_change_count_fn fn);
 int64_t x11_clipboard_get_change_count(void);
 
 // -------------------------------------------------------------------------------------
+// Log bridge (C++ → Swift debug panel)
+// -------------------------------------------------------------------------------------
+// Log levels: 0 = important (always shown), 1 = info (stubs/unhandled), 2 = verbose
+typedef void (*x11_log_callback_fn)(int level, const char* msg);
+void x11_register_log_callback(x11_log_callback_fn fn);
+void x11_ui_push_log(int level, const char* message);
+void x11_set_log_verbosity(int level);
+int  x11_get_log_verbosity(void);
+
+// -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
 // Set/get whether server-side text rendering uses antialiased (8-bit alpha) glyphs.
