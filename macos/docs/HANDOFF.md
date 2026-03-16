@@ -1,134 +1,101 @@
-# SwiftX11 — Session Handoff Prompt
+# SwiftX11 Session Handoff
 
-**Date**: 2026-03-11
-**Version**: v1.10.7
-**Branch**: `develop++`
+Last updated: 2026-03-16 (v1.13.2)
 
----
+## Current State
 
-## How to Use This Document
+SwiftX11 is a working X11 server for macOS. Vivado (Java Swing) is confirmed working. Vitis (Eclipse SWT/GTK) connects and starts but needs more testing. The app has a custom icon, Stage Manager support, graceful quit, and multi-monitor window placement.
 
-Paste this into a new Claude conversation along with: "Please read CLAUDE.md and docs/TODO.md, then continue with the next task outlined in this handoff."
+**Branch**: `develop++` — all work is on this branch
+**Version**: 1.13.2 (defined in `X11LowLevel/include/SwiftX11Version.h`)
+**Bundle ID**: `com.rlan.SwiftX11` (changed from `RLAN.SwiftX11` in v1.13.2 to fix poisoned macOS icon cache)
 
----
-
-## Project Summary
-
-SwiftX11 is an X11 protocol server running natively on macOS. It implements the X11 wire protocol so X11 clients (xterm, xeyes, xcalc, xclock, etc.) display via native Cocoa/Metal windows.
-
-**Two language layers** (C layer fully eliminated in v1.0.0):
-- **Swift** (`SwiftX11/`): UI owner — AppKit, Metal rendering, surface allocation, networking
-- **C++** (`X11LowLevel/cpp/X11Protocol/`): Protocol core — request parsing, reply/event framing, raster ops, resource tables. `SwiftBridge.cpp` provides the `extern "C"` functions that Swift calls.
-
-**Working clients**: xterm (scrollbar, cursor blink, modifier keys, Option+click thumb drag, bidirectional clipboard, CoreText antialiased fonts, Xft subpixel rendering), xeyes (SHAPE transparency), xcalc (Symbol font sqrt/pi/division), xclock, multi-client, multi-monitor with popup menus
-
-**Advertised extensions (7)**: BIG-REQUESTS (133), RENDER (139), XFIXES (134), SHAPE (135), RANDR (136), XINERAMA (137), GE (138)
-
-**Display**: SwiftX11 listens on display :1 (TCP port 6001 + Unix socket `/tmp/.X11-unix/X1`). `~/.profile` sets `DISPLAY=127.0.0.1:1`.
-
----
-
-## What Was Accomplished Recently (v1.10.0 - v1.10.7)
-
-### v1.10.7: Multi-Monitor Popup Menu Fix
-- **Blank popup text on external monitors**: `CAMetalLayer.contentsScale` stayed 0.0 for `.borderless` NSWindows on external monitors. Fixed by explicit `backingScaleFactor` propagation in `ensureMetalSetup()` + `viewDidChangeBackingProperties`.
-- **Hot-plug popup positioning**: xterm doesn't query RANDR, so Xlib's `WidthOfScreen`/`HeightOfScreen` remain stale after monitor changes. Fixed with server-side `adjustOROriginForCursorScreen()` + `x11_set_window_position()` to sync X11 geometry.
-- **ScreenLayoutChanged host command**: `CGDisplayReconfigurationCallback` now broadcasts ConfigureNotify + RRScreenChangeNotify to all connected clients on monitor hot-plug/unplug.
-- **Diagnostic trace cleanup**: Removed ~217 lines of verbose per-frame OR popup traces.
-
-### v1.10.0: Rendering Performance + Metal-Only
-- **Metal rendering required**: Software (CGImage/CALayer) rendering path removed entirely.
-- **PutImage bulk memcpy**: GXcopy fast path uses `std::memcpy` + 4-pixel-unrolled alpha forcing.
-- **Expose two-pass**: Backgrounds/borders filled first, then Expose events sent.
-
-### v1.9.7: Multi-Monitor Support
-- ScreenLayout cache, dynamic RANDR/Xinerama, coordinate conversion fixes
-- `xrandr --query` works with real monitor configuration
-
----
-
-## Known Issues (deferred)
-
-- **xcalc -rpn extra button labels**: Buttons 40-54 show widget names. NOT a server bug -- app-defaults only cover 1-39.
-- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" -- XCreateFontSet() expects multiple charset fonts.
-- **xeyes shaped window occasional black flash on resize**: Minor cosmetic issue during live resize.
-
----
-
-## Next Task: Phase 5.3 — Keyboard
-
-**Priority**: MEDIUM — needed for Vivado/Vitis (Java Swing expects comprehensive keysym tables and modifier mapping).
-
-### Unchecked items from docs/TODO.md Phase 5.3:
-- [ ] **Full keysym mapping**: Map macOS virtual keycodes to X11 keysyms comprehensively (currently minimal)
-- [ ] **Modifier mapping**: GetModifierMapping should return a mapping that matches macOS keyboard layout
-- [ ] **Keymap state**: QueryKeymap returns current key state (currently all-zeros stub)
-- [ ] **XKB (optional)**: Modern clients may query for XKB extension — return not-present is acceptable initially
-
-### Suggested approach:
-1. Audit current `sendKeyEvent()` implementation — what keysyms are mapped, what's missing
-2. Build comprehensive macOS virtual keycode → X11 keysym table (Latin-1 + function keys + keypad + special keys)
-3. Implement GetModifierMapping with correct macOS→X11 modifier semantics (Cmd→Mod4, Option→Mod1, etc.)
-4. Implement GetKeyboardMapping to return the keysym table
-5. Test with `xev -event keyboard` to verify all keys produce correct keysyms
-6. Test with `xterm` for text input, special keys (Home/End/Page/arrows/F-keys)
-7. Consider XKB stubs if Java or GTK clients query for it
-
-### Other unchecked TODO items (lower priority):
-- Phase 4.4: Colormap verification (TrueColor visual, AllocColor)
-- Phase 5.2: Xauth, latency tolerance
-- Phase 5.5: Window menu integration
-- Phase 5.6: ICCCM/WM compliance (WM_HINTS, WM_NORMAL_HINTS, EWMH)
-- Phase 7: XInput2, SYNC, Shape AA
-
----
-
-## Build & Test
+## Build & Run
 
 ```bash
-# Open in Xcode
-open macos/SwiftX11.xcodeproj
-
-# Build target: SwiftX11 (macOS app)
-# Test clients:
-xterm -sb -rightbar -bc        # scrollbar + cursor blink
-xterm -fa Menlo -fs 16         # Xft antialiased rendering
-xeyes                          # SHAPE transparency
-xcalc                          # Symbol font (sqrt, pi, division)
-xclock -analog                 # Xaw widgets, arcs
-xrandr --query                 # Multi-monitor: shows real monitor config
-xev -event keyboard            # Keyboard event testing (for Phase 5.3)
-
-# Verify version banner: "SwiftX11 v1.10.7"
-
-# Test multi-monitor popups:
-# 1. Open xterm on external monitor
-# 2. Right-click (Ctrl+click) for popup menu -> should show text, highlight works
-# 3. Hot-plug/unplug monitor -> popup should follow cursor screen
+cd /Users/lkg/Documents/Vivado/SwiftX11/macos
+# Build from Xcode: open SwiftX11.xcodeproj, Cmd+R
+# Or command line:
+xcodebuild -project SwiftX11.xcodeproj -scheme SwiftX11 -configuration Debug build
 ```
 
----
+Test clients: `DISPLAY=127.0.0.1:1 xterm -sb -rightbar -bc`
 
-## Key Architecture References
+## Next Tasks (Priority Order)
 
-Read these files to understand the codebase:
-- `CLAUDE.md` -- Comprehensive architecture doc (surface routing, damage pipeline, input events, development guidelines)
-- `docs/TODO.md` -- Full roadmap with testing apps and priority order
-- `X11LowLevel/include/SwiftX11Version.h` -- Single source of truth for version string
-- `X11LowLevel/cpp/X11Protocol/include/Utils/TraceDefs.hpp` -- Categorical trace system
-- `X11LowLevel/cpp/X11Protocol/include/Core/ScreenLayout.hpp` -- Multi-monitor layout cache
-- `SwiftX11/Core/WindowRegistry.swift` -- Window management, popup adjustment, coordinate conversion
+### 1. Help Menu / User Guide (Phase 6.1 in TODO.md)
+Add a Help menu item that opens documentation covering:
+- **DISPLAY setup**: `DISPLAY=127.0.0.1:1` for TCP, `DISPLAY=:1` for Unix socket, `~/.profile` configuration
+- **Font locations**: `/opt/X11/share/fonts/{misc,75dpi,100dpi}/`, CoreText bridge (fixed->Menlo, courier->Courier, etc.), antialiased font toggle in Settings -> Rendering
+- **Settings panels**: Rendering options, Network tab (TCP/Unix toggles), Docker usage
+- **Log window**: View menu Show/Hide toggle, what the log output means, trace categories
+- **Docker/container workflow**: `DISPLAY=host.docker.internal:1`, TCP vs Unix socket on Docker Desktop
+- **Keyboard shortcuts**: Option+click = middle mouse (scrollbar thumb drag), Ctrl+click = right-click, Cmd+W = close/kill client
+- **Known limitations**: No GLX, no XKB compose, big-endian rejected
 
----
+The help could be an NSWindow with an NSTextView (rich text), or a simple HTML file loaded in a WKWebView. SwiftUI sheet anchored to the main menu is another option.
 
-## Important Conventions
+### 2. XC-MISC Extension (Phase 7.1 — HIGH)
+Prevents XID exhaustion crash for long-running Vivado sessions. Very simple:
+- `XC-MiscGetVersion` → return 1.1
+- `XC-MiscGetXIDRange` → return new XID range from server's free pool
+- `XC-MiscGetXIDList` → return individual free XIDs
+Needs: XID allocation tracking per client, new extension handler in ExtensionOps.cpp
 
-- **All new code in C++ or Swift** -- no C files remain
-- **Display :1** -- TCP port 6001 + Unix socket, set via `~/.profile`
-- **Version bump** -- bump `SwiftX11Version.h` to verify correct build
-- **Reply-bearing opcodes** -- always send reply via `ctx.reply().sendReply32()` or XCB will crash
-- **toX11State()** -- always use for event state fields (modifier/button bit mapping)
-- **stridePixels** -- always use `dst.stridePixels` not `dst.w` for pixel row indexing
-- **Branch**: all work on `develop++`
-- **Extension opcodes**: BIG-REQUESTS=133, XFIXES=134, SHAPE=135, RANDR=136, Xinerama=137, GE=138, RENDER=139 (in X11ExtOpcodes.hpp)
-- **Trace tiers**: `#ifndef NDEBUG` for lifecycle traces; `X11_TRACE_<CATEGORY>` for categorical; `X11_TRACE_VERBOSE` enables ALL. See `TraceDefs.hpp`.
+### 3. XInput2 Stubs (Phase 7.2 — MEDIUM-HIGH)
+GTK3/4 queries XI2 at startup. Without it, GTK falls back but loses features:
+- `XIQueryVersion` → return 2.0+ or present=0
+- `XIQueryDevice` → list virtual core pointer + keyboard
+- `XISelectEvents` → accept and track selections
+- Test: run `gtk3-demo` and see if it works without XI2
+
+### 4. XTEST Extension (Phase 7.3 — MEDIUM)
+Automation/accessibility. Used by xdotool, AT-SPI:
+- `XTestFakeInput` → synthesize events through InputState
+- `XTestGrabControl` → allow events to bypass grabs
+
+### 5. Vitis Testing
+Eclipse SWT/GTK from ALMA 9 container. Run script at `~/Documents/Vivado/vivado2023/run_vitis_swiftx11.sh`. May uncover additional extension/protocol gaps.
+
+## Key Files to Know
+
+| Purpose | File |
+|---------|------|
+| App entry + SwiftUI scene | `SwiftX11/App.swift` |
+| AppDelegate (menus, quit, icon) | `SwiftX11/AppDelegate.swift` |
+| Window creation | `SwiftX11/UI/Windows/X11WindowController.swift` |
+| Metal rendering + surface | `SwiftX11/UI/Windows/X11WindowHost.swift` |
+| Metal draw pipeline | `SwiftX11/UI/Windows/X11MetalRenderer.swift` |
+| Window registry (Cocoa side) | `SwiftX11/Core/WindowRegistry.swift` |
+| Settings store | `SwiftX11/Core/SettingsStore.swift` |
+| Status bar controller | `SwiftX11/UI/StatusBar/StatusItemController.swift` |
+| Version string | `X11LowLevel/include/SwiftX11Version.h` |
+| C++ extension handlers | `X11LowLevel/cpp/X11Protocol/src/Ops/ExtensionOps.cpp` |
+| Full architecture docs | `CLAUDE.md` |
+| Roadmap | `docs/TODO.md` |
+
+## Recent Changes (v1.13.x)
+
+- **XFIXES/RANDR stubs**: Minor opcodes from Vitis that were returning BadRequest now handled
+- **Multi-monitor window placement**: Default-position windows go to NSScreen.main, not virtual desktop top-left
+- **View menu dynamic toggle**: Show/Hide Log Window updates based on window visibility (AppDelegate NSMenu + NSMenuDelegate)
+- **Graceful quit**: `applicationShouldTerminate` stops X11 server before window teardown (no more beach ball)
+- **App icon**: Generated from SwiftX11-2.pdf, 10 sizes with blue background
+- **Bundle ID**: Changed to `com.rlan.SwiftX11` — old ID had poisoned icon cache in macOS
+- **NSWindow.sharingType = .readWrite**: Set on all X11 windows
+
+## Architecture Quick Reference
+
+- **Swift** owns: AppKit windows, Metal rendering, surface allocation, networking
+- **C++** owns: X11 protocol parsing, drawing ops, resource tables, event delivery
+- **Bridge**: `extern "C"` functions in `SwiftBridge.cpp` / `SwiftX11Bridge.h`
+- **Surfaces**: Swift allocates host surface → registers via `x11_surface_update()` → C++ draws into it → damage reported → Metal presents
+- **Extensions**: 7 advertised (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE). RENDER not fully advertised (missing Trapezoids rendering). New extensions go in `ExtensionOps.cpp` with opcode in `X11ExtOpcodes.hpp`.
+
+## Vitis Run Script
+
+Located at `~/Documents/Vivado/vivado2023/run_vitis_swiftx11.sh`. Features:
+- Starts SwiftX11 if not running
+- Runs Vitis in Docker container with DISPLAY forwarded
+- `monitor_swiftx11()` background function: if SwiftX11 quits, kills container after timeout
+- Cleanup function kills monitor and stops container gracefully
