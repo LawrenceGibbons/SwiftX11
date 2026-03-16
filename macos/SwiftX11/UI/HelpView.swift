@@ -53,7 +53,7 @@ struct HelpView: View {
                 helpSection("Log Window") {
                     Text("View \u{2192} Show Log Window (\u{2318}0) toggles the log window.")
                     Text("The log shows X11 protocol activity, connection events, and diagnostics.")
-                    Text("Increase verbosity in Settings \u{2192} General for more detail. Debug builds include lifecycle and input traces.")
+                    Text("Increase verbosity in Settings \u{2192} General for more detail.")
                 }
 
                 helpSection("Keyboard & Mouse") {
@@ -97,10 +97,10 @@ struct HelpView: View {
 
                 helpSection("Known Limitations") {
                     bulletList([
-                        "No GLX (OpenGL over X11) \u{2014} use native GPU rendering instead",
-                        "No XKB compose sequences \u{2014} dead keys and compose not supported",
-                        "Big-endian clients rejected \u{2014} only little-endian byte order accepted",
-                        "Metal GPU required \u{2014} software rendering has been removed",
+                        "No GLX \u{2014} OpenGL rendering over X11 is not supported",
+                        "No XKB compose sequences \u{2014} dead keys and multi-key compose not supported",
+                        "Little-endian only \u{2014} big-endian X11 clients are rejected at connection time",
+                        "Requires Metal GPU \u{2014} software rendering is not supported",
                         "US keyboard layout assumed \u{2014} non-US layouts may have incorrect keysym mapping"
                     ])
                 }
