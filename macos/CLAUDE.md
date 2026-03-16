@@ -189,7 +189,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.12.2)
+### Current State (v1.13.2)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -289,24 +289,27 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **Vivado banner + menu fixes** (v1.12.2): Deferred show for floor-sized windows (`pendingNonORShow` — show triggered by applyX11Resize, first present, or 500ms timeout). ConfigureNotify on user window drag (`WindowMoved` HostCmdType → fixes Java/Swing stale root coordinates after cross-monitor window move). mapWindow geometry sync (query X11 geometry before makeKeyAndOrderFront). **Vivado confirmed working** — full GUI with menus, dialogs, banner on multi-monitor setup.
 
-### Known Issues (v1.12.2)
+- **Vitis extension stubs** (v1.13.0): XFIXES minor 1 (ChangeSaveSet) and minor 2 (SelectSelectionInput) void handlers. RANDR minor 15 (GetOutputProperty) reply-bearing handler returning empty property. Eliminates BadRequest errors from Vitis startup.
+
+- **Multi-monitor window placement fix** (v1.13.0): `adjustNonOROriginForMainScreen()` places default-position (0,0) windows on `NSScreen.main` instead of virtual desktop top-left. Explicitly positioned windows unaffected. `deferredShowRetry()` polls up to 3s for floor-sized windows to get real geometry before showing.
+
+- **Dynamic View menu** (v1.13.0): View menu moved from SwiftUI CommandMenu to AppDelegate NSMenu with NSMenuDelegate. "Show Log Window" ↔ "Hide Log Window" toggle updates dynamically via `menuNeedsUpdate()`. Status bar menu item also toggles.
+
+- **Graceful quit with connected clients** (v1.13.0): `applicationShouldTerminate` calls `x11_stop_server()` before window teardown, replies after 100ms delay for server thread to exit. Prevents beach-ball hang when quitting while X11 clients are connected.
+
+- **App icon** (v1.13.2): Custom icon from SwiftX11 logo PDF, all 10 asset catalog sizes (16–1024px) with blue background. Bundle ID changed to `com.rlan.SwiftX11` (reverse-DNS convention, also fixes poisoned macOS icon cache from old `RLAN.SwiftX11` ID).
+
+- **NSWindow.sharingType** (v1.13.2): Set to `.readWrite` on all X11 windows for window server capture compatibility.
+
+### Known Issues (v1.13.2)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
-
 - **xeyes shaped window occasional black flash on resize**: During live resize, eyes may briefly flash black as the shape mask is reapplied to the new surface size. Minor cosmetic issue.
 
-### Next Major Tasks (Vivado/Vitis Roadmap)
-See `docs/TODO.md` for the comprehensive 5-phase plan with testing apps per phase. Priority order:
-1. ~~**Complete Phase 3.3**~~ — ✅ Done (v1.8.0): CoreText font bridge + Xft verification
-2. ~~**Window close → client kill**~~ — ✅ Done (v1.9.0): WM_DELETE_WINDOW + forceful disconnect
-3. ~~**Error handling**~~ — ✅ Done (v1.9.3): X11 error generation across ~50 handlers
-4. ~~**Container networking**~~ — ✅ Done (v1.9.4): TCP + Unix socket for Docker workflow
-5. ~~**Window management + wire protocol**~~ — ✅ Done (v1.9.5): WM attributes (override-redirect, gravity, backing store) + wire correctness verification
-6. ~~**Multi-monitor support**~~ — ✅ Done (v1.9.7): ScreenLayout, dynamic RANDR/Xinerama, coordinate fixes
-7. ~~**Rendering performance**~~ — ✅ Done (v1.10.0): Metal-only (software path removed), PutImage bulk memcpy, Expose two-pass
-8. ~~**Multi-monitor popup fix**~~ — ✅ Done (v1.10.7): contentsScale fix, hot-plug positioning, ScreenLayoutChanged broadcast
-9. ~~**Keyboard support**~~ — ✅ Done (v1.11.0): Full keysym table, 4-column GetKeyboardMapping, 2-key GetModifierMapping, real QueryKeymap
-10. ~~**Window menu + title sync**~~ — ✅ Done (v1.11.1): macOS Window menu, WM_NAME/_NET_WM_NAME title sync
-11. ~~**ICCCM/WM compliance**~~ — ✅ Done (v1.12.0): WM_NORMAL_HINTS, WM_HINTS, WM_TAKE_FOCUS, EWMH, min size floor
-12. ~~**Vivado confirmed working**~~ — ✅ Done (v1.12.2): Banner, menus, dialogs all functional on multi-monitor
-13. **Vitis testing** — Next: Eclipse SWT/GTK from ALMA 9 container
+### Next Major Tasks
+See `docs/TODO.md` for the comprehensive roadmap. Priority order:
+1. **Help menu / user guide** — Add a Help menu item with usage documentation (DISPLAY setup, font locations, settings, log window, Docker workflow)
+2. **XC-MISC extension** (HIGH) — Prevents XID exhaustion crash for long-running sessions (Vivado). Simple 2-request extension.
+3. **XInput2 stubs** (MEDIUM-HIGH) — GTK3/4 queries XI2 at startup. Stubs needed for broader GTK app support.
+4. **XTEST extension** (MEDIUM) — Synthesizes keyboard/mouse events. Used by accessibility tools and test frameworks.
+5. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container. May uncover additional extension/protocol needs.

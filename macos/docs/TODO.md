@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-13 (v1.12.2 — ICCCM/WM compliance + Vivado banner/menu fixes)
+Last updated: 2026-03-16 (v1.13.2 — App icon, Stage Manager fix, Vitis extension stubs, multi-monitor window placement, graceful quit)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -295,6 +295,24 @@ Convert the SwiftX11 main window from a spawnable `WindowGroup` into a single pe
 
 ---
 
+## Phase 6: UX Polish & Help (MEDIUM — general release readiness)
+
+### 6.1 Help Menu / User Guide (MEDIUM)
+SwiftX11 needs in-app documentation so users can get started without reading source code.
+- [ ] **Help menu item**: Add "SwiftX11 Help" under the Help menu. Opens a native help window or sheet.
+- [ ] **DISPLAY configuration**: How to set `DISPLAY=127.0.0.1:1` (TCP) or `DISPLAY=:1` (Unix socket). `~/.profile` setup.
+- [ ] **Font locations**: Where system fonts live (`/opt/X11/share/fonts/{misc,75dpi,100dpi}/`), how CoreText bridge maps X11 font names to macOS fonts, antialiased font toggle in Settings.
+- [ ] **Settings documentation**: Detailed explanation of each settings panel (Rendering, Network/TCP/Unix toggles, Docker usage).
+- [ ] **Log window**: What the log window shows, how to use View menu Show/Hide toggle, trace categories for debugging.
+- [ ] **Docker/container workflow**: How to run X11 clients from Docker containers (`DISPLAY=host.docker.internal:1`), the Vitis run script pattern, TCP vs Unix socket limitations on Docker Desktop for Mac.
+- [ ] **Keyboard shortcuts**: Option+click for middle mouse (scrollbar thumb drag), Ctrl+click for right-click, Cmd+W to close/kill client.
+- [ ] **Known limitations**: No GLX/OpenGL, no XKB compose keys, big-endian clients rejected, font charset gaps.
+
+### 6.2 About Dialog (LOW)
+- [ ] **About SwiftX11**: Show version, build info, credits. Currently version only shown in startup log.
+
+---
+
 ## Phase 7: Additional Extensions (LOW — broader app compatibility)
 
 These extensions are not needed for the Vivado/Vitis target but may be required by other X11 applications colleagues might use.
@@ -526,7 +544,11 @@ rendercheck                 # RENDER extension tests
 
 **v1.12.2 fixes Vivado banner + cross-monitor menus** — (1) Banner race fix: floor-sized (200×100) windows stay hidden until applyX11Resize, first present, or 500ms timeout (`pendingNonORShow` deferred show mechanism). (2) ConfigureNotify on user window drag: new `WindowMoved` HostCmdType sends ConfigureNotify when user drags NSWindow, fixing Java/Swing stale root coordinate cache that broke menu tracking after cross-monitor window moves. Vivado confirmed working.
 
-**Next priority**: Vitis testing (Eclipse SWT/GTK from ALMA 9 container). Phase 7 extensions as needed.
+**v1.13.0 adds Vitis extension stubs + UX fixes** — XFIXES minor 1/2 and RANDR minor 15 handlers eliminate BadRequest errors from Vitis. Multi-monitor window placement fix (`adjustNonOROriginForMainScreen`). Dynamic View menu (Show/Hide Log Window toggle). Graceful quit with connected clients (`applicationShouldTerminate` stops X11 server before teardown). Deferred show retry loop for floor-sized windows.
+
+**v1.13.2 adds app icon + Stage Manager fix** — Custom app icon from SwiftX11 logo PDF (10 sizes, blue background). Bundle ID changed to `com.rlan.SwiftX11` (fixes poisoned icon cache + proper reverse-DNS). NSWindow.sharingType = .readWrite for window server capture.
+
+**Next priorities**: (1) Help menu / user guide (Phase 6.1), (2) XC-MISC extension for XID exhaustion prevention (Phase 7.1), (3) XInput2 stubs for GTK3/4 (Phase 7.2), (4) XTEST extension (Phase 7.3), (5) Vitis testing.
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
