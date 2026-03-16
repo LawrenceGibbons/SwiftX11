@@ -1,4 +1,5 @@
 import Cocoa
+import SwiftUI
 import X11LowLevel
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -42,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
       self?.installViewMenu()
       self?.installWindowMenu()
+      self?.installHelpMenu()
     }
   }
 
@@ -84,6 +86,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   func menuNeedsUpdate(_ menu: NSMenu) {
     let isVisible = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" })?.isVisible ?? false
     logWindowMenuItem?.title = isVisible ? "Hide Log Window" : "Show Log Window"
+  }
+
+  /// Install a "Help" menu with "SwiftX11 Help" (Cmd+?).
+  /// Replaces the default (empty) SwiftUI Help menu to avoid the
+  /// "Help isn't available" dialog triggered by macOS Help Book system.
+  private func installHelpMenu() {
+    guard let mainMenu = NSApp.mainMenu else { return }
+
+    // Remove the default Help menu if SwiftUI created one
+    if let existingHelp = mainMenu.items.last, existingHelp.submenu?.title == "Help" {
+      mainMenu.removeItem(existingHelp)
+    }
+
+    let helpMenu = NSMenu(title: "Help")
+    let helpItem = NSMenuItem(title: "SwiftX11 Help",
+                              action: #selector(showHelpWindow),
+                              keyEquivalent: "/")
+    helpItem.keyEquivalentModifierMask = [.command, .shift]
+    helpItem.target = self
+    helpMenu.addItem(helpItem)
+
+    let helpMenuItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+    helpMenuItem.submenu = helpMenu
+    mainMenu.addItem(helpMenuItem)
+  }
+
+  @objc private func showHelpWindow() {
+    // Look for an existing help window first
+    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Help" }) {
+      win.makeKeyAndOrderFront(nil)
+      NSApp.activate(ignoringOtherApps: true)
+      return
+    }
+    // Create a new help window with SwiftUI content
+    let helpView = NSHostingController(rootView: HelpView())
+    let window = NSWindow(contentViewController: helpView)
+    window.title = "SwiftX11 Help"
+    window.setContentSize(NSSize(width: 640, height: 700))
+    window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+    window.center()
+    window.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
   }
 
   /// Install a standard macOS "Window" menu so all X11 NSWindows appear in

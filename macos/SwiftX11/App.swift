@@ -18,6 +18,7 @@ struct SwiftX11: App {
         }
         .commands {
             CommandGroup(replacing: .appInfo) { }
+            CommandGroup(replacing: .help) { }
         }
     }
 }
