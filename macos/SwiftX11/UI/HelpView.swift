@@ -66,6 +66,23 @@ struct HelpView: View {
                     Text("X11 modifier mapping: Option \u{2192} Mod1 (Alt), Command \u{2192} Mod4 (Super), Control \u{2192} Control.")
                 }
 
+                helpSection("Copy & Paste") {
+                    Text("X11 has two clipboard mechanisms, both bridged to the macOS clipboard:")
+                    Text("PRIMARY selection (traditional X11)").fontWeight(.semibold)
+                    bulletList([
+                        "Select text with the mouse \u{2014} it is automatically copied (no \u{2318}C needed)",
+                        "Middle-click (Option + Click) to paste at the cursor position",
+                        "This is the classic Unix/X11 workflow and works in xterm, vim, emacs, etc."
+                    ])
+                    Text("CLIPBOARD selection (modern apps)").fontWeight(.semibold)
+                    bulletList([
+                        "Ctrl+Shift+C to copy in xterm (or use the Edit menu)",
+                        "Ctrl+Shift+V to paste in xterm",
+                        "Java/GTK apps typically use Ctrl+C / Ctrl+V as on other platforms"
+                    ])
+                    Text("SwiftX11 syncs both directions: text copied in X11 apps appears in \u{2318}V on macOS, and text copied with \u{2318}C on macOS can be pasted into X11 apps.")
+                }
+
                 helpSection("Supported Extensions") {
                     bulletList([
                         "BIG-REQUESTS \u{2014} Large request support (up to 4 MB)",
