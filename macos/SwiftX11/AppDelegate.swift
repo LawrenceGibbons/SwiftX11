@@ -30,12 +30,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    // Explicitly set the app icon so Stage Manager and the window server
-    // have a complete icon image.  Xcode's asset catalog compiler sometimes
-    // produces an .icns with only a subset of sizes, leaving Stage Manager
-    // thumbnails blank.
-    if let icon = NSImage(named: "AppIcon") {
+    // Explicitly set the app icon for Stage Manager / Dock / window server.
+    // Load from the bundle icns first (complete 10-type file), fall back to
+    // the asset catalog.  Also push to the Dock tile so Stage Manager picks
+    // it up even when using a cached stale entry.
+    let icon: NSImage? = {
+      if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+         let img = NSImage(contentsOf: url) { return img }
+      return NSImage(named: "AppIcon")
+    }()
+    if let icon {
+      icon.size = NSSize(width: 512, height: 512)  // ensure HiDPI representations
       NSApp.applicationIconImage = icon
+      let imgView = NSImageView(image: icon)
+      NSApp.dockTile.contentView = imgView
+      NSApp.dockTile.display()
     }
 
     statusItemController = StatusItemController()
