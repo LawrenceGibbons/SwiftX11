@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // This prevents _NSDetectedLayoutRecursion crashes caused by
     // FBSScene updates triggering recursive layout in SwiftUI windows.
     NSView.installLayoutRecursionGuard()
+    // Do NOT set applicationIconImage — macOS reads from the asset catalog
+    // and applies the rounded superellipse mask automatically.  Overriding
+    // it produces a raw square icon in the Dock.
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -30,13 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    // Set the application icon from the bundle path (via NSWorkspace) so that
-    // Stage Manager's app icon badge picks it up.  NSWorkspace.icon(forFile:)
-    // reads directly from the compiled asset catalog, bypassing NSImage name
-    // cache which could serve a stale icon.
-    let bundleIcon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
-    NSApp.applicationIconImage = bundleIcon
-
     statusItemController = StatusItemController()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
       StatusItemController.shared.install()
