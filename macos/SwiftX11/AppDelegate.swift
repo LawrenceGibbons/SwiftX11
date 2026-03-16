@@ -2,7 +2,7 @@ import Cocoa
 import SwiftUI
 import X11LowLevel
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate {
   private var statusItemController: StatusItemController?
 
   func applicationWillFinishLaunching(_ notification: Notification) {
@@ -38,7 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
       StatusItemController.shared.install()
     }
     // Delay menu customisation so SwiftUI has finished setting up its menu bar.
-    // We augment SwiftUI's existing menus rather than creating duplicates.
+    // Only Help and Window menus need AppDelegate — About and View are handled
+    // by SwiftUI CommandGroups which survive SwiftUI's menu rebuilds.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
       self?.customiseMenus()
     }
@@ -46,47 +47,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
   // MARK: - Menu Customisation (runs once after SwiftUI menu setup)
 
-  /// Single entry point — augments SwiftUI's menus without creating duplicates.
+  /// Augments SwiftUI's menus for the items that can't be done in SwiftUI:
+  /// - Help menu (SwiftUI triggers macOS Help Book "not available" dialog)
+  /// - Window menu (needs NSApp.windowsMenu assignment for auto-population)
   private func customiseMenus() {
     guard let mainMenu = NSApp.mainMenu else { return }
 
-    // 1. Retarget the About item in the app menu
-    if let appMenu = mainMenu.items.first?.submenu {
-      if let aboutItem = appMenu.items.first(where: {
-        $0.action == #selector(NSApplication.orderFrontStandardAboutPanel(_:))
-      }) {
-        aboutItem.target = self
-        aboutItem.action = #selector(showAboutPanel)
-      }
-    }
-
-    // 2. Add "Show/Hide Log Window" to the existing View menu (or create one)
-    let viewMenu: NSMenu
-    if let existing = mainMenu.items.first(where: { $0.submenu?.title == "View" })?.submenu {
-      viewMenu = existing
-    } else {
-      viewMenu = NSMenu(title: "View")
-      let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
-      viewMenuItem.submenu = viewMenu
-      let insertIndex = min(2, mainMenu.items.count)
-      mainMenu.insertItem(viewMenuItem, at: insertIndex)
-    }
-    // Only add our item if it isn't already there
-    if viewMenu.items.first(where: { $0.action == #selector(toggleLogWindow) }) == nil {
-      if !viewMenu.items.isEmpty { viewMenu.addItem(.separator()) }
-      let logItem = NSMenuItem(title: "Show Log Window",
-                               action: #selector(toggleLogWindow),
-                               keyEquivalent: "0")
-      logItem.target = self
-      viewMenu.addItem(logItem)
-    }
-
-    // 3. Adopt the existing Window menu (so AppKit auto-populates it with NSWindows)
+    // 1. Adopt the existing Window menu (so AppKit auto-populates with NSWindows)
     if let existingWindowMenu = mainMenu.items.first(where: { $0.submenu?.title == "Window" })?.submenu {
       NSApp.windowsMenu = existingWindowMenu
     }
 
-    // 4. Replace the Help menu (SwiftUI's triggers the macOS Help Book dialog)
+    // 2. Replace the Help menu (SwiftUI's triggers the macOS Help Book dialog)
     if let existingHelp = mainMenu.items.first(where: { $0.submenu?.title == "Help" }) {
       mainMenu.removeItem(existingHelp)
     }
@@ -102,48 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     mainMenu.addItem(helpMenuItem)
   }
 
-  // MARK: - NSMenuItemValidation
-
-  /// Dynamically update menu item titles before they are displayed.
-  func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-    if menuItem.action == #selector(toggleLogWindow) {
-      let isVisible = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" })?.isVisible ?? false
-      menuItem.title = isVisible ? "Hide Log Window" : "Show Log Window"
-    }
-    return true
-  }
-
   // MARK: - Actions
-
-  @objc private func showAboutPanel() {
-    let version = XServerController.buildVersion
-    let buildDate = XServerController.buildDate
-    let credits = NSAttributedString(
-      string: "An X11 display server for macOS.\n\nDeveloped by Rlan and Claude.",
-      attributes: [
-        .font: NSFont.systemFont(ofSize: 11),
-        .foregroundColor: NSColor.labelColor
-      ]
-    )
-    NSApp.orderFrontStandardAboutPanel(options: [
-      .applicationName: "SwiftX11",
-      .applicationVersion: version,
-      .version: "Built \(buildDate)",
-      .credits: credits
-    ])
-  }
-
-  @objc private func toggleLogWindow() {
-    if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }),
-       win.isVisible {
-      win.orderOut(nil)
-    } else {
-      NSApp.activate(ignoringOtherApps: true)
-      if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Log" }) {
-        win.makeKeyAndOrderFront(nil)
-      }
-    }
-  }
 
   @objc private func showHelpWindow() {
     // Look for an existing help window first
