@@ -318,8 +318,12 @@ final class X11MetalRenderer {
       }
     }
 
-    cmdBuf.present(drawable)
+    // Synchronous present for Stage Manager / Mission Control captures.
+    // With presentsWithTransaction=true, we must commit first, wait for
+    // GPU scheduling, then present the drawable on the CAMetalLayer.
     cmdBuf.commit()
+    cmdBuf.waitUntilScheduled()
+    drawable.present()
   }
 
   /// Schedule a retry when currentDrawable/currentRenderPassDescriptor is nil.

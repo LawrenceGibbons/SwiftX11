@@ -829,6 +829,13 @@ final class X11View: NSView {
     view.framebufferOnly = false
     view.colorPixelFormat = .bgra8Unorm
     view.preferredFramesPerSecond = 0
+
+    // Present synchronously so the window server can capture the frame for
+    // Stage Manager thumbnails and Mission Control.  Without this, Metal
+    // presents asynchronously and the window server snapshot is often blank.
+    if let metalLayer = view.layer as? CAMetalLayer {
+      metalLayer.presentsWithTransaction = true
+    }
     
     //self.renderer = X11MetalRenderer(device: device)
     self.renderer = X11MetalRenderer(view: view)
