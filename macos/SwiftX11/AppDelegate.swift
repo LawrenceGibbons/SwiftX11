@@ -38,8 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       StatusItemController.shared.install()
     }
     // Delay menu customisation so SwiftUI has finished setting up its menu bar.
-    // Only Help and Window menus need AppDelegate — About and View are handled
-    // by SwiftUI CommandGroups which survive SwiftUI's menu rebuilds.
+    // About, View toggle, and Help are all SwiftUI CommandGroups now.
+    // AppDelegate only needs to: neutralize Help Book search + adopt Window menu.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
       self?.customiseMenus()
     }
@@ -47,36 +47,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   // MARK: - Menu Customisation (runs once after SwiftUI menu setup)
 
-  /// Augments SwiftUI's menus for the items that can't be done in SwiftUI:
-  /// - Help menu (SwiftUI triggers macOS Help Book "not available" dialog)
-  /// - Window menu (needs NSApp.windowsMenu assignment for auto-population)
   private func customiseMenus() {
     guard let mainMenu = NSApp.mainMenu else { return }
 
-    // 1. Adopt the existing Window menu (so AppKit auto-populates with NSWindows)
+    // Adopt the existing Window menu (so AppKit auto-populates with NSWindows)
     if let existingWindowMenu = mainMenu.items.first(where: { $0.submenu?.title == "Window" })?.submenu {
       NSApp.windowsMenu = existingWindowMenu
     }
 
-    // 2. Replace the Help menu (SwiftUI's triggers the macOS Help Book dialog)
-    if let existingHelp = mainMenu.items.first(where: { $0.submenu?.title == "Help" }) {
-      mainMenu.removeItem(existingHelp)
-    }
-    let helpMenu = NSMenu(title: "Help")
-    let helpItem = NSMenuItem(title: "SwiftX11 Help",
-                              action: #selector(showHelpWindow),
-                              keyEquivalent: "/")
-    helpItem.keyEquivalentModifierMask = [.command, .shift]
-    helpItem.target = self
-    helpMenu.addItem(helpItem)
-    let helpMenuItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
-    helpMenuItem.submenu = helpMenu
-    mainMenu.addItem(helpMenuItem)
+    // Neutralize macOS Help Book search dialog.  SwiftUI's Help CommandGroup
+    // creates a menu that macOS recognises as the "help menu" and adds a
+    // Spotlight-style search field to.  Setting helpMenu to nil prevents this.
+    NSApp.helpMenu = nil
   }
 
-  // MARK: - Actions
+  // MARK: - Help Window (static so SwiftUI CommandGroup can call it)
 
-  @objc private func showHelpWindow() {
+  static func openHelpWindow() {
     // Look for an existing help window first
     if let win = NSApp.windows.first(where: { $0.title == "SwiftX11 Help" }) {
       win.makeKeyAndOrderFront(nil)

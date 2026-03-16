@@ -50,7 +50,12 @@ struct SwiftX11: App {
                 }
                 .keyboardShortcut("0", modifiers: .command)
             }
-            CommandGroup(replacing: .help) { }
+            CommandGroup(replacing: .help) {
+                Button("SwiftX11 Help") {
+                    AppDelegate.openHelpWindow()
+                }
+                .keyboardShortcut("/", modifiers: [.command, .shift])
+            }
         }
     }
 }
