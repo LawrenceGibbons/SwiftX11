@@ -615,6 +615,8 @@ namespace x11 {
     } else if (name == "SHAPE") {
       present = 1; major = ext::kSHAPE;
       first_event = ext::kSHAPE_FirstEvent;
+    } else if (name == "XC-MISC") {
+      present = 1; major = ext::kXCMisc;
     }
 
 #ifndef NDEBUG
@@ -649,8 +651,9 @@ namespace x11 {
       "XINERAMA",
       "Generic Event Extension",
       "SHAPE",
+      "XC-MISC",
     };
-    static constexpr uint8_t nExt = 7;
+    static constexpr uint8_t nExt = 8;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;

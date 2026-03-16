@@ -28,6 +28,7 @@ extern "C" {
 #include "Core/ScreenLayout.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Transport/XProtoTransport.hpp"
+#include "Core/XClient.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Utils/WireLE.hpp"
 #include "Utils/WireErrors.hpp"
@@ -47,6 +48,7 @@ ExtensionOps::ExtensionOps(XProtoRegistrar& reg) {
   reg.registerMajor(ext::kRANDR,     &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kXinerama,  &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kGE,        &ExtensionOps::onMajor, this);
+  reg.registerMajor(ext::kXCMisc,    &ExtensionOps::onMajor, this);
 }
 
 void ExtensionOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -961,6 +963,72 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     { char buf[128]; snprintf(buf, sizeof(buf), "[GE] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
     br.skip(br.remaining());
     // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // XC-MISC — XID range recycling (prevents exhaustion in long sessions)
+  // -------------------------------------------------------------------
+  if (major == ext::kXCMisc) {
+    switch (minor) {
+    case 0: {
+      // XC-MiscGetVersion — reply: server major=1, minor=1
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);    // length
+        wire::wr16_le(rep.data() + 8, 1);    // server major version
+        wire::wr16_le(rep.data() + 10, 1);   // server minor version
+      });
+      return;
+    }
+    case 1: {
+      // XC-MiscGetXIDRange — reply: (start_id, count)
+      br.skip(br.remaining());
+      auto* client = ctx.client();
+      uint32_t start_id = 0, count = 0;
+      if (client) {
+        auto [s, c] = client->allocXIDRange(65536);
+        start_id = s;
+        count = c;
+      }
+      (void)ctx.reply().sendReply32(seq, [start_id, count](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);           // length
+        wire::wr32_le(rep.data() + 8, start_id);    // start_id
+        wire::wr32_le(rep.data() + 12, count);      // count
+      });
+      return;
+    }
+    case 2: {
+      // XC-MiscGetXIDList — request: CARD32 count; reply: CARD32 ids_count, [CARD32 id…]
+      const uint32_t requested = br.remaining() >= 4 ? br.readU32() : 0;
+      br.skip(br.remaining());
+      auto* client = ctx.client();
+      // Cap at 4096 to avoid huge allocations
+      const uint32_t cap = std::min(requested, uint32_t(4096));
+      std::vector<uint32_t> ids(cap);
+      uint32_t actual = 0;
+      if (client)
+        actual = client->allocXIDList(ids.data(), cap);
+      const uint32_t payload_words = actual;  // each ID is 1 CARD32
+      (void)ctx.reply().sendReply32(seq, [payload_words, actual](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, payload_words);  // length (extra 4-byte words)
+        wire::wr32_le(rep.data() + 8, actual);          // ids_count
+      });
+      if (actual > 0) {
+        // Convert to little-endian wire format
+        std::vector<uint8_t> payload(actual * 4);
+        for (uint32_t i = 0; i < actual; ++i)
+          wire::wr32_le(payload.data() + i * 4, ids[i]);
+        ctx.reply().sendBytes(payload.data(), payload.size());
+      }
+      return;
+    }
+    default:
+      break;
+    }
+    { char buf[128]; snprintf(buf, sizeof(buf), "[XC-MISC] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+    br.skip(br.remaining());
     ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;
   }
