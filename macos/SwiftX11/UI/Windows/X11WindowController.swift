@@ -55,6 +55,10 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
                           defer: false)
     window.isRestorable = false
     window.isReleasedWhenClosed = false
+    // Allow the window server to capture window content for Stage Manager
+    // thumbnails and Mission Control.  Default is .readOnly on modern macOS
+    // which can cause blank captures for Metal-backed windows.
+    window.sharingType = .readWrite
 
     if overrideRedirect {
       // Override-redirect: float above normal windows (popup/menu behavior).
