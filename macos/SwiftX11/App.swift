@@ -17,7 +17,6 @@ struct SwiftX11: App {
                 .environmentObject(settings)
         }
         .commands {
-            CommandGroup(replacing: .appInfo) { }
             CommandGroup(replacing: .help) { }
         }
     }

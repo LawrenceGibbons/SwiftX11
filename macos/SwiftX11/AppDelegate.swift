@@ -48,15 +48,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
   }
 
-  /// Install "About SwiftX11" in the app menu (replacing the empty SwiftUI stub).
+  /// Retarget the existing "About" menu item to show our custom About panel.
   private func installAboutMenuItem() {
     guard let mainMenu = NSApp.mainMenu,
           let appMenu = mainMenu.items.first?.submenu else { return }
-    let aboutItem = NSMenuItem(title: "About SwiftX11",
-                               action: #selector(showAboutPanel),
-                               keyEquivalent: "")
-    aboutItem.target = self
-    appMenu.insertItem(aboutItem, at: 0)
+    // Find the existing About item (SwiftUI creates "About SwiftX11")
+    if let aboutItem = appMenu.items.first(where: {
+      $0.action == #selector(NSApplication.orderFrontStandardAboutPanel(_:))
+    }) {
+      aboutItem.target = self
+      aboutItem.action = #selector(showAboutPanel)
+    }
   }
 
   @objc private func showAboutPanel() {
