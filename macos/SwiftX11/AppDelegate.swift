@@ -30,10 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    // Don't manually set applicationIconImage or dockTile — the system reads
-    // the icon directly from the asset catalog (Assets.car).  Overriding it
-    // with NSImage(named: "AppIcon") can serve a stale NSImageCache entry,
-    // causing the Dock to revert to the old icon after the launch bounce.
+    // Set the application icon from the bundle path (via NSWorkspace) so that
+    // Stage Manager's app icon badge picks it up.  NSWorkspace.icon(forFile:)
+    // reads directly from the compiled asset catalog, bypassing NSImage name
+    // cache which could serve a stale icon.
+    let bundleIcon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+    NSApp.applicationIconImage = bundleIcon
 
     statusItemController = StatusItemController()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

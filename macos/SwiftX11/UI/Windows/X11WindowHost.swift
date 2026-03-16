@@ -651,34 +651,6 @@ final class X11View: NSView {
                                  damageRect: damageRect)
     mv.setNeedsDisplay(mv.bounds)
 
-    // Update the window's miniwindowImage so Stage Manager and Mission Control
-    // have a bitmap snapshot to display.  Metal drawables are not always capturable
-    // by the window server; the miniwindowImage provides a reliable fallback.
-    // Throttle to at most once per second to avoid overhead.
-    updateMiniwindowImage(data: data, width: width, height: height, bytesPerRow: bytesPerRow)
-  }
-
-  private var lastMiniwindowUpdate: CFAbsoluteTime = 0
-
-  private func updateMiniwindowImage(data: Data, width: Int, height: Int, bytesPerRow: Int) {
-    let now = CFAbsoluteTimeGetCurrent()
-    guard now - lastMiniwindowUpdate > 1.0 else { return }
-    lastMiniwindowUpdate = now
-
-    guard let win = self.window else { return }
-    data.withUnsafeBytes { rawBuf in
-      guard let base = rawBuf.baseAddress else { return }
-      guard let ctx = CGContext(
-        data: UnsafeMutableRawPointer(mutating: base),
-        width: width, height: height,
-        bitsPerComponent: 8, bytesPerRow: bytesPerRow,
-        space: CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-      ) else { return }
-      guard let cgImage = ctx.makeImage() else { return }
-      let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
-      win.miniwindowImage = nsImage
-    }
   }
 
   /// Schedule a re-present when the Metal drawable isn't ready yet.
