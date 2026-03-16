@@ -50,6 +50,7 @@ final class XServerController: ObservableObject {
   }
   
   static let buildVersion = String(cString: swiftx11_version())
+  static let buildDate = String(cString: swiftx11_build_date())
 
   func start() {
     guard !isRunning else { return }

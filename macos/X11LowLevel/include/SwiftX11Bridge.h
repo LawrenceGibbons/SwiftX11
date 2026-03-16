@@ -286,6 +286,7 @@ int  x11_get_font_antialiased(void);
 // Version
 // -------------------------------------------------------------------------------------
 const char* swiftx11_version(void);
+const char* swiftx11_build_date(void);
 
 #ifdef __cplusplus
 }

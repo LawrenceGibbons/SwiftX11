@@ -1322,6 +1322,11 @@ const char* swiftx11_version(void)
   return kSwiftX11Version;
 }
 
+const char* swiftx11_build_date(void)
+{
+  return __DATE__;
+}
+
 extern "C" int x11_proto_start_daemon(int display)
 {
   fprintf(stderr, "\n========================================\n");

@@ -41,10 +41,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Delay menu installation so SwiftUI has finished setting up its menu bar.
     // SwiftUI overwrites menus installed before it renders.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+      self?.installAboutMenuItem()
       self?.installViewMenu()
       self?.installWindowMenu()
       self?.installHelpMenu()
     }
+  }
+
+  /// Install "About SwiftX11" in the app menu (replacing the empty SwiftUI stub).
+  private func installAboutMenuItem() {
+    guard let mainMenu = NSApp.mainMenu,
+          let appMenu = mainMenu.items.first?.submenu else { return }
+    let aboutItem = NSMenuItem(title: "About SwiftX11",
+                               action: #selector(showAboutPanel),
+                               keyEquivalent: "")
+    aboutItem.target = self
+    appMenu.insertItem(aboutItem, at: 0)
+  }
+
+  @objc private func showAboutPanel() {
+    let version = XServerController.buildVersion
+    let buildDate = XServerController.buildDate
+    let credits = NSAttributedString(
+      string: "An X11 display server for macOS.\n\nDeveloped by Rlan and Claude.",
+      attributes: [
+        .font: NSFont.systemFont(ofSize: 11),
+        .foregroundColor: NSColor.labelColor
+      ]
+    )
+    NSApp.orderFrontStandardAboutPanel(options: [
+      .applicationName: "SwiftX11",
+      .applicationVersion: version,
+      .version: "Built \(buildDate)",
+      .credits: credits
+    ])
   }
 
   /// Install a "View" menu with "Show/Hide Log Window" (Cmd+0).
