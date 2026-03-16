@@ -9,6 +9,7 @@
 
 #pragma once
 #include <cstdint>
+#include <utility>
 #include <Transport/XProtoTransport.hpp>
 #include <Ops/ReplyWriter.hpp>
 
@@ -37,6 +38,15 @@ public:
   bool bigReqEnabled() const { return big_req_enabled_; }
   void setBigReqEnabled(bool v) { big_req_enabled_ = v; }
 
+  // XC-MISC: allocate a range of XIDs from this client's ID space.
+  // Xlib allocates from the bottom (1, 2, 3…); we allocate from the top
+  // downward to avoid collision until the client exhausts ~8M XIDs.
+  // Returns (start_xid, count).  (0, 0) means exhausted.
+  std::pair<uint32_t, uint32_t> allocXIDRange(uint32_t requested);
+
+  // XC-MISC: allocate individual XIDs (up to count).  Returns actual count.
+  uint32_t allocXIDList(uint32_t* out, uint32_t count);
+
 private:
   int fd_;
   uint32_t rid_base_;
@@ -44,6 +54,8 @@ private:
   XProtoTransport transport_;
   ReplyWriter reply_;
   bool big_req_enabled_ = false;
+  // XC-MISC: cursor for XID allocation, starts at rid_mask/2 and grows upward
+  uint32_t xid_alloc_cursor_ = 0;  // 0 = uninitialised
 };
 
 } // namespace x11

@@ -19,6 +19,7 @@ static constexpr uint8_t kRANDR     = 136;
 static constexpr uint8_t kXinerama  = 137;
 static constexpr uint8_t kGE        = 138;  // Generic Event Extension
 static constexpr uint8_t kRENDER    = 139;  // reserved for RENDER
+static constexpr uint8_t kXCMisc   = 140;  // XC-MISC (XID range recycling)
 
 // Extension first_event values
 static constexpr uint8_t kXFIXES_FirstEvent   = 87;
