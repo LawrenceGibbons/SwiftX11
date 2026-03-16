@@ -30,6 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // Explicitly set the app icon so Stage Manager and the window server
+    // have a complete icon image.  Xcode's asset catalog compiler sometimes
+    // produces an .icns with only a subset of sizes, leaving Stage Manager
+    // thumbnails blank.
+    if let icon = NSImage(named: "AppIcon") {
+      NSApp.applicationIconImage = icon
+    }
+
     statusItemController = StatusItemController()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
       StatusItemController.shared.install()
