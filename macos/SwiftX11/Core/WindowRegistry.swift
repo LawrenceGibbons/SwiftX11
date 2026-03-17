@@ -375,9 +375,9 @@ final class WindowRegistry {
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
       if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
-        // WM minimum size floor for OR windows (splash screens created at 1×1)
-        let effW = max(x11w, 200)
-        let effH = max(x11h, 100)
+        // WM minimum size floor: only for truly tiny OR windows (< 10px)
+        let effW = x11w < 10 ? max(x11w, 200) : x11w
+        let effH = x11h < 10 ? max(x11h, 100) : x11h
         let rawOrigin = WindowRegistry.x11RootToMacOSOrigin(
           x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(effH))
         let popupSize = NSSize(width: CGFloat(effW), height: CGFloat(effH))
@@ -423,6 +423,9 @@ final class WindowRegistry {
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
       let gotGeom = x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR)
+      // Detect WM-floor windows: the C++ floor enlarges windows < 10px to
+      // 200×100.  Only those truly tiny windows should be deferred — legitimate
+      // small windows (xeyes 150×100, etc.) must show immediately.
       let isAtFloor = gotGeom && x11w == 200 && x11h == 100
 
       // If the window is still at the WM floor size (200×100), it was likely

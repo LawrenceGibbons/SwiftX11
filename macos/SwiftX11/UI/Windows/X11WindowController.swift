@@ -25,21 +25,21 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     if overrideRedirect {
       // Convert X11 root coords (top-left, y-down) to macOS global coords.
       // Uses virtual desktop union bounds so windows on any monitor work correctly.
-      // WM minimum size floor applies to OR windows too — splash screens (e.g., Vivado
-      // startup banner) may be created at 1×1 expecting WM resize via WM_NORMAL_HINTS.
-      let effW = max(width, 200)
-      let effH = max(height, 100)
+      // WM minimum size floor: only for truly tiny windows (< 10px) like Vivado's
+      // 1×1 splash screens.  Legitimate small OR windows must keep their size.
+      let effW = width < 10 ? max(width, 200) : width
+      let effH = height < 10 ? max(height, 100) : height
       let origin = WindowRegistry.x11RootToMacOSOrigin(
         x11X: CGFloat(x), x11Y: CGFloat(y), height: CGFloat(effH))
       contentRect = NSRect(origin: origin,
                            size: NSSize(width: CGFloat(effW), height: CGFloat(effH)))
     } else {
-      // WM minimum size floor: X11 clients (e.g., Vivado) may create windows at
-      // 1×1 expecting the WM to resize them based on WM_NORMAL_HINTS.  Enforce a
-      // minimum so the NSWindow is usable (visible, clickable close/cancel buttons).
-      // The client gets ConfigureNotify with the actual size once the surface is allocated.
-      let minW = max(width, 200)
-      let minH = max(height, 100)
+      // WM minimum size floor: only for truly tiny windows (< 10px) created at
+      // e.g. 1×1 expecting the WM to resize via WM_NORMAL_HINTS.  Legitimate
+      // small windows (xeyes 150×100, etc.) must NOT be enlarged — the 200×100
+      // floor triggers deferred-show and breaks the Expose lifecycle.
+      let minW = width < 10 ? max(width, 200) : width
+      let minH = height < 10 ? max(height, 100) : height
       contentRect = NSRect(x: 0, y: 0, width: minW, height: minH)
     }
 

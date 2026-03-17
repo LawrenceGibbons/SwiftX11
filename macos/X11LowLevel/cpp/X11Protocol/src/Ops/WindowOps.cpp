@@ -477,12 +477,15 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
 
   // ---- CREATE (server state only) ----
-  // WM minimum size floor: top-level windows created at tiny sizes (e.g. 1×1)
-  // are enlarged to a usable minimum.  Vivado and other apps create windows at
-  // 1×1 expecting the WM to resize via WM_NORMAL_HINTS or ConfigureRequest.
-  // Without a floor, surfaces never allocate properly and windows are invisible.
+  // WM minimum size floor: top-level windows created at truly tiny sizes
+  // (e.g. 1×1) are enlarged so surfaces allocate and windows are visible.
+  // Vivado and similar apps create 1×1 windows expecting the WM to resize
+  // via WM_NORMAL_HINTS or ConfigureRequest.
+  // Only apply to very small windows (< 10×10) — legitimate small windows
+  // like xeyes (150×100) must NOT be enlarged, as the floor size (200×100)
+  // triggers the deferred-show path and breaks the Expose lifecycle.
   uint16_t eff_w = wpx, eff_h = hpx;
-  if (parent == x11::kRootXid && (wpx < 200 || hpx < 100)) {
+  if (parent == x11::kRootXid && (wpx < 10 || hpx < 10)) {
     if (eff_w < 200) eff_w = 200;
     if (eff_h < 100) eff_h = 100;
 #ifndef NDEBUG
