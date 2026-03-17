@@ -257,6 +257,12 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
                                    wv->w, wv->h,
                                    count);
   bool sent = ctx.transport().sendEvent32(wid, ev.data());
+#ifndef NDEBUG
+  fprintf(stderr, "[EXPOSE_NOW_DBG] wid=0x%08X wh=%ux%u evmask=0x%08X mapped=%d owner_fd=%d sent=%d kids=%zu\n",
+          (unsigned)wid, (unsigned)wv->w, (unsigned)wv->h,
+          (unsigned)wv->event_mask, (int)wv->mapped, wv->owner_fd, (int)sent,
+          ctx.windows().descendantsOf(wid).size());
+#endif
 
 #ifndef NDEBUG
   // Check if this window (or its host) is OR — helps diagnose blank popup text.
@@ -392,6 +398,10 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
   }
 #endif
 
+#ifndef NDEBUG
+  fprintf(stderr, "[EXPOSE_SUBTREE_SEND] host=0x%08X total_desc=%zu mapped_kids=%zu\n",
+          (unsigned)hostXid, kids.size(), mappedKids.size());
+#endif
   // Send Expose events.  count=0 because we send exactly one Expose per
   // window (full-window rect).  X11 spec: count is per-WINDOW ("number of
   // Expose events to follow for this window"), NOT per-client-batch.
