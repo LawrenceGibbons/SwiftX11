@@ -309,6 +309,17 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
             ctx.transport().clientFd());
   }
 #endif
+#ifndef NDEBUG
+  {
+    x11::SurfaceDesc dbgS{};
+    bool hasSurf = ctx.surfaces().get(hostXid, dbgS);
+    fprintf(stderr, "[EXPOSE_SUBTREE_DBG] host=0x%08X hasSurface=%d surfWH=%ux%u bpr=%u ptr=%p fd=%d\n",
+            (unsigned)hostXid, (int)hasSurf,
+            (unsigned)dbgS.w, (unsigned)dbgS.h,
+            (unsigned)dbgS.bytesPerRow, dbgS.ptr,
+            ctx.transport().clientFd());
+  }
+#endif
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
 #endif
@@ -436,6 +447,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 #endif
           ctx.windows().setPresentable(c.xid, true);
+#ifndef NDEBUG
+          fprintf(stderr, "[SET_PRESENTABLE_DBG] xid=0x%08X — about to sendExposeSubtree\n",
+                  (unsigned)c.xid);
+#endif
 
           // Write full-window damage to the shared accumulator and signal
           // so any content drawn before the surface was presentable gets shown.
