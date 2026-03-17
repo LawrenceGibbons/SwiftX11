@@ -49,6 +49,8 @@ ExtensionOps::ExtensionOps(XProtoRegistrar& reg) {
   reg.registerMajor(ext::kXinerama,  &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kGE,        &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kXCMisc,    &ExtensionOps::onMajor, this);
+  reg.registerMajor(ext::kXInput2,   &ExtensionOps::onMajor, this);
+  reg.registerMajor(ext::kXTEST,     &ExtensionOps::onMajor, this);
 }
 
 void ExtensionOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -1028,6 +1030,212 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       break;
     }
     { char buf[128]; snprintf(buf, sizeof(buf), "[XC-MISC] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // XINPUT2 (XInput2) — major opcode 141
+  // -------------------------------------------------------------------
+  if (major == ext::kXInput2) {
+    switch (minor) {
+
+    // ---- minor 46: XISelectEvents (void — no reply) ----
+    case 46: {
+      // Request: CARD32 window, CARD16 num_masks, pad16
+      //   then per mask: CARD16 deviceid, CARD16 mask_len, mask_len*4 bytes
+      // Silently consume — we don't deliver XI2 events.
+      br.skip(br.remaining());
+      return;
+    }
+
+    // ---- minor 47: XIQueryVersion (reply-bearing) ----
+    case 47: {
+      // Request: CARD16 client_major_version, CARD16 client_minor_version
+      br.skip(br.remaining());
+      // Reply: server_major=2, server_minor=0
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
+        wire::wr16_le(rep.data() + 8, 2);     // server_major_version
+        wire::wr16_le(rep.data() + 10, 0);    // server_minor_version
+      });
+      return;
+    }
+
+    // ---- minor 48: XIQueryDevice (reply-bearing with payload) ----
+    case 48: {
+      // Request: CARD16 deviceid (0=XIAllDevices, 1=XIAllMasterDevices, or specific)
+      const uint16_t requested_device = br.remaining() >= 2 ? br.readU16() : 0;
+      br.skip(br.remaining());
+
+      // Build XIDeviceInfo entries for the 4 virtual core devices.
+      // XIDeviceInfo wire format (per device):
+      //   CARD16 deviceid, CARD16 type(use), CARD16 attachment,
+      //   CARD16 num_classes, CARD16 name_len, CARD8 enabled, CARD8 pad
+      //   + name bytes padded to 4
+      //   + class entries
+
+      struct DeviceDesc {
+        uint16_t id;
+        uint16_t use;        // 1=MasterPointer, 2=MasterKeyboard, 3=SlavePointer, 4=SlaveKeyboard
+        uint16_t attachment;
+        const char* name;
+        bool has_buttons;    // pointer devices get ButtonClass
+        bool has_keys;       // keyboard devices get KeyClass
+      };
+
+      static const DeviceDesc allDevices[] = {
+        { 2, 1, 3, "Virtual core pointer",         true,  false },
+        { 3, 2, 4, "Virtual core keyboard",        false, true  },
+        { 4, 3, 2, "Virtual core XTEST pointer",   true,  false },
+        { 5, 4, 3, "Virtual core XTEST keyboard",  false, true  },
+      };
+
+      // Filter devices based on request
+      std::vector<const DeviceDesc*> devices;
+      for (const auto& d : allDevices) {
+        if (requested_device == 0 /* XIAllDevices */ ||
+            requested_device == 1 /* XIAllMasterDevices (masters only) */ ||
+            d.id == requested_device) {
+          if (requested_device == 1 && d.use > 2) continue; // skip slaves for AllMasters
+          devices.push_back(&d);
+        }
+      }
+
+      // Build payload
+      std::vector<uint8_t> payload;
+      auto appendU16 = [&](uint16_t v) {
+        uint8_t b[2]; wire::wr16_le(b, v); payload.insert(payload.end(), b, b + 2);
+      };
+      auto appendU32 = [&](uint32_t v) {
+        uint8_t b[4]; wire::wr32_le(b, v); payload.insert(payload.end(), b, b + 4);
+      };
+
+      for (const auto* dev : devices) {
+        const uint16_t name_len = (uint16_t)std::strlen(dev->name);
+        const uint16_t name_pad = (4 - (name_len % 4)) % 4;
+        uint16_t num_classes = 0;
+        if (dev->has_buttons) num_classes++;
+        if (dev->has_keys) num_classes++;
+
+        // XIDeviceInfo header (12 bytes)
+        appendU16(dev->id);
+        appendU16(dev->use);
+        appendU16(dev->attachment);
+        appendU16(num_classes);
+        appendU16(name_len);
+        payload.push_back(1);  // enabled
+        payload.push_back(0);  // pad
+
+        // Name + padding
+        payload.insert(payload.end(), dev->name, dev->name + name_len);
+        for (uint16_t i = 0; i < name_pad; i++) payload.push_back(0);
+
+        // ButtonClass for pointer devices
+        if (dev->has_buttons) {
+          // ButtonClass: type=0, length_words, sourceid, num_buttons,
+          //   state_mask (ceil(num_buttons/32)*4 bytes), labels[num_buttons]
+          const uint16_t num_buttons = 5;
+          const uint16_t state_words = 1; // ceil(5/32) = 1 word = 4 bytes
+          // Total bytes: 8 (header) + state_words*4 + num_buttons*4
+          const uint16_t total_bytes = 8 + state_words * 4 + num_buttons * 4;
+          const uint16_t length_words = total_bytes / 4;
+
+          appendU16(0);              // type = ButtonClass
+          appendU16(length_words);   // length in 4-byte words
+          appendU16(dev->id);        // sourceid
+          appendU16(num_buttons);    // num_buttons
+          // Button state mask (all released = 0)
+          appendU32(0);
+          // Labels (atom per button — 0=None for all)
+          for (uint16_t b = 0; b < num_buttons; b++) appendU32(0);
+        }
+
+        // KeyClass for keyboard devices
+        if (dev->has_keys) {
+          // KeyClass: type=1, length_words, sourceid, num_keycodes, keycodes[]
+          // Report keycodes 8..255 (standard X11 range)
+          const uint16_t num_keycodes = 248; // 8..255
+          const uint16_t total_bytes = 8 + num_keycodes * 4;
+          const uint16_t length_words = total_bytes / 4;
+
+          appendU16(1);              // type = KeyClass
+          appendU16(length_words);   // length in 4-byte words
+          appendU16(dev->id);        // sourceid
+          appendU16(num_keycodes);   // num_keycodes
+          // Keycodes 8..255
+          for (uint16_t k = 8; k <= 255; k++) appendU32(k);
+        }
+      }
+
+      // Pad payload to 4-byte boundary (should already be aligned)
+      while (payload.size() % 4u) payload.push_back(0);
+
+      const uint32_t payload_words = (uint32_t)(payload.size() / 4u);
+      const uint16_t num_devices = (uint16_t)devices.size();
+
+      (void)ctx.reply().sendReply32(seq, [payload_words, num_devices](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, payload_words);  // length
+        wire::wr16_le(rep.data() + 8, num_devices);    // num_infos
+      });
+      if (!payload.empty()) {
+        ctx.reply().sendBytes(payload.data(), payload.size());
+      }
+      return;
+    }
+
+    default:
+      break;
+    }
+    // Unhandled XI2 minor — send BadRequest
+    { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // XTEST — major opcode 142
+  // -------------------------------------------------------------------
+  if (major == ext::kXTEST) {
+    switch (minor) {
+
+    // ---- minor 0: XTestGetVersion (reply-bearing) ----
+    case 0: {
+      // Request: CARD8 client_major, pad, CARD16 client_minor
+      br.skip(br.remaining());
+      // Reply: server_major in byte 1, server_minor at bytes 8-9
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
+        rep[1] = 2;                            // server_major_version
+        wire::wr16_le(rep.data() + 8, 2);     // server_minor_version
+      });
+      return;
+    }
+
+    // ---- minor 2: XTestFakeInput (void — no reply) ----
+    case 2: {
+      // Request: CARD8 type, CARD8 detail, pad16, CARD32 time,
+      //          CARD32 root, pad32, pad32, CARD16 rootX, CARD16 rootY
+      // Silently consume for now — synthesized events not yet routed.
+      br.skip(br.remaining());
+      return;
+    }
+
+    // ---- minor 3: XTestGrabControl (void — no reply) ----
+    case 3: {
+      // Request: BOOL impervious, pad*3
+      // Controls whether XTEST events bypass grabs. Silently consume.
+      br.skip(br.remaining());
+      return;
+    }
+
+    default:
+      break;
+    }
+    // Unhandled XTEST minor — send BadRequest
+    { char buf[128]; snprintf(buf, sizeof(buf), "[XTEST] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
     br.skip(br.remaining());
     ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;

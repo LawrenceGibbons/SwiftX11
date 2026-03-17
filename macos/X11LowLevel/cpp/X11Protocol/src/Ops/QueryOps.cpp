@@ -617,6 +617,10 @@ namespace x11 {
       first_event = ext::kSHAPE_FirstEvent;
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
+    } else if (name == "XInputExtension") {
+      present = 1; major = ext::kXInput2;
+    } else if (name == "XTEST") {
+      present = 1; major = ext::kXTEST;
     }
 
 #ifndef NDEBUG
@@ -652,8 +656,10 @@ namespace x11 {
       "Generic Event Extension",
       "SHAPE",
       "XC-MISC",
+      "XInputExtension",
+      "XTEST",
     };
-    static constexpr uint8_t nExt = 8;
+    static constexpr uint8_t nExt = 10;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
