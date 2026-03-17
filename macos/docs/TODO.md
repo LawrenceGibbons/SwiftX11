@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-16 (v1.14.0 — Help menu, About dialog, Phase 6 complete)
+Last updated: 2026-03-16 (v1.14.1 — XC-MISC extension, Phase 7.1 complete)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -324,11 +324,11 @@ Items moved from higher phases — not blocking Vivado/Vitis.
 - [ ] **XKB extension**: Full X Keyboard Extension for multi-layout support, compose/dead keys, per-key type definitions. Java Swing/GTK fall back to core keyboard protocol gracefully. Return not-present is acceptable.
 - [ ] **Option key compose**: Pass macOS Option-key-interpreted characters (e.g., Option+e → é) through to X11 keysym table columns 3-4.
 
-### 7.1 XC-MISC Extension (HIGH — prevents XID exhaustion crash)
-Long-running clients (Vivado sessions that run for hours/days) exhaust their 2^21 XID range and need `XC-MiscGetXIDRange` to get more. Without it, the client crashes when XIDs run out. Very simple extension (2 requests).
-- [ ] **XC-MiscGetVersion**: Return version 1.1. Advertise in QueryExtension + ListExtensions.
-- [ ] **XC-MiscGetXIDRange**: Return a new XID range (start + count) from the server's free pool. Server needs to track per-client XID allocation and provide fresh ranges.
-- [ ] **XC-MiscGetXIDList**: Return a list of individual free XIDs (alternative to range allocation).
+### 7.1 XC-MISC Extension (HIGH — prevents XID exhaustion crash) ✅ Done (v1.14.1)
+Long-running clients (Vivado sessions that run for hours/days) exhaust their 2^21 XID range and need `XC-MiscGetXIDRange` to get more. Without it, the client crashes when XIDs run out. Very simple extension (3 minor opcodes).
+- [x] **XC-MiscGetVersion** (minor 0): Returns version 1.1. Advertised in QueryExtension + ListExtensions (major opcode 140, total 8 extensions).
+- [x] **XC-MiscGetXIDRange** (minor 1): Returns new XID range (start + count) from per-client allocator. Allocates from midpoint of rid_mask upward to avoid collision with Xlib's bottom-up allocation.
+- [x] **XC-MiscGetXIDList** (minor 2): Returns list of individual free XIDs (capped at 4096 per request). Per-client cursor in XClient tracks allocation state.
 
 ### 7.2 XInput / XInput2 (MEDIUM-HIGH — GTK3/4 apps)
 GTK3/4 queries XI2 at startup. Without it, GTK falls back but loses multi-pointer awareness and some event handling. Most impactful missing extension for broader GTK app support.
@@ -550,7 +550,9 @@ rendercheck                 # RENDER extension tests
 
 **v1.14.0 adds Help menu + About dialog** — Phase 6 complete. HelpView.swift with comprehensive user documentation (DISPLAY setup, Docker, fonts, settings, keyboard/mouse, copy & paste, extensions, limitations). About dialog with version, build date, credits. All menus via SwiftUI CommandGroups (About, View toggle, Help) with AppDelegate only for Help Book neutralization + Window menu adoption.
 
-**Next priorities**: (1) XC-MISC extension for XID exhaustion prevention (Phase 7.1), (2) XInput2 stubs for GTK3/4 (Phase 7.2), (3) XTEST extension (Phase 7.3), (4) Vitis testing.
+**v1.14.1 adds XC-MISC extension** — Phase 7.1 complete. XC-MiscGetVersion (1.1), XC-MiscGetXIDRange (per-client midpoint-up allocation), XC-MiscGetXIDList (capped at 4096). Major opcode 140. Total advertised extensions: 8. Prevents XID exhaustion crash for long-running Vivado sessions.
+
+**Next priorities**: (1) XInput2 stubs for GTK3/4 (Phase 7.2), (2) XTEST extension (Phase 7.3), (3) Vitis testing.
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
