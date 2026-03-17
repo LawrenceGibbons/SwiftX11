@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>SwiftX11 — X11 Server for macOS</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <options customize="always" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="14.0"/>
+        </allowed-os-versions>
+    </volume-check>
+
+    <choices-outline>
+        <line choice="app"/>
+        <line choice="fonts"/>
+    </choices-outline>
+
+    <choice id="app"
+            title="SwiftX11 Application"
+            description="The SwiftX11 X11 server application. Installed to /Applications."
+            enabled="false"
+            selected="true"
+            visible="true">
+        <pkg-ref id="com.rlan.SwiftX11.app"/>
+    </choice>
+
+    <choice id="fonts"
+            title="X11 Fonts (PCF)"
+            description="Standard X11 bitmap fonts (misc, 75dpi, 100dpi). Required for legacy X11 applications like xterm, xcalc, xclock. Installed to /opt/X11/share/fonts/. Not needed if XQuartz is already installed."
+            start_selected="fonts_default()"
+            selected="true"
+            visible="true">
+        <pkg-ref id="com.rlan.SwiftX11.fonts"/>
+    </choice>
+
+    <script>
+    <![CDATA[
+    function fonts_default() {
+        // Deselect by default if X11 fonts are already installed (e.g. from XQuartz)
+        var hasfonts = system.files.fileExistsAtPath('/opt/X11/share/fonts/misc/fonts.dir');
+        return !hasfonts;
+    }
+    ]]>
+    </script>
+
+    <pkg-ref id="com.rlan.SwiftX11.app">SwiftX11-app.pkg</pkg-ref>
+    <pkg-ref id="com.rlan.SwiftX11.fonts">SwiftX11-fonts.pkg</pkg-ref>
+</installer-gui-script>
