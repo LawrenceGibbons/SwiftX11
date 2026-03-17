@@ -618,9 +618,11 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      // TEMPORARILY DISABLED for xeyes regression testing
+      // NOT advertised: our XI2 stubs silently consume XISelectEvents but
+      // don't deliver XI2 events.  Apps that detect XI2 (xeyes, Xlib apps)
+      // switch from core to XI2 event model and then receive no Expose/input.
+      // Re-enable once XI2 event delivery is implemented.
       present = 0; major = 0;
-      // present = 1; major = ext::kXInput2;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     }
@@ -658,7 +660,7 @@ namespace x11 {
       "Generic Event Extension",
       "SHAPE",
       "XC-MISC",
-      // "XInputExtension",  // TEMPORARILY DISABLED for xeyes regression testing
+      // "XInputExtension",  // not advertised — see QueryExtension comment
       "XTEST",
     };
     static constexpr uint8_t nExt = 9;

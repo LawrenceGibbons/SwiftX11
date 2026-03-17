@@ -615,28 +615,6 @@ final class X11View: NSView {
     var data: Data
     if isShaped {
       data = Data(bytes: framebuffer, count: byteCount)
-
-      // Diagnostic: check source pixel stats before shape masking
-      #if DEBUG
-      do {
-        let stridePixels = bytesPerRow / 4
-        var nonZero = 0, nonBlack = 0
-        let maxRects: Int32 = 4096
-        var xywh = [Int16](repeating: 0, count: Int(maxRects) * 4)
-        let nrects = x11_shape_get_rects(xid, &xywh, maxRects)
-        data.withUnsafeBytes { buf in
-          guard let p = buf.baseAddress?.assumingMemoryBound(to: UInt32.self) else { return }
-          let midY = height / 2
-          for col in 0..<width {
-            let px = p[midY * stridePixels + col]
-            if px != 0 { nonZero += 1 }
-            if (px & 0x00FFFFFF) != 0 { nonBlack += 1 }
-          }
-        }
-        print("[SHAPE_DIAG] xid=0x\(String(format:"%X",xid)) \(width)x\(height) stride=\(bytesPerRow/4) nrects=\(nrects) midRow: nonZero=\(nonZero)/\(width) nonBlack=\(nonBlack)/\(width)")
-      }
-      #endif
-
       applyShapeMask(to: &data, width: width, height: height, bytesPerRow: bytesPerRow)
 
       // Ensure renderer and layer stay in sync (MTKView may reset layer properties)
