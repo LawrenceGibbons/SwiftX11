@@ -237,6 +237,10 @@ final class X11View: NSView {
     }
 
     // Publish surface every time (so C++ sees latest ptr + generation)
+    #if DEBUG
+    print(String(format: "[ENSURE_SURFACE] xid=0x%08X %dx%d bpr=%d gen=%d — calling x11_surface_update",
+                 self.xid, wPx, hPx, bpr, hostSurfaceGen))
+    #endif
     hostSurface!.withUnsafeMutableBytes { raw in
       guard let p = raw.baseAddress else { return }
       x11_surface_update(xid, p, UInt32(bpr),
@@ -436,6 +440,14 @@ final class X11View: NSView {
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
 
+    #if DEBUG
+    print(String(format: "[VIEW_MOVE_WIN] xid=0x%08X window=%@ lastKnown=%@ attachSched=%d",
+                 self.xid,
+                 self.window.map { String(describing: type(of: $0)) } ?? "nil",
+                 lastKnownWindow.map { String(describing: type(of: $0)) } ?? "nil",
+                 attachSettleScheduled ? 1 : 0))
+    #endif
+
     // Detach: always clear and stop here (don’t schedule attach work).
     if self.window == nil {
       clearHostSurface()
@@ -447,6 +459,9 @@ final class X11View: NSView {
     // Prevent re-running attach logic for the same window repeatedly.
     let w = self.window
     if lastKnownWindow === w, attachSettleScheduled {
+      #if DEBUG
+      print(String(format: "[VIEW_MOVE_WIN] xid=0x%08X SKIP — same window + already scheduled", self.xid))
+      #endif
       return
     }
     lastKnownWindow = w
@@ -484,9 +499,17 @@ final class X11View: NSView {
   }
   
   private func scheduleAttachSettle() {
-    guard !attachSettleScheduled else { return }
+    guard !attachSettleScheduled else {
+      #if DEBUG
+      print(String(format: "[ATTACH_SETTLE] xid=0x%08X SKIP — already scheduled", self.xid))
+      #endif
+      return
+    }
     attachSettleScheduled = true
-    
+    #if DEBUG
+    print(String(format: "[ATTACH_SETTLE] xid=0x%08X scheduling", self.xid))
+    #endif
+
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.attachSettleScheduled = false
