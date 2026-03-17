@@ -119,6 +119,29 @@ namespace x11 {
     // behaviour — the focus target always receives the event).
     void sendFocusEventDirect(XProtoContext& ctx, uint32_t wid, bool is_in);
 
+    // ---- XI2 (XInput2) GenericEvent senders ----
+    // Each checks xi2_mask on the target window; no-op if the appropriate bit is not set.
+    void sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
+                            int32_t root_x, int32_t root_y,
+                            uint32_t buttons, uint32_t mods);
+
+    void sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
+                            bool is_press, uint8_t button,
+                            int32_t root_x, int32_t root_y,
+                            uint32_t buttons, uint32_t mods,
+                            uint32_t child_xid);
+
+    void sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
+                         bool is_press, uint8_t keycode,
+                         uint32_t buttons, uint32_t mods);
+
+    void sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
+                              bool is_enter,
+                              int32_t root_x, int32_t root_y,
+                              uint32_t buttons, uint32_t mods);
+
+    void sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
+
   private:
     XProtoContext& ctx_;
   };

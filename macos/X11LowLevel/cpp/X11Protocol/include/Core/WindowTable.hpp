@@ -50,6 +50,9 @@ public:
   // Update only the event mask (CWEventMask / SelectInput semantics)
   void setEventMask(uint32_t xid, uint32_t event_mask);
 
+  // Update XI2 event selection mask
+  void setXI2Mask(uint32_t xid, uint32_t xi2_mask);
+
   // Update geometry without reallocating framebuffers
   // (framebuffer resizing is handled elsewhere)
   void setGeometry(uint32_t xid,
@@ -178,6 +181,7 @@ private:
     uint32_t cursor_xid = 0; // 0 means "inherit/default"
 
     uint32_t event_mask = 0;
+    uint32_t xi2_mask = 0;    // XI2 event selection mask (bits = 1 << XI2 event type)
 
     // X11 window background pixel (ARGB8888, alpha forced opaque).
     uint32_t background_pixel = 0;

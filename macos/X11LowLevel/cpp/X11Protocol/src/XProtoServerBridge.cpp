@@ -572,6 +572,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/true,
                                             ctx.input().root_x_u, ctx.input().root_y_u,
                                             ctx.input().buttons, c.modsMask);
+          srv->eventOps().sendXI2CrossingEvent(ctx, under, /*is_enter=*/true,
+                                               ctx.input().root_x_u, ctx.input().root_y_u,
+                                               ctx.input().buttons, c.modsMask);
           break;
         }
 
@@ -597,6 +600,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           srv->eventOps().sendCrossingEvent(ctx, leaveWin, /*is_enter=*/false,
                                             ctx.input().root_x_u, ctx.input().root_y_u,
                                             ctx.input().buttons, c.modsMask);
+          srv->eventOps().sendXI2CrossingEvent(ctx, leaveWin, /*is_enter=*/false,
+                                               ctx.input().root_x_u, ctx.input().root_y_u,
+                                               ctx.input().buttons, c.modsMask);
           break;
         }
 
@@ -623,6 +629,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // FocusOut to previous focus window (if different)
             if (oldFocus && oldFocus != host) {
               srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
+              srv->eventOps().sendXI2FocusEvent(ctx, oldFocus, /*is_in=*/false);
             }
 
             // ICCCM WM_TAKE_FOCUS: if client advertises it in WM_PROTOCOLS,
@@ -648,6 +655,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // FocusIn to HOST — always delivered (bypass mask check).
             // Even with WM_TAKE_FOCUS, passively focusable clients need FocusIn.
             srv->eventOps().sendFocusEventDirect(ctx, host, /*is_in=*/true);
+            srv->eventOps().sendXI2FocusEvent(ctx, host, /*is_in=*/true);
 
           } else {
             // Losing focus on this host — only act if this host actually
@@ -658,6 +666,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
               if (oldFocus) {
                 srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
+                srv->eventOps().sendXI2FocusEvent(ctx, oldFocus, /*is_in=*/false);
               }
 
               ctx.input().focus_xid = 0;
@@ -879,6 +888,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                           ctx.input().root_x_u, ctx.input().root_y_u,
                                           buttonsBefore, c.modsMask,
                                           child);
+          srv->eventOps().sendXI2ButtonEvent(ctx, deliver,
+                                             c.isDown != 0, c.button,
+                                             ctx.input().root_x_u, ctx.input().root_y_u,
+                                             buttonsBefore, c.modsMask,
+                                             child);
           break;
         }
 
@@ -936,6 +950,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                             rx, ry,
                                             ctx.input().buttons, c.modsMask,
                                             /*child_xid=*/0);
+            srv->eventOps().sendXI2ButtonEvent(ctx, target,
+                                               /*is_press=*/true, btn,
+                                               rx, ry,
+                                               ctx.input().buttons, c.modsMask,
+                                               /*child_xid=*/0);
 
             const uint32_t wheelMask = (btn >= 1 && btn <= 31) ? (1u << (btn - 1u)) : 0;
             srv->eventOps().sendButtonEvent(ctx, target,
@@ -943,6 +962,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                             rx, ry,
                                             (ctx.input().buttons | wheelMask), c.modsMask,
                                             /*child_xid=*/0);
+            srv->eventOps().sendXI2ButtonEvent(ctx, target,
+                                               /*is_press=*/false, btn,
+                                               rx, ry,
+                                               (ctx.input().buttons | wheelMask), c.modsMask,
+                                               /*child_xid=*/0);
           }
 
           // NOTE: Do NOT send Expose after scroll events. xterm handles
@@ -1021,6 +1045,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                        c.isDown != 0,
                                        x11_kc,
                                        ctx.input().buttons, c.modsMask);
+          srv->eventOps().sendXI2KeyEvent(ctx, target,
+                                          c.isDown != 0,
+                                          x11_kc,
+                                          ctx.input().buttons, c.modsMask);
           break;
         }
 

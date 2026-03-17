@@ -1114,10 +1114,26 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // ---- minor 46: XISelectEvents (void — no reply) ----
     case 46: {
-      // Request: CARD32 window, CARD16 num_masks, pad16
+      // XISelectEvents: CARD32 window, CARD16 num_masks, pad16
       //   then per mask: CARD16 deviceid, CARD16 mask_len, mask_len*4 bytes
-      // Silently consume — we don't deliver XI2 events.
-      br.skip(br.remaining());
+      if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+      uint32_t window = br.readU32();
+      uint16_t num_masks = br.readU16();
+      br.skip(2); // pad
+      uint32_t combined_mask = 0;
+      for (uint16_t i = 0; i < num_masks && br.remaining() >= 4; i++) {
+        uint16_t deviceid = br.readU16();
+        uint16_t mask_len = br.readU16(); // in 4-byte units
+        (void)deviceid;
+        uint32_t mask = 0;
+        for (uint16_t j = 0; j < mask_len && br.remaining() >= 4; j++) {
+          uint32_t word = br.readU32();
+          if (j == 0) mask = word;  // only first word has event types 0-31
+        }
+        combined_mask |= mask;
+      }
+      br.skip(br.remaining()); // consume any trailing padding
+      ctx.windows().setXI2Mask(window, combined_mask);
       return;
     }
 
@@ -1321,11 +1337,32 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // ---- minor 60: XIGetSelectedEvents (reply-bearing) ----
     case 60: {
+      // XIGetSelectedEvents: CARD32 window
+      uint32_t window = (br.remaining() >= 4) ? br.readU32() : 0;
       br.skip(br.remaining());
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0);   // length
-        wire::wr16_le(rep.data() + 8, 0);   // num_masks = 0
-      });
+      // Look up stored XI2 mask for this window
+      x11::WindowView wv;
+      bool found = ctx.windows().snapshot(window, wv);
+      uint32_t mask = found ? wv.xi2_mask : 0;
+      if (mask == 0) {
+        // No XI2 selection — return empty
+        (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+          wire::wr32_le(rep.data() + 4, 0);
+          wire::wr16_le(rep.data() + 8, 0);
+        });
+      } else {
+        // Return one mask entry: 8 bytes (deviceid=0 XIAllDevices, mask_len=1, mask)
+        (void)ctx.reply().sendReply32(seq, [mask](std::array<uint8_t, 32>& rep) {
+          wire::wr32_le(rep.data() + 4, 2);   // length = 2 words (8 bytes extra)
+          wire::wr16_le(rep.data() + 8, 1);   // num_masks = 1
+        });
+        // Send trailing data: deviceid(2) + mask_len(2) + mask(4) = 8 bytes
+        uint8_t extra[8] = {};
+        wire::wr16_le(extra + 0, 0);    // deviceid = XIAllDevices
+        wire::wr16_le(extra + 2, 1);    // mask_len = 1 (one 4-byte word)
+        wire::wr32_le(extra + 4, mask); // the actual mask
+        ctx.transport().sendAll(extra, 8);
+      }
       return;
     }
 

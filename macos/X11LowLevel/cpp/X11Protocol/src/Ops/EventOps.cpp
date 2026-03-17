@@ -18,6 +18,9 @@
 #include "Utils/WireLE.hpp"
 #include "Core/WindowTable.hpp"
 #include "Core/X11Modifiers.hpp"
+#include "Core/timestamp.hpp"
+#include "Core/XI2EventMask.hpp"
+#include "Core/X11ExtOpcodes.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/timestamp.hpp"
 #include "Utils/WireEvents.hpp"
@@ -635,5 +638,215 @@ void EventOps::sendFocusEventDirect(XProtoContext& ctx, uint32_t wid, bool is_in
   ctx.transport().sendEvent32(wid, ev);
 }
 
+
+// ============================================================================
+// XI2 (XInput2) GenericEvent senders
+// ============================================================================
+
+// Helpers for building XI2 wire events
+namespace {
+
+// Build button mask word from internal button bits (0-4 → X11 wire bits 1-5)
+static uint32_t xi2ButtonMask(uint32_t buttons) {
+  uint32_t mask = 0;
+  for (int i = 0; i < 5; i++) {
+    if (buttons & (1u << i))
+      mask |= (1u << (i + 1));  // XI2 button bits are 1-indexed
+  }
+  return mask;
+}
+
+// Fill mods section (4×uint32 = 16 bytes) at buf
+static void fillXI2Mods(uint8_t* buf, uint32_t mods_state) {
+  uint32_t x11mods = x11::input::toX11State(0, mods_state) & 0xFFu;
+  x11::wire::wr32_le(buf + 0,  x11mods);  // base
+  x11::wire::wr32_le(buf + 4,  0);        // latched
+  x11::wire::wr32_le(buf + 8,  0);        // locked
+  x11::wire::wr32_le(buf + 12, x11mods);  // effective
+}
+
+// Fill group section (4×uint8 = 4 bytes) at buf
+static void fillXI2Group(uint8_t* buf) {
+  buf[0] = 0; buf[1] = 0; buf[2] = 0; buf[3] = 0;
+}
+
+} // anonymous namespace
+
+void EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
+                                  int32_t root_x, int32_t root_y,
+                                  uint32_t buttons, uint32_t mods) {
+  const WindowView* wv = ctx.window(wid);
+  if (!wv || !(wv->xi2_mask & xi2::kMotionMask)) return;
+
+  // Compute event-relative coords
+  int32_t ev_x = root_x - wv->x;
+  int32_t ev_y = root_y - wv->y;
+
+  uint8_t buf[xi2::kDeviceEventSize] = {};
+  buf[0] = 35;                                          // GenericEvent
+  buf[1] = (uint8_t)ext::kXInput2;                      // extension
+  wire::wr16_le(buf + 2,  ctx.transport().lastSeq());   // sequence
+  wire::wr32_le(buf + 4,  xi2::kDeviceEventLength);     // length
+  wire::wr16_le(buf + 8,  xi2::kMotion);                // evtype
+  wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);    // deviceid
+  wire::wr32_le(buf + 12, x11_now_ms_monotonic());         // time
+  wire::wr32_le(buf + 16, 0);                           // detail (0 for motion)
+  wire::wr32_le(buf + 20, 1);                           // root window
+  wire::wr32_le(buf + 24, wid);                         // event window
+  wire::wr32_le(buf + 28, 0);                           // child
+  wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));    // root_x FP16.16
+  wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));    // root_y FP16.16
+  wire::wr32_le(buf + 40, (uint32_t)(ev_x << 16));      // event_x FP16.16
+  wire::wr32_le(buf + 44, (uint32_t)(ev_y << 16));      // event_y FP16.16
+  wire::wr16_le(buf + 48, 1);                           // buttons_len
+  wire::wr16_le(buf + 50, 0);                           // valuators_len
+  wire::wr16_le(buf + 52, xi2::kVirtualCorePointer);    // sourceid
+  // buf[54-55] = pad
+  wire::wr32_le(buf + 56, 0);                           // flags
+  fillXI2Mods(buf + 60, mods);                              // mods (16 bytes)
+  fillXI2Group(buf + 76);                                   // group (4 bytes)
+  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));       // button_mask
+
+  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+}
+
+void EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
+                                  bool is_press, uint8_t button,
+                                  int32_t root_x, int32_t root_y,
+                                  uint32_t buttons, uint32_t mods,
+                                  uint32_t child_xid) {
+  uint32_t mask_bit = is_press ? xi2::kButtonPressMask : xi2::kButtonReleaseMask;
+  const WindowView* wv = ctx.window(wid);
+  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+
+  int32_t ev_x = root_x - wv->x;
+  int32_t ev_y = root_y - wv->y;
+
+  uint8_t buf[xi2::kDeviceEventSize] = {};
+  buf[0] = 35;
+  buf[1] = (uint8_t)ext::kXInput2;
+  wire::wr16_le(buf + 2,  ctx.transport().lastSeq());
+  wire::wr32_le(buf + 4,  xi2::kDeviceEventLength);
+  wire::wr16_le(buf + 8,  is_press ? xi2::kButtonPress : xi2::kButtonRelease);
+  wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);
+  wire::wr32_le(buf + 12, x11_now_ms_monotonic());
+  wire::wr32_le(buf + 16, (uint32_t)button);             // detail = button number
+  wire::wr32_le(buf + 20, 1);                            // root
+  wire::wr32_le(buf + 24, wid);                          // event
+  wire::wr32_le(buf + 28, child_xid);                    // child
+  wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));
+  wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));
+  wire::wr32_le(buf + 40, (uint32_t)(ev_x << 16));
+  wire::wr32_le(buf + 44, (uint32_t)(ev_y << 16));
+  wire::wr16_le(buf + 48, 1);                            // buttons_len
+  wire::wr16_le(buf + 50, 0);                            // valuators_len
+  wire::wr16_le(buf + 52, xi2::kVirtualCorePointer);
+  wire::wr32_le(buf + 56, 0);                            // flags
+  fillXI2Mods(buf + 60, mods);
+  fillXI2Group(buf + 76);
+  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));
+
+  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+}
+
+void EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
+                               bool is_press, uint8_t keycode,
+                               uint32_t buttons, uint32_t mods) {
+  uint32_t mask_bit = is_press ? xi2::kKeyPressMask : xi2::kKeyReleaseMask;
+  const WindowView* wv = ctx.window(wid);
+  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+
+  uint8_t buf[xi2::kDeviceEventSize] = {};
+  buf[0] = 35;
+  buf[1] = (uint8_t)ext::kXInput2;
+  wire::wr16_le(buf + 2,  ctx.transport().lastSeq());
+  wire::wr32_le(buf + 4,  xi2::kDeviceEventLength);
+  wire::wr16_le(buf + 8,  is_press ? xi2::kKeyPress : xi2::kKeyRelease);
+  wire::wr16_le(buf + 10, xi2::kVirtualCoreKeyboard);
+  wire::wr32_le(buf + 12, x11_now_ms_monotonic());
+  wire::wr32_le(buf + 16, (uint32_t)keycode);
+  wire::wr32_le(buf + 20, 1);   // root
+  wire::wr32_le(buf + 24, wid);
+  wire::wr32_le(buf + 28, 0);   // child
+  // Coordinates: 0 for keyboard events (no pointer position included)
+  wire::wr16_le(buf + 48, 1);   // buttons_len
+  wire::wr16_le(buf + 50, 0);   // valuators_len
+  wire::wr16_le(buf + 52, xi2::kVirtualCoreKeyboard);
+  wire::wr32_le(buf + 56, 0);   // flags
+  fillXI2Mods(buf + 60, mods);
+  fillXI2Group(buf + 76);
+  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));
+
+  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+}
+
+void EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
+                                    bool is_enter,
+                                    int32_t root_x, int32_t root_y,
+                                    uint32_t buttons, uint32_t mods) {
+  uint32_t mask_bit = is_enter ? xi2::kEnterMask : xi2::kLeaveMask;
+  const WindowView* wv = ctx.window(wid);
+  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+
+  int32_t ev_x = root_x - wv->x;
+  int32_t ev_y = root_y - wv->y;
+
+  uint8_t buf[xi2::kEnterEventSize] = {};
+  buf[0] = 35;
+  buf[1] = (uint8_t)ext::kXInput2;
+  wire::wr16_le(buf + 2,  ctx.transport().lastSeq());
+  wire::wr32_le(buf + 4,  xi2::kEnterEventLength);
+  wire::wr16_le(buf + 8,  is_enter ? xi2::kEnter : xi2::kLeave);
+  wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);
+  wire::wr32_le(buf + 12, x11_now_ms_monotonic());
+  wire::wr16_le(buf + 16, xi2::kVirtualCorePointer);     // sourceid
+  buf[18] = 0;   // mode = Normal
+  buf[19] = 0;   // detail = Ancestor
+  wire::wr32_le(buf + 20, 1);                            // root
+  wire::wr32_le(buf + 24, wid);                          // event
+  wire::wr32_le(buf + 28, 0);                            // child
+  wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));
+  wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));
+  wire::wr32_le(buf + 40, (uint32_t)(ev_x << 16));
+  wire::wr32_le(buf + 44, (uint32_t)(ev_y << 16));
+  buf[48] = 1;   // same_screen = True
+  buf[49] = 0;   // focus = False
+  wire::wr16_le(buf + 50, 1);                            // buttons_len
+  fillXI2Mods(buf + 52, mods);                               // mods (16 bytes)
+  fillXI2Group(buf + 68);                                    // group (4 bytes)
+  wire::wr32_le(buf + 72, xi2ButtonMask(buttons));        // button_mask
+
+  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+}
+
+void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
+  uint32_t mask_bit = is_in ? xi2::kFocusInMask : xi2::kFocusOutMask;
+  const WindowView* wv = ctx.window(wid);
+  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+
+  uint8_t buf[xi2::kEnterEventSize] = {};
+  buf[0] = 35;
+  buf[1] = (uint8_t)ext::kXInput2;
+  wire::wr16_le(buf + 2,  ctx.transport().lastSeq());
+  wire::wr32_le(buf + 4,  xi2::kEnterEventLength);
+  wire::wr16_le(buf + 8,  is_in ? xi2::kFocusIn : xi2::kFocusOut);
+  wire::wr16_le(buf + 10, xi2::kVirtualCoreKeyboard);
+  wire::wr32_le(buf + 12, x11_now_ms_monotonic());
+  wire::wr16_le(buf + 16, xi2::kVirtualCoreKeyboard);    // sourceid
+  buf[18] = 0;   // mode = Normal
+  buf[19] = 0;   // detail = Ancestor
+  wire::wr32_le(buf + 20, 1);   // root
+  wire::wr32_le(buf + 24, wid);
+  wire::wr32_le(buf + 28, 0);   // child
+  // coordinates = 0 for focus events
+  buf[48] = 1;   // same_screen
+  buf[49] = 1;   // focus = True (for focus events)
+  wire::wr16_le(buf + 50, 1);   // buttons_len
+  fillXI2Mods(buf + 52, 0);
+  fillXI2Group(buf + 68);
+  wire::wr32_le(buf + 72, 0);   // button_mask = 0
+
+  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+}
 
 } // namespace x11

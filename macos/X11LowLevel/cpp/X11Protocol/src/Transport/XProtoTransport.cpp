@@ -539,8 +539,19 @@ bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
               (unsigned)targetWid, (unsigned)ev[0]);
   return sendAll(ev, 32);
 }
-  
-  
+
+bool XProtoTransport::sendEventVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
+  if (targetWid == 0 || !ev || len < 32) return false;
+  if (!xproto_thread_valid_ || !pthread_equal(pthread_self(), xproto_thread_)) return false;
+  if (client_fd_ < 0) return false;
+
+  const WindowView* wv = ctx_.window(targetWid);
+  if (!wv) return false;
+  if (wv->owner_fd <= 0 || wv->owner_fd != client_fd_) return false;
+
+  return sendAll(ev, len);
+}
+
 void XProtoTransport::queueNotify(uint32_t wid, bool wantConfigure, bool wantExpose) {
   if (wid == 0) return;
   if (!wantConfigure && !wantExpose) return;

@@ -26,6 +26,7 @@ struct WindowView {
 
   // X11 SelectInput mask bits
   uint32_t event_mask = 0;
+  uint32_t xi2_mask = 0;    // XI2 event selection mask
 
   // Window background pixel (ARGB8888, alpha forced opaque).
   // Only valid when has_background_pixel is true.

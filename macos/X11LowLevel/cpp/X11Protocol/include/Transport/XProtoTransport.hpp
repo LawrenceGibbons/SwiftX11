@@ -68,6 +68,7 @@ public:
   //  - window owner_fd must match this transport's client_fd_
   // Returns false if any guard fails.
   bool sendEvent32(uint32_t targetWid, const uint8_t ev[32]);
+  bool sendEventVariable(uint32_t targetWid, const uint8_t* ev, size_t len);
   bool sendMapNotify(uint16_t seq, uint32_t event, uint32_t window, bool overrideRedirect);
   bool sendUnmapNotify(uint16_t seq, uint32_t event, uint32_t window, bool fromConfigure);
 

@@ -242,6 +242,7 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.w = st->w;
   out.h = st->h;
   out.event_mask = st->event_mask;
+  out.xi2_mask = st->xi2_mask;
   out.background_pixel = st->background_pixel;
   out.has_background_pixel = st->has_background_pixel;
   out.is_parent_relative = st->is_parent_relative;
@@ -524,6 +525,19 @@ void WindowTable::setEventMask(uint32_t xid, uint32_t event_mask) {
 
   st->event_mask = event_mask;
   st->serial++;
+}
+
+void WindowTable::setXI2Mask(uint32_t xid, uint32_t xi2_mask) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->xi2_mask = xi2_mask;
+  st->serial++;
+#ifndef NDEBUG
+  fprintf(stderr, "[XI2_MASK] xid=0x%08X xi2_mask=0x%08X\n",
+          (unsigned)xid, (unsigned)xi2_mask);
+#endif
 }
 
 // Assumes mu_ is held.

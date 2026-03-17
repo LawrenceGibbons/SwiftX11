@@ -618,11 +618,7 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      // NOT advertised: our XI2 stubs silently consume XISelectEvents but
-      // don't deliver XI2 events.  Apps that detect XI2 (xeyes, Xlib apps)
-      // switch from core to XI2 event model and then receive no Expose/input.
-      // Re-enable once XI2 event delivery is implemented.
-      present = 0; major = 0;
+      present = 1; major = ext::kXInput2;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     }
@@ -660,10 +656,10 @@ namespace x11 {
       "Generic Event Extension",
       "SHAPE",
       "XC-MISC",
-      // "XInputExtension",  // not advertised — see QueryExtension comment
+      "XInputExtension",
       "XTEST",
     };
-    static constexpr uint8_t nExt = 9;
+    static constexpr uint8_t nExt = 10;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
