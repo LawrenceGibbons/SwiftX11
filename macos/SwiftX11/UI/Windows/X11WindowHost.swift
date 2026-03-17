@@ -667,53 +667,74 @@ final class X11View: NSView {
   
   // MARK: - SHAPE extension alpha masking
 
-  /// Clear alpha channel for all pixels, then set alpha=0xFF for pixels inside shape rects.
-  /// This makes pixels outside the shape region transparent.
+  /// Apply antialiased shape mask using 3×3 box-filter coverage.
+  /// Interior pixels get full opacity, exterior get full transparency,
+  /// and boundary pixels get premultiplied alpha proportional to neighbor coverage.
   private func applyShapeMask(to data: inout Data, width: Int, height: Int, bytesPerRow: Int) {
     let maxRects: Int32 = 4096
     var xywh = [Int16](repeating: 0, count: Int(maxRects) * 4)
     let nrects = x11_shape_get_rects(xid, &xywh, maxRects)
     if nrects <= 0 { return }
 
-    // Build a bitmask of which pixels are inside the shape.
-    // Then zero pixels outside (premultiplied alpha: transparent = all zeros)
-    // and force alpha=0xFF on pixels inside.
     let stridePixels = bytesPerRow / 4
+    let original = Data(data)
 
-    // Single pass: for each pixel, check if it's inside any shape rect.
-    // To avoid O(pixels * rects), we process rect-by-rect: first zero
-    // everything, then copy back shape-interior pixels from a saved copy.
-    let original = Data(data)  // save original pixel data
+    // Phase 1: Build binary coverage grid from shape rects
+    let gridCount = width * height
+    let grid = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: gridCount)
+    grid.initialize(repeating: 0)
+    defer { grid.deallocate() }
 
+    for i in 0..<Int(nrects) {
+      let rx = Int(xywh[i * 4 + 0]); let ry = Int(xywh[i * 4 + 1])
+      let rw = Int(xywh[i * 4 + 2]); let rh = Int(xywh[i * 4 + 3])
+      let x0 = max(0, rx); let y0 = max(0, ry)
+      let x1 = min(width, rx + rw); let y1 = min(height, ry + rh)
+      if x0 >= x1 || y0 >= y1 { continue }
+      for row in y0..<y1 {
+        let rowBase = row * width
+        for col in x0..<x1 { grid[rowBase + col] = 1 }
+      }
+    }
+
+    // Phase 2: Apply 3×3 box-filter AA with premultiplied alpha
     data.withUnsafeMutableBytes { dstBuf in
       original.withUnsafeBytes { srcBuf in
         guard let dst = dstBuf.baseAddress?.assumingMemoryBound(to: UInt32.self),
               let src = srcBuf.baseAddress?.assumingMemoryBound(to: UInt32.self) else { return }
 
-        // Step 1: Zero all pixels (fully transparent, premultiplied)
         for row in 0..<height {
+          let dstRowBase = row * stridePixels
+          let r0 = max(0, row - 1); let r1 = min(height - 1, row + 1)
+
           for col in 0..<width {
-            dst[row * stridePixels + col] = 0x00000000
-          }
-        }
+            let c0 = max(0, col - 1); let c1 = min(width - 1, col + 1)
 
-        // Step 2: Copy back pixels inside shape rects with alpha=0xFF
-        for i in 0..<Int(nrects) {
-          let rx = Int(xywh[i * 4 + 0])
-          let ry = Int(xywh[i * 4 + 1])
-          let rw = Int(xywh[i * 4 + 2])
-          let rh = Int(xywh[i * 4 + 3])
+            // Count coverage in 3×3 neighborhood
+            var count: UInt32 = 0; var total: UInt32 = 0
+            for nr in r0...r1 {
+              let nrBase = nr * width
+              for nc in c0...c1 { count &+= UInt32(grid[nrBase + nc]); total &+= 1 }
+            }
 
-          let x0 = max(0, rx)
-          let y0 = max(0, ry)
-          let x1 = min(width, rx + rw)
-          let y1 = min(height, ry + rh)
-          if x0 >= x1 || y0 >= y1 { continue }
-
-          for row in y0..<y1 {
-            for col in x0..<x1 {
-              let idx = row * stridePixels + col
-              dst[idx] = src[idx] | 0xFF000000  // original RGB + opaque alpha
+            let idx = dstRowBase + col
+            if count == total {
+              // Fully inside — opaque (fast path, ~95% of pixels)
+              dst[idx] = src[idx] | 0xFF000000
+            } else if count == 0 {
+              // Fully outside — transparent (fast path)
+              dst[idx] = 0x00000000
+            } else {
+              // Boundary — premultiplied alpha from coverage fraction
+              let alpha = (count * 255 + total / 2) / total
+              let srcPixel = src[idx]
+              let srcB = srcPixel & 0xFF
+              let srcG = (srcPixel >> 8) & 0xFF
+              let srcR = (srcPixel >> 16) & 0xFF
+              let pB = (srcB * alpha + 127) / 255
+              let pG = (srcG * alpha + 127) / 255
+              let pR = (srcR * alpha + 127) / 255
+              dst[idx] = (alpha << 24) | (pR << 16) | (pG << 8) | pB
             }
           }
         }

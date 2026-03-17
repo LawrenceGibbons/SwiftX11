@@ -278,13 +278,13 @@ SwiftX11 advertises TrueColor visual. Vivado/Vitis Java apps use TrueColor. Curr
 - [x] **WM_NAME title sync**: PropOps hooks WM_NAME (atom 39) and `_NET_WM_NAME` (atom 79) property changes → `x11_ui_push_title()` → NSWindow title update. Child window titles route through `topLevelAncestorOf()` (v1.11.1).
 - [x] **Dynamic updates**: AppKit handles add/remove automatically when NSWindows are created/destroyed (v1.11.1).
 
-### 5.6 SwiftX11 Debug Panel Redesign (LOW — UX improvement)
+### 5.6 SwiftX11 Debug Panel Redesign (LOW — UX improvement) — DONE (v1.13.0)
 Convert the SwiftX11 main window from a spawnable `WindowGroup` into a single persistent debug/control panel.
-- [ ] **Single persistent window**: Replace `WindowGroup` with a single non-spawnable window (e.g., `Window` with `id`). Remove "New SwiftX11 Window" from File menu.
-- [ ] **View menu show/hide**: Add "Show Debug Panel" / "Hide Debug Panel" toggle under View menu instead of spawning new windows.
-- [ ] **Debug logging controls**: Consolidate debug logging level controls (trace categories, verbose mode) into the panel. Wire to C++ trace flags at runtime.
-- [ ] **Log output display**: Keep the existing monospace log view for server output. Consider filtering by trace category.
-- [ ] **Remove obsolete features**: Audit current ContentView for obsolete controls (e.g., "Freeze Log", "Pause Drain" if no longer useful) and simplify.
+- [x] **Single persistent window**: `Window("SwiftX11 Log", id: "log-window")` replaces `WindowGroup`. No "New SwiftX11 Window" in File menu.
+- [x] **View menu show/hide**: "Toggle Log Window" (⌘0) in View menu shows/hides the log window without spawning new instances.
+- [x] **Debug logging controls**: Log verbosity picker (Errors only / Info / Verbose) in ContentView, wired to C++ via `x11_set_log_verbosity()`.
+- [x] **Log output display**: Monospace `LogTextView` with auto-scroll, Copy All, Clear buttons. Trace category filtering deferred (optional).
+- [x] **Remove obsolete features**: No obsolete controls remain — clean UI with only essential logging controls.
 
 ### 5.7 ICCCM / Window Manager Compliance (MEDIUM) — DONE (v1.12.0)
 - [x] **Minimum window size floor**: Top-level windows created below 200×100 are enlarged in C++ CreateWindow before WindowTable upsert. Swift NSWindow applies matching floor. Fixes Vivado 1×1 splash screen (v1.12.0).
@@ -360,10 +360,10 @@ Some older Xaw/Motif apps (and `xclock -render`) use DBE for flicker-free render
 - [ ] **DBEAllocateBackBuffer / DeallocateBackBuffer**: Create/destroy back buffer for a window.
 - [ ] **DBESwapBuffers**: Copy back buffer to front buffer and present.
 
-### 7.7 Window Shape AA Compositing (LOW)
-Antialiased window shape borders at the macOS compositing level. Currently SHAPE uses binary masking (pixel is inside or outside the shape region). XQuartz produces softer window outlines because its compositor may antialias the shape boundary.
-- [ ] **Shape mask AA**: Generate antialiased alpha mask from shape rects in the Swift present path (e.g., signed-distance-field or multi-sample approach for shape boundary pixels).
-- [ ] **Metal blending**: Ensure the alpha channel in the Metal texture reflects shape coverage, producing smooth window outlines against the desktop.
+### 7.7 Window Shape AA Compositing — DONE (v1.15.0)
+Antialiased window shape borders at the macOS compositing level. 3×3 box-filter coverage AA replaces binary masking — boundary pixels get premultiplied alpha proportional to neighbor coverage, producing smooth window outlines.
+- [x] **Shape mask AA**: 3×3 box-filter coverage grid in `applyShapeMask()` — interior pixels fully opaque, exterior fully transparent, boundary pixels get fractional premultiplied alpha.
+- [x] **Metal blending**: Alpha channel in Metal texture reflects shape coverage via existing `sourceAlpha/oneMinusSourceAlpha` pipeline — no Metal changes needed.
 
 ---
 

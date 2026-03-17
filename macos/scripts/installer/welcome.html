@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { font-family: -apple-system, Helvetica Neue, sans-serif; font-size: 13px; line-height: 1.5; color: #333; }
+h1 { font-size: 18px; margin-bottom: 8px; }
+h2 { font-size: 14px; margin-top: 16px; margin-bottom: 4px; }
+code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>SwiftX11 &mdash; X11 Server for macOS</h1>
+<p>SwiftX11 is a native macOS X11 protocol server. It allows X11 applications
+(xterm, xcalc, Vivado, Vitis, and other Linux GUI tools) to display on your Mac
+using Metal-accelerated rendering.</p>
+
+<h2>What gets installed</h2>
+<ul>
+<li><strong>SwiftX11.app</strong> &rarr; <code>/Applications</code></li>
+<li><strong>X11 Fonts</strong> (optional) &rarr; <code>/opt/X11/share/fonts/</code><br/>
+    Standard PCF bitmap fonts for legacy X11 apps. Not needed if XQuartz is already installed.</li>
+</ul>
+
+<h2>Quick start</h2>
+<ol>
+<li>Launch <strong>SwiftX11</strong> from Applications.</li>
+<li>Add to your shell profile (<code>~/.zprofile</code> or <code>~/.profile</code>):<br/>
+    <code>export DISPLAY=127.0.0.1:1</code></li>
+<li>Run an X11 app: <code>xterm</code>, <code>xeyes</code>, etc.</li>
+<li>For Docker containers: <code>DISPLAY=host.docker.internal:1</code></li>
+</ol>
+
+<p>See <strong>Help &rarr; SwiftX11 Help</strong> in the app for full documentation.</p>
+</body>
+</html>
