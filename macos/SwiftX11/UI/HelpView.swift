@@ -91,7 +91,10 @@ struct HelpView: View {
                         "RANDR \u{2014} Multi-monitor layout (dynamic, real display data)",
                         "XINERAMA \u{2014} Multi-monitor screen queries",
                         "SHAPE \u{2014} Non-rectangular windows (e.g., xeyes)",
-                        "GE \u{2014} Generic Events"
+                        "GE \u{2014} Generic Events",
+                        "XC-MISC \u{2014} XID range recycling for long-running sessions",
+                        "XInput2 \u{2014} Input device enumeration for GTK3/4",
+                        "XTEST \u{2014} Synthetic input events for accessibility and automation"
                     ])
                 }
 
