@@ -669,7 +669,8 @@ final class X11View: NSView {
 
   /// Apply antialiased shape mask using 3×3 box-filter coverage.
   /// Interior pixels get full opacity, exterior get full transparency,
-  /// and boundary pixels get premultiplied alpha proportional to neighbor coverage.
+  /// and boundary pixels get straight alpha proportional to neighbor coverage.
+  /// Metal pipeline uses sourceAlpha/oneMinusSourceAlpha (straight alpha blending).
   private func applyShapeMask(to data: inout Data, width: Int, height: Int, bytesPerRow: Int) {
     let maxRects: Int32 = 4096
     var xywh = [Int16](repeating: 0, count: Int(maxRects) * 4)
@@ -725,16 +726,11 @@ final class X11View: NSView {
               // Fully outside — transparent (fast path)
               dst[idx] = 0x00000000
             } else {
-              // Boundary — premultiplied alpha from coverage fraction
+              // Boundary — straight alpha from coverage fraction
+              // Metal blend is sourceAlpha/oneMinusSourceAlpha (straight alpha),
+              // so keep original RGB and only set alpha to coverage.
               let alpha = (count * 255 + total / 2) / total
-              let srcPixel = src[idx]
-              let srcB = srcPixel & 0xFF
-              let srcG = (srcPixel >> 8) & 0xFF
-              let srcR = (srcPixel >> 16) & 0xFF
-              let pB = (srcB * alpha + 127) / 255
-              let pG = (srcG * alpha + 127) / 255
-              let pR = (srcR * alpha + 127) / 255
-              dst[idx] = (alpha << 24) | (pR << 16) | (pG << 8) | pB
+              dst[idx] = (alpha << 24) | (src[idx] & 0x00FFFFFF)
             }
           }
         }
