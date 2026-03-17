@@ -1067,6 +1067,51 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
+    // ---- XI1 legacy void stubs (minor 3-39) ----
+    case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10:
+    case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18:
+    case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26:
+    case 27: case 28: case 29: case 30: case 31: case 32: case 33: case 34:
+    case 35: case 36: case 37: case 38: case 39:
+      // XI1 legacy requests — silently consume (all void or rarely used)
+      br.skip(br.remaining());
+      return;
+
+    // ---- minor 40: XIQueryPointer (reply-bearing) ----
+    case 40: {
+      br.skip(br.remaining());
+      // Reply: root=kRootXid, child=0, root_x/y=0, win_x/y=0, buttons_len=1, mods/group=0
+      std::array<uint8_t, 56> rep{};
+      rep[0] = 1;  // reply
+      wire::wr16_le(rep.data() + 2, seq);
+      wire::wr32_le(rep.data() + 4, 6);   // length = 6 extra words (24 bytes)
+      wire::wr32_le(rep.data() + 8, 1);   // root window
+      wire::wr32_le(rep.data() + 12, 0);  // child
+      // root_x/y, win_x/y all 0 (FP16.16 format — 32-bit each)
+      wire::wr16_le(rep.data() + 36, 1);  // buttons_len = 1
+      // mods (base/latched/locked/effective) = 0, group = 0
+      // buttons mask (4 bytes at offset 56-4=52) — all zeros
+      ctx.transport().sendAll(rep.data(), rep.size());
+      return;
+    }
+
+    // ---- minor 41-45: XI2 void stubs ----
+    case 41: // XIWarpPointer
+    case 42: // XIChangeCursor
+    case 43: // XIChangeHierarchy
+    case 44: // XISetClientPointer
+      br.skip(br.remaining());
+      return;
+    case 45: { // XIGetClientPointer (reply-bearing)
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0); // length
+        rep[1] = 1;                         // set = True
+        wire::wr16_le(rep.data() + 8, 2);  // deviceid = virtual core pointer
+      });
+      return;
+    }
+
     // ---- minor 46: XISelectEvents (void — no reply) ----
     case 46: {
       // Request: CARD32 window, CARD16 num_masks, pad16
@@ -1211,13 +1256,85 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
+    // ---- minor 49: XISetFocus (void) ----
+    case 49:
+      br.skip(br.remaining());
+      return;
+
+    // ---- minor 50: XIGetFocus (reply-bearing) ----
+    case 50: {
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);  // length
+        wire::wr32_le(rep.data() + 8, 1);  // focus = PointerRoot (1)
+      });
+      return;
+    }
+
+    // ---- minor 51: XIGrabDevice (reply-bearing) ----
+    case 51: {
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);  // length
+        rep[1] = 0;                          // status = Success
+      });
+      return;
+    }
+
+    // ---- minor 52-55: XI2 void stubs ----
+    case 52: // XIUngrabDevice
+    case 53: // XIAllowEvents
+    case 54: // XIPassiveGrabDevice — should be reply-bearing but rare
+    case 55: // XIPassiveUngrabDevice
+      br.skip(br.remaining());
+      return;
+
+    // ---- minor 56: XIListProperties (reply-bearing) ----
+    case 56: {
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);   // length
+        wire::wr16_le(rep.data() + 8, 0);   // num_properties = 0
+      });
+      return;
+    }
+
+    // ---- minor 57-58: XI2 void stubs ----
+    case 57: // XIChangeProperty
+    case 58: // XIDeleteProperty
+      br.skip(br.remaining());
+      return;
+
+    // ---- minor 59: XIGetProperty (reply-bearing) ----
+    case 59: {
+      br.skip(br.remaining());
+      // Reply: type=0 (None), bytes_after=0, num_items=0
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);   // length
+        rep[1] = 0;                           // result_format = 0
+        wire::wr32_le(rep.data() + 8, 0);   // type = None
+        wire::wr32_le(rep.data() + 12, 0);  // bytes_after
+        wire::wr32_le(rep.data() + 16, 0);  // num_items
+      });
+      return;
+    }
+
+    // ---- minor 60: XIGetSelectedEvents (reply-bearing) ----
+    case 60: {
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);   // length
+        wire::wr16_le(rep.data() + 8, 0);   // num_masks = 0
+      });
+      return;
+    }
+
     default:
       break;
     }
-    // Unhandled XI2 minor — send BadRequest
-    { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+    // Unhandled XI2 minor — silently consume (shouldn't reach here now).
+    { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] unhandled minor=%u seq=%u — silently consumed\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
     br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;
   }
 
