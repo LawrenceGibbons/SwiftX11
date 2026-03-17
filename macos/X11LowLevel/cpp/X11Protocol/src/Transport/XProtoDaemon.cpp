@@ -588,6 +588,9 @@ void XProtoDaemon::drainHostCommands() {
 
   auto cmds = server_->hostCmds().takeAll();
   if (cmds.empty()) return;
+#ifndef NDEBUG
+  fprintf(stderr, "[DRAIN_HOST] %zu commands\n", cmds.size());
+#endif
 
   // Collect fds that need forceful disconnect (WindowClose without WM_DELETE_WINDOW).
   std::vector<int> forceDisconnect;
@@ -732,6 +735,10 @@ void XProtoDaemon::drainHostCommands() {
     activateClient(*cs);
 
     // Process this single command directly (no re-queue roundtrip).
+#ifndef NDEBUG
+    fprintf(stderr, "[DRAIN_HOST] processing type=%d xid=0x%08X owner_fd=%d cs=%p\n",
+            (int)c.type, (unsigned)c.xid, owner_fd, (void*)cs);
+#endif
     x11_proto_bridge_process_host_cmd(&c);
     server_->flushNotifyQueue();
 
