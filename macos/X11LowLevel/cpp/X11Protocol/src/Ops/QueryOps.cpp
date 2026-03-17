@@ -618,7 +618,9 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      present = 1; major = ext::kXInput2;
+      // TEMPORARILY DISABLED for xeyes regression testing
+      present = 0; major = 0;
+      // present = 1; major = ext::kXInput2;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     }
@@ -656,10 +658,10 @@ namespace x11 {
       "Generic Event Extension",
       "SHAPE",
       "XC-MISC",
-      "XInputExtension",
+      // "XInputExtension",  // TEMPORARILY DISABLED for xeyes regression testing
       "XTEST",
     };
-    static constexpr uint8_t nExt = 10;
+    static constexpr uint8_t nExt = 9;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
