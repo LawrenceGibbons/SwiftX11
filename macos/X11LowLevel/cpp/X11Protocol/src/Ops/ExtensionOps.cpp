@@ -1168,7 +1168,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           const uint16_t total_bytes = 8 + state_words * 4 + num_buttons * 4;
           const uint16_t length_words = total_bytes / 4;
 
-          appendU16(0);              // type = ButtonClass
+          appendU16(1);              // type = ButtonClass (XI2: 1)
           appendU16(length_words);   // length in 4-byte words
           appendU16(dev->id);        // sourceid
           appendU16(num_buttons);    // num_buttons
@@ -1186,7 +1186,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           const uint16_t total_bytes = 8 + num_keycodes * 4;
           const uint16_t length_words = total_bytes / 4;
 
-          appendU16(1);              // type = KeyClass
+          appendU16(0);              // type = KeyClass (XI2: 0)
           appendU16(length_words);   // length in 4-byte words
           appendU16(dev->id);        // sourceid
           appendU16(num_keycodes);   // num_keycodes
