@@ -1041,6 +1041,32 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   if (major == ext::kXInput2) {
     switch (minor) {
 
+    // ---- minor 1: GetExtensionVersion (XI1 legacy — reply-bearing) ----
+    case 1: {
+      // libXi sends this before XIQueryVersion.
+      // Request: CARD16 name_len, pad16, then name bytes.
+      br.skip(br.remaining());
+      // Reply 32 bytes: major=2, minor=0, present=1
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);     // length
+        wire::wr16_le(rep.data() + 8, 2);     // server_major
+        wire::wr16_le(rep.data() + 10, 0);    // server_minor
+        rep[12] = 1;                            // present = True
+      });
+      return;
+    }
+
+    // ---- minor 2: ListInputDevices (XI1 legacy — reply-bearing) ----
+    case 2: {
+      // Return empty device list — XI2 clients use XIQueryDevice instead.
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
+        rep[1] = 0;                             // ndevices = 0
+      });
+      return;
+    }
+
     // ---- minor 46: XISelectEvents (void — no reply) ----
     case 46: {
       // Request: CARD32 window, CARD16 num_masks, pad16
