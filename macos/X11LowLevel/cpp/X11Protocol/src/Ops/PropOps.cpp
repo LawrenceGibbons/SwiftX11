@@ -24,6 +24,24 @@
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/ScreenLayout.hpp"
+#include "Core/timestamp.hpp"
+
+// Send PropertyNotify (type 28) for ChangeProperty/DeleteProperty.
+// X11 spec: "Whenever a property is changed or deleted, the server
+// generates a PropertyNotify event on that window."
+// Java AWT uses PropertyNotify on _SUNW_JAVA_AWT_TIME to extract
+// the server timestamp needed for SetSelectionOwner.
+static void sendPropertyNotify(x11::XProtoContext& ctx, uint32_t wid,
+                               uint32_t atom, bool deleted) {
+  uint8_t ev[32] = {};
+  ev[0] = 28; // PropertyNotify
+  x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+  x11::wire::wr32_le(ev + 4, wid);           // window
+  x11::wire::wr32_le(ev + 8, atom);          // atom
+  x11::wire::wr32_le(ev + 12, x11_now_ms_monotonic()); // time
+  ev[16] = deleted ? 1 : 0;             // state: 0=NewValue, 1=Deleted
+  (void)ctx.transport().sendEvent32(wid, ev);
+}
 
 extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8);
 extern "C" void x11_ui_push_resize(uint32_t xid, int32_t w_px, int32_t h_px);
@@ -126,6 +144,9 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
   } else {
     PropertyTable::instance().setReplace(wid, atom, type, fmt, data, dataBytes);
   }
+
+  // X11 spec: generate PropertyNotify on every property change
+  sendPropertyNotify(ctx, wid, atom, /*deleted*/false);
 
   // Push title update to UI when WM_NAME or _NET_WM_NAME is set
   if (atom == x11::atom::kWM_NAME || atom == x11::atom::k_NET_WM_NAME) {
