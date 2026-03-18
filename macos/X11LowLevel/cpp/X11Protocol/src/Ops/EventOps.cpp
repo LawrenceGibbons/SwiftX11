@@ -868,12 +868,12 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid) {
   if (!wv) return;
 
   // xXIRawEvent wire format (from XI2proto.h):
-  // 32-byte GenericEvent header + 24 bytes extra = 56 bytes total
+  // All fields fit in 32 bytes. length=0 (no extra data after header).
   uint8_t buf[xi2::kRawEventSize] = {};
   buf[0] = 35;                                         // GenericEvent
   buf[1] = (uint8_t)ext::kXInput2;                     // extension
   wire::wr16_le(buf + 2,  ctx.transport().lastSeq());  // sequence
-  wire::wr32_le(buf + 4,  xi2::kRawEventLength);       // length = 6 words
+  wire::wr32_le(buf + 4,  xi2::kRawEventLength);       // length = 0
   wire::wr16_le(buf + 8,  xi2::kRawMotion);            // evtype = 17
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);   // deviceid
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());     // time
