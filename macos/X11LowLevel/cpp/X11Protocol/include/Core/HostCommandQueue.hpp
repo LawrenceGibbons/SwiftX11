@@ -75,6 +75,23 @@ public:
       }
     }
 
+    // Coalesce consecutive PointerMove for the same window.
+    // Prevents MotionNotify flood that live-locks Java AWT's XAWT thread
+    // (holds AWT lock in XPending loop, starving EDT from clipboard ops).
+    if (c.type == HostCmdType::PointerMove && !q_.empty()) {
+      HostCmd& back = q_.back();
+      if (back.type == HostCmdType::PointerMove && back.xid == c.xid) {
+        back.win_x_u    = c.win_x_u;
+        back.win_y_u    = c.win_y_u;
+        back.root_x_u   = c.root_x_u;
+        back.root_y_u   = c.root_y_u;
+        back.deliver     = c.deliver;
+        back.buttonsMask = c.buttonsMask;
+        back.modsMask    = c.modsMask;
+        return;
+      }
+    }
+
     q_.push_back(c);
   }
 
