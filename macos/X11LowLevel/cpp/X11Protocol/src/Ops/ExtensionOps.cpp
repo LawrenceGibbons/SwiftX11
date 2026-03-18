@@ -1039,6 +1039,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // XINPUT2 (XInput2) — major opcode 141
   // -------------------------------------------------------------------
   if (major == ext::kXInput2) {
+#ifndef NDEBUG
+    fprintf(stderr, "[XI2_OP] minor=%u seq=%u remain=%zu replySent=%d\n",
+            (unsigned)minor, (unsigned)seq, br.remaining(),
+            (int)ctx.transport().wasReplySent());
+#endif
     switch (minor) {
 
     // ---- minor 1: GetExtensionVersion (XI1 legacy — reply-bearing) ----
