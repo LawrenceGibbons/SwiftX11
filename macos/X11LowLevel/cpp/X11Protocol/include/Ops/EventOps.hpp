@@ -142,6 +142,10 @@ namespace x11 {
 
     void sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
 
+    // XI2 RawMotion: sent to clients that registered for XI_RawMotion on root.
+    // Delivered on any window (uses xi2_root_mask, not per-window mask).
+    void sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid);
+
   private:
     XProtoContext& ctx_;
   };

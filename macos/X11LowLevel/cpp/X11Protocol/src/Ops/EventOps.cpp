@@ -860,4 +860,31 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }
 
+void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid) {
+  // Only send if root has RawMotionMask
+  if (!(ctx.input().xi2_root_mask & xi2::kRawMotionMask)) return;
+  // Need a valid window for sendEventVariable's owner check
+  const WindowView* wv = ctx.window(wid);
+  if (!wv) return;
+
+  // xXIRawEvent wire format (from XI2proto.h):
+  // 32-byte GenericEvent header + 24 bytes extra = 56 bytes total
+  uint8_t buf[xi2::kRawEventSize] = {};
+  buf[0] = 35;                                         // GenericEvent
+  buf[1] = (uint8_t)ext::kXInput2;                     // extension
+  wire::wr16_le(buf + 2,  ctx.transport().lastSeq());  // sequence
+  wire::wr32_le(buf + 4,  xi2::kRawEventLength);       // length = 6 words
+  wire::wr16_le(buf + 8,  xi2::kRawMotion);            // evtype = 17
+  wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);   // deviceid
+  wire::wr32_le(buf + 12, x11_now_ms_monotonic());     // time
+  wire::wr32_le(buf + 16, 0);                          // detail = 0
+  wire::wr16_le(buf + 20, xi2::kVirtualCorePointer);   // sourceid
+  wire::wr16_le(buf + 22, 0);                          // valuators_len = 0
+  wire::wr32_le(buf + 24, 0);                          // flags = 0
+  // buf[28-31] = pad (already 0)
+  // No valuator mask or axis values (valuators_len=0)
+
+  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+}
+
 } // namespace x11

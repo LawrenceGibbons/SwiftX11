@@ -33,6 +33,19 @@ constexpr uint32_t kLeaveMask         = (1u << 8);
 constexpr uint32_t kFocusInMask       = (1u << 9);
 constexpr uint32_t kFocusOutMask      = (1u << 10);
 
+// Raw event types and masks (global, typically on root window)
+constexpr uint16_t kRawKeyPress       = 13;
+constexpr uint16_t kRawKeyRelease     = 14;
+constexpr uint16_t kRawButtonPress    = 15;
+constexpr uint16_t kRawButtonRelease  = 16;
+constexpr uint16_t kRawMotion         = 17;
+
+constexpr uint32_t kRawKeyPressMask      = (1u << 13);
+constexpr uint32_t kRawKeyReleaseMask    = (1u << 14);
+constexpr uint32_t kRawButtonPressMask   = (1u << 15);
+constexpr uint32_t kRawButtonReleaseMask = (1u << 16);
+constexpr uint32_t kRawMotionMask        = (1u << 17);
+
 // --- Virtual core device IDs (matching XIQueryDevice) ---
 constexpr uint16_t kVirtualCorePointer  = 2;
 constexpr uint16_t kVirtualCoreKeyboard = 3;
@@ -45,5 +58,15 @@ constexpr uint32_t kDeviceEventLength = 13;  // (84 - 32) / 4
 // xXIEnterEvent with buttons_len=1: 76 bytes
 constexpr size_t kEnterEventSize = 76;
 constexpr uint32_t kEnterEventLength = 11;  // (76 - 32) / 4
+
+// xXIRawEvent with valuators_len=0: 32 bytes total (no extra data)
+// Fixed fields after header: evtype(2)+deviceid(2)+time(4)+detail(4)+
+//   sourceid(2)+valuators_len(2)+flags(4)+pad(4) = 24 bytes
+// With valuators_len=0: no valuator mask, no axis values
+// Total = 32 + 24 = 56 bytes, but xXIRawEvent struct is 32 bytes
+// Actually from XI2proto.h: the struct is the header only.
+// With valuators_len=0: length = (24/4) = 6 words, total = 32+24 = 56 bytes
+constexpr size_t kRawEventSize = 56;
+constexpr uint32_t kRawEventLength = 6;  // (56 - 32) / 4
 
 } // namespace x11::xi2
