@@ -555,15 +555,9 @@ bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
   ctx_.tracef("[XProtoTransport] sendEvent32 OK wid=0x%08X type=%u\n",
               (unsigned)targetWid, (unsigned)ev[0]);
 #ifndef NDEBUG
-  {
-    // Log unsolicited events (motion, crossing, XI2) to diagnose Vivado
-    // Edit→Copy livelock. Skip high-frequency drawing events (Expose etc.)
-    const uint8_t t = ev[0] & 0x7F; // mask off SendEvent bit
-    if (t == 6 || t == 7 || t == 8 || t == 35) { // Motion, Enter, Leave, GenericEvent
-      fprintf(stderr, "[EVT_SEND] fd=%d type=%u wid=0x%08X\n",
-              client_fd_, (unsigned)t, (unsigned)targetWid);
-    }
-  }
+  // Log ALL events sent to diagnose Vivado Edit→Copy hang
+  fprintf(stderr, "[EVT_SEND] fd=%d type=%u wid=0x%08X\n",
+          client_fd_, (unsigned)(ev[0] & 0x7F), (unsigned)targetWid);
 #endif
   return sendAll(ev, 32);
 }
