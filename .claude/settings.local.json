@@ -63,7 +63,11 @@
       "Bash(git add CLAUDE.md macos/CLAUDE.md macos/SwiftX11/Core/SettingsStore.swift macos/SwiftX11/Core/XServerController.swift macos/SwiftX11/UI/Preferences/NetworkTab.swift macos/X11LowLevel/cpp/X11Protocol/include/Transport/XProtoDaemon.hpp macos/X11LowLevel/cpp/X11Protocol/src/SwiftBridge.cpp macos/X11LowLevel/cpp/X11Protocol/src/Transport/XProtoDaemon.cpp macos/X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp macos/X11LowLevel/include/SwiftX11Bridge.h macos/X11LowLevel/include/SwiftX11Version.h macos/docs/TODO.md)",
       "Bash(grep -n \"sendReply32\" /Users/lkg/Documents/Vivado/SwiftX11/macos/X11LowLevel/cpp/X11Protocol/src/Ops/*.cpp)",
       "Bash(git add SwiftX11/Core/WindowRegistry.swift SwiftX11/Core/XServerController.swift X11LowLevel/cpp/X11Protocol/src/Core/UICommandQueue.cpp X11LowLevel/cpp/X11Protocol/src/Ops/WindowAttrOps.cpp X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp X11LowLevel/cpp/X11Protocol/src/XProtoNotifyBridge.cpp X11LowLevel/include/SwiftX11Bridge.h)",
-      "Bash(git add X11LowLevel/cpp/X11Protocol/include/Core/WindowTable.hpp X11LowLevel/cpp/X11Protocol/include/Core/WindowView.hpp X11LowLevel/cpp/X11Protocol/src/Core/WindowTable.cpp X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp X11LowLevel/cpp/X11Protocol/src/Ops/WindowAttrOps.cpp X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp X11LowLevel/cpp/X11Protocol/include/Utils/BackgroundFill.hpp)"
+      "Bash(git add X11LowLevel/cpp/X11Protocol/include/Core/WindowTable.hpp X11LowLevel/cpp/X11Protocol/include/Core/WindowView.hpp X11LowLevel/cpp/X11Protocol/src/Core/WindowTable.cpp X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp X11LowLevel/cpp/X11Protocol/src/Ops/WindowAttrOps.cpp X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp X11LowLevel/cpp/X11Protocol/include/Utils/BackgroundFill.hpp)",
+      "Bash(git merge:*)",
+      "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 stash)",
+      "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 merge claude/stupefied-panini --no-edit)",
+      "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 log --oneline -3)"
     ]
   }
 }
