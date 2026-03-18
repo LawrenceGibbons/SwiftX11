@@ -21,6 +21,7 @@
 #include "Core/timestamp.hpp"
 #include "Core/XI2EventMask.hpp"
 #include "Core/X11ExtOpcodes.hpp"
+#include "Core/InputState.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/timestamp.hpp"
 #include "Utils/WireEvents.hpp"
@@ -676,7 +677,9 @@ void EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
                                   int32_t root_x, int32_t root_y,
                                   uint32_t buttons, uint32_t mods) {
   const WindowView* wv = ctx.window(wid);
-  if (!wv || !(wv->xi2_mask & xi2::kMotionMask)) return;
+  if (!wv) return;
+  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+  if (!(eff_mask & xi2::kMotionMask)) return;
 
   // Compute event-relative coords
   int32_t ev_x = root_x - wv->x;
@@ -717,7 +720,9 @@ void EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
                                   uint32_t child_xid) {
   uint32_t mask_bit = is_press ? xi2::kButtonPressMask : xi2::kButtonReleaseMask;
   const WindowView* wv = ctx.window(wid);
-  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+  if (!wv) return;
+  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+  if (!(eff_mask & mask_bit)) return;
 
   int32_t ev_x = root_x - wv->x;
   int32_t ev_y = root_y - wv->y;
@@ -754,7 +759,9 @@ void EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
                                uint32_t buttons, uint32_t mods) {
   uint32_t mask_bit = is_press ? xi2::kKeyPressMask : xi2::kKeyReleaseMask;
   const WindowView* wv = ctx.window(wid);
-  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+  if (!wv) return;
+  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+  if (!(eff_mask & mask_bit)) return;
 
   uint8_t buf[xi2::kDeviceEventSize] = {};
   buf[0] = 35;
@@ -786,7 +793,9 @@ void EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                                     uint32_t buttons, uint32_t mods) {
   uint32_t mask_bit = is_enter ? xi2::kEnterMask : xi2::kLeaveMask;
   const WindowView* wv = ctx.window(wid);
-  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+  if (!wv) return;
+  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+  if (!(eff_mask & mask_bit)) return;
 
   int32_t ev_x = root_x - wv->x;
   int32_t ev_y = root_y - wv->y;
@@ -822,7 +831,9 @@ void EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
 void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
   uint32_t mask_bit = is_in ? xi2::kFocusInMask : xi2::kFocusOutMask;
   const WindowView* wv = ctx.window(wid);
-  if (!wv || !(wv->xi2_mask & mask_bit)) return;
+  if (!wv) return;
+  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+  if (!(eff_mask & mask_bit)) return;
 
   uint8_t buf[xi2::kEnterEventSize] = {};
   buf[0] = 35;

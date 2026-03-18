@@ -33,6 +33,7 @@ extern "C" {
 #include "Utils/WireLE.hpp"
 #include "Utils/WireErrors.hpp"
 #include "Core/X11ExtOpcodes.hpp"
+#include "Core/InputState.hpp"
 
 // Bridge function (defined in UICommandQueue.cpp)
 extern "C" void x11_ui_push_shape_changed(uint32_t host_xid);
@@ -1138,7 +1139,15 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         combined_mask |= mask;
       }
       br.skip(br.remaining()); // consume any trailing padding
-      ctx.windows().setXI2Mask(window, combined_mask);
+      // Root window (XID 1) isn't in WindowTable — store in InputState.
+      if (window == 1) {
+        ctx.input().xi2_root_mask = combined_mask;
+#ifndef NDEBUG
+        fprintf(stderr, "[XI2_MASK_ROOT] xi2_root_mask=0x%08X\n", (unsigned)combined_mask);
+#endif
+      } else {
+        ctx.windows().setXI2Mask(window, combined_mask);
+      }
       return;
     }
 

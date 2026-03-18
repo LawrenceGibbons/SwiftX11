@@ -32,6 +32,11 @@ namespace x11 {
     uint32_t last_cursor_host = 0;
     uint32_t last_cursor_cid  = 0;
 
+    // XI2 event mask registered on the root window (XID 1).
+    // XISelectEvents on root isn't stored in WindowTable (root isn't a real window).
+    // XI2 senders check this when the per-window xi2_mask is 0.
+    uint32_t xi2_root_mask = 0;
+
     // Screen origin cache: maps host XID → (screen_x, screen_y).
     // Updated whenever the pointer moves over a host window.
     // screen_origin = root_coords - window_local_coords.
