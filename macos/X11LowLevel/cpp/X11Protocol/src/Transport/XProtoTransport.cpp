@@ -189,6 +189,21 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   if (n >= 32 && payload_remaining_ == 0) {
     const uint8_t b0 = static_cast<const uint8_t*>(buf)[0];
     if (b0 == 0 || b0 == 1) reply_sent_ = true;
+
+#ifndef NDEBUG
+    // Dump reply/event headers during early initialization (first 80 seqs)
+    const uint8_t* bp = static_cast<const uint8_t*>(buf);
+    uint16_t dseq = uint16_t(bp[2] | (uint16_t(bp[3]) << 8));
+    if (dseq < 80 || last_request_seq_ < 80) {
+      uint32_t dlen = uint32_t(bp[4]) | (uint32_t(bp[5])<<8) |
+                      (uint32_t(bp[6])<<16) | (uint32_t(bp[7])<<24);
+      fprintf(stderr, "[WIRE_HDR] type=%u seq=%u len=%u n=%zu major=%u minor=%u payload_rem=%u | %02X %02X %02X %02X %02X %02X %02X %02X\n",
+              (unsigned)b0, (unsigned)dseq, (unsigned)dlen, n,
+              (unsigned)last_request_major_, (unsigned)last_request_minor_,
+              (unsigned)payload_remaining_,
+              bp[0], bp[1], bp[2], bp[3], bp[4], bp[5], bp[6], bp[7]);
+    }
+#endif
   }
 
   // ── Monotonic wire-sequence floor ──────────────────────────────
