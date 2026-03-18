@@ -117,14 +117,33 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
     sSelMacCC[selection] = cc;
   }
 
-  // NOTE: We do NOT proactively request clipboard data from the new owner.
-  // The old ClipboardCapture mechanism sent a SelectionRequest back to the
-  // client that just called SetSelectionOwner, but this deadlocks when the
-  // client's event thread is blocked (e.g., Java Swing menu tracking or
-  // text selection callback).  X11 clipboard is designed for lazy transfer:
-  // data is only requested when another app pastes (ConvertSelection).
-  // X11→macOS sync happens via handleSendEvent's SelectionNotify interception
-  // when an actual ConvertSelection transfer completes.
+  // Proactive clipboard capture: send SelectionRequest from root (XID 1)
+  // to the new owner asking for UTF8_STRING.  The owner responds with
+  // ChangeProperty + SendEvent(SelectionNotify), which our handleSendEvent
+  // intercepts and pushes to NSPasteboard.
+  //
+  // This mimics XQuartz's pasteboard proxy (window 0x00800001) which
+  // automatically requests CLIPBOARD content on ownership change.
+  //
+  // We only do this for CLIPBOARD (not PRIMARY) and only when the owner
+  // is a real client window (not None/root).
+  if ((selection == atom::kCLIPBOARD) && owner > 1) {
+    uint8_t ev[32] = {0};
+    ev[0] = 30; // SelectionRequest
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+    wire::wr32_le(ev + 4,  time);                   // time
+    wire::wr32_le(ev + 8,  owner);                   // owner
+    wire::wr32_le(ev + 12, 1u);                        // requestor (root XID = our proxy)
+    wire::wr32_le(ev + 16, selection);               // selection (CLIPBOARD)
+    wire::wr32_le(ev + 20, atom::kUTF8_STRING);     // target
+    wire::wr32_le(ev + 24, atom::kUTF8_STRING);     // property
+    (void)ctx.transport().sendEvent32(owner, ev);
+
+#ifndef NDEBUG
+    fprintf(stderr, "[CLIPBOARD] Sent proactive SelectionRequest(UTF8_STRING) to owner 0x%08X\n",
+            (unsigned)owner);
+#endif
+  }
 
 }
 
@@ -468,13 +487,18 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   if (evType == 31) { // SelectionNotify
     const uint32_t selAtom = wire::rd32_le(event + 12);
     const uint32_t propAtom = wire::rd32_le(event + 20);
+    // Use the requestor from the event (bytes 8-11), NOT resolvedDest.
+    // When our proactive capture uses root (XID 1) as requestor, Java sends
+    // SendEvent(destination=1), which gets resolved as InputFocus.  But the
+    // property was set on root (1), so we must read from the event's requestor.
+    const uint32_t evRequestor = wire::rd32_le(event + 8);
     if ((selAtom == atom::kCLIPBOARD || selAtom == atom::kPRIMARY) &&
-        propAtom != 0 && resolvedDest != 0)
+        propAtom != 0 && evRequestor != 0)
     {
       // The selection owner just set a property on the requestor.
       // Read it and push to macOS clipboard.
       PropertyTable::Prop p{};
-      if (PropertyTable::instance().get(resolvedDest, propAtom, p) &&
+      if (PropertyTable::instance().get(evRequestor, propAtom, p) &&
           p.format == 8 && !p.data.empty())
       {
         x11_clipboard_set_text(reinterpret_cast<const char*>(p.data.data()),
