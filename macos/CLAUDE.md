@@ -113,7 +113,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp` | PutImage, CopyArea, ClearArea, text ops |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/ShapeOps.cpp` | PolyArc, PolyFillArc, PolyFillRectangle, PolyLine, PolySegment, PolyPoint |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/WindowOps.cpp` | CreateWindow, MapWindow, ConfigureWindow, rootless resize |
-| `X11LowLevel/cpp/X11Protocol/src/Ops/EventOps.cpp` | MotionNotify, ButtonPress/Release, FocusIn/Out, crossing events |
+| `X11LowLevel/cpp/X11Protocol/src/Ops/EventOps.cpp` | MotionNotify, ButtonPress/Release, FocusIn/Out, crossing events, XI2 event senders |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/GrabOps.cpp` | GrabPointer, GrabButton, GrabKeyboard, passive/active grabs |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/QueryOps.cpp` | SetInputFocus, GetInputFocus, QueryPointer, TranslateCoordinates |
 | `X11LowLevel/cpp/X11Protocol/src/XProtoServerBridge.cpp` | Host command dispatch (Focus, Button, ScrollTicks, SetPresentable, SurfaceResized) |
@@ -139,6 +139,9 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 | `X11LowLevel/cpp/X11Protocol/src/Ops/SelectionOps.cpp` | Selection protocol + macOS clipboard bridge |
 | `X11LowLevel/cpp/X11Protocol/include/Core/ScreenLayout.hpp` | Multi-monitor layout cache (MonitorInfo, ScreenLayout) |
 | `X11LowLevel/cpp/X11Protocol/src/Core/ScreenLayout.cpp` | CGDisplay query, CGDisplayReconfigurationCallback |
+| `X11LowLevel/cpp/X11Protocol/include/Core/XI2EventMask.hpp` | XI2 event types, masks, wire sizes (DeviceEvent/Enter/RawEvent) |
+| `X11LowLevel/cpp/X11Protocol/include/Core/X11ExtOpcodes.hpp` | Extension opcodes, first_event/first_error values |
+| `SwiftX11/Core/GlobalPointerTracker.swift` | Global mouse monitor (NSEvent global+local), drives XI2 RawMotion |
 | `docs/TODO.md` | Comprehensive project roadmap |
 
 ## Build & Run
@@ -171,6 +174,14 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Focus uses `sendFocusEventDirect()` (bypasses FocusChangeMask) to emulate WM SetInputFocus behaviour
 - **Do NOT add click-to-focus in Button handler** — Focus handler (Cocoa becomeKey) handles it
 
+### XI2 (XInput2) Event Delivery
+- XI2 events are GenericEvent (type 35), variable-length, sent via `sendEventVariable()`
+- **RawMotion** is a ROOT-level event: sent in `postMotion()` BEFORE `if (!deliver) return`, so `GlobalPointerTracker`'s global mouse monitor delivers it even when cursor is outside X11 windows
+- RawMotion events must include valuator data (68 bytes with 2 axes, length=9) — `XInputWireToCookie` in libXi fails on length=0
+- Per-window XI2 masks (stored in `WindowView.xi2_mask`) OR'd with `InputState.xi2_root_mask` for effective mask check
+- **Extension advertisement**: XInputExtension must return `first_event >= 64` in QueryExtension — libXi's `XextAddDisplay` calls `XESetWireToEvent(dpy, first_event+i, ...)` for 17 event types; `first_event=0` overwrites core event handlers (Expose, MotionNotify, etc.)
+- XI2 events use `XESetWireToEventCookie` (keyed by major opcode, not first_event) for GenericEvent dispatch
+
 ### Reply Requirements
 - Requests that generate replies MUST call `ctx.reply().sendReply32(seq, ...)` — missing replies cause XCB sequence desync crashes
 - GrabPointer (opcode 26) and GrabKeyboard (opcode 31) replies both use `sendReply32(seq, ...)`
@@ -189,7 +200,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.13.2)
+### Current State (v1.15.4)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -301,15 +312,20 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **NSWindow.sharingType** (v1.13.2): Set to `.readWrite` on all X11 windows for window server capture compatibility.
 
-### Known Issues (v1.13.2)
+- **XInput2 extension** (v1.14.0→v1.15.4): Full XI2 event delivery infrastructure. `XI2EventMask.hpp` defines event types, masks, wire sizes. `EventOps.cpp` has 6 XI2 event senders (Motion, Button, Key, Crossing, Focus, RawMotion). `ExtensionOps.cpp` handles XIQueryVersion (v2.0), XISelectEvents (per-window + root masks), XIQueryDevice (4 virtual core devices), XIQueryPointer, XIGetClientPointer. 13 injection points send XI2 events alongside core events. XInputExtension advertised with `first_event=93` (range 93-109, above RANDR 89-90). Total advertised extensions: 10 (BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XInputExtension, XTEST).
+
+- **XI2 RawMotion global delivery** (v1.15.3): RawMotion sent in `postMotion()` before `if (!deliver) return` check, so `GlobalPointerTracker`'s global mouse monitor (NSEvent global+local + 30fps timer) delivers RawMotion even when cursor is outside X11 windows. Required for xeyes pupil tracking. RawMotion events are 68 bytes with 2-axis valuator data (length=9).
+
+- **XTEST extension** (v1.14.0): Synthesizes keyboard/mouse events via `x11_post_pointer_move2` / `x11_post_button` / `x11_post_key` bridge functions. FakeInput (minor 2) with types 2-6 (KeyPress/Release, ButtonPress/Release, MotionNotify). GetVersion (minor 0) returns v2.2.
+
+### Known Issues (v1.15.4)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
 - **xeyes shaped window occasional black flash on resize**: During live resize, eyes may briefly flash black as the shape mask is reapplied to the new surface size. Minor cosmetic issue.
 
 ### Next Major Tasks
 See `docs/TODO.md` for the comprehensive roadmap. Priority order:
-1. **Help menu / user guide** — Add a Help menu item with usage documentation (DISPLAY setup, font locations, settings, log window, Docker workflow)
-2. **XC-MISC extension** (HIGH) — Prevents XID exhaustion crash for long-running sessions (Vivado). Simple 2-request extension.
-3. **XInput2 stubs** (MEDIUM-HIGH) — GTK3/4 queries XI2 at startup. Stubs needed for broader GTK app support.
-4. **XTEST extension** (MEDIUM) — Synthesizes keyboard/mouse events. Used by accessibility tools and test frameworks.
-5. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container. May uncover additional extension/protocol needs.
+1. **Shape AA compositing** — Re-apply 3×3 box-filter antialiasing to `applyShapeMask()` using straight alpha (Metal pipeline uses `sourceAlpha/oneMinusSourceAlpha`, not premultiplied). Previously reverted.
+2. **Help menu / user guide** — Add a Help menu item with usage documentation
+3. **Build Release + .pkg installer**
+4. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container

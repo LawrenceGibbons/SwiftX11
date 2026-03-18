@@ -108,8 +108,16 @@ final class XServerController: ObservableObject {
   }
 
   /// Register clipboard callbacks so C++ can read/write macOS pasteboard.
+  /// IMPORTANT: These callbacks are invoked from the xproto background thread.
+  /// NSPasteboard read operations (getter, changeCount) are called directly —
+  /// they are safe enough from background threads and MUST NOT use
+  /// DispatchQueue.main.sync because that deadlocks when the main thread is
+  /// in NSMenu tracking mode (e.g., Vivado Edit → Copy).
+  /// The setter uses DispatchQueue.main.async (fire-and-forget) for writes.
   private func registerClipboardBridge() {
-    // Getter: read NSPasteboard text into buffer, return byte count
+    // Getter: read NSPasteboard text into buffer, return byte count.
+    // Called from xproto thread during ConvertSelection when no X11 owner.
+    // Direct access — no main-thread dispatch (avoids menu-tracking deadlock).
     let getter: x11_clipboard_get_text_fn = { buf, maxLen in
       guard let buf = buf, maxLen > 0 else { return 0 }
       guard let text = NSPasteboard.general.string(forType: .string) else { return 0 }
@@ -117,24 +125,27 @@ final class XServerController: ObservableObject {
       text.withCString { cstr in
         let len = strlen(cstr)
         copyLen = min(Int(maxLen), len)
-        if copyLen > 0 {
-          memcpy(buf, cstr, copyLen)
-        }
+        if copyLen > 0 { memcpy(buf, cstr, copyLen) }
       }
       return UInt32(copyLen)
     }
 
-    // Setter: write text to NSPasteboard
+    // Setter: write text to NSPasteboard.
+    // Called from xproto thread during clipboard capture (X11→macOS sync).
+    // Uses async dispatch — the caller doesn't need to wait for completion.
     let setter: x11_clipboard_set_text_fn = { text, len in
       guard let text = text, len > 0 else { return }
       let data = Data(bytes: text, count: Int(len))
-      if let s = String(data: data, encoding: .utf8) {
+      guard let s = String(data: data, encoding: .utf8) else { return }
+      DispatchQueue.main.async {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(s, forType: .string)
       }
     }
 
-    // Change-count: lets C++ detect when macOS clipboard changed externally
+    // Change-count: lets C++ detect when macOS clipboard changed externally.
+    // Called from xproto thread during SetSelectionOwner and ConvertSelection.
+    // Direct access — no main-thread dispatch (avoids menu-tracking deadlock).
     let changeCounter: x11_clipboard_change_count_fn = {
       return Int64(NSPasteboard.general.changeCount)
     }

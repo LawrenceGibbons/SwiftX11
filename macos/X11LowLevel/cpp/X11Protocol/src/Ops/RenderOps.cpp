@@ -1856,11 +1856,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       std::lock_guard<std::mutex> lk(sPicMtx);
       sPictures[pid] = std::move(ps);
     }
-#ifndef NDEBUG
-    fprintf(stderr, "[RENDER CreateLinearGradient] pid=0x%X nStops=%u "
-            "p1=(%.1f,%.1f) p2=(%.1f,%.1f)\n",
-            pid, nStops, gd->p1x, gd->p1y, gd->p2x, gd->p2y);
-#endif
     return;
   }
 
@@ -1919,11 +1914,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       std::lock_guard<std::mutex> lk(sPicMtx);
       sPictures[pid] = std::move(ps);
     }
-#ifndef NDEBUG
-    fprintf(stderr, "[RENDER CreateRadialGradient] pid=0x%X nStops=%u "
-            "inner=(%.1f,%.1f r=%.1f) outer=(%.1f,%.1f r=%.1f)\n",
-            pid, nStops, gd->p1x, gd->p1y, gd->r1, gd->p2x, gd->p2y, gd->r2);
-#endif
     return;
   }
 
@@ -1976,11 +1966,6 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       std::lock_guard<std::mutex> lk(sPicMtx);
       sPictures[pid] = std::move(ps);
     }
-#ifndef NDEBUG
-    fprintf(stderr, "[RENDER CreateConicalGradient] pid=0x%X nStops=%u "
-            "center=(%.1f,%.1f) angle=%.1f°\n",
-            pid, nStops, gd->p1x, gd->p1y, (float)ang / 65536.0f);
-#endif
     return;
   }
 

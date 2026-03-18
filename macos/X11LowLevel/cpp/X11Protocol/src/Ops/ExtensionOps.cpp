@@ -266,10 +266,6 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (host == 0) host = wid;
       x11_ui_push_shape_changed(host);
 
-#ifndef NDEBUG
-      fprintf(stderr, "[SHAPE] ShapeRectangles wid=0x%X kind=%u op=%u nrects=%zu host=0x%X\n",
-              wid, kind, op, nrects, host);
-#endif
       return;
     }
     case 2: {
@@ -297,10 +293,6 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         // Look up depth-1 pixmap
         PixmapView pm{};
         bool found = ctx.pixmaps().snapshot(pixmap_id, pm);
-#ifndef NDEBUG
-        fprintf(stderr, "[SHAPE] ShapeMask lookup pixmap=0x%X found=%d depth=%u w=%u h=%u bits=%p stride=%u\n",
-                pixmap_id, found, pm.depth, pm.w, pm.h, (const void*)pm.bits, pm.stride_bytes);
-#endif
         if (found && pm.depth == 1 && pm.bits) {
           if (op != 0) {
             if (kind == 0)      region = ctx.windows().shapeBounding(wid);
@@ -308,15 +300,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           }
           region.setFromBitmap(pm.bits, pm.w, pm.h, (int)pm.stride_bytes,
                                x_off, y_off, ww, wh, op);
-#ifndef NDEBUG
-          fprintf(stderr, "[SHAPE] ShapeMask result: shaped=%d nrects=%zu\n",
-                  region.shaped, region.rects.size());
-#endif
         } else {
           // Unknown pixmap — treat as unshaped
-#ifndef NDEBUG
-          fprintf(stderr, "[SHAPE] ShapeMask FAILED: pixmap not found or wrong depth/bits\n");
-#endif
           region.reset();
         }
       }
@@ -329,10 +314,6 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (host == 0) host = wid;
       x11_ui_push_shape_changed(host);
 
-#ifndef NDEBUG
-      fprintf(stderr, "[SHAPE] ShapeMask wid=0x%X kind=%u op=%u pixmap=0x%X host=0x%X\n",
-              wid, kind, op, pixmap_id, host);
-#endif
       return;
     }
     case 3: {
@@ -523,10 +504,6 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // -------------------------------------------------------------------
 
   if (major == ext::kRANDR) {
-#ifndef NDEBUG
-    fprintf(stderr, "[RANDR] minor=%u seq=%u remaining=%zu\n",
-            (unsigned)minor, (unsigned)seq, br.remaining());
-#endif
     switch (minor) {
 
     case 0: {
@@ -1040,11 +1017,6 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // XINPUT2 (XInput2) — major opcode 141
   // -------------------------------------------------------------------
   if (major == ext::kXInput2) {
-#ifndef NDEBUG
-    fprintf(stderr, "[XI2_OP] minor=%u seq=%u remain=%zu replySent=%d\n",
-            (unsigned)minor, (unsigned)seq, br.remaining(),
-            (int)ctx.transport().wasReplySent());
-#endif
     switch (minor) {
 
     // ---- minor 1: GetExtensionVersion (XI1 legacy — reply-bearing) ----
@@ -1142,9 +1114,6 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // Root window (XID 1) isn't in WindowTable — store in InputState.
       if (window == 1) {
         ctx.input().xi2_root_mask = combined_mask;
-#ifndef NDEBUG
-        fprintf(stderr, "[XI2_MASK_ROOT] xi2_root_mask=0x%08X\n", (unsigned)combined_mask);
-#endif
       } else {
         ctx.windows().setXI2Mask(window, combined_mask);
       }

@@ -271,12 +271,6 @@ void WindowTable::setBackgroundPixel(uint32_t xid, uint32_t pixel_argb) {
   std::lock_guard<std::mutex> lock(mu_);
   WindowState* st = findLocked(xid);
   if (!st) return;
-#ifndef NDEBUG
-  if (st->background_pixmap != 0) {
-    fprintf(stderr, "[BG_SET] xid=0x%08X setBackgroundPixel=0x%08X (was pixmap=0x%08X)\n",
-            (unsigned)xid, (unsigned)pixel_argb, (unsigned)st->background_pixmap);
-  }
-#endif
   st->background_pixel = pixel_argb;
   st->has_background_pixel = true;
   st->is_parent_relative = false;  // explicit pixel overrides ParentRelative
@@ -289,11 +283,6 @@ void WindowTable::setBackgroundPixmap(uint32_t xid, uint32_t pixmap_xid) {
   std::lock_guard<std::mutex> lock(mu_);
   WindowState* st = findLocked(xid);
   if (!st) return;
-#ifndef NDEBUG
-  fprintf(stderr, "[BG_SET] xid=0x%08X setBackgroundPixmap=0x%08X (was pixel=0x%08X has=%d)\n",
-          (unsigned)xid, (unsigned)pixmap_xid,
-          (unsigned)st->background_pixel, (int)st->has_background_pixel);
-#endif
   st->background_pixmap = pixmap_xid;
   st->has_background_pixel = false;  // pixmap overrides solid
   st->is_parent_relative = false;
@@ -534,10 +523,6 @@ void WindowTable::setXI2Mask(uint32_t xid, uint32_t xi2_mask) {
   if (!st) return;
   st->xi2_mask = xi2_mask;
   st->serial++;
-#ifndef NDEBUG
-  fprintf(stderr, "[XI2_MASK] xid=0x%08X xi2_mask=0x%08X\n",
-          (unsigned)xid, (unsigned)xi2_mask);
-#endif
 }
 
 // Assumes mu_ is held.

@@ -1,66 +1,61 @@
 # SwiftX11 Session Handoff
 
-Last updated: 2026-03-17 (v1.15.0)
+Last updated: 2026-03-18 (v1.15.12)
 
 ## Current State
 
-SwiftX11 is a working X11 server for macOS. xterm, xcalc, xeyes all work. XI2 (XInput2) event delivery infrastructure is built but has a client-side compatibility issue with xeyes that needs debugging.
+SwiftX11 is a working X11 server for macOS. xterm, xcalc, xeyes, Vivado all work. Version 1.15.12 on `develop++` branch.
 
-**Branch**: `develop++` — all work is on this branch
-**Version**: 1.15.0 (defined in `X11LowLevel/include/SwiftX11Version.h`)
 **Bundle ID**: `com.rlan.SwiftX11`
 
-## URGENT: XI2 + xeyes Black Eyes Bug
+## Session Accomplishments (v1.15.0 → v1.15.12)
+
+### Completed
+1. **XI2 xeyes black eyes fix** (v1.15.4): `first_event=93` prevents libXi from overwriting core event handlers. 68-byte RawMotion with valuator data.
+2. **Global RawMotion delivery** (v1.15.3): `GlobalPointerTracker` (NSEvent global+local monitor) for xeyes pupil tracking outside X11 windows.
+3. **Shape AA compositing** (v1.15.5): 3×3 box-filter with straight alpha (not premultiplied). Cardinal-neighbor fast-path for interior pixels.
+4. **Debug trace cleanup** (v1.15.7): ~50 `#ifndef NDEBUG` fprintf removed across 15+ files.
+5. **Vivado banner race fix** (v1.15.10): Deferred show waits for first present (not floor-size check). WM floor 200×100 can match banner's real size.
+6. **Clipboard improvements** (v1.15.8-9): Removed proactive ClipboardCapture (deadlocked same-client). Same-client ConvertSelection returns property=None. NSPasteboard direct access (no DispatchQueue.main).
+7. **Socket backpressure** (v1.15.12): 1MB SO_SNDBUF, PointerMove throttling via poll(POLLOUT), EAGAIN poll-wait instead of tight spin.
+8. **SEQ_REGRESS false alarm fix**: Per-transport dbg_last_sent_seq_ replaces leaked thread_local.
+9. **TODO.md updated**: XI2, XTEST, Shape AA sections current. v1.15.x status documented.
+10. **CLAUDE.md updated**: XI2 architecture, GlobalPointerTracker, new key files.
+
+## URGENT: Vivado Edit → Copy Hang
 
 ### The Problem
-When XInputExtension is advertised (`present=1`), xeyes shows solid black ovals instead of white eyes with pupils. Disabling XI2 (`present=0` in QueryOps.cpp line ~620) makes xeyes work perfectly. **XQuartz handles this correctly** — xeyes works fine there with XI2 advertised.
+When clicking Edit → Copy in Vivado's menu (after selecting text in the IP status report), Vivado hangs with the Edit menu still displayed. Also happens when selecting text in the TCL console.
 
-### What's Been Verified (server side is correct)
-- All XI2 reply wire formats are correct (verified with byte-level `[WIRE_HDR]` dumps)
-- Expose events ARE delivered to the socket (`sent=1` for both host and child windows)
-- Surface IS registered (`hasSurface=1, surfWH=150x100`) when sendExposeSubtree runs
-- xeyes sends only 4 XI2 opcodes: minor=1 (GetExtensionVersion ×2), minor=47 (XIQueryVersion), minor=46 (XISelectEvents with XI_RawMotionMask=0x00020000 on root)
-- No XCB sequence desync — all reply sizes are correct, monotonic floor is intact
+### What's Been Proven
+- **NOT socket backpressure**: No `[BACKPRESSURE]` or `[THROTTLE]` traces. 1MB SO_SNDBUF + PointerMove throttling confirmed working.
+- **NOT selection protocol**: No `[SEL]` traces appear — Java never sends SetSelectionOwner or ConvertSelection. The hang is BEFORE any X11 selection request reaches the wire.
+- **NOT clipboard bridge**: NSPasteboard callbacks work (direct access, no main-thread dispatch).
+- **NOT ClipboardCapture**: Proactive clipboard capture removed entirely. Same-client ConvertSelection returns None.
+- **Server is responsive**: xproto thread continues processing other events normally. No stuck writes.
 
-### What's Built (all compiled and wired in)
-- `XI2EventMask.hpp`: Event type constants, mask bits (including Raw events)
-- `WindowState/WindowView.xi2_mask`: Per-window XI2 event selection
-- `InputState.xi2_root_mask`: Root window XI2 selections (for global tracking apps)
-- `XProtoTransport::sendEventVariable()`: Variable-length event sender
-- `EventOps`: 6 XI2 senders (Motion, Button, Key, Crossing, Focus, RawMotion)
-- `ExtensionOps`: XISelectEvents parser stores mask; root window handled via InputState
-- 13 injection points sending XI2 events alongside core events
-- XInputExtension advertised in QueryExtension + ListExtensions (nExt=10)
+### Working Theory
+Java's Copy action handler on the EDT calls `XSync()` (which sends `GetInputFocus` and waits for the reply). During the `_XReply()` wait, Xlib reads events from the socket. Something about how we deliver events during that read causes Java's event processing to deadlock internally.
 
 ### Recommended Next Steps
-1. **Capture XQuartz wire traffic with Xscope**: `xscope -display :0 -port 6010` then `DISPLAY=:10 xeyes`. Compare event sequences between XQuartz and SwiftX11.
-2. **Check Xlib/libXi source for `_XiCheckExtInit`**: This is where Xlib hooks into event processing when XI2 is detected. Understanding what it changes will pinpoint the issue.
-3. **Try without GE extension**: If disabling "Generic Event Extension" (`present=0` for GE in QueryOps) also fixes xeyes, the issue may be in GE's event cookie handling, not XI2 specifically.
+1. **Add trace to GetInputFocus** (opcode 43): Log when it's received and when the reply is sent. If Java calls GetInputFocus during Copy and we don't respond, that's the hang.
+2. **Wire capture with xscope**: `xscope -display :1 -port 6010` then `DISPLAY=:10 vivado`. Compare with XQuartz wire traffic.
+3. **Check if menus work with XQuartz**: If Vivado Copy works with XQuartz, compare what XQuartz does differently (it may have special clipboard handling in its XSync).
+4. **Test with a simple Java app**: Write a minimal Java Swing app with a JTextArea and Edit→Copy to isolate whether it's Vivado-specific or all Java Swing.
 
-### Debug Traces Still Active (#ifndef NDEBUG)
-- `[XI2_OP]`, `[XI2_MASK_ROOT]` — XI2 opcode/mask tracking
-- `[WIRE_HDR]` — raw reply/event headers (first 80 seqs)
-- `[DRAIN_HOST]` — host command processing
-- `[SET_PRESENTABLE_DBG]`, `[EXPOSE_SUBTREE_DBG]`, `[EXPOSE_NOW_DBG]` — Expose delivery
-- `[VIEW_MOVE_WIN]`, `[ATTACH_SETTLE]`, `[ENSURE_SURFACE]` — Swift surface lifecycle
-- `[SHAPE_DBG]` — layer hierarchy dump
-These should be cleaned up after the XI2 issue is resolved.
+### Debug Traces Still Active
+- `[BACKPRESSURE]` — sendAll EAGAIN detection (fires only on backpressure)
+- `[THROTTLE]` — PointerMove skip count (fires only on backpressure)
+- `[SEL]` — SetSelectionOwner and ConvertSelection (fires on every call)
+- `[WM_HINTS_DBG]` — WM_NORMAL_HINTS parser (fires on every WM_NORMAL_HINTS)
+- `[MAP_SHOW]` — mapWindow geometry diagnostic (fires on every non-OR map)
+- `[DEFER_SHOW]` — deferred show retry loop (fires only for floor-sized windows)
 
-## Other Changes This Session (v1.15.0)
+These should be cleaned up once the clipboard issue is resolved.
 
-### WM Size Floor Fix
-- Lowered WM floor threshold from `< 200 || < 100` to `< 10` pixels
-- Prevents legitimate small windows (xeyes 150×100) from being enlarged
-
-### Shape AA Compositing (reverted, TODO)
-- 3×3 box-filter AA was implemented in `applyShapeMask()` but reverted
-- Metal pipeline uses straight alpha (`sourceAlpha/oneMinusSourceAlpha`), not premultiplied
-- Re-apply with straight alpha once xeyes works with XI2
-
-### Release Linker Fixes
-- 8 extension stub .cpp files had incomplete `ByteReader` forward declarations
-- Fixed by replacing with `#include "Utils/ByteReader.hpp"`
-- `GCC_INLINES_ARE_PRIVATE_EXTERN=YES` in Release made out-of-line copies hidden
+## Other Known Issues (v1.15.12)
+- **Vivado startup banner**: Sometimes shows at 200×100 (when ConfigureWindow arrives after MapWindow). Fixed in v1.15.10 with present-on-first-draw; needs more testing.
+- **xeyes shaped window black flash on resize**: Minor cosmetic issue during live resize.
 
 ## Build & Run
 
@@ -78,26 +73,22 @@ DISPLAY=127.0.0.1:1 xcalc
 
 | File | Change |
 |------|--------|
-| `include/Core/XI2EventMask.hpp` | NEW: event types, masks, wire sizes |
-| `include/Core/WindowTable.hpp` | xi2_mask in WindowState |
-| `include/Core/WindowView.hpp` | xi2_mask field |
-| `include/Core/InputState.hpp` | xi2_root_mask |
-| `include/Ops/EventOps.hpp` | 6 XI2 event sender declarations |
-| `include/Transport/XProtoTransport.hpp` | sendEventVariable() |
-| `src/Ops/EventOps.cpp` | XI2 event builders + senders |
-| `src/Ops/ExtensionOps.cpp` | XISelectEvents parser, XI2 opcode trace |
-| `src/Transport/XProtoTransport.cpp` | sendEventVariable(), wire header dump |
-| `src/Transport/XProtoDaemon.cpp` | Host command drain diagnostics |
-| `src/XProtoServerBridge.cpp` | XI2 injection points, expose diagnostics |
-| `src/XProtoNotifyBridge.cpp` | XI2 injection points |
-| `src/Ops/QueryOps.cpp` | XI2 advertisement (present=1, nExt=10) |
-| `src/Core/WindowTable.cpp` | setXI2Mask(), snapshot xi2_mask |
-| `SwiftX11/UI/Windows/X11WindowHost.swift` | Surface lifecycle diagnostics |
-| `X11LowLevel/include/SwiftX11Version.h` | v1.15.0 |
+| `XProtoTransport.cpp` | EAGAIN poll-wait, backpressure trace, per-transport seq regression detector |
+| `XProtoDaemon.cpp` | 1MB SO_SNDBUF, PointerMove throttle, ClipboardCapture no-op |
+| `SelectionOps.cpp` | Removed proactive ClipboardCapture, same-client ConvertSelection guard, [SEL] traces |
+| `XServerController.swift` | NSPasteboard direct access (no DispatchQueue.main) |
+| `WindowRegistry.swift` | Banner deferred show rework, present-path show on first draw |
+| `X11WindowHost.swift` | Shape AA with straight alpha (3×3 box filter) |
+| `PropOps.cpp` | [WM_HINTS_DBG] trace |
+| `WindowTable.cpp` | Removed XI2_MASK trace |
+| `EventOps.cpp` | Removed FOCUS_DIRECT, BTN_EVENT traces |
+| `~50 files` | Debug trace cleanup (removed ~50 #ifndef NDEBUG fprintf blocks) |
+| `CLAUDE.md` | XI2 architecture, GlobalPointerTracker, updated Current State |
+| `TODO.md` | XI2 events done, XTEST updated, v1.15.x status |
+| `SwiftX11Version.h` | v1.15.12 |
 
 ## Priority for Next Session
-1. **Fix XI2 + xeyes** (compare with XQuartz using Xscope)
-2. **Shape AA compositing** (straight alpha, re-apply once xeyes works)
-3. **Clean up debug traces**
-4. **Build Release + .pkg installer**
-5. **Update CLAUDE.md** with XI2 architecture details
+1. **Fix Vivado Edit→Copy hang** (wire-level investigation needed)
+2. **Clean up diagnostic traces** ([SEL], [MAP_SHOW], [WM_HINTS_DBG], etc.)
+3. **Update CLAUDE.md** with clipboard/backpressure architecture
+4. **Vitis testing** (Phase 8)

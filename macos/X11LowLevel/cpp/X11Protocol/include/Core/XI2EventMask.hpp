@@ -59,11 +59,14 @@ constexpr uint32_t kDeviceEventLength = 13;  // (84 - 32) / 4
 constexpr size_t kEnterEventSize = 76;
 constexpr uint32_t kEnterEventLength = 11;  // (76 - 32) / 4
 
-// xXIRawEvent with valuators_len=0: ALL fields fit in 32 bytes.
-// GenericEvent header (8 bytes) + evtype(2)+deviceid(2)+time(4)+detail(4)+
-//   sourceid(2)+valuators_len(2)+flags(4)+pad(4) = 24 bytes = 32 total.
-// length=0 (no data after the 32-byte header).
-constexpr size_t kRawEventSize = 32;
-constexpr uint32_t kRawEventLength = 0;
+// xXIRawEvent with 2 valuators (X, Y axes):
+// GenericEvent header (8) + evtype(2)+deviceid(2)+time(4)+detail(4)+
+//   sourceid(2)+valuators_len(2)+flags(4)+pad(4) = 32 bytes header
+// + valuator_mask[1] (4 bytes, bits 0+1 set)
+// + raw_values[2] (2×FP32.32 = 16 bytes)
+// + values[2] (2×FP32.32 = 16 bytes)
+// Total: 68 bytes, length = (68-32)/4 = 9
+constexpr size_t kRawEventSize = 68;
+constexpr uint32_t kRawEventLength = 9;
 
 } // namespace x11::xi2

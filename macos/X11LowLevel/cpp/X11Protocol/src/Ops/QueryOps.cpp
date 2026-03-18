@@ -244,6 +244,10 @@ namespace x11 {
   void QueryOps::handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining());
     const uint32_t f = ctx.input().focus_xid ? ctx.input().focus_xid : 0;
+#ifndef NDEBUG
+    fprintf(stderr, "[GetInputFocus] seq=%u fd=%d focus=0x%08X\n",
+            (unsigned)seq, ctx.transport().clientFd(), (unsigned)f);
+#endif
     (void)ctx.reply().sendGetInputFocusReply(seq, /*revertTo*/0, /*focus*/f);
   }
   
@@ -611,7 +615,8 @@ namespace x11 {
       present = 1; major = ext::kXinerama;
     } else if (name == "Generic Event Extension") {
       present = 1; major = ext::kGE;
-      first_event = ext::kGE_FirstEvent;
+      // GE allocates 0 events — first_event should be 0.
+      // GenericEvent (type 35) is a core protocol type, not an extension event.
     } else if (name == "SHAPE") {
       present = 1; major = ext::kSHAPE;
       first_event = ext::kSHAPE_FirstEvent;
@@ -619,6 +624,7 @@ namespace x11 {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
       present = 1; major = ext::kXInput2;
+      first_event = ext::kXInput_FirstEvent;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     }
@@ -701,11 +707,6 @@ namespace x11 {
 
     // Maximum request length: 1M words = 4MB
     static constexpr uint32_t kMaxBigReqWords = 0x00100000u; // 1048576 words = 4MB
-
-#ifndef NDEBUG
-    fprintf(stderr, "[BigReqEnable] enabled, max_request_length=%u words\n",
-            (unsigned)kMaxBigReqWords);
-#endif
 
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       wire::wr32_le(rep.data() + 4, 0); // length=0 (no extra data)
@@ -909,10 +910,6 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t rev
 
   (void)revertTo; // stored but unused for now
 
-#ifndef NDEBUG
-  fprintf(stderr, "[SetInputFocus] old=0x%08X new=0x%08X revertTo=%u\n",
-          (unsigned)oldFocus, (unsigned)newFocus, (unsigned)revertTo);
-#endif
 }
 
 // ---- 39: GetMotionEvents (stub: empty list) ----

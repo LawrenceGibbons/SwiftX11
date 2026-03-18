@@ -404,19 +404,6 @@ std::unique_ptr<BdfFont> createCoreTextFont(const std::string& xlfdOrName,
 
   CFRelease(ctFont);
 
-#ifndef NDEBUG
-  fprintf(stderr, "[CoreText] CREATED \"%s\" family=\"%s\" px=%d "
-          "ctAsc=%.1f ctDesc=%.1f ctLead=%.1f → "
-          "fontAscent=%d fontDescent=%d maxGlyphDesc=%d lineH=%d "
-          "bbx=%dx%d glyphs=%zu\n",
-          xlfdOrName.c_str(), family.c_str(), pxSize,
-          (double)ctAscent, (double)ctDescent, (double)ctLeading,
-          font->ascent, font->descent, maxGlyphDescent,
-          font->ascent + font->descent,
-          font->bbx_w, font->bbx_h,
-          font->glyphs.size());
-#endif
-
   return font;
 }
 

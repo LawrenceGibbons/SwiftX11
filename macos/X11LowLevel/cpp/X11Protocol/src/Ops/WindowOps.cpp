@@ -396,10 +396,6 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     const uint32_t val = br.readU32();
     switch (bit) {
       case 0: // CWBackPixmap
-#ifndef NDEBUG
-        fprintf(stderr, "[CW_PARSE] wid=0x%08X CWBackPixmap val=0x%08X vmask=0x%08X\n",
-                (unsigned)wid, (unsigned)val, (unsigned)vmask);
-#endif
         if (val == 1) parent_relative = true;
         else if (val == 0) { /* None (no background, which is our default) */ }
         else { bg_pixmap = val; }  // actual pixmap XID
@@ -409,10 +405,6 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
         else if (val == 1)  bg_pixel = 0xFFFFFFFFu;       // white
         else                bg_pixel = 0xFF000000u | (val & 0x00FFFFFFu);
         has_bg_pixel = true;
-#ifndef NDEBUG
-        fprintf(stderr, "[CW_PARSE] wid=0x%08X CWBackPixel val=0x%08X → argb=0x%08X vmask=0x%08X\n",
-                (unsigned)wid, (unsigned)val, (unsigned)bg_pixel, (unsigned)vmask);
-#endif
         break;
       case 3: // CWBorderPixel
         border_pixel_raw = val;
@@ -488,10 +480,6 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   if (parent == x11::kRootXid && (wpx < 10 || hpx < 10)) {
     if (eff_w < 200) eff_w = 200;
     if (eff_h < 100) eff_h = 100;
-#ifndef NDEBUG
-    fprintf(stderr, "[WM_FLOOR] wid=0x%08X %ux%u → %ux%u (top-level minimum)\n",
-            (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (unsigned)eff_w, (unsigned)eff_h);
-#endif
   }
 
   const int owner_fd = ctx.transport().clientFd();
@@ -508,20 +496,11 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     ctx.windows().setBorderPixel(wid, bp_argb);
   }
   if (has_bg_pixel) {
-#ifndef NDEBUG
-    if (bg_pixmap)
-      fprintf(stderr, "[CW_BG] wid=0x%08X bg_pixmap=0x%08X OVERRIDDEN by CWBackPixel=0x%08X\n",
-              (unsigned)wid, (unsigned)bg_pixmap, (unsigned)bg_pixel);
-#endif
     ctx.windows().setBackgroundPixel(wid, bg_pixel);
   } else if (parent_relative) {
     // CWBackPixmap=ParentRelative: inherit the nearest ancestor's background_pixel.
     ctx.windows().resolveParentRelativeBackground(wid);
   } else if (bg_pixmap) {
-#ifndef NDEBUG
-    fprintf(stderr, "[CW_BG] wid=0x%08X applying CWBackPixmap=0x%08X\n",
-            (unsigned)wid, (unsigned)bg_pixmap);
-#endif
     ctx.windows().setBackgroundPixmap(wid, bg_pixmap);
   }
   // Window management attributes (Phase 4.3)
@@ -530,13 +509,6 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   if (has_bit_gravity)       ctx.windows().setBitGravity(wid, bit_gravity);
   if (has_backing_store)     ctx.windows().setBackingStore(wid, backing_store);
 
-#ifndef NDEBUG
-  if (override_redirect) {
-    fprintf(stderr, "[OR_CREATE] wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u\n",
-            (unsigned)wid, (unsigned)parent,
-            (int)x, (int)y, (unsigned)wpx, (unsigned)hpx);
-  }
-#endif
 
   ctx.windows().setMapped(wid, false);
   ctx.windows().setPresentable(wid, false);
@@ -566,16 +538,6 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
           has_bg_pixel ? "yes" : "no");
 #endif
 
-#ifndef NDEBUG
-  // Diagnostic: log all child windows to help identify xcalc button placement
-  if (parent != 1) {
-    fprintf(stderr, "[LABEL] CreateWindow wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u bw=%u bg_pixel=%s\n",
-            (unsigned)wid, (unsigned)parent,
-            (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
-            (unsigned)borderWidth,
-            has_bg_pixel ? "yes" : "no");
-  }
-#endif
 }
 
 
@@ -739,10 +701,6 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
         // or ConfigureWindow, but the NSWindow needs to be placed correctly
         // before/when it becomes visible.
         if (vw.override_redirect) {
-#ifndef NDEBUG
-          fprintf(stderr, "[OR_MAP] wid=0x%08X pushing move to (%d,%d) size=%ux%u\n",
-                  (unsigned)wid, (int)vw.x, (int)vw.y, (unsigned)vw.w, (unsigned)vw.h);
-#endif
           x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
         }
 
@@ -936,14 +894,6 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
   WindowView cv{};
   const bool hadSnap = ctx.windows().snapshot(wid, cv);
   const bool wasMapped = hadSnap && cv.mapped;
-
-#ifndef NDEBUG
-  if (hadSnap && cv.parent_xid != 0 && cv.parent_xid != 1) {
-    fprintf(stderr, "[LABEL] UnmapWindow wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u wasMapped=%d\n",
-            (unsigned)wid, (unsigned)cv.parent_xid,
-            (int)cv.x, (int)cv.y, (unsigned)cv.w, (unsigned)cv.h, (int)wasMapped);
-  }
-#endif
 
   // 1) Update authoritative table
   ctx.windows().setMapped(wid, false);

@@ -83,6 +83,9 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
 
   br.skip(br.remaining());
 
+  fprintf(stderr, "[SEL] SetSelectionOwner sel=%u owner=0x%08X\n",
+          (unsigned)selection, (unsigned)owner);
+
   uint32_t prevOwner = 0;
   {
     std::lock_guard<std::mutex> lk(sSelMtx);
@@ -114,26 +117,15 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
     sSelMacCC[selection] = cc;
   }
 
-  // Queue a deferred clipboard capture via HostCommandQueue.
-  // This will be processed on the NEXT poll iteration in drainHostCommands,
-  // which activates the owning client in a separate cycle — avoiding the
-  // fatal IO error that occurs when sending a SelectionRequest to a client
-  // during its own request processing.
-  if (owner != 0 && (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD)) {
-    auto* srv = x11_proto_bridge_get_server();
-    if (srv) {
-      x11::HostCmd hc{};
-      hc.type = x11::HostCmdType::ClipboardCapture;
-      hc.xid = owner;
-      hc.keyCode = selection; // reuse keyCode field for selection atom
-      srv->hostCmds().push(hc);
-    }
-  }
+  // NOTE: We do NOT proactively request clipboard data from the new owner.
+  // The old ClipboardCapture mechanism sent a SelectionRequest back to the
+  // client that just called SetSelectionOwner, but this deadlocks when the
+  // client's event thread is blocked (e.g., Java Swing menu tracking or
+  // text selection callback).  X11 clipboard is designed for lazy transfer:
+  // data is only requested when another app pastes (ConvertSelection).
+  // X11→macOS sync happens via handleSendEvent's SelectionNotify interception
+  // when an actual ConvertSelection transfer completes.
 
-#ifndef NDEBUG
-  fprintf(stderr, "[SelectionOps] SetSelectionOwner sel=%u owner=0x%08X prev=0x%08X\n",
-          (unsigned)selection, (unsigned)owner, (unsigned)prevOwner);
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +312,9 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
 
   br.skip(br.remaining());
 
+  fprintf(stderr, "[SEL] ConvertSelection sel=%u target=%u req=0x%08X prop=%u\n",
+          (unsigned)selection, (unsigned)target, (unsigned)requestor, (unsigned)property);
+
   // Per ICCCM: if property is None, use target as property
   if (property == 0) property = target;
 
@@ -329,11 +324,6 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     auto it = sSelOwner.find(selection);
     if (it != sSelOwner.end()) owner = it->second;
   }
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SelectionOps] ConvertSelection sel=%u target=%u req=0x%08X owner=0x%08X\n",
-          (unsigned)selection, (unsigned)target, (unsigned)requestor, (unsigned)owner);
-#endif
 
   if (owner != 0) {
     // Check if macOS clipboard has newer content than when the X11 owner was set.
@@ -372,7 +362,32 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
       }
     }
 
-    // X11 client owns this selection — forward SelectionRequest
+    // X11 client owns this selection.
+    // If the owner is on the SAME connection as the requestor, don't send
+    // SelectionRequest — the client's event thread may be blocked (Java
+    // Swing menu tracking, text selection callback) and can't process it,
+    // causing deadlock.  Instead, send SelectionNotify with property=None
+    // (conversion refused).  The client handles this gracefully.
+    {
+      WindowView ownerWv{}, reqWv{};
+      bool ownerOk = ctx.windows().snapshot(owner, ownerWv);
+      bool reqOk   = ctx.windows().snapshot(requestor, reqWv);
+      if (ownerOk && reqOk && ownerWv.owner_fd == reqWv.owner_fd) {
+        // Same client — can't do round-trip, refuse the conversion
+        uint8_t nev[32] = {0};
+        nev[0] = 31; // SelectionNotify
+        wire::wr16_le(nev + 2, ctx.transport().lastSeq());
+        wire::wr32_le(nev + 4,  time);
+        wire::wr32_le(nev + 8,  requestor);
+        wire::wr32_le(nev + 12, selection);
+        wire::wr32_le(nev + 16, target);
+        wire::wr32_le(nev + 20, 0); // property = None (can't self-convert)
+        (void)ctx.transport().sendEvent32(requestor, nev);
+        return;
+      }
+    }
+
+    // Different client owns the selection — forward SelectionRequest
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());

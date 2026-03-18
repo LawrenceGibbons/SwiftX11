@@ -65,25 +65,10 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
       case 5:  st.line_style = (uint8_t)(val & 0x03u); break;
       case 6:  st.cap_style  = (uint8_t)(val & 0x03u); break;
       case 7:  st.join_style = (uint8_t)(val & 0x03u); break;
-      case 8:  st.fill_style = (uint8_t)(val & 0x03u);
-#ifndef NDEBUG
-        fprintf(stderr, "[GC_FILL] gc=0x%08X fill_style=%u vmask=0x%08X\n",
-                (unsigned)st.xid, (unsigned)st.fill_style, (unsigned)vmask);
-#endif
-        break;
+      case 8:  st.fill_style = (uint8_t)(val & 0x03u); break;
       case 9:  st.fill_rule  = (uint8_t)(val & 0x01u); break;
-      case 10: st.tile       = val;
-#ifndef NDEBUG
-        fprintf(stderr, "[GC_FILL] gc=0x%08X tile=0x%08X vmask=0x%08X\n",
-                (unsigned)st.xid, (unsigned)st.tile, (unsigned)vmask);
-#endif
-        break;
-      case 11: st.stipple    = val;
-#ifndef NDEBUG
-        fprintf(stderr, "[GC_FILL] gc=0x%08X stipple=0x%08X vmask=0x%08X\n",
-                (unsigned)st.xid, (unsigned)st.stipple, (unsigned)vmask);
-#endif
-        break;
+      case 10: st.tile       = val; break;
+      case 11: st.stipple    = val; break;
       case 12: st.ts_x_origin = (int16_t)(val & 0xFFFFu); break;
       case 13: st.ts_y_origin = (int16_t)(val & 0xFFFFu); break;
       case 14: st.font       = val; break;
@@ -260,11 +245,6 @@ void GCOps::handleSetClipRectangles(XProtoContext& ctx, uint16_t /*seq*/, uint8_
   }
   br.skip(br.remaining());
   GCTable::instance().upsert(st);
-
-#ifndef NDEBUG
-  fprintf(stderr, "[SetClipRects] gc=0x%08X origin=(%d,%d) nrects=%zu ordering=%u\n",
-          (unsigned)gcXid, (int)cxo, (int)cyo, st.clip_rects.size(), (unsigned)ordering);
-#endif
 
   (void)ordering; // stored order hint; we don't optimize by ordering yet
 }

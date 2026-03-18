@@ -61,21 +61,11 @@ static inline bool fillStyleSetup(FillStyleCache& c,
     PixmapView pv{};
     bool found = pix.snapshot(gst.tile, pv);
     if (!found || !pv.pixels || pv.w == 0 || pv.h == 0) {
-#ifndef NDEBUG
-      fprintf(stderr, "[FILL_STYLE] FillTiled tile=0x%X FAIL found=%d depth=%u %ux%u pixels=%p bits=%p → fallback solid\n",
-              (unsigned)gst.tile, (int)found, (unsigned)pv.depth,
-              (unsigned)pv.w, (unsigned)pv.h,
-              (const void*)pv.pixels, (const void*)pv.bits);
-#endif
       // Graceful fallback: if the tile is a depth-1 pixmap with bits data,
       // treat it as an opaque stipple (fg where bit=1, bg where bit=0).
       // This handles clients that use FillTiled with a depth-1 stipple bitmap
       // (e.g., Xaw Scrollbar after widget GC recreation).
       if (found && pv.bits && pv.w > 0 && pv.h > 0 && pv.depth == 1) {
-#ifndef NDEBUG
-        fprintf(stderr, "[FILL_STYLE] FillTiled tile=0x%X depth-1 → promoting to OpaqueStippled\n",
-                (unsigned)gst.tile);
-#endif
         c.style       = 3;  // treat as FillOpaqueStippled
         c.stip_bits   = pv.bits;
         c.stip_stride = pv.stride_bytes;
@@ -91,19 +81,11 @@ static inline bool fillStyleSetup(FillStyleCache& c,
     c.tile_pixels = pv.pixels;
     c.tile_w      = pv.w;
     c.tile_h      = pv.h;
-#ifndef NDEBUG
-    fprintf(stderr, "[FILL_STYLE] FillTiled tile=0x%X %ux%u OK\n",
-            (unsigned)gst.tile, (unsigned)pv.w, (unsigned)pv.h);
-#endif
   }
   else if (c.style == 2 || c.style == 3) {
     // FillStippled / FillOpaqueStippled — need stipple pixmap (1bpp)
     PixmapView pv{};
     if (!pix.snapshot(gst.stipple, pv) || !pv.bits || pv.w == 0 || pv.h == 0) {
-#ifndef NDEBUG
-      fprintf(stderr, "[FILL_STYLE] style=%u stipple=0x%X FAIL → fallback solid\n",
-              (unsigned)c.style, (unsigned)gst.stipple);
-#endif
       c.valid = false;
       c.style = 0;  // fallback to solid
       return false;
@@ -112,11 +94,6 @@ static inline bool fillStyleSetup(FillStyleCache& c,
     c.stip_stride = pv.stride_bytes;
     c.stip_w      = pv.w;
     c.stip_h      = pv.h;
-#ifndef NDEBUG
-    fprintf(stderr, "[FILL_STYLE] style=%u stipple=0x%X %ux%u stride=%u OK\n",
-            (unsigned)c.style, (unsigned)gst.stipple, (unsigned)pv.w, (unsigned)pv.h,
-            (unsigned)pv.stride_bytes);
-#endif
   }
   return true;
 }

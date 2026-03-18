@@ -7,6 +7,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <poll.h>
 #include <errno.h>
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +45,8 @@ void XProtoTransport::attachClientFd(int fd) {
   client_fd_ = fd;
   max_wire_seq_ = 0;       // reset monotonic floor for new connection
   payload_remaining_ = 0;  // reset payload tracking
+  dbg_last_sent_seq_ = 0;  // reset sequence regression detector
+  dbg_send_count_ = 0;
 }
 
 void XProtoTransport::setXprotoThreadSelf() {
@@ -127,36 +130,31 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     const uint8_t b0 = bb[0];
     const uint16_t seq = uint16_t(bb[2] | (uint16_t(bb[3]) << 8));
 
-    // Track the last few sends for context on regression.
-    static thread_local uint16_t last_sent_seq = 0;
-    static thread_local uint8_t  last_sent_type = 0;
-    static thread_local unsigned send_count = 0;
-    send_count++;
+    // Track per-transport state for regression detection.
+    // (Must NOT be thread_local — that leaks across client connections.)
+    dbg_send_count_++;
 
     const char* kind = (b0 == 0) ? "ERROR" : (b0 == 1) ? "REPLY" : "EVENT";
 
     // Detect regression: a reply or error with seq < previous reply/error seq.
     // Events are allowed to have older sequences, but replies/errors must not
     // go backwards relative to each other (that causes XCB desync).
-    if ((b0 == 0 || b0 == 1) && last_sent_seq != 0) {
+    if ((b0 == 0 || b0 == 1) && dbg_last_sent_seq_ != 0) {
       // Check if this reply/error seq is LESS than the last one sent
-      int16_t delta = (int16_t)(seq - last_sent_seq);
+      int16_t delta = (int16_t)(seq - dbg_last_sent_seq_);
       if (delta < 0) {
         fprintf(stderr,
                 "[SEQ_REGRESS] *** SEQUENCE WENT BACKWARDS *** "
                 "%s seq=%u < prev_seq=%u (delta=%d) type=%u send#=%u\n",
-                kind, (unsigned)seq, (unsigned)last_sent_seq,
-                (int)delta, (unsigned)b0, send_count);
+                kind, (unsigned)seq, (unsigned)dbg_last_sent_seq_,
+                (int)delta, (unsigned)b0, dbg_send_count_);
       }
     }
 
     // Update tracking for replies and errors only (they advance XCB's request_read).
     if (b0 == 0 || b0 == 1) {
-      last_sent_seq = seq;
+      dbg_last_sent_seq_ = seq;
     }
-
-    last_sent_type = b0;
-    (void)last_sent_type; // suppress unused warning
 
     // Log the wire send (compact format for debugging).
     // Gated by X11_TRACE_WIRE (or X11_TRACE_VERBOSE) — very noisy.
@@ -189,21 +187,6 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   if (n >= 32 && payload_remaining_ == 0) {
     const uint8_t b0 = static_cast<const uint8_t*>(buf)[0];
     if (b0 == 0 || b0 == 1) reply_sent_ = true;
-
-#ifndef NDEBUG
-    // Dump reply/event headers during early initialization (first 80 seqs)
-    const uint8_t* bp = static_cast<const uint8_t*>(buf);
-    uint16_t dseq = uint16_t(bp[2] | (uint16_t(bp[3]) << 8));
-    if (dseq < 80 || last_request_seq_ < 80) {
-      uint32_t dlen = uint32_t(bp[4]) | (uint32_t(bp[5])<<8) |
-                      (uint32_t(bp[6])<<16) | (uint32_t(bp[7])<<24);
-      fprintf(stderr, "[WIRE_HDR] type=%u seq=%u len=%u n=%zu major=%u minor=%u payload_rem=%u | %02X %02X %02X %02X %02X %02X %02X %02X\n",
-              (unsigned)b0, (unsigned)dseq, (unsigned)dlen, n,
-              (unsigned)last_request_major_, (unsigned)last_request_minor_,
-              (unsigned)payload_remaining_,
-              bp[0], bp[1], bp[2], bp[3], bp[4], bp[5], bp[6], bp[7]);
-    }
-#endif
   }
 
   // ── Monotonic wire-sequence floor ──────────────────────────────
@@ -302,16 +285,35 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   const uint8_t* p = static_cast<const uint8_t*>(sendBuf);
   std::size_t left = n;
 
+  int eagain_waits = 0;
   while (left) {
     ssize_t w = ::send(client_fd_, p, left, MSG_NOSIGNAL);
     if (w < 0) {
       if (errno == EINTR) continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // Socket buffer full — wait with poll() instead of tight-spinning.
+        // We MUST NOT drop data: it could be part of a reply the client is
+        // waiting for.  The 1MB SO_SNDBUF set at accept time makes this
+        // very rare.  poll() yields the CPU and wakes when the client reads.
+        if (++eagain_waits == 1) {
+          // First EAGAIN — log to help diagnose backpressure issues
+          const uint8_t* hdr = static_cast<const uint8_t*>(sendBuf);
+          fprintf(stderr, "[BACKPRESSURE] sendAll EAGAIN fd=%d n=%zu left=%zu type=%u\n",
+                  client_fd_, n, left, (unsigned)hdr[0]);
+        }
+        struct pollfd pfd = { client_fd_, POLLOUT, 0 };
+        ::poll(&pfd, 1, 50);
+        continue;
+      }
       return false;
     }
     if (w == 0) return false;
     p += static_cast<size_t>(w);
     left -= static_cast<size_t>(w);
+  }
+  if (eagain_waits > 0) {
+    fprintf(stderr, "[BACKPRESSURE] resolved after %d waits (%zu bytes)\n",
+            eagain_waits, n);
   }
   return true;
 }

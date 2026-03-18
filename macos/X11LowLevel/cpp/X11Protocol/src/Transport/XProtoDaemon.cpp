@@ -349,6 +349,15 @@ void XProtoDaemon::acceptClient(int listenFd) {
           clients_.size() + 1);
 #endif
 
+  // Enlarge socket send buffer to 1MB to reduce backpressure when the client
+  // is slow to read (e.g., Java Swing during menu tracking).  The default
+  // macOS SO_SNDBUF (~128KB) fills up quickly with MotionNotify + RawMotion
+  // events from GlobalPointerTracker, blocking the xproto thread.
+  {
+    int sndbuf = 1024 * 1024;
+    ::setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  }
+
   // Switch to non-blocking for the poll loop
   set_nonblocking(cfd);
 
@@ -525,6 +534,21 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
 
   cs.seq = (uint16_t)(cs.seq + 1);
 
+#ifndef NDEBUG
+  // Log sync/grab/selection opcodes to diagnose Vivado Edit→Copy hang.
+  // Filtered to avoid noise from high-frequency draw ops (PutImage, etc.)
+  if (major == 22 || major == 23 || major == 24 || major == 25 || // Selection ops
+      major == 26 || major == 27 ||                                // GrabPointer/Ungrab
+      major == 31 || major == 32 ||                                // GrabKeyboard/Ungrab
+      major == 34 ||                                               // AllowEvents
+      major == 36 || major == 37 ||                                // GrabServer/Ungrab
+      major == 43) {                                               // GetInputFocus
+    fprintf(stderr, "[REQ] fd=%d seq=%u op=%u.%u len=%zu\n",
+            cs.client->transport().clientFd(), (unsigned)cs.seq,
+            (unsigned)major, (unsigned)minor, remain);
+  }
+#endif
+
   activateClient(cs);
   server_->ctx().transport().noteLastSeq(cs.seq);
   (void)server_->dispatch(major, minor, cs.seq, payload, remain);
@@ -588,9 +612,6 @@ void XProtoDaemon::drainHostCommands() {
 
   auto cmds = server_->hostCmds().takeAll();
   if (cmds.empty()) return;
-#ifndef NDEBUG
-  fprintf(stderr, "[DRAIN_HOST] %zu commands\n", cmds.size());
-#endif
 
   // Collect fds that need forceful disconnect (WindowClose without WM_DELETE_WINDOW).
   std::vector<int> forceDisconnect;
@@ -692,10 +713,6 @@ void XProtoDaemon::drainHostCommands() {
         wire::wr16_le(ev.data() + 24, vw.border_width);
         ev[26] = vw.override_redirect ? 1 : 0;
         server_->ctx().transport().sendAll(ev.data(), 32);
-#ifndef NDEBUG
-        fprintf(stderr, "[WM_MOVE_NOTIFY] xid=0x%08X ConfigureNotify pos=(%d,%d) size=%dx%d\n",
-                (unsigned)c.xid, (int)vw.x, (int)vw.y, (int)vw.w, (int)vw.h);
-#endif
       }
 
       deactivateClient();
@@ -732,13 +749,26 @@ void XProtoDaemon::drainHostCommands() {
 
     if (!cs) continue; // no clients at all
 
+    // For PointerMove events (high-frequency, non-critical), check if the
+    // client socket can accept data.  If the socket buffer is full (client
+    // not reading — e.g., Java EDT in menu tracking), skip the event to
+    // prevent the xproto thread from blocking in sendAll's EAGAIN loop.
+    // Critical events (Button, Focus, WindowClose, etc.) are never skipped.
+    if (c.type == HostCmdType::PointerMove) {
+      struct pollfd pfd = { cs->client->fd(), POLLOUT, 0 };
+      if (::poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLOUT)) {
+        static int skip_count = 0;
+        if (++skip_count <= 3 || (skip_count % 100) == 0) {
+          fprintf(stderr, "[THROTTLE] skipped PointerMove #%d (socket not writable fd=%d)\n",
+                  skip_count, cs->client->fd());
+        }
+        continue; // socket not writable — skip this motion event
+      }
+    }
+
     activateClient(*cs);
 
     // Process this single command directly (no re-queue roundtrip).
-#ifndef NDEBUG
-    fprintf(stderr, "[DRAIN_HOST] processing type=%d xid=0x%08X owner_fd=%d cs=%p\n",
-            (int)c.type, (unsigned)c.xid, owner_fd, (void*)cs);
-#endif
     x11_proto_bridge_process_host_cmd(&c);
     server_->flushNotifyQueue();
 

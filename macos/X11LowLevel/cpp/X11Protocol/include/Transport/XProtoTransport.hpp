@@ -126,6 +126,10 @@ private:
   // floor for payload data (bytes[2:3] are arbitrary payload, not sequences).
   uint32_t payload_remaining_ = 0;
 
+  // Debug-only: sequence regression detector (per-transport, NOT thread-local).
+  uint16_t dbg_last_sent_seq_ = 0;
+  unsigned dbg_send_count_ = 0;
+
   // True if a reply (byte[0]==1) or error (byte[0]==0) was sent since resetReplySent().
   bool reply_sent_ = false;
   

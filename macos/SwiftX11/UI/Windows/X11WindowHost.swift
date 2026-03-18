@@ -78,7 +78,6 @@ final class X11View: NSView {
   
   // MARK: -- SHAPE extension
   var isShaped: Bool = false
-  private var shapeDebugDumped: Bool = false
 
   // MARK: -- Metal drawable retry
   /// Retry counter for presents that fail because the Metal drawable isn't ready
@@ -237,10 +236,6 @@ final class X11View: NSView {
     }
 
     // Publish surface every time (so C++ sees latest ptr + generation)
-    #if DEBUG
-    print(String(format: "[ENSURE_SURFACE] xid=0x%08X %dx%d bpr=%d gen=%d — calling x11_surface_update",
-                 self.xid, wPx, hPx, bpr, hostSurfaceGen))
-    #endif
     hostSurface!.withUnsafeMutableBytes { raw in
       guard let p = raw.baseAddress else { return }
       x11_surface_update(xid, p, UInt32(bpr),
@@ -440,14 +435,6 @@ final class X11View: NSView {
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
 
-    #if DEBUG
-    print(String(format: "[VIEW_MOVE_WIN] xid=0x%08X window=%@ lastKnown=%@ attachSched=%d",
-                 self.xid,
-                 self.window.map { String(describing: type(of: $0)) } ?? "nil",
-                 lastKnownWindow.map { String(describing: type(of: $0)) } ?? "nil",
-                 attachSettleScheduled ? 1 : 0))
-    #endif
-
     // Detach: always clear and stop here (don’t schedule attach work).
     if self.window == nil {
       clearHostSurface()
@@ -459,9 +446,6 @@ final class X11View: NSView {
     // Prevent re-running attach logic for the same window repeatedly.
     let w = self.window
     if lastKnownWindow === w, attachSettleScheduled {
-      #if DEBUG
-      print(String(format: "[VIEW_MOVE_WIN] xid=0x%08X SKIP — same window + already scheduled", self.xid))
-      #endif
       return
     }
     lastKnownWindow = w
@@ -499,16 +483,8 @@ final class X11View: NSView {
   }
   
   private func scheduleAttachSettle() {
-    guard !attachSettleScheduled else {
-      #if DEBUG
-      print(String(format: "[ATTACH_SETTLE] xid=0x%08X SKIP — already scheduled", self.xid))
-      #endif
-      return
-    }
+    guard !attachSettleScheduled else { return }
     attachSettleScheduled = true
-    #if DEBUG
-    print(String(format: "[ATTACH_SETTLE] xid=0x%08X scheduling", self.xid))
-    #endif
 
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
@@ -645,12 +621,6 @@ final class X11View: NSView {
       if let metalLayer = mtkView?.layer as? CAMetalLayer, metalLayer.isOpaque {
         metalLayer.isOpaque = false
       }
-
-      // One-shot layer hierarchy diagnostic
-      if !shapeDebugDumped {
-        shapeDebugDumped = true
-        dumpLayerHierarchy()
-      }
     } else {
       data = Data(bytes: framebuffer, count: byteCount)
     }
@@ -698,46 +668,81 @@ final class X11View: NSView {
     let nrects = x11_shape_get_rects(xid, &xywh, maxRects)
     if nrects <= 0 { return }
 
-    // Build a bitmask of which pixels are inside the shape.
-    // Then zero pixels outside (premultiplied alpha: transparent = all zeros)
-    // and force alpha=0xFF on pixels inside.
     let stridePixels = bytesPerRow / 4
 
-    // Single pass: for each pixel, check if it's inside any shape rect.
-    // To avoid O(pixels * rects), we process rect-by-rect: first zero
-    // everything, then copy back shape-interior pixels from a saved copy.
-    let original = Data(data)  // save original pixel data
+    // Step 1: Build a 1-bit "inside" mask from shape rects.
+    // Packed as one byte per pixel (0 = outside, 1 = inside).
+    var mask = [UInt8](repeating: 0, count: width * height)
+    for i in 0..<Int(nrects) {
+      let rx = Int(xywh[i * 4 + 0])
+      let ry = Int(xywh[i * 4 + 1])
+      let rw = Int(xywh[i * 4 + 2])
+      let rh = Int(xywh[i * 4 + 3])
 
-    data.withUnsafeMutableBytes { dstBuf in
-      original.withUnsafeBytes { srcBuf in
-        guard let dst = dstBuf.baseAddress?.assumingMemoryBound(to: UInt32.self),
-              let src = srcBuf.baseAddress?.assumingMemoryBound(to: UInt32.self) else { return }
+      let x0 = max(0, rx)
+      let y0 = max(0, ry)
+      let x1 = min(width, rx + rw)
+      let y1 = min(height, ry + rh)
+      if x0 >= x1 || y0 >= y1 { continue }
 
-        // Step 1: Zero all pixels (fully transparent, premultiplied)
-        for row in 0..<height {
-          for col in 0..<width {
-            dst[row * stridePixels + col] = 0x00000000
-          }
+      for row in y0..<y1 {
+        let rowOff = row * width
+        for col in x0..<x1 {
+          mask[rowOff + col] = 1
         }
+      }
+    }
 
-        // Step 2: Copy back pixels inside shape rects with alpha=0xFF
-        for i in 0..<Int(nrects) {
-          let rx = Int(xywh[i * 4 + 0])
-          let ry = Int(xywh[i * 4 + 1])
-          let rw = Int(xywh[i * 4 + 2])
-          let rh = Int(xywh[i * 4 + 3])
+    // Step 2: Apply alpha using 3×3 box-filter antialiasing at shape edges.
+    // Interior pixels: alpha=0xFF (fully opaque), RGB preserved.
+    // Exterior pixels: all zeros (fully transparent).
+    // Edge pixels: alpha = (count of "inside" neighbors in 3×3) * 255/9,
+    //              RGB preserved (straight alpha — Metal pipeline handles blending).
+    data.withUnsafeMutableBytes { rawBuf in
+      guard let pixels = rawBuf.baseAddress?.assumingMemoryBound(to: UInt32.self) else { return }
 
-          let x0 = max(0, rx)
-          let y0 = max(0, ry)
-          let x1 = min(width, rx + rw)
-          let y1 = min(height, ry + rh)
-          if x0 >= x1 || y0 >= y1 { continue }
+      for row in 0..<height {
+        for col in 0..<width {
+          let maskIdx = row * width + col
+          let pixIdx  = row * stridePixels + col
 
-          for row in y0..<y1 {
-            for col in x0..<x1 {
-              let idx = row * stridePixels + col
-              dst[idx] = src[idx] | 0xFF000000  // original RGB + opaque alpha
+          if mask[maskIdx] == 1 {
+            // Check if this is an interior pixel (all 8 neighbors inside).
+            // If so, skip the 3×3 sampling — just force alpha=0xFF.
+            let isEdge: Bool
+            if row == 0 || row == height - 1 || col == 0 || col == width - 1 {
+              isEdge = true
+            } else {
+              // Quick check: if any of the 4 cardinal neighbors is outside, it's an edge
+              isEdge = mask[maskIdx - 1] == 0 ||
+                       mask[maskIdx + 1] == 0 ||
+                       mask[maskIdx - width] == 0 ||
+                       mask[maskIdx + width] == 0
             }
+
+            if !isEdge {
+              // Fully interior: original RGB + opaque alpha
+              pixels[pixIdx] = pixels[pixIdx] | 0xFF000000
+            } else {
+              // Edge pixel inside shape: 3×3 box-filter coverage
+              var count: UInt32 = 0
+              for dy in -1...1 {
+                let ny = row + dy
+                if ny < 0 || ny >= height { continue }
+                for dx in -1...1 {
+                  let nx = col + dx
+                  if nx < 0 || nx >= width { continue }
+                  count += UInt32(mask[ny * width + nx])
+                }
+              }
+              // count is 1..9 (center is inside, so at least 1)
+              let alpha = (count * 255 + 4) / 9  // rounded
+              // Straight alpha: keep RGB as-is, set alpha channel
+              pixels[pixIdx] = (pixels[pixIdx] & 0x00FFFFFF) | (alpha << 24)
+            }
+          } else {
+            // Outside shape: fully transparent
+            pixels[pixIdx] = 0x00000000
           }
         }
       }
@@ -776,21 +781,12 @@ final class X11View: NSView {
     // its layer's isOpaque. Access the CAMetalLayer directly.
     if let mv = mtkView, let metalLayer = mv.layer as? CAMetalLayer {
       metalLayer.isOpaque = !transparent
-      #if DEBUG
-      print("[SHAPE] CAMetalLayer.isOpaque set to \(!transparent), readback=\(metalLayer.isOpaque)")
-      #endif
     }
 
     // Update Metal renderer if active
     if let r = renderer {
       r.isShaped = transparent
-      #if DEBUG
-      print("[SHAPE] renderer.isShaped set to \(transparent), readback=\(r.isShaped)")
-      #endif
     } else {
-      #if DEBUG
-      print("[SHAPE] WARNING: renderer is nil! Cannot set isShaped")
-      #endif
     }
 
     // Force a full-frame redraw so the alpha mask takes effect
@@ -798,37 +794,6 @@ final class X11View: NSView {
       mv.setNeedsDisplay(mv.bounds)
     }
 
-    #if DEBUG
-    print(String(format: "[SHAPE] setWindowTransparency xid=0x%08X shaped=%d", xid, transparent ? 1 : 0))
-    #endif
-  }
-
-  /// Dump the entire view/layer hierarchy for SHAPE transparency debugging.
-  private func dumpLayerHierarchy() {
-    guard let win = self.window else {
-      print("[SHAPE_DBG] no window!")
-      return
-    }
-    print("[SHAPE_DBG] === Layer hierarchy for xid=0x\(String(xid, radix:16)) ===")
-    print("[SHAPE_DBG] NSWindow.isOpaque=\(win.isOpaque) bg=\(String(describing: win.backgroundColor))")
-    print("[SHAPE_DBG] NSWindow.contentView type=\(type(of: win.contentView as Any))")
-
-    // Walk from MTKView up to window
-    var depth = 0
-    var v: NSView? = mtkView ?? self
-    while let view = v {
-      let layerInfo: String
-      if let layer = view.layer {
-        layerInfo = "isOpaque=\(layer.isOpaque) bg=\(String(describing: layer.backgroundColor)) type=\(type(of: layer))"
-      } else {
-        layerInfo = "NO LAYER"
-      }
-      print("[SHAPE_DBG] [\(depth)] \(type(of: view)) frame=\(view.frame) wantsLayer=\(view.wantsLayer) \(layerInfo)")
-      v = view.superview
-      depth += 1
-    }
-    print("[SHAPE_DBG] isShaped=\(isShaped) renderer.isShaped=\(renderer?.isShaped ?? false)")
-    print("[SHAPE_DBG] === end ===")
   }
 
   // MARK: - Metal setup

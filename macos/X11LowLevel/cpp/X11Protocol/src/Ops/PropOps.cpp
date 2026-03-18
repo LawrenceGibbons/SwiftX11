@@ -186,6 +186,11 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
 
+    fprintf(stderr, "[WM_HINTS_DBG] xid=0x%08X host=0x%08X flags=0x%X desired=%dx%d min=%dx%d max=%dx%d pos=(%d,%d) hasPos=%d\n",
+            (unsigned)wid, (unsigned)host, (unsigned)flags,
+            (int)desired_w, (int)desired_h, (int)min_w, (int)min_h,
+            (int)max_w, (int)max_h, (int)pos_x, (int)pos_y, (int)has_position);
+
     // If we have a desired size and the window should be resized, do it (WM role).
     //
     // Resize when:
@@ -215,11 +220,6 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
             ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
             x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
             did_resize = true;
-#ifndef NDEBUG
-            fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X resize %dx%d → %dx%d (flags=0x%X)\n",
-                    (unsigned)wid, (unsigned)host, (int)vw.w, (int)vw.h,
-                    (int)nw, (int)nh, (unsigned)flags);
-#endif
           }
         }
       }
@@ -236,10 +236,6 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       if (ctx.windows().snapshot(host, vw)) {
         ctx.windows().setGeometry(host, (int16_t)pos_x, (int16_t)pos_y, vw.w, vw.h);
         x11_ui_push_move(host, pos_x, pos_y);
-#ifndef NDEBUG
-        fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X position → (%d,%d) (flags=0x%X)\n",
-                (unsigned)wid, (unsigned)host, pos_x, pos_y, (unsigned)flags);
-#endif
       }
     } else if (did_resize) {
       // No explicit position — center on primary monitor.
@@ -260,22 +256,12 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
           if (cy < primary->y) cy = primary->y;
           ctx.windows().setGeometry(host, (int16_t)cx, (int16_t)cy, vw.w, vw.h);
           x11_ui_push_move(host, cx, cy);
-#ifndef NDEBUG
-          fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X host=0x%08X center → (%d,%d) on %s (%dx%d)\n",
-                  (unsigned)wid, (unsigned)host, cx, cy,
-                  primary->name, (int)primary->w, (int)primary->h);
-#endif
         }
       }
     }
 
     // Push size constraints to Swift for NSWindow contentMinSize/contentMaxSize/resizeIncrements
     x11_ui_push_size_hints(host, min_w, min_h, max_w, max_h, inc_w, inc_h);
-#ifndef NDEBUG
-    fprintf(stderr, "[WM_SIZE_HINTS] xid=0x%08X min=%dx%d max=%dx%d inc=%dx%d pos=%s(%d,%d) flags=0x%X\n",
-            (unsigned)wid, min_w, min_h, max_w, max_h, inc_w, inc_h,
-            has_position ? "YES" : "no", pos_x, pos_y, (unsigned)flags);
-#endif
   }
 
   // -----------------------------------------------------------------------
@@ -301,11 +287,6 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     if (flags & 2) {
       uint32_t initial_state = d32[2];
       x11_ui_push_initial_state(host, initial_state);
-#ifndef NDEBUG
-      fprintf(stderr, "[WM_HINTS] xid=0x%08X host=0x%08X initial_state=%u input=%u flags=0x%X\n",
-              (unsigned)wid, (unsigned)host, (unsigned)initial_state,
-              (unsigned)((flags & 1) ? d32[1] : 0xFFFF), (unsigned)flags);
-#endif
     }
   }
 
@@ -324,10 +305,6 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       if (d32[i] == x11::atom::kWM_DELETE_WINDOW)  has_delete_window = true;
     }
     ctx.windows().setWantsTakeFocus(host, has_take_focus);
-#ifndef NDEBUG
-    fprintf(stderr, "[WM_PROTOCOLS] xid=0x%08X host=0x%08X take_focus=%d delete_window=%d\n",
-            (unsigned)wid, (unsigned)host, has_take_focus, has_delete_window);
-#endif
   }
 
   // -----------------------------------------------------------------------
@@ -339,10 +316,6 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
     x11_ui_push_window_type(host, type_atom);
-#ifndef NDEBUG
-    fprintf(stderr, "[NET_WM_TYPE] xid=0x%08X host=0x%08X type_atom=%u\n",
-            (unsigned)wid, (unsigned)host, (unsigned)type_atom);
-#endif
   }
 
   // -----------------------------------------------------------------------
@@ -364,10 +337,6 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     // Fullscreen → push as window type with flag 0x80000002
     if (modal)      x11_ui_push_window_type(host, 0x80000001);
     if (fullscreen)  x11_ui_push_window_type(host, 0x80000002);
-#ifndef NDEBUG
-    fprintf(stderr, "[NET_WM_STATE] xid=0x%08X modal=%d fullscreen=%d\n",
-            (unsigned)wid, modal, fullscreen);
-#endif
   }
 }
 

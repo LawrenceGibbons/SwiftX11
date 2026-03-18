@@ -227,14 +227,6 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t seq, uint8_t coordMod
   const uint32_t pm = gst.plane_mask;
   const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
 
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[PolyLine] dst=0x%08X gc=0x%08X fn=%u fg=0x%08X bg=0x%08X pm=0x%08X npts=%zu\n",
-          (unsigned)drawable, (unsigned)gcXid,
-          (unsigned)fn, (unsigned)gst.fg, (unsigned)gst.bg,
-          (unsigned)pm, nPts);
-#endif
-
   // Read first point
   int32_t prevX = br.readI16();
   int32_t prevY = br.readI16();
@@ -286,14 +278,6 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t seq, ByteReader& b
   const uint32_t pm = gst.plane_mask;
   const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
 
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[PolySeg] dst=0x%08X gc=0x%08X fn=%u fg=0x%08X bg=0x%08X pm=0x%08X nsegs=%zu\n",
-          (unsigned)drawable, (unsigned)gcXid,
-          (unsigned)fn, (unsigned)gst.fg, (unsigned)gst.bg,
-          (unsigned)pm, nSegs);
-#endif
-
   for (size_t i = 0; i < nSegs; i++) {
     if (br.remaining() < 8) break;
     int32_t x1 = br.readI16();
@@ -333,32 +317,12 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t seq, ByteReader&
   const uint32_t pm = gst.plane_mask;
   const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
 
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[PolyRect] dst=0x%08X gc=0x%08X fn=%u fg=0x%08X bg=0x%08X pm=0x%08X nrect=%zu dstWH=%ux%u\n",
-          (unsigned)drawable, (unsigned)gcXid,
-          (unsigned)fn, (unsigned)gst.fg, (unsigned)gst.bg,
-          (unsigned)pm, nRects, (unsigned)dst.w, (unsigned)dst.h);
-#endif
-
   for (size_t i = 0; i < nRects; i++) {
     if (br.remaining() < 8) break;
     int32_t rx = br.readI16();
     int32_t ry = br.readI16();
     int32_t rw = (int32_t)br.readU16();
     int32_t rh = (int32_t)br.readU16();
-
-#ifndef NDEBUG
-    fprintf(stderr, "[PolyRect]   rect[%zu]=(%d,%d %dx%d)\n",
-            i, (int)rx, (int)ry, (int)rw, (int)rh);
-    // Sample the destination pixel at top-left to see what color is there
-    if (rx >= 0 && ry >= 0 && rx < (int32_t)dst.w && ry < (int32_t)dst.h) {
-      uint32_t existing = dst.pixels32[(size_t)ry * dst.stridePixels + (size_t)rx];
-      fprintf(stderr, "[PolyRect]   dst_pixel_at(%d,%d)=0x%08X fg_opaque=0x%08X => %s\n",
-              (int)rx, (int)ry, (unsigned)existing, (unsigned)fgOpaque,
-              (existing == fgOpaque) ? "SAME(invisible!)" : "different(visible)");
-    }
-#endif
 
     // X11 PolyRectangle draws 4 edges: top, bottom, left, right
     // The rectangle outline includes the boundary pixels.

@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-16 (v1.14.2 — XInput2 + XTEST extensions, Phase 7.2 + 7.3 complete)
+Last updated: 2026-03-18 (v1.15.7 — XI2 events, Shape AA, clipboard fix, trace cleanup)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -330,17 +330,20 @@ Long-running clients (Vivado sessions that run for hours/days) exhaust their 2^2
 - [x] **XC-MiscGetXIDRange** (minor 1): Returns new XID range (start + count) from per-client allocator. Allocates from midpoint of rid_mask upward to avoid collision with Xlib's bottom-up allocation.
 - [x] **XC-MiscGetXIDList** (minor 2): Returns list of individual free XIDs (capped at 4096 per request). Per-client cursor in XClient tracks allocation state.
 
-### 7.2 XInput / XInput2 (MEDIUM-HIGH — GTK3/4 apps) ✅ Done (v1.14.2)
-GTK3/4 queries XI2 at startup. Without it, GTK falls back to core device manager (confirmed via Docker GTK3 testing — zenity runs with zero errors). XI2 stubs let GTK use its preferred XI2 device manager path.
+### 7.2 XInput / XInput2 (MEDIUM-HIGH — GTK3/4 apps) ✅ Done (v1.15.4)
+GTK3/4 queries XI2 at startup. Full XI2 event delivery infrastructure with 6 event senders and global RawMotion support. xeyes uses XI2 RawMotion for pupil tracking; works correctly with shaped windows.
 - [x] **XIQueryVersion** (minor 47): Returns version 2.0. Advertised as "XInputExtension" in QueryExtension + ListExtensions (major opcode 141).
 - [x] **XIQueryDevice** (minor 48): Returns 4 virtual core devices (pointer + keyboard masters, XTEST pointer + keyboard slaves) with ButtonClass and KeyClass entries.
-- [x] **XISelectEvents** (minor 46): Silently accepts event selections (XI2 events not delivered — GTK falls back to core events).
-- [ ] **XI2 events**: Deferred — GTK falls back to core events gracefully when XI2 events aren't delivered.
+- [x] **XISelectEvents** (minor 46): Per-window XI2 mask storage + root window mask in InputState. Supports XI_RawMotion and all standard XI2 event types.
+- [x] **XIQueryPointer** (minor 40): Returns pointer position and modifiers for XI2 device.
+- [x] **XIGetClientPointer** (minor 44): Returns virtual core pointer device ID.
+- [x] **XI2 events** (v1.15.3): 6 XI2 event senders (Motion, Button, Key, Crossing, Focus, RawMotion) with 13 injection points alongside core events. RawMotion uses 68-byte variable-length GenericEvent with 2-axis valuator data. `first_event=93` avoids overwriting core event handlers in libXi.
+- [x] **Global RawMotion** (v1.15.3): `GlobalPointerTracker` (NSEvent global+local monitor + 30fps timer) delivers RawMotion to all clients with xi2_root_mask regardless of cursor position over X11 windows. Required for xeyes pupil tracking.
 
 ### 7.3 XTEST Extension (MEDIUM — automation/accessibility) ✅ Done (v1.14.2)
 Synthesizes keyboard/mouse events. Used by accessibility tools (AT-SPI), automation (xdotool, xte), and test frameworks. GTK accessibility stack queries for it.
 - [x] **XTestGetVersion** (minor 0): Returns version 2.2. Advertised in QueryExtension + ListExtensions (major opcode 142). Total advertised extensions: 10.
-- [x] **XTestFakeInput** (minor 2): Silently consumes synthetic event requests (stub — event routing deferred).
+- [x] **XTestFakeInput** (minor 2): Synthesizes KeyPress/KeyRelease, ButtonPress/ButtonRelease, MotionNotify via `x11_post_pointer_move2` / `x11_post_button` / `x11_post_key` bridge functions.
 - [x] **XTestGrabControl** (minor 3): Silently consumes grab control requests.
 
 ### 7.4 SYNC Extension (LOW)
@@ -360,10 +363,10 @@ Some older Xaw/Motif apps (and `xclock -render`) use DBE for flicker-free render
 - [ ] **DBEAllocateBackBuffer / DeallocateBackBuffer**: Create/destroy back buffer for a window.
 - [ ] **DBESwapBuffers**: Copy back buffer to front buffer and present.
 
-### 7.7 Window Shape AA Compositing — DONE (v1.15.0)
-Antialiased window shape borders at the macOS compositing level. 3×3 box-filter coverage AA replaces binary masking — boundary pixels get premultiplied alpha proportional to neighbor coverage, producing smooth window outlines.
-- [x] **Shape mask AA**: 3×3 box-filter coverage grid in `applyShapeMask()` — interior pixels fully opaque, exterior fully transparent, boundary pixels get fractional premultiplied alpha.
-- [x] **Metal blending**: Alpha channel in Metal texture reflects shape coverage via existing `sourceAlpha/oneMinusSourceAlpha` pipeline — no Metal changes needed.
+### 7.7 Window Shape AA Compositing — DONE (v1.15.5)
+Antialiased window shape borders at the macOS compositing level. 3×3 box-filter coverage AA replaces binary masking — boundary pixels get fractional alpha proportional to neighbor coverage, producing smooth window outlines.
+- [x] **Shape mask AA**: 3×3 box-filter coverage grid in `applyShapeMask()` — interior pixels fully opaque (fast-path via cardinal-neighbor check), exterior fully transparent, boundary pixels get `alpha = coverage/9 * 255`. Uses **straight alpha** (RGB preserved as-is, only alpha channel set).
+- [x] **Metal blending**: Pipeline uses `sourceAlpha/oneMinusSourceAlpha` (straight alpha, not premultiplied) — Metal handles the alpha blending at render time. Previous premultiplied attempt (v1.15.0) reverted due to double-application artifacts.
 
 ---
 
@@ -552,7 +555,14 @@ rendercheck                 # RENDER extension tests
 
 **v1.14.1 adds XC-MISC extension** — Phase 7.1 complete. XC-MiscGetVersion (1.1), XC-MiscGetXIDRange (per-client midpoint-up allocation), XC-MiscGetXIDList (capped at 4096). Major opcode 140. Total advertised extensions: 8. Prevents XID exhaustion crash for long-running Vivado sessions.
 
-**v1.14.2 adds XInput2 + XTEST extensions** — Phase 7.2 + 7.3 complete. XInput2: XIQueryVersion (2.0), XIQueryDevice (4 virtual core devices with ButtonClass/KeyClass), XISelectEvents (silently accepts). XTEST: XTestGetVersion (2.2), XTestFakeInput (stub), XTestGrabControl (stub). Major opcodes 141/142. Total advertised extensions: 10. GTK3 confirmed working via Docker (zenity with zero errors).
+**v1.14.2 adds XInput2 + XTEST extensions** — Phase 7.2 + 7.3 complete (stubs). XInput2: XIQueryVersion (2.0), XIQueryDevice (4 virtual core devices with ButtonClass/KeyClass), XISelectEvents (silently accepts). XTEST: XTestGetVersion (2.2), XTestFakeInput (stub), XTestGrabControl (stub). Major opcodes 141/142. Total advertised extensions: 10. GTK3 confirmed working via Docker (zenity with zero errors).
+
+**v1.15.x completes XI2 events + Shape AA + bug fixes**:
+- **v1.15.4**: Full XI2 event delivery — 6 event senders (Motion, Button, Key, Crossing, Focus, RawMotion) with 13 injection points. RawMotion uses 68-byte GenericEvent with valuator data. `first_event=93` prevents libXi from overwriting core event handlers. xeyes works with XI2 advertised.
+- **v1.15.3**: `GlobalPointerTracker` (NSEvent global+local monitor) delivers RawMotion globally so xeyes tracks cursor even outside X11 windows.
+- **v1.15.5**: Shape AA compositing with straight alpha (3×3 box-filter, cardinal-neighbor fast-path). Previous premultiplied attempt reverted.
+- **v1.15.6**: Clipboard thread-safety fix — NSPasteboard callbacks dispatched to main thread via `DispatchQueue.main.sync`. Fixes Vivado Edit→Copy hang (deadlock between xproto thread and main thread).
+- **v1.15.7**: Debug trace cleanup (~50 `#ifndef NDEBUG` fprintf removed). Vivado startup banner race fix — present path no longer shows window while still at WM floor size (200×100).
 
 **Next priorities**: (1) Vitis testing (Phase 8), (2) SYNC extension if needed (Phase 7.4), (3) DAMAGE extension if needed (Phase 7.5).
 

@@ -29,6 +29,10 @@ static constexpr uint8_t kSHAPE_FirstEvent    = 76;
 static constexpr uint8_t kRANDR_FirstEvent    = 89;
 static constexpr uint8_t kGE_FirstEvent       = 35;  // GenericEvent
 
+// XInput1 first_event: 17 events (DeviceValuator..DevicePropertyNotify)
+// Range 93-109, safely above RANDR (89-90)
+static constexpr uint8_t kXInput_FirstEvent  = 93;
+
 // Extension first_error values (0 = none)
 static constexpr uint8_t kSHAPE_FirstError    = 0;
 static constexpr uint8_t kRANDR_FirstError    = 0;

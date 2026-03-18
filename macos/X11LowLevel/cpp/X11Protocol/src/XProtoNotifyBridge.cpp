@@ -77,7 +77,14 @@ void postMotion(uint32_t host_xid,
                             root_x, root_y,
                             buttons, mods);
 
-  // Only deliver MotionNotify when inside (or dragging/grab)
+  // XI2 RawMotion is a root-level event — deliver on ANY pointer move,
+  // even when deliver=0 (cursor outside X11 windows).  GlobalPointerTracker
+  // fires with deliver=0 for global motion; xeyes relies on this for
+  // cursor tracking across the entire screen.
+  if (host_xid)
+    ev->sendXI2RawMotionEvent(*ctx, host_xid);
+
+  // Only deliver core MotionNotify when inside (or dragging/grab)
   if (!deliver) return;
 
   // ---- macOS drag correction ----
@@ -202,23 +209,6 @@ void postMotion(uint32_t host_xid,
     target = pick_motion_target(*ctx, host_xid, win_x, win_y);
   }
 
-#ifndef NDEBUG
-  // Trace drag-routed or grab-routed motion (high-frequency, but only during grab/drag)
-  if (ctx->input().drag_xid || haveGrab) {
-    static int dragMotionCount = 0;
-    if (++dragMotionCount <= 20) { // first 20 only, to avoid flood
-      fprintf(stderr,
-              "[DRAG_MOTION] host=0x%08X target=0x%08X drag=0x%08X grab=%s grabWin=0x%08X win=(%d,%d)\n",
-              (unsigned)host_xid, (unsigned)target, (unsigned)ctx->input().drag_xid,
-              haveGrab ? "YES" : "no",
-              haveGrab ? (unsigned)activeGrab.grabWindow : 0u,
-              (int)win_x, (int)win_y);
-    }
-    if (dragMotionCount == 20) {
-      fprintf(stderr, "[DRAG_MOTION] (further traces suppressed)\n");
-    }
-  }
-#endif
 
   if (!target) return;
 
@@ -229,11 +219,10 @@ void postMotion(uint32_t host_xid,
 
   const uint32_t cursorTarget = ctx->input().routePointer(target); // respects drag_xid/pointer_xid/focus_xid
   maybeApplyCursor(*ctx, host, cursorTarget);
-  
+
   // Send MotionNotify with ROOT coords (root_x/root_y)
   ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
   ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods);
-  ev->sendXI2RawMotionEvent(*ctx, target);
 }  
   
 void postButtonLegacy(uint32_t xid, int is_press, int32_t x_px, int32_t y_px, uint32_t buttons, uint32_t mods)

@@ -257,32 +257,7 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
                                    wv->w, wv->h,
                                    count);
   bool sent = ctx.transport().sendEvent32(wid, ev.data());
-#ifndef NDEBUG
-  fprintf(stderr, "[EXPOSE_NOW_DBG] wid=0x%08X wh=%ux%u evmask=0x%08X mapped=%d owner_fd=%d sent=%d kids=%zu\n",
-          (unsigned)wid, (unsigned)wv->w, (unsigned)wv->h,
-          (unsigned)wv->event_mask, (int)wv->mapped, wv->owner_fd, (int)sent,
-          ctx.windows().descendantsOf(wid).size());
-#endif
-
-#ifndef NDEBUG
-  // Check if this window (or its host) is OR — helps diagnose blank popup text.
-  {
-    bool isOR = wv->override_redirect;
-    if (!isOR && wv->parent_xid != 0 && wv->parent_xid != 1) {
-      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
-      x11::WindowView hv{};
-      if (host && ctx.windows().snapshot(host, hv)) isOR = hv.override_redirect;
-    }
-    if (isOR) {
-      fprintf(stderr, "[OR_EXPOSE] Expose wid=0x%08X wh=%ux%u sent=%d "
-              "owner_fd=%d client_fd=%d evmask=0x%08X\n",
-              (unsigned)wid,
-              (unsigned)wv->w, (unsigned)wv->h,
-              (int)sent, wv->owner_fd, ctx.transport().clientFd(),
-              (unsigned)wv->event_mask);
-    }
-  }
-#endif
+  (void)sent;
 }
 
 // Re-expose a host window AND all its mapped descendants.
@@ -297,35 +272,6 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
                                      x11::EventOps& evOps,
                                      uint32_t hostXid)
 {
-  // Check if host is override-redirect (for diagnostic traces)
-  bool hostIsOR = false;
-  {
-    x11::WindowView hv{};
-    if (ctx.windows().snapshot(hostXid, hv)) hostIsOR = hv.override_redirect;
-  }
-
-#ifndef NDEBUG
-  if (hostIsOR) {
-    x11::SurfaceDesc dbgS{};
-    bool hasSurf = ctx.surfaces().get(hostXid, dbgS);
-    fprintf(stderr, "[OR_EXPOSE_SUBTREE] host=0x%08X hasSurface=%d surfWH=%ux%u bpr=%u ptr=%p client_fd=%d\n",
-            (unsigned)hostXid, (int)hasSurf,
-            (unsigned)dbgS.w, (unsigned)dbgS.h,
-            (unsigned)dbgS.bytesPerRow, dbgS.ptr,
-            ctx.transport().clientFd());
-  }
-#endif
-#ifndef NDEBUG
-  {
-    x11::SurfaceDesc dbgS{};
-    bool hasSurf = ctx.surfaces().get(hostXid, dbgS);
-    fprintf(stderr, "[EXPOSE_SUBTREE_DBG] host=0x%08X hasSurface=%d surfWH=%ux%u bpr=%u ptr=%p fd=%d\n",
-            (unsigned)hostXid, (int)hasSurf,
-            (unsigned)dbgS.w, (unsigned)dbgS.h,
-            (unsigned)dbgS.bytesPerRow, dbgS.ptr,
-            ctx.transport().clientFd());
-  }
-#endif
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
 #endif
@@ -337,12 +283,6 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
   // (X11 spec: server paints backgrounds before delivering Expose).
   auto kids = ctx.windows().descendantsOf(hostXid);
 
-#ifndef NDEBUG
-  if (hostIsOR) {
-    fprintf(stderr, "[OR_EXPOSE_SUBTREE] host=0x%08X total_descendants=%zu\n",
-            (unsigned)hostXid, kids.size());
-  }
-#endif
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
           (unsigned)hostXid, kids.size());
@@ -359,22 +299,6 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
     fillWindowBorderIfReady(ctx, kid);
     fillWindowBackgroundIfReady(ctx, kid);
 
-#ifndef NDEBUG
-    if (hostIsOR) {
-      x11::DrawableRW dbgDst{};
-      bool resolved = x11::resolveDrawableRW(ctx, kid, dbgDst);
-      fprintf(stderr, "[OR_EXPOSE_SUBTREE] kid=0x%08X mapped=%d wh=%ux%u pos=(%d,%d) owner_fd=%d resolved=%d res_wh=%ux%u off=(%d,%d)\n",
-              (unsigned)kid, (int)kv.mapped,
-              (unsigned)kv.w, (unsigned)kv.h,
-              (int)kv.x, (int)kv.y,
-              kv.owner_fd,
-              (int)resolved,
-              resolved ? (unsigned)dbgDst.w : 0u,
-              resolved ? (unsigned)dbgDst.h : 0u,
-              resolved ? (int)dbgDst.offsetX : 0,
-              resolved ? (int)dbgDst.offsetY : 0);
-    }
-#endif
 #if X11_TRACE_LIFECYCLE_ENABLED
     {
       x11::DrawableRW dbgDst{};
@@ -391,17 +315,6 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
     mappedKids.push_back(kid);
   }
 
-#ifndef NDEBUG
-  if (hostIsOR) {
-    fprintf(stderr, "[OR_EXPOSE_SUBTREE] host=0x%08X sending Expose to %zu mapped kids + host\n",
-            (unsigned)hostXid, mappedKids.size());
-  }
-#endif
-
-#ifndef NDEBUG
-  fprintf(stderr, "[EXPOSE_SUBTREE_SEND] host=0x%08X total_desc=%zu mapped_kids=%zu\n",
-          (unsigned)hostXid, kids.size(), mappedKids.size());
-#endif
   // Send Expose events.  count=0 because we send exactly one Expose per
   // window (full-window rect).  X11 spec: count is per-WINDOW ("number of
   // Expose events to follow for this window"), NOT per-client-batch.
@@ -457,10 +370,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 #endif
           ctx.windows().setPresentable(c.xid, true);
-#ifndef NDEBUG
-          fprintf(stderr, "[SET_PRESENTABLE_DBG] xid=0x%08X — about to sendExposeSubtree\n",
-                  (unsigned)c.xid);
-#endif
 
           // Write full-window damage to the shared accumulator and signal
           // so any content drawn before the surface was presentable gets shown.
@@ -794,13 +703,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 if (!ctx.windows().snapshot(checkWin, vw)) break;
                 checkWin = vw.parent_xid;
               }
-            #ifndef NDEBUG
-              fprintf(stderr,
-                      "[BTN_GRAB] under=0x%08X btn=%u x11Mods=0x%04X grab=%s grabWin=0x%08X\n",
-                      (unsigned)under, (unsigned)c.button, (unsigned)x11Mods,
-                      foundGrab ? "YES" : "no",
-                      foundGrab ? (unsigned)pg.grabWindow : 0u);
-            #endif
             }
           }
 
@@ -854,59 +756,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // child field: if delivering to ancestor, child is the subwindow under pointer
           const uint32_t child = (deliver != under) ? under : 0;
 
-        #ifndef NDEBUG
-          {
-            // Enhanced button event trace for debugging xcalc button routing
-            fprintf(stderr,
-                    "[BTN] host=0x%08X under=0x%08X deliver=0x%08X child=0x%08X down=%d btn=%u drag=0x%08X\n",
-                    (unsigned)host, (unsigned)under, (unsigned)deliver, (unsigned)child,
-                    (int)(c.isDown != 0), (unsigned)c.button, (unsigned)ctx.input().drag_xid);
-            fprintf(stderr,
-                    "[BTN]   win_xy=(%d,%d) root_xy=(%d,%d)\n",
-                    (int)ctx.input().win_x_u, (int)ctx.input().win_y_u,
-                    (int)ctx.input().root_x_u, (int)ctx.input().root_y_u);
-
-            // Print geometry of 'under' and 'deliver' windows
-            x11::WindowView underVw{}, deliverVw{};
-            if (ctx.windows().snapshot(under, underVw)) {
-              fprintf(stderr,
-                      "[BTN]   under geom=(%d,%d %ux%u) parent=0x%08X mask=0x%08X\n",
-                      (int)underVw.x, (int)underVw.y,
-                      (unsigned)underVw.w, (unsigned)underVw.h,
-                      (unsigned)underVw.parent_xid, (unsigned)underVw.event_mask);
-            }
-            if (deliver != under && ctx.windows().snapshot(deliver, deliverVw)) {
-              fprintf(stderr,
-                      "[BTN]   deliver geom=(%d,%d %ux%u) parent=0x%08X mask=0x%08X\n",
-                      (int)deliverVw.x, (int)deliverVw.y,
-                      (unsigned)deliverVw.w, (unsigned)deliverVw.h,
-                      (unsigned)deliverVw.parent_xid, (unsigned)deliverVw.event_mask);
-            }
-
-            // On press, dump all immediate children of deliver's parent (sibling buttons)
-            if (c.isDown) {
-              uint32_t parentOfDeliver = 0;
-              x11::WindowView dvw{};
-              if (ctx.windows().snapshot(deliver, dvw)) parentOfDeliver = dvw.parent_xid;
-              if (parentOfDeliver && parentOfDeliver != host) {
-                // Dump siblings (other buttons)
-                auto siblings = ctx.windows().descendantsOf(parentOfDeliver);
-                int printed = 0;
-                for (uint32_t sib : siblings) {
-                  x11::WindowView sv{};
-                  if (!ctx.windows().snapshot(sib, sv)) continue;
-                  if (sv.parent_xid != parentOfDeliver) continue; // only direct children
-                  if (!sv.mapped) continue;
-                  fprintf(stderr,
-                          "[BTN]   sibling=0x%08X geom=(%d,%d %ux%u) mask=0x%08X\n",
-                          (unsigned)sib, (int)sv.x, (int)sv.y,
-                          (unsigned)sv.w, (unsigned)sv.h, (unsigned)sv.event_mask);
-                  if (++printed > 40) { fprintf(stderr, "[BTN]   ... (truncated)\n"); break; }
-                }
-              }
-            }
-          }
-        #endif
 
           srv->eventOps().sendButtonEvent(ctx, deliver,
                                           c.isDown != 0, c.button,
@@ -1077,35 +926,13 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           break;
         }
 
-        // ------------------- ClipboardCapture
-        // Proactive selection request: when an X11 app claims PRIMARY or
-        // CLIPBOARD ownership, we send it a SelectionRequest so it writes
-        // its data to a property we can capture and push to macOS pasteboard.
-        // This runs on a separate poll iteration via drainHostCommands with
-        // the owning client properly activated — avoiding the fatal IO error
-        // that occurred when sending during the same readAndDispatch call.
-        case HostCmdType::ClipboardCapture: {
-          const uint32_t owner     = c.xid;
-          const uint32_t selection = c.keyCode; // selection atom stored in keyCode
-          if (!owner) break;
-
-          uint8_t ev[32] = {0};
-          ev[0] = 30; // SelectionRequest
-          x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq()); // sequence number (required by XCB)
-          x11::wire::wr32_le(ev + 4,  0); // time = CurrentTime
-          x11::wire::wr32_le(ev + 8,  owner);                    // owner
-          x11::wire::wr32_le(ev + 12, owner);                    // requestor = owner
-          x11::wire::wr32_le(ev + 16, selection);
-          x11::wire::wr32_le(ev + 20, x11::atom::kUTF8_STRING); // target
-          x11::wire::wr32_le(ev + 24, x11::atom::kSWIFTX11_CLIP); // property
-          (void)ctx.transport().sendEvent32(owner, ev);
-
-#ifndef NDEBUG
-          fprintf(stderr, "[CLIPBOARD] HostCmd SelectionRequest sel=%u owner=0x%08X\n",
-                  (unsigned)selection, (unsigned)owner);
-#endif
+        // ------------------- ClipboardCapture (removed v1.15.8)
+        // Proactive clipboard capture was removed because it deadlocks when
+        // the client's event thread is blocked (Java Swing menu tracking,
+        // text selection callbacks).  X11→macOS sync now happens lazily via
+        // handleSendEvent's SelectionNotify interception.
+        case HostCmdType::ClipboardCapture:
           break;
-        }
 
         // ------------------- WindowClose
         // Handled directly in XProtoDaemon::drainHostCommands() (needs

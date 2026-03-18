@@ -100,10 +100,6 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
     rep[1] = 0; // GrabSuccess
   });
 
-#ifndef NDEBUG
-  fprintf(stderr, "[GrabPointer] win=0x%08X owner=%u mask=0x%04X seq=%u\n",
-          (unsigned)grabWindow, (unsigned)ownerEvents, (unsigned)eventMask, (unsigned)seq);
-#endif
 }
 
 // -----------------------------
@@ -116,10 +112,6 @@ void GrabOps::handleUngrabPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   br.skip(br.remaining());
 
   ctx.grabs().clearPointerGrab();
-
-#ifndef NDEBUG
-  fprintf(stderr, "[UngrabPointer]\n");
-#endif
 }
 
 // -----------------------------
@@ -171,12 +163,6 @@ void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t seq, uint8_t ownerEv
   g.eventMask = eventMask;
 
   ctx.grabs().addOrReplace(g);
-
-#ifndef NDEBUG
-  fprintf(stderr, "[GrabButton] win=0x%08X btn=%u mods=0x%04X owner=%u mask=0x%04X\n",
-             (unsigned)grabWindow, (unsigned)button, (unsigned)modifiers,
-             (unsigned)ownerEvents, (unsigned)eventMask);
-#endif
 }
 
 // -----------------------------
@@ -258,13 +244,19 @@ void GrabOps::handleAllowEvents(XProtoContext& /*ctx*/, uint16_t /*seq*/, uint8_
 }
 
 // 36 GrabServer (void, no-op for single-process)
-void GrabOps::handleGrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+void GrabOps::handleGrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   br.skip(br.remaining());
+#ifndef NDEBUG
+  fprintf(stderr, "[GrabServer] seq=%u fd=%d\n", (unsigned)seq, ctx.transport().clientFd());
+#endif
 }
 
 // 37 UngrabServer (void, no-op)
-void GrabOps::handleUngrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+void GrabOps::handleUngrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   br.skip(br.remaining());
+#ifndef NDEBUG
+  fprintf(stderr, "[UngrabServer] seq=%u fd=%d\n", (unsigned)seq, ctx.transport().clientFd());
+#endif
 }
 
 // -----------------------------

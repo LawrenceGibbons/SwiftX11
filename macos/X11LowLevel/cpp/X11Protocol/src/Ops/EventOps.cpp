@@ -444,14 +444,6 @@ void EventOps::sendButtonEvent(XProtoContext& ctx,
     }
   }
 
-#ifndef NDEBUG
-  fprintf(stderr,
-          "[BTN_EVENT] wid=0x%08X %s btn=%u event_xy=(%d,%d) root_xy=(%d,%d) child=0x%08X\n",
-          (unsigned)wid, is_press ? "PRESS" : "RELEASE",
-          (unsigned)button, (int)ex, (int)ey,
-          (int)root_x, (int)root_y, (unsigned)child_xid);
-#endif
-
   int rootW = 0, rootH = 0;
   getRootWH(ctx, rootW, rootH);
 
@@ -630,11 +622,6 @@ void EventOps::sendFocusEventDirect(XProtoContext& ctx, uint32_t wid, bool is_in
                     mode,
                     same);
 
-#ifndef NDEBUG
-  fprintf(stderr, "[FOCUS_DIRECT] wid=0x%08X %s mask=0x%08X\n",
-          (unsigned)wid, is_in ? "FocusIn" : "FocusOut",
-          (unsigned)vw->event_mask);
-#endif
 
   ctx.transport().sendEvent32(wid, ev);
 }
@@ -867,22 +854,30 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid) {
   const WindowView* wv = ctx.window(wid);
   if (!wv) return;
 
-  // xXIRawEvent wire format (from XI2proto.h):
-  // All fields fit in 32 bytes. length=0 (no extra data after header).
+  // xXIRawEvent wire format with 2 valuators (X, Y):
+  //   Header (32 bytes) + valuator_mask[1] (4) + raw[2]×8 + cooked[2]×8 = 68
+  // libXi's XInputWireToCookie requires length>0 to allocate cookie data.
   uint8_t buf[xi2::kRawEventSize] = {};
   buf[0] = 35;                                         // GenericEvent
   buf[1] = (uint8_t)ext::kXInput2;                     // extension
   wire::wr16_le(buf + 2,  ctx.transport().lastSeq());  // sequence
-  wire::wr32_le(buf + 4,  xi2::kRawEventLength);       // length = 0
+  wire::wr32_le(buf + 4,  xi2::kRawEventLength);       // length = 9
   wire::wr16_le(buf + 8,  xi2::kRawMotion);            // evtype = 17
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);   // deviceid
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());     // time
   wire::wr32_le(buf + 16, 0);                          // detail = 0
   wire::wr16_le(buf + 20, xi2::kVirtualCorePointer);   // sourceid
-  wire::wr16_le(buf + 22, 0);                          // valuators_len = 0
+  wire::wr16_le(buf + 22, 1);                          // valuators_len = 1 (one mask word)
   wire::wr32_le(buf + 24, 0);                          // flags = 0
   // buf[28-31] = pad (already 0)
-  // No valuator mask or axis values (valuators_len=0)
+
+  // Valuator data (36 bytes after the 32-byte header):
+  wire::wr32_le(buf + 32, 0x03);                       // valuator_mask: bits 0+1 set (X, Y)
+  // raw_values[0] = X delta (FP32.32) — set to 0 (we don't track deltas)
+  // raw_values[1] = Y delta (FP32.32)
+  // values[0] = X delta cooked (FP32.32)
+  // values[1] = Y delta cooked (FP32.32)
+  // All zero — xeyes only uses RawMotion as a trigger to call XQueryPointer
 
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }

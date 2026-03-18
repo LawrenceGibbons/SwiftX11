@@ -126,14 +126,6 @@ namespace x11 {
 
       buttons = mask;
 
-#ifndef NDEBUG
-      fprintf(stderr,
-              "[INPUT_BTN] xid=0x%08X %s btn=%u before=0x%08X after_mask=0x%08X mask=0x%08X buttons=0x%08X drag=0x%08X->",
-              (unsigned)xid, is_press ? "press" : "release",
-              (unsigned)button_num, (unsigned)before, (unsigned)after_mask,
-              (unsigned)mask, (unsigned)buttons, (unsigned)drag_xid);
-#endif
-
       // Robust drag tracking: don't depend on 'before' being preserved
       // between press and release (a PointerMove can corrupt it).
       //   - All buttons released → always clear drag
@@ -143,10 +135,6 @@ namespace x11 {
       } else if (drag_xid == 0) {
         drag_xid = xid;
       }
-
-#ifndef NDEBUG
-      fprintf(stderr, "0x%08X\n", (unsigned)drag_xid);
-#endif
     }
 
     uint32_t routePointer(uint32_t from_xid) const {

@@ -280,12 +280,6 @@ bool resolveDrawableRW(XProtoContext& ctx,
 
             if (out.numOccluded < DrawableRW::kMaxOccluded) {
               out.occluded[out.numOccluded++] = { lx, ly, lw, lh };
-#ifndef NDEBUG
-              fprintf(stderr, "[OCCLUDE] drawable=0x%08X occluded by sib=0x%08X "
-                      "local=(%d,%d %ux%u)\n",
-                      (unsigned)drawable, (unsigned)sib2,
-                      (int)lx, (int)ly, (unsigned)lw, (unsigned)lh);
-#endif
             }
           }
         }

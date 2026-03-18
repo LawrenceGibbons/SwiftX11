@@ -396,31 +396,16 @@ extern "C" bool x11_get_window_geometry(uint32_t xid, int32_t* out_x, int32_t* o
                                         int32_t* out_w, int32_t* out_h,
                                         bool* out_override_redirect) {
   auto* srv = x11_proto_bridge_get_server();
-  if (!srv) {
-#ifndef NDEBUG
-    fprintf(stderr, "[GEO_QUERY] xid=0x%08X FAIL: no server\n", (unsigned)xid);
-#endif
-    return false;
-  }
+  if (!srv) return false;
 
   x11::WindowView vw;
-  if (!srv->windows().snapshot(xid, vw)) {
-#ifndef NDEBUG
-    fprintf(stderr, "[GEO_QUERY] xid=0x%08X FAIL: not in WindowTable\n", (unsigned)xid);
-#endif
-    return false;
-  }
+  if (!srv->windows().snapshot(xid, vw)) return false;
 
   if (out_x) *out_x = vw.x;
   if (out_y) *out_y = vw.y;
   if (out_w) *out_w = vw.w;
   if (out_h) *out_h = vw.h;
   if (out_override_redirect) *out_override_redirect = vw.override_redirect;
-#ifndef NDEBUG
-  fprintf(stderr, "[GEO_QUERY] xid=0x%08X OK: pos=(%d,%d) size=%dx%d or=%d\n",
-          (unsigned)xid, (int)vw.x, (int)vw.y, (int)vw.w, (int)vw.h,
-          (int)vw.override_redirect);
-#endif
   return true;
 }
 
@@ -439,11 +424,6 @@ extern "C" void x11_set_window_position(uint32_t xid, int32_t x, int32_t y) {
                              static_cast<int16_t>(x),
                              static_cast<int16_t>(y),
                              vw.w, vw.h);
-#ifndef NDEBUG
-  fprintf(stderr, "[GEO_SET] xid=0x%08X pos=(%d,%d) → (%d,%d) size=%dx%d\n",
-          (unsigned)xid, (int)vw.x, (int)vw.y, (int)x, (int)y,
-          (int)vw.w, (int)vw.h);
-#endif
 
   // Send ConfigureNotify to the X11 client so it knows the window moved.
   // Without this, toolkits (Java/Swing, GTK) cache stale root coordinates
