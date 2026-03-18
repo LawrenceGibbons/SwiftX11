@@ -27,12 +27,17 @@
 #include "Core/timestamp.hpp"
 
 // Send PropertyNotify (type 28) for ChangeProperty/DeleteProperty.
-// X11 spec: "Whenever a property is changed or deleted, the server
-// generates a PropertyNotify event on that window."
+// X11 spec: PropertyNotify is delivered only to clients that selected
+// PropertyChangeMask (bit 22) on the window's event_mask.
 // Java AWT uses PropertyNotify on _SUNW_JAVA_AWT_TIME to extract
 // the server timestamp needed for SetSelectionOwner.
 static void sendPropertyNotify(x11::XProtoContext& ctx, uint32_t wid,
                                uint32_t atom, bool deleted) {
+  // Only send if the window has PropertyChangeMask selected
+  x11::WindowView wv{};
+  if (!ctx.windows().snapshot(wid, wv)) return;
+  if (!(wv.event_mask & x11::mask::PropertyChange)) return;
+
   uint8_t ev[32] = {};
   ev[0] = 28; // PropertyNotify
   x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
