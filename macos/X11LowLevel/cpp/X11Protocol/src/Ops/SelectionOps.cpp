@@ -125,9 +125,9 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
   // This mimics XQuartz's pasteboard proxy (window 0x00800001) which
   // automatically requests CLIPBOARD content on ownership change.
   //
-  // We only do this for CLIPBOARD (not PRIMARY) and only when the owner
-  // is a real client window (not None/root).
-  if ((selection == atom::kCLIPBOARD) && owner > 1) {
+  // Capture both CLIPBOARD (Vivado Edit→Copy) and PRIMARY (xterm select).
+  // Only when the owner is a real client window (not None/root).
+  if ((selection == atom::kCLIPBOARD || selection == atom::kPRIMARY) && owner > 1) {
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
