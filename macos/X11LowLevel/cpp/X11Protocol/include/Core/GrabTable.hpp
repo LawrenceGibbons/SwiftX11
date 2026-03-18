@@ -46,6 +46,10 @@ public:
   bool getPointerGrab(PointerGrab& out) const;
   void updatePointerGrabEventMask(uint16_t eventMask);
 
+  // Active keyboard grab (GrabKeyboard/UngrabKeyboard)
+  void setKeyboardGrab(uint32_t grabWindow);
+  uint32_t clearKeyboardGrab();  // returns previous grab window (0 if none)
+
   // Reset all grabs (call on session teardown — single client mode)
   void clearAll();
 
@@ -57,6 +61,7 @@ private:
   mutable std::mutex mu_;
   std::vector<PassiveGrab> passive_;
   PointerGrab pointer_;
+  uint32_t keyboard_grab_window_ = 0;
 };
 
 } // namespace x11

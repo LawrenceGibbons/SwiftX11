@@ -14,6 +14,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
+#include "Utils/WireLE.hpp"
 
 namespace x11 {
 
@@ -218,14 +219,48 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
     }
   }
 
+  // Store keyboard grab window for UngrabKeyboard focus events
+  ctx.grabs().setKeyboardGrab(grabWindow);
+
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
     rep[1] = 0; // GrabSuccess
   });
 }
 
 // 32 UngrabKeyboard (void)
-void GrabOps::handleUngrabKeyboard(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+// X11 spec: When the keyboard grab is released, the server generates
+// FocusOut(mode=Ungrab) to the grab window and FocusIn(mode=Ungrab)
+// to the focus window. Java AWT depends on these events to proceed
+// with clipboard operations after menu dismissal.
+void GrabOps::handleUngrabKeyboard(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
+
+  const uint32_t grabWin = ctx.grabs().clearKeyboardGrab();
+  const uint32_t focusWin = ctx.input().focus_xid;
+
+  if (grabWin && grabWin != focusWin) {
+    // FocusOut(detail=Nonlinear, mode=Ungrab) to the grab window
+    uint8_t ev[32] = {};
+    ev[0]  = 10; // FocusOut
+    ev[1]  = 3;  // detail = NotifyNonlinear
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+    wire::wr32_le(ev + 4, grabWin);
+    ev[8]  = 2;  // mode = NotifyUngrab
+    ev[9]  = 1;  // same-screen = true
+    (void)ctx.transport().sendEvent32(grabWin, ev);
+  }
+
+  if (focusWin) {
+    // FocusIn(detail=Nonlinear, mode=Ungrab) to the focus window
+    uint8_t ev[32] = {};
+    ev[0]  = 9;  // FocusIn
+    ev[1]  = 3;  // detail = NotifyNonlinear
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+    wire::wr32_le(ev + 4, focusWin);
+    ev[8]  = 2;  // mode = NotifyUngrab
+    ev[9]  = 1;  // same-screen = true
+    (void)ctx.transport().sendEvent32(focusWin, ev);
+  }
 }
 
 // 33 GrabKey (void)

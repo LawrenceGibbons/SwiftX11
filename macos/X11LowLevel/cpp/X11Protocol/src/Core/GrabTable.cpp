@@ -88,10 +88,23 @@ void GrabTable::updatePointerGrabEventMask(uint16_t eventMask) {
   }
 }
 
+void GrabTable::setKeyboardGrab(uint32_t grabWindow) {
+  std::lock_guard<std::mutex> lock(mu_);
+  keyboard_grab_window_ = grabWindow;
+}
+
+uint32_t GrabTable::clearKeyboardGrab() {
+  std::lock_guard<std::mutex> lock(mu_);
+  uint32_t prev = keyboard_grab_window_;
+  keyboard_grab_window_ = 0;
+  return prev;
+}
+
 void GrabTable::clearAll() {
   std::lock_guard<std::mutex> lock(mu_);
   passive_.clear();
   pointer_ = PointerGrab{};
+  keyboard_grab_window_ = 0;
 }
 
 void GrabTable::removeForWindows(const std::vector<uint32_t>& xids) {
