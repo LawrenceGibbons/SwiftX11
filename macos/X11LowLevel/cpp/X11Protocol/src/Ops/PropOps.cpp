@@ -393,6 +393,10 @@ void PropOps::handleDeleteProperty(XProtoContext& ctx, uint16_t seq, ByteReader&
   }
 
   PropertyTable::instance().erase(wid, atom);
+
+  // X11 spec: DeleteProperty generates PropertyNotify with state=Deleted
+  sendPropertyNotify(ctx, wid, atom, /*deleted*/true);
+
   ctx.tracef("[PropOps] DeleteProperty wid=0x%08X atom=%u\n", (unsigned)wid, (unsigned)atom);
 }
 
@@ -519,8 +523,11 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   if (!ok) return;
   
   // Delete property if requested and we returned the entire property starting at offset 0
-  if (deleteFlag && longOff == 0 && sendOff == 0 && sendBytes == totalBytes) {
+  // X11 spec: only delete when entire property is returned (offset 0, no bytes remaining)
+  if (deleteFlag && longOff == 0 && sendOff == 0 && bytesAfter == 0) {
     PropertyTable::instance().erase(wid, atom);
+    // X11 spec: generate PropertyNotify with state=Deleted after deletion
+    sendPropertyNotify(ctx, wid, atom, /*deleted*/true);
   }
 }
   

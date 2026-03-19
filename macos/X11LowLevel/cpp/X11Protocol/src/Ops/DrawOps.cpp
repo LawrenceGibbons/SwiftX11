@@ -704,10 +704,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     damageOrDirty(ctx, dst, (int32_t)dx0, (int32_t)dy0, (int32_t)cw, (int32_t)ch);
   }
 
-  // ------------------------------------------------------------
-  // After successful copy: send NoExpose (bring-up)
-  // ------------------------------------------------------------
-  if (dstIsWin) {
+  // X11 spec: NoExposure sent when graphics_exposures is True in the GC
+  // and no region of the source is obscured.
+  if (gc.graphics_exposures) {
     auto ev = x11::wireev::buildNoExpose(seq, dst,
                                         x11::opcode::CopyArea, 0);
     (void)ctx.transport().sendEvent32(dst, ev.data());
@@ -717,7 +716,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 // -----------------------------
 // CopyPlane (major 63)
 // -----------------------------
-  void DrawOps::handleCopyPlane(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br)
+  void DrawOps::handleCopyPlane(XProtoContext& ctx, uint16_t seq, ByteReader& br)
   {
     // Body after 4-byte header (28 bytes):
     //   CARD32 srcDrawable
@@ -914,9 +913,16 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if ( dstIsWindow ) {
       damageOrDirty(ctx, dst, (int32_t)dstX, (int32_t)dstY, (int32_t)wpx, (int32_t)hpx);
     }
+
+    // X11 spec: NoExposure sent when graphics_exposures is True in the GC
+    if (gst.graphics_exposures) {
+      auto noExpEv = x11::wireev::buildNoExpose(seq, dst,
+                                                x11::opcode::CopyPlane, 0);
+      (void)ctx.transport().sendEvent32(dst, noExpEv.data());
+    }
   }
-  
-  
+
+
   void DrawOps::handleClearArea(XProtoContext& ctx, uint16_t seq, uint8_t exposures, ByteReader& br)
   {
     if (br.remaining() < 12) { br.skip(br.remaining()); return; }

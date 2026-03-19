@@ -493,6 +493,29 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (wantCfg) {
         ctx.transport().queueNotify(wid, /*wantConfigure=*/true, /*wantExpose=*/false);
       }
+
+      // X11 spec: ConfigureNotify also sent to parent with SubstructureNotifyMask
+      if (vw2->parent_xid != 0 && vw2->parent_xid != x11::kRootXid) {
+        WindowView pv{};
+        if (ctx.windows().snapshot(vw2->parent_xid, pv) &&
+            (pv.event_mask & x11::mask::SubstructureNotify)) {
+          // Find above-sibling (window just below this one in stacking order)
+          uint32_t aboveSib = 0;
+          {
+            auto sibs = ctx.windows().childrenInStackOrder(vw2->parent_xid);
+            for (size_t i = 1; i < sibs.size(); i++) {
+              if (sibs[i] == wid) { aboveSib = sibs[i-1]; break; }
+            }
+          }
+          auto cfgEv = x11::wireev::buildConfigureNotify(
+            ctx.transport().nextEventSeq(),
+            vw2->parent_xid, wid, aboveSib,
+            vw2->x, vw2->y, vw2->w, vw2->h,
+            vw2->border_width, vw2->override_redirect);
+          (void)ctx.transport().sendEvent32(vw2->parent_xid, cfgEv.data());
+        }
+      }
+
       // Always send a direct Expose (bypasses notify queue coalescing).
       // This ensures the child repaints at its new position immediately.
       auto ev = x11::wireev::buildExpose(ctx.transport().lastSeq(),

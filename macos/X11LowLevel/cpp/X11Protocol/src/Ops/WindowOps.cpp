@@ -332,6 +332,7 @@ WindowOps::WindowOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::MapSubwindows,   &WindowOps::onMajor, this);  // MapSubwindows
   reg.registerMajor(x11::opcode::UnmapWindow  ,   &WindowOps::onMajor, this);  // UnmapWindow
   reg.registerMajor(x11::opcode::UnmapSubwindows, &WindowOps::onMajor, this);  // UnmapSubwindows
+  reg.registerMajor(x11::opcode::CirculateWindow, &WindowOps::onMajor, this);  // 13
 }
 
 void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -349,6 +350,7 @@ void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::MapSubwindows   :  handleMapSubwindows(ctx, dc.seq, dc.br); return;
     case x11::opcode::UnmapWindow     : handleUnmapWindow(ctx, dc.seq, dc.br); return;
     case x11::opcode::UnmapSubwindows : handleUnmapSubwindows(ctx, dc.seq, dc.br); return;
+    case x11::opcode::CirculateWindow : handleCirculateWindow(ctx, dc.seq, dc.minor, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowOps] unexpected major=%u\n", (unsigned)dc.major);
@@ -531,6 +533,20 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
 
+  // X11 spec: CreateNotify sent to parent if parent selects SubstructureNotifyMask
+  {
+    WindowView parentView{};
+    if (parent == x11::kRootXid || ctx.windows().snapshot(parent, parentView)) {
+      uint32_t parentMask = (parent == x11::kRootXid) ? 0 : parentView.event_mask;
+      if (parentMask & x11::mask::SubstructureNotify) {
+        auto ev = x11::wireev::buildCreateNotify(
+          ctx.transport().nextEventSeq(),
+          parent, wid, x, y, wpx, hpx, borderWidth, override_redirect);
+        (void)ctx.transport().sendEvent32(parent, ev.data());
+      }
+    }
+  }
+
 #if X11_TRACE_LIFECYCLE_ENABLED
   fprintf(stderr, "[LIFECYCLE] CreateWindow wid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u evmask=0x%08X bg=%s\n",
           (unsigned)wid, (unsigned)parent,
@@ -555,6 +571,42 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
   if (!ctx.windows().exists(wid)) {
     ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::DestroyWindow);
     return;
+  }
+
+  // Snapshot before erase for DestroyNotify delivery
+  WindowView dv{};
+  const bool hadSnap = ctx.windows().snapshot(wid, dv);
+  const uint32_t parentXid = hadSnap ? dv.parent_xid : 0;
+
+  // X11 spec: If this window has focus, send FocusOut and reset focus
+  if (ctx.input().focus_xid == wid) {
+    uint8_t fev[32] = {};
+    fev[0]  = 10; // FocusOut
+    fev[1]  = 0;  // detail = NotifyAncestor
+    wire::wr16_le(fev + 2, ctx.transport().nextEventSeq());
+    wire::wr32_le(fev + 4, wid);
+    fev[8]  = 0;  // mode = NotifyNormal
+    fev[9]  = 1;  // same-screen = true
+    (void)ctx.transport().sendEvent32(wid, fev);
+    ctx.input().setFocusXid(0);
+  }
+
+  // X11 spec: DestroyNotify sent to the window itself (StructureNotifyMask)
+  // and to the parent (SubstructureNotifyMask)
+  {
+    const uint16_t evSeq = ctx.transport().nextEventSeq();
+    if (hadSnap && (dv.event_mask & x11::mask::StructureNotify)) {
+      auto ev = x11::wireev::buildDestroyNotify(evSeq, wid, wid);
+      (void)ctx.transport().sendEvent32(wid, ev.data());
+    }
+    if (parentXid != 0 && parentXid != x11::kRootXid) {
+      WindowView pv{};
+      if (ctx.windows().snapshot(parentXid, pv) &&
+          (pv.event_mask & x11::mask::SubstructureNotify)) {
+        auto ev = x11::wireev::buildDestroyNotify(evSeq, parentXid, wid);
+        (void)ctx.transport().sendEvent32(parentXid, ev.data());
+      }
+    }
   }
 
   // 1) Authoritative C++ state
@@ -582,6 +634,29 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
   // Reverse: destroy deepest children first (leaf → root)
   for (auto it = desc.rbegin(); it != desc.rend(); ++it) {
     const uint32_t child = *it;
+
+    // X11 spec: DestroyNotify to child (StructureNotifyMask)
+    // and to its parent (SubstructureNotifyMask)
+    {
+      WindowView cv{};
+      if (ctx.windows().snapshot(child, cv)) {
+        const uint16_t evSeq = ctx.transport().nextEventSeq();
+        if (cv.event_mask & x11::mask::StructureNotify) {
+          auto ev = x11::wireev::buildDestroyNotify(evSeq, child, child);
+          (void)ctx.transport().sendEvent32(child, ev.data());
+        }
+        const uint32_t parentXid = cv.parent_xid;
+        if (parentXid != 0 && parentXid != x11::kRootXid) {
+          WindowView pv{};
+          if (ctx.windows().snapshot(parentXid, pv) &&
+              (pv.event_mask & x11::mask::SubstructureNotify)) {
+            auto ev = x11::wireev::buildDestroyNotify(evSeq, parentXid, child);
+            (void)ctx.transport().sendEvent32(parentXid, ev.data());
+          }
+        }
+      }
+    }
+
     ctx.windows().erase(child);
     x11_ui_push_destroy(child);
   }
@@ -618,19 +693,48 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
   // Reparent in WindowTable
   ctx.windows().reparent(wid, newParent, x, y);
 
-  // Send ReparentNotify (event type 21) to the window itself
+  // X11 spec: ReparentNotify sent to the window (StructureNotifyMask),
+  // old parent (SubstructureNotifyMask), and new parent (SubstructureNotifyMask).
   {
     const uint16_t evSeq = ctx.transport().nextEventSeq();
-    uint8_t ev[32] = {};
-    ev[0] = 21; // ReparentNotify
-    wire::wr16_le(ev + 2, evSeq);
-    wire::wr32_le(ev + 4, wid);       // event = window itself
-    wire::wr32_le(ev + 8, wid);       // window
-    wire::wr32_le(ev + 12, newParent); // parent
-    wire::wr16_le(ev + 16, (uint16_t)x);
-    wire::wr16_le(ev + 18, (uint16_t)y);
-    ev[20] = vw.override_redirect ? 1 : 0;
-    (void)ctx.transport().sendEvent32(wid, ev);
+    const uint32_t oldParent = vw.parent_xid;
+
+    // Helper lambda to build a ReparentNotify event
+    auto buildReparentNotify = [&](uint32_t eventWid) {
+      uint8_t ev[32] = {};
+      ev[0] = 21; // ReparentNotify
+      wire::wr16_le(ev + 2, evSeq);
+      wire::wr32_le(ev + 4, eventWid);    // event
+      wire::wr32_le(ev + 8, wid);         // window
+      wire::wr32_le(ev + 12, newParent);  // parent
+      wire::wr16_le(ev + 16, (uint16_t)x);
+      wire::wr16_le(ev + 18, (uint16_t)y);
+      ev[20] = vw.override_redirect ? 1 : 0;
+      (void)ctx.transport().sendEvent32(eventWid, ev);
+    };
+
+    // To the window itself (if StructureNotifyMask)
+    if (vw.event_mask & x11::mask::StructureNotify) {
+      buildReparentNotify(wid);
+    }
+
+    // To old parent (if SubstructureNotifyMask)
+    if (oldParent != 0 && oldParent != x11::kRootXid) {
+      WindowView opv{};
+      if (ctx.windows().snapshot(oldParent, opv) &&
+          (opv.event_mask & x11::mask::SubstructureNotify)) {
+        buildReparentNotify(oldParent);
+      }
+    }
+
+    // To new parent (if SubstructureNotifyMask)
+    if (newParent != 0 && newParent != x11::kRootXid && newParent != oldParent) {
+      WindowView npv{};
+      if (ctx.windows().snapshot(newParent, npv) &&
+          (npv.event_mask & x11::mask::SubstructureNotify)) {
+        buildReparentNotify(newParent);
+      }
+    }
   }
 
   // If was mapped, remap
@@ -716,6 +820,29 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
               (int)mv_dbg.x, (int)mv_dbg.y, (unsigned)mv_dbg.w, (unsigned)mv_dbg.h);
     }
 #endif
+
+    // X11 spec: MapNotify sent to the window (StructureNotifyMask) and
+    // parent (SubstructureNotifyMask), but only if it wasn't already mapped.
+    if (!wasMapped) {
+      WindowView mv{};
+      bool orFlag = false;
+      if (ctx.windows().snapshot(wid, mv)) orFlag = mv.override_redirect;
+      const uint16_t evSeq = ctx.transport().nextEventSeq();
+      // To window itself
+      if (mv.event_mask & x11::mask::StructureNotify) {
+        auto ev = x11::wireev::buildMapNotify(evSeq, wid, wid, orFlag);
+        (void)ctx.transport().sendEvent32(wid, ev.data());
+      }
+      // To parent
+      if (mv.parent_xid != 0 && mv.parent_xid != x11::kRootXid) {
+        WindowView pv{};
+        if (ctx.windows().snapshot(mv.parent_xid, pv) &&
+            (pv.event_mask & x11::mask::SubstructureNotify)) {
+          auto ev = x11::wireev::buildMapNotify(evSeq, mv.parent_xid, wid, orFlag);
+          (void)ctx.transport().sendEvent32(mv.parent_xid, ev.data());
+        }
+      }
+    }
 
     // Already-mapped window: skip UI push (prevents double MAP_SHOW when
     // MapSubwindows already pushed a map for this host).
@@ -857,6 +984,26 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader
     // 1) Authoritative state
     ctx.windows().setMapped(xid, true);
 
+    // X11 spec: MapNotify to the window and parent
+    {
+      WindowView childView{};
+      if (ctx.windows().snapshot(xid, childView)) {
+        const uint16_t evSeq = ctx.transport().nextEventSeq();
+        if (childView.event_mask & x11::mask::StructureNotify) {
+          auto ev = x11::wireev::buildMapNotify(evSeq, xid, xid, childView.override_redirect);
+          (void)ctx.transport().sendEvent32(xid, ev.data());
+        }
+        if (parent != 0 && parent != x11::kRootXid) {
+          WindowView pv{};
+          if (ctx.windows().snapshot(parent, pv) &&
+              (pv.event_mask & x11::mask::SubstructureNotify)) {
+            auto ev = x11::wireev::buildMapNotify(evSeq, parent, xid, childView.override_redirect);
+            (void)ctx.transport().sendEvent32(parent, ev.data());
+          }
+        }
+      }
+    }
+
     // Fill border + background (X11 spec: server paints before Expose)
     fillWindowBorder(ctx, xid);
     fillWindowBackground(ctx, xid);
@@ -923,6 +1070,37 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
   const bool hadSnap = ctx.windows().snapshot(wid, cv);
   const bool wasMapped = hadSnap && cv.mapped;
 
+  // X11 spec: UnmapNotify sent to window (StructureNotifyMask) and
+  // parent (SubstructureNotifyMask), but only if it was mapped.
+  if (wasMapped) {
+    const uint16_t evSeq = ctx.transport().nextEventSeq();
+    if (hadSnap && (cv.event_mask & x11::mask::StructureNotify)) {
+      auto ev = x11::wireev::buildUnmapNotify(evSeq, wid, wid, /*fromConfigure*/false);
+      (void)ctx.transport().sendEvent32(wid, ev.data());
+    }
+    if (cv.parent_xid != 0 && cv.parent_xid != x11::kRootXid) {
+      WindowView pv{};
+      if (ctx.windows().snapshot(cv.parent_xid, pv) &&
+          (pv.event_mask & x11::mask::SubstructureNotify)) {
+        auto ev = x11::wireev::buildUnmapNotify(evSeq, cv.parent_xid, wid, /*fromConfigure*/false);
+        (void)ctx.transport().sendEvent32(cv.parent_xid, ev.data());
+      }
+    }
+  }
+
+  // X11 spec: If unmapped window has focus, send FocusOut and reset focus
+  if (wasMapped && ctx.input().focus_xid == wid) {
+    uint8_t fev[32] = {};
+    fev[0]  = 10; // FocusOut
+    fev[1]  = 0;  // detail = NotifyAncestor
+    wire::wr16_le(fev + 2, ctx.transport().nextEventSeq());
+    wire::wr32_le(fev + 4, wid);
+    fev[8]  = 0;  // mode = NotifyNormal
+    fev[9]  = 1;  // same-screen = true
+    (void)ctx.transport().sendEvent32(wid, fev);
+    ctx.input().setFocusXid(0);
+  }
+
   // 1) Update authoritative table
   ctx.windows().setMapped(wid, false);
 
@@ -973,6 +1151,23 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteRead
     if (!ctx.windows().snapshot(xid, cv)) continue;
     if (!cv.mapped) continue; // already unmapped
 
+    // X11 spec: UnmapNotify to the window and parent
+    {
+      const uint16_t evSeq = ctx.transport().nextEventSeq();
+      if (cv.event_mask & x11::mask::StructureNotify) {
+        auto ev = x11::wireev::buildUnmapNotify(evSeq, xid, xid, /*fromConfigure*/false);
+        (void)ctx.transport().sendEvent32(xid, ev.data());
+      }
+      if (parent != 0 && parent != x11::kRootXid) {
+        WindowView pv{};
+        if (ctx.windows().snapshot(parent, pv) &&
+            (pv.event_mask & x11::mask::SubstructureNotify)) {
+          auto ev = x11::wireev::buildUnmapNotify(evSeq, parent, xid, /*fromConfigure*/false);
+          (void)ctx.transport().sendEvent32(parent, ev.data());
+        }
+      }
+    }
+
     // 1) Authoritative state
     ctx.windows().setMapped(xid, false);
 
@@ -994,6 +1189,83 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteRead
 }
   
   
+// -------------------- CirculateWindow (opcode 13)
+// dc.minor = direction: 0=RaiseLowest, 1=LowerHighest
+void WindowOps::handleCirculateWindow(XProtoContext& ctx, uint16_t seq,
+                                       uint8_t direction, ByteReader& br)
+{
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t wid = br.readU32();
+  br.skip(br.remaining());
+  if (wid == 0) return;
+
+  if (!ctx.windows().exists(wid)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CirculateWindow);
+    return;
+  }
+
+  // Get children in stacking order
+  auto children = ctx.windows().childrenInStackOrder(wid);
+  if (children.size() < 2) return; // nothing to circulate
+
+  uint32_t target = 0;
+  uint8_t place = 0; // 0=Top, 1=Bottom
+
+  if (direction == 0) {
+    // RaiseLowest: find lowest mapped child and raise it to the top
+    for (uint32_t child : children) {
+      WindowView cv{};
+      if (ctx.windows().snapshot(child, cv) && cv.mapped) {
+        target = child;
+        place = 0; // Top
+        break;
+      }
+    }
+    if (target != 0) ctx.windows().raiseToTop(target);
+  } else {
+    // LowerHighest: find highest mapped child and lower it to the bottom
+    for (auto it = children.rbegin(); it != children.rend(); ++it) {
+      WindowView cv{};
+      if (ctx.windows().snapshot(*it, cv) && cv.mapped) {
+        target = *it;
+        place = 1; // Bottom
+        break;
+      }
+    }
+    if (target != 0) ctx.windows().lowerToBottom(target);
+  }
+
+  if (target == 0) return; // no mapped children
+
+  // X11 spec: CirculateNotify sent to the window (StructureNotifyMask)
+  // and to the parent (SubstructureNotifyMask)
+  {
+    const uint16_t evSeq = ctx.transport().nextEventSeq();
+
+    // To the parent (wid) if it selects StructureNotify
+    WindowView parentView{};
+    if (ctx.windows().snapshot(wid, parentView) &&
+        (parentView.event_mask & x11::mask::StructureNotify)) {
+      auto ev = x11::wireev::buildCirculateNotify(evSeq, wid, target, place);
+      (void)ctx.transport().sendEvent32(wid, ev.data());
+    }
+
+    // To the circulated child if it selects StructureNotify
+    WindowView childView{};
+    if (ctx.windows().snapshot(target, childView) &&
+        (childView.event_mask & x11::mask::StructureNotify)) {
+      auto ev = x11::wireev::buildCirculateNotify(evSeq, target, target, place);
+      (void)ctx.transport().sendEvent32(target, ev.data());
+    }
+  }
+
+  // Damage host for repaint
+  const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+  if (host != 0) {
+    damageOrDirty(ctx, host);
+  }
+}
+
 // Host resized native surface for wid; update server geometry + notify clients + redraw.
 // Called on server/protocol thread.  Swift owns the backing surface.
 void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t h_px)

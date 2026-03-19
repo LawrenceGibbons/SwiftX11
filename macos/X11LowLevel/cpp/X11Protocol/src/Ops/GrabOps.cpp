@@ -219,6 +219,31 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
     }
   }
 
+  // X11 spec: When a keyboard grab activates, the server generates
+  // FocusIn(mode=Grab) to the grab window and FocusOut(mode=Grab)
+  // to the old focus window.
+  const uint32_t focusWin = ctx.input().focus_xid;
+  if (focusWin && focusWin != grabWindow) {
+    uint8_t ev[32] = {};
+    ev[0]  = 10; // FocusOut
+    ev[1]  = 3;  // detail = NotifyNonlinear
+    wire::wr16_le(ev + 2, ctx.transport().nextEventSeq());
+    wire::wr32_le(ev + 4, focusWin);
+    ev[8]  = 1;  // mode = NotifyGrab
+    ev[9]  = 1;  // same-screen = true
+    (void)ctx.transport().sendEvent32(focusWin, ev);
+  }
+  if (grabWindow) {
+    uint8_t ev[32] = {};
+    ev[0]  = 9;  // FocusIn
+    ev[1]  = 3;  // detail = NotifyNonlinear
+    wire::wr16_le(ev + 2, ctx.transport().nextEventSeq());
+    wire::wr32_le(ev + 4, grabWindow);
+    ev[8]  = 1;  // mode = NotifyGrab
+    ev[9]  = 1;  // same-screen = true
+    (void)ctx.transport().sendEvent32(grabWindow, ev);
+  }
+
   // Store keyboard grab window for UngrabKeyboard focus events
   ctx.grabs().setKeyboardGrab(grabWindow);
 
