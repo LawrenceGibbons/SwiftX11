@@ -424,14 +424,15 @@ final class WindowRegistry {
       #endif
 
       // WM_HINTS IconicState: client wants this window to start minimized.
-      // Skip showing entirely — just miniaturize without orderFront.
+      // Don't show or miniaturize — miniaturize(nil) on a non-visible window
+      // causes macOS to briefly show it with a minimize animation (the "sliding
+      // window" glitch).  Just leave it hidden; the client thinks it's mapped
+      // (MapNotify was sent) but the NSWindow stays off-screen.
       if pendingIconicState.remove(hostCopy) != nil {
         #if DEBUG
-        print("[MAP_ICONIC] xid=0x\(String(format:"%X", hostCopy)) IconicState — miniaturizing without show")
+        print("[MAP_ICONIC] xid=0x\(String(format:"%X", hostCopy)) IconicState — keeping hidden")
         #endif
-        if let win = windows[hostCopy]?.window {
-          DispatchQueue.main.async { win.miniaturize(nil) }
-        }
+        // Window stays hidden — no orderFront, no miniaturize
       } else {
         syncAndShowNonORWindow(host: hostCopy, x11x: x11x, x11y: x11y, x11w: x11w, x11h: x11h)
       }
