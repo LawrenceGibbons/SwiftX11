@@ -67,7 +67,9 @@
       "Bash(git merge:*)",
       "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 stash)",
       "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 merge claude/stupefied-panini --no-edit)",
-      "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 log --oneline -3)"
+      "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 log --oneline -3)",
+      "Bash(git add:*)",
+      "Bash(git -C /Users/lkg/Documents/Vivado/SwiftX11 log --oneline -8)"
     ]
   }
 }
