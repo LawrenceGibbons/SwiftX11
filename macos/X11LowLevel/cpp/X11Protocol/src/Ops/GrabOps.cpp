@@ -227,7 +227,7 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
     uint8_t ev[32] = {};
     ev[0]  = 10; // FocusOut
     ev[1]  = 3;  // detail = NotifyNonlinear
-    wire::wr16_le(ev + 2, ctx.transport().nextEventSeq());
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4, focusWin);
     ev[8]  = 1;  // mode = NotifyGrab
     ev[9]  = 1;  // same-screen = true
@@ -237,7 +237,7 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
     uint8_t ev[32] = {};
     ev[0]  = 9;  // FocusIn
     ev[1]  = 3;  // detail = NotifyNonlinear
-    wire::wr16_le(ev + 2, ctx.transport().nextEventSeq());
+    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4, grabWindow);
     ev[8]  = 1;  // mode = NotifyGrab
     ev[9]  = 1;  // same-screen = true

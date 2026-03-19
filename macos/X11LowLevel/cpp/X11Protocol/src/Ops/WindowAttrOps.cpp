@@ -508,7 +508,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             }
           }
           auto cfgEv = x11::wireev::buildConfigureNotify(
-            ctx.transport().nextEventSeq(),
+            ctx.transport().lastSeq(),
             vw2->parent_xid, wid, aboveSib,
             vw2->x, vw2->y, vw2->w, vw2->h,
             vw2->border_width, vw2->override_redirect);

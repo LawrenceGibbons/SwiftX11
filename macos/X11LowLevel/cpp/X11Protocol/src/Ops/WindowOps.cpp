@@ -236,8 +236,9 @@ static inline void sendInitialExposeNow(x11::XProtoContext& ctx, uint32_t wid) {
   x11::WindowView vw{};
   if (!ctx.windows().snapshot(wid, vw)) return;
 
-  // Full-window expose. Use a nonzero seq field; nextEventSeq() is ideal.
-  const uint16_t seq = ctx.transport().nextEventSeq();
+  // Full-window expose.  Carry the sequence of the last processed request
+  // (X11 spec: events use the sequence of the most recently processed request).
+  const uint16_t seq = ctx.transport().lastSeq();
 
   auto ev = x11::wireev::buildExpose(seq,
                                      wid,
@@ -540,7 +541,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
       uint32_t parentMask = (parent == x11::kRootXid) ? 0 : parentView.event_mask;
       if (parentMask & x11::mask::SubstructureNotify) {
         auto ev = x11::wireev::buildCreateNotify(
-          ctx.transport().nextEventSeq(),
+          ctx.transport().lastSeq(),
           parent, wid, x, y, wpx, hpx, borderWidth, override_redirect);
         (void)ctx.transport().sendEvent32(parent, ev.data());
       }
@@ -583,7 +584,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
     uint8_t fev[32] = {};
     fev[0]  = 10; // FocusOut
     fev[1]  = 0;  // detail = NotifyAncestor
-    wire::wr16_le(fev + 2, ctx.transport().nextEventSeq());
+    wire::wr16_le(fev + 2, ctx.transport().lastSeq());
     wire::wr32_le(fev + 4, wid);
     fev[8]  = 0;  // mode = NotifyNormal
     fev[9]  = 1;  // same-screen = true
@@ -594,7 +595,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
   // X11 spec: DestroyNotify sent to the window itself (StructureNotifyMask)
   // and to the parent (SubstructureNotifyMask)
   {
-    const uint16_t evSeq = ctx.transport().nextEventSeq();
+    const uint16_t evSeq = ctx.transport().lastSeq();
     if (hadSnap && (dv.event_mask & x11::mask::StructureNotify)) {
       auto ev = x11::wireev::buildDestroyNotify(evSeq, wid, wid);
       (void)ctx.transport().sendEvent32(wid, ev.data());
@@ -640,7 +641,7 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
     {
       WindowView cv{};
       if (ctx.windows().snapshot(child, cv)) {
-        const uint16_t evSeq = ctx.transport().nextEventSeq();
+        const uint16_t evSeq = ctx.transport().lastSeq();
         if (cv.event_mask & x11::mask::StructureNotify) {
           auto ev = x11::wireev::buildDestroyNotify(evSeq, child, child);
           (void)ctx.transport().sendEvent32(child, ev.data());
@@ -696,7 +697,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
   // X11 spec: ReparentNotify sent to the window (StructureNotifyMask),
   // old parent (SubstructureNotifyMask), and new parent (SubstructureNotifyMask).
   {
-    const uint16_t evSeq = ctx.transport().nextEventSeq();
+    const uint16_t evSeq = ctx.transport().lastSeq();
     const uint32_t oldParent = vw.parent_xid;
 
     // Helper lambda to build a ReparentNotify event
@@ -827,7 +828,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
       WindowView mv{};
       bool orFlag = false;
       if (ctx.windows().snapshot(wid, mv)) orFlag = mv.override_redirect;
-      const uint16_t evSeq = ctx.transport().nextEventSeq();
+      const uint16_t evSeq = ctx.transport().lastSeq();
       // To window itself
       if (mv.event_mask & x11::mask::StructureNotify) {
         auto ev = x11::wireev::buildMapNotify(evSeq, wid, wid, orFlag);
@@ -988,7 +989,7 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader
     {
       WindowView childView{};
       if (ctx.windows().snapshot(xid, childView)) {
-        const uint16_t evSeq = ctx.transport().nextEventSeq();
+        const uint16_t evSeq = ctx.transport().lastSeq();
         if (childView.event_mask & x11::mask::StructureNotify) {
           auto ev = x11::wireev::buildMapNotify(evSeq, xid, xid, childView.override_redirect);
           (void)ctx.transport().sendEvent32(xid, ev.data());
@@ -1073,7 +1074,7 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
   // X11 spec: UnmapNotify sent to window (StructureNotifyMask) and
   // parent (SubstructureNotifyMask), but only if it was mapped.
   if (wasMapped) {
-    const uint16_t evSeq = ctx.transport().nextEventSeq();
+    const uint16_t evSeq = ctx.transport().lastSeq();
     if (hadSnap && (cv.event_mask & x11::mask::StructureNotify)) {
       auto ev = x11::wireev::buildUnmapNotify(evSeq, wid, wid, /*fromConfigure*/false);
       (void)ctx.transport().sendEvent32(wid, ev.data());
@@ -1093,7 +1094,7 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
     uint8_t fev[32] = {};
     fev[0]  = 10; // FocusOut
     fev[1]  = 0;  // detail = NotifyAncestor
-    wire::wr16_le(fev + 2, ctx.transport().nextEventSeq());
+    wire::wr16_le(fev + 2, ctx.transport().lastSeq());
     wire::wr32_le(fev + 4, wid);
     fev[8]  = 0;  // mode = NotifyNormal
     fev[9]  = 1;  // same-screen = true
@@ -1153,7 +1154,7 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteRead
 
     // X11 spec: UnmapNotify to the window and parent
     {
-      const uint16_t evSeq = ctx.transport().nextEventSeq();
+      const uint16_t evSeq = ctx.transport().lastSeq();
       if (cv.event_mask & x11::mask::StructureNotify) {
         auto ev = x11::wireev::buildUnmapNotify(evSeq, xid, xid, /*fromConfigure*/false);
         (void)ctx.transport().sendEvent32(xid, ev.data());
@@ -1240,7 +1241,7 @@ void WindowOps::handleCirculateWindow(XProtoContext& ctx, uint16_t seq,
   // X11 spec: CirculateNotify sent to the window (StructureNotifyMask)
   // and to the parent (SubstructureNotifyMask)
   {
-    const uint16_t evSeq = ctx.transport().nextEventSeq();
+    const uint16_t evSeq = ctx.transport().lastSeq();
 
     // To the parent (wid) if it selects StructureNotify
     WindowView parentView{};
