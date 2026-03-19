@@ -13,9 +13,13 @@
 #include "Core/XClient.hpp"
 #include "Core/SurfaceDesc.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/PropertyTable.hpp"
+#include "Core/ClipboardAtoms.hpp"
+#include "Core/ScreenLayout.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
 #include "Core/timestamp.hpp"
+#include "Utils/WireLE.hpp"
 
 extern "C" {
 #include "SwiftX11Bridge.h"
@@ -46,6 +50,12 @@ XProtoServer::XProtoServer()
 
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);
+
+  // Wire pending-map callback so MapWindow handler can defer maps.
+  ctx_.setPendingMapCallback(&XProtoServer::pendingMapTrampoline, this);
+
+  // Wire peak-size callback so ConfigureWindow can track pre-map sizes.
+  ctx_.setPeakSizeCallback(&XProtoServer::peakSizeTrampoline, this);
 
   // Load built-in fonts.
   std::string err;
@@ -317,6 +327,159 @@ void XProtoServer::setTestWindow(const WindowView& w) {
 void XProtoServer::clearTestWindows() {
   if (!impl_) return;
   impl_->testWindows.clear();
+}
+
+void XProtoServer::flushPendingMaps() {
+  if (pending_maps_.empty()) return;
+  for (uint32_t wid : pending_maps_) {
+    WindowView vw{};
+    if (!windows_.snapshot(wid, vw)) continue;
+
+    // ── SubstructureRedirect emulation: authoritative size override ─────
+    // After draining all buffered client data, the window's geometry may
+    // STILL be tiny (e.g., Java AWT undoes its own ConfigureWindow AND
+    // WM_NORMAL_HINTS before MapWindow).
+    //
+    // Resolution order:
+    //   1. WM_NORMAL_HINTS (ICCCM authoritative — real WMs read at MapRequest)
+    //   2. Peak pre-map size (largest ConfigureWindow seen before map)
+    //   3. Give up: map at current tiny size
+    if (vw.w < 50 || vw.h < 50) {
+      int32_t desired_w = 0, desired_h = 0;
+
+      // Try WM_NORMAL_HINTS first
+      x11::PropertyTable::Prop hints_prop;
+      if (x11::PropertyTable::instance().get(wid, x11::atom::kWM_NORMAL_HINTS, hints_prop) &&
+          hints_prop.format == 32 && hints_prop.data.size() >= 5 * 4) {
+        const uint32_t* d32 = reinterpret_cast<const uint32_t*>(hints_prop.data.data());
+        const uint32_t flags = d32[0];
+        if ((flags & 0x08) && hints_prop.data.size() >= 5 * 4) { // PSize
+          desired_w = (int32_t)d32[3];
+          desired_h = (int32_t)d32[4];
+        }
+        if ((flags & 0x10) && hints_prop.data.size() >= 7 * 4) { // PMinSize
+          int32_t mw = (int32_t)d32[5], mh = (int32_t)d32[6];
+          if (mw > desired_w) desired_w = mw;
+          if (mh > desired_h) desired_h = mh;
+        }
+        if ((flags & 0x100) && hints_prop.data.size() >= 17 * 4) { // PBaseSize
+          int32_t bw = (int32_t)d32[15], bh = (int32_t)d32[16];
+          if (bw > desired_w) desired_w = bw;
+          if (bh > desired_h) desired_h = bh;
+        }
+      }
+
+      // If WM_NORMAL_HINTS didn't help (also tiny or missing), try peak size
+      if (desired_w < 50 || desired_h < 50) {
+        uint16_t pw = 0, ph = 0;
+        if (getPeakSize(wid, pw, ph) && pw >= 50 && ph >= 50) {
+          desired_w = (int32_t)pw;
+          desired_h = (int32_t)ph;
+#ifndef NDEBUG
+          fprintf(stderr, "[FLUSH_MAP_PEAK] wid=0x%08X: geom %ux%u → peak %ux%u\n",
+                  (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
+                  (unsigned)pw, (unsigned)ph);
+#endif
+        }
+      }
+
+      if (desired_w >= 50 && desired_h >= 50 &&
+          ((int32_t)vw.w != desired_w || (int32_t)vw.h != desired_h)) {
+        uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
+        uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
+#ifndef NDEBUG
+        fprintf(stderr, "[FLUSH_MAP_RESIZE] wid=0x%08X: geom %ux%u → %ux%u\n",
+                (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
+                (unsigned)nw, (unsigned)nh);
+#endif
+        // Center on primary monitor if no explicit position
+        auto layout = x11::getScreenLayout();
+        const x11::MonitorInfo* primary = nullptr;
+        for (auto& m : layout.monitors) {
+          if (m.is_primary) { primary = &m; break; }
+        }
+        if (!primary && !layout.monitors.empty())
+          primary = &layout.monitors[0];
+        if (primary) {
+          int32_t cx = primary->x + ((int32_t)primary->w - (int32_t)nw) / 2;
+          int32_t cy = primary->y + ((int32_t)primary->h - (int32_t)nh) / 2;
+          if (cx < primary->x) cx = primary->x;
+          if (cy < primary->y) cy = primary->y;
+          windows_.setGeometry(wid, (int16_t)cx, (int16_t)cy, nw, nh);
+        } else {
+          windows_.setGeometry(wid, vw.x, vw.y, nw, nh);
+        }
+        // Re-snapshot after resize
+        windows_.snapshot(wid, vw);
+      }
+    }
+
+    // Clear peak size now that window is being mapped
+    clearPeakSize(wid);
+
+#ifndef NDEBUG
+    fprintf(stderr, "[FLUSH_MAP] wid=0x%08X geom=%ux%u — pushing deferred map\n",
+            (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h);
+#endif
+    x11_ui_push_map(wid);
+    x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);
+    if (vw.override_redirect) {
+      x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
+    }
+
+    // _NET_FRAME_EXTENTS
+    {
+      uint8_t extents[16] = {0};
+      if (!vw.override_redirect) {
+        x11::wire::wr32_le(extents + 0, 0);   // left
+        x11::wire::wr32_le(extents + 4, 0);   // right
+        x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
+        x11::wire::wr32_le(extents + 12, 0);  // bottom
+      }
+      PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
+                                           x11::atom::kATOM, 32, extents, 16);
+    }
+  }
+  pending_maps_.clear();
+}
+
+void XProtoServer::pendingMapTrampoline(uint32_t wid, void* user) {
+  if (user) static_cast<XProtoServer*>(user)->addPendingMap(wid);
+}
+
+void XProtoServer::peakSizeTrampoline(uint32_t wid, uint16_t w, uint16_t h, void* user) {
+  if (user) static_cast<XProtoServer*>(user)->notePeakSize(wid, w, h);
+}
+
+void XProtoServer::notePeakSize(uint32_t wid, uint16_t w, uint16_t h) {
+  uint32_t area = (uint32_t)w * (uint32_t)h;
+  auto it = peak_sizes_.find(wid);
+  if (it == peak_sizes_.end()) {
+    peak_sizes_[wid] = PeakSize{w, h};
+  } else {
+    uint32_t old_area = (uint32_t)it->second.w * (uint32_t)it->second.h;
+    if (area > old_area) {
+      it->second = PeakSize{w, h};
+    }
+  }
+#ifndef NDEBUG
+  auto& ps = peak_sizes_[wid];
+  fprintf(stderr, "[PEAK_SIZE] wid=0x%08X configure=%ux%u peak=%ux%u\n",
+          (unsigned)wid, (unsigned)w, (unsigned)h,
+          (unsigned)ps.w, (unsigned)ps.h);
+#endif
+}
+
+bool XProtoServer::getPeakSize(uint32_t wid, uint16_t& outW, uint16_t& outH) const {
+  auto it = peak_sizes_.find(wid);
+  if (it == peak_sizes_.end()) return false;
+  outW = it->second.w;
+  outH = it->second.h;
+  return true;
+}
+
+void XProtoServer::clearPeakSize(uint32_t wid) {
+  peak_sizes_.erase(wid);
 }
 
 bool XProtoServer::lookupWindowTrampoline(uint32_t xid, WindowView* out, void* user) {

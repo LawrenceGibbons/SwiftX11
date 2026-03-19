@@ -18,6 +18,7 @@
 #include "Utils/WireEvents.hpp"
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
+#include "Core/ScreenLayout.hpp"
 #include "Utils/WireLE.hpp"
 
 // util
@@ -469,21 +470,21 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
 
   // ---- CREATE (server state only) ----
-  // WM minimum size floor: top-level windows created at truly tiny sizes
-  // (e.g. 1×1) are enlarged so surfaces allocate and windows are visible.
-  // Vivado and similar apps create 1×1 windows expecting the WM to resize
-  // via WM_NORMAL_HINTS or ConfigureRequest.
-  // Only apply to very small windows (< 10×10) — legitimate small windows
-  // like xeyes (150×100) must NOT be enlarged, as the floor size (200×100)
-  // triggers the deferred-show path and breaks the Expose lifecycle.
-  uint16_t eff_w = wpx, eff_h = hpx;
-  if (parent == x11::kRootXid && (wpx < 10 || hpx < 10)) {
-    if (eff_w < 200) eff_w = 200;
-    if (eff_h < 100) eff_h = 100;
-  }
-
+  // No size floor at CreateWindow time — store the client's requested size
+  // exactly.  XQuartz/quartz-wm doesn't floor either; the WM reads
+  // WM_NORMAL_HINTS at MapRequest time.  Our MAP_HINTS code in
+  // handleMapWindow() does the equivalent: proactively reads hints at map
+  // time and resizes.  Flooring here would change the client's perceived
+  // geometry (via ConfigureNotify) and prevent it from sending its own
+  // ConfigureWindow with the real size.
   const int owner_fd = ctx.transport().clientFd();
-  ctx.windows().upsert(wid, parent, x, y, eff_w, eff_h, event_mask, owner_fd);
+#ifndef NDEBUG
+  if (parent == x11::kRootXid) {
+    fprintf(stderr, "[CREATE_TOPLEVEL] wid=0x%08X requested=%ux%u pos=(%d,%d) bw=%u\n",
+            (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (int)x, (int)y, (unsigned)borderWidth);
+  }
+#endif
+  ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
   if (borderWidth > 0) {
     ctx.windows().setBorderWidth(wid, borderWidth);
   }
@@ -525,7 +526,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
 
   uint32_t createFlags = 0;
   if (override_redirect) createFlags |= X11_UI_FLAG_OVERRIDE_REDIRECT;
-  ctx.ui().pushCreate(wid, parent, title, (int32_t)x, (int32_t)y, (int32_t)eff_w, (int32_t)eff_h, createFlags);
+  ctx.ui().pushCreate(wid, parent, title, (int32_t)x, (int32_t)y, (int32_t)wpx, (int32_t)hpx, createFlags);
 
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
@@ -647,6 +648,34 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
 }
 
 
+// Helper: push resize/move/frame-extents after x11_ui_push_map().
+// Used by both the immediate map path (normal-sized windows) and
+// flushPendingMaps() in XProtoServer (deferred tiny windows).
+static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
+  WindowView vw{};
+  if (!ctx.windows().snapshot(wid, vw)) return;
+
+  x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);
+
+  if (vw.override_redirect) {
+    x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
+  }
+
+  // _NET_FRAME_EXTENTS: WM frame decoration sizes.
+  {
+    uint8_t extents[16] = {0};
+    if (!vw.override_redirect) {
+      x11::wire::wr32_le(extents + 0, 0);   // left
+      x11::wire::wr32_le(extents + 4, 0);   // right
+      x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
+      x11::wire::wr32_le(extents + 12, 0);  // bottom
+    }
+    PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
+                                         x11::atom::kATOM /*CARDINAL*/, 32,
+                                         extents, 16);
+  }
+}
+
   void WindowOps::handleMapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
     const uint32_t wid = br.readU32();
@@ -659,6 +688,8 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     }
 
     // 1) Update authoritative table
+    // X11 spec: MapWindow on already-mapped window is a no-op.
+    const bool wasMapped = ctx.windows().isMapped(wid);
     ctx.windows().setMapped(wid, true);
 
     // Rootless rule: only top-level host windows drive Cocoa.
@@ -668,10 +699,10 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     {
       WindowView mv{};
       ctx.windows().snapshot(wid, mv);
-      fprintf(stderr, "[LIFECYCLE] MapWindow wid=0x%08X host=0x%08X isHost=%d parent=0x%08X xy=(%d,%d) wh=%ux%u\n",
+      fprintf(stderr, "[LIFECYCLE] MapWindow wid=0x%08X host=0x%08X isHost=%d parent=0x%08X xy=(%d,%d) wh=%ux%u wasMapped=%d\n",
               (unsigned)wid, (unsigned)host, (int)(host == wid),
               (unsigned)mv.parent_xid,
-              (int)mv.x, (int)mv.y, (unsigned)mv.w, (unsigned)mv.h);
+              (int)mv.x, (int)mv.y, (unsigned)mv.w, (unsigned)mv.h, (int)wasMapped);
     }
 #endif
 
@@ -686,44 +717,41 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     }
 #endif
 
+    // Already-mapped window: skip UI push (prevents double MAP_SHOW when
+    // MapSubwindows already pushed a map for this host).
+    if (wasMapped) goto post_map;
+
     // 2) Swift-side map + authoritative resize only for the host (UI command queue)
     if (host == wid) {
-      x11_ui_push_map(wid);
 
-      // After mapping a top-level host, emit an authoritative resize to Swift.
-      // This ensures Cocoa host is sized from X11 geometry and avoids relying on transient Cocoa sizes.
-      WindowView vw{};
-      if (ctx.windows().snapshot(wid, vw)) {
-        x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);
-
-        // For override-redirect windows (popup menus, tooltips), push the
-        // position at map time. The window's geometry was set at CreateWindow
-        // or ConfigureWindow, but the NSWindow needs to be placed correctly
-        // before/when it becomes visible.
-        if (vw.override_redirect) {
-          x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
+      // ── SubstructureRedirect emulation: defer map for tiny windows ────
+      // Clients like Java AWT create windows at 1×1, then configure them to
+      // the real size.  Without SubstructureRedirect, MapWindow fires before
+      // ConfigureWindow arrives.  Deferring the map until all buffered client
+      // data is drained allows ConfigureWindow + WM_NORMAL_HINTS to land
+      // first.  The daemon's poll loop calls flushPendingMaps() after
+      // readAndDispatch returns NeedMore (all buffered data consumed).
+      {
+        WindowView pre_map_vw{};
+        bool is_tiny = false;
+        if (ctx.windows().snapshot(wid, pre_map_vw)) {
+          is_tiny = (pre_map_vw.w < 50 || pre_map_vw.h < 50);
         }
 
-        // _NET_FRAME_EXTENTS: proactively set WM frame decoration sizes.
-        // EWMH §_NET_FRAME_EXTENTS: left, right, top, bottom (4 CARD32s).
-        // OR windows have no decoration (0,0,0,0).
-        // Titled windows have a title bar (~28px on macOS).
-        {
-          uint8_t extents[16] = {0};
-          if (!vw.override_redirect) {
-            // Approximate macOS title bar height = 28 pixels
-            x11::wire::wr32_le(extents + 0, 0);   // left
-            x11::wire::wr32_le(extents + 4, 0);   // right
-            x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
-            x11::wire::wr32_le(extents + 12, 0);  // bottom
-          }
-          PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
-                                               x11::atom::kATOM /*CARDINAL*/, 32,
-                                               extents, 16);
+        if (is_tiny) {
+#ifndef NDEBUG
+          fprintf(stderr, "[MAP_DEFER] wid=0x%08X geom=%ux%u — deferring map (tiny root child)\n",
+                  (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h);
+#endif
+          ctx.addPendingMap(wid);
+        } else {
+          x11_ui_push_map(wid);
+          pushMapExtras(ctx, wid);
         }
       }
     }
 
+    post_map:
     // 3) Fill window border + background (X11 spec: server paints before Expose).
     fillWindowBorder(ctx, wid);
     fillWindowBackground(ctx, wid);

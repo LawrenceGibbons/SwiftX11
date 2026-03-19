@@ -139,6 +139,13 @@ void WindowTable::setMapped(uint32_t xid, bool mapped) {
   st->serial++;
 }
 
+bool WindowTable::isMapped(uint32_t xid) const {
+  if (xid == 0) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  const WindowState* st = findLocked(xid);
+  return st && st->mapped;
+}
+
 void WindowTable::setPresentable(uint32_t xid, bool presentable) {
   if (xid == 0) return;
   std::lock_guard<std::mutex> lock(mu_);

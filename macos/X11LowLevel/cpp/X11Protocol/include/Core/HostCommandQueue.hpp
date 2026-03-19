@@ -81,13 +81,22 @@ public:
     if (c.type == HostCmdType::PointerMove && !q_.empty()) {
       HostCmd& back = q_.back();
       if (back.type == HostCmdType::PointerMove && back.xid == c.xid) {
-        back.win_x_u    = c.win_x_u;
-        back.win_y_u    = c.win_y_u;
-        back.root_x_u   = c.root_x_u;
-        back.root_y_u   = c.root_y_u;
-        back.deliver     = c.deliver;
-        back.buttonsMask = c.buttonsMask;
-        back.modsMask    = c.modsMask;
+        if (back.deliver && !c.deliver) {
+          // Pending event is inside-view (deliver=1), new event is outside-view
+          // (deliver=0, from acceptsMouseMovedEvents).  Keep inside window coords
+          // and deliver=1 so MotionNotify reaches the client.  Only update root
+          // coords (for QueryPointer / xeyes global tracking).
+          back.root_x_u   = c.root_x_u;
+          back.root_y_u   = c.root_y_u;
+        } else {
+          back.win_x_u    = c.win_x_u;
+          back.win_y_u    = c.win_y_u;
+          back.root_x_u   = c.root_x_u;
+          back.root_y_u   = c.root_y_u;
+          back.deliver     = c.deliver;
+          back.buttonsMask = c.buttonsMask;
+          back.modsMask    = c.modsMask;
+        }
         return;
       }
     }

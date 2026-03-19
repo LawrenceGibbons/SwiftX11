@@ -153,6 +153,17 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
   // X11 spec: generate PropertyNotify on every property change
   sendPropertyNotify(ctx, wid, atom, /*deleted*/false);
 
+#ifndef NDEBUG
+  {
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+    if (host == wid) {
+      fprintf(stderr, "[PROP_TOPLEVEL] wid=0x%08X atom=%u fmt=%u bytes=%zu\n",
+              (unsigned)wid, (unsigned)atom, (unsigned)fmt, dataBytes);
+    }
+  }
+#endif
+
   // Push title update to UI when WM_NAME or _NET_WM_NAME is set
   if (atom == x11::atom::kWM_NAME || atom == x11::atom::k_NET_WM_NAME) {
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
@@ -233,13 +244,9 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       WindowView vw{};
       if (ctx.windows().snapshot(host, vw)) {
         const bool isTiny = (vw.w < 50 || vw.h < 50);
-        const bool isAtFloor = (vw.w == 200 && vw.h == 100);
         const bool desiredLarger = (desired_w > (int32_t)vw.w || desired_h > (int32_t)vw.h);
-        if (isTiny || (isAtFloor && desiredLarger) || desiredLarger) {
-          // Enforce WM minimum size floor — never shrink below 200×100 for
-          // top-level windows.
-          if (desired_w < 200) desired_w = 200;
-          if (desired_h < 100) desired_h = 100;
+        if (isTiny || desiredLarger) {
+          // No minimum size floor — let the client choose any size.
           uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
           uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
           if (nw != vw.w || nh != vw.h) {

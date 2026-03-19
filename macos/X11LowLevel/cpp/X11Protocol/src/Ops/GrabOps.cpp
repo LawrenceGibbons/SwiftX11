@@ -279,19 +279,13 @@ void GrabOps::handleAllowEvents(XProtoContext& /*ctx*/, uint16_t /*seq*/, uint8_
 }
 
 // 36 GrabServer (void, no-op for single-process)
-void GrabOps::handleGrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+void GrabOps::handleGrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
-#ifndef NDEBUG
-  fprintf(stderr, "[GrabServer] seq=%u fd=%d\n", (unsigned)seq, ctx.transport().clientFd());
-#endif
 }
 
 // 37 UngrabServer (void, no-op)
-void GrabOps::handleUngrabServer(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
+void GrabOps::handleUngrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
-#ifndef NDEBUG
-  fprintf(stderr, "[UngrabServer] seq=%u fd=%d\n", (unsigned)seq, ctx.transport().clientFd());
-#endif
 }
 
 // -----------------------------

@@ -366,16 +366,18 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     uint16_t w = clamp_u16_nonzero(w32);
     uint16_t h = clamp_u16_nonzero(h32);
 
-    // WM minimum size floor for top-level windows — prevent clients from
-    // resizing host windows below 200×100 via ConfigureWindow (matches the
-    // CreateWindow floor in WindowOps.cpp).
-    if (host != 0 && host == wid) {
-      if (w < 200) w = 200;
-      if (h < 100) h = 100;
-    }
+    // No size floor — let the client set any size.  The CreateWindow floor
+    // was removed (v1.16.5) to match XQuartz behavior.  Tiny windows (1×1)
+    // simply stay tiny until the client sends ConfigureWindow with the real size.
 
     ctx.tracef("[CONFIGURE] wid=0x%08X x=%d y=%d w=%u h=%u bw=%u host=0x%08X\n",
                wid, (int)x, (int)y, (unsigned)w, (unsigned)h, (unsigned)borderW, host);
+#ifndef NDEBUG
+    if (host != 0 && host == wid) {
+      fprintf(stderr, "[CONFIGURE_TOPLEVEL] wid=0x%08X vmask=0x%X w=%u h=%u pos=(%d,%d)\n",
+              (unsigned)wid, (unsigned)vmask, (unsigned)w, (unsigned)h, (int)x, (int)y);
+    }
+#endif
 
     // Apply border width if changed
     if (vmask & (1u << 4)) {
@@ -429,6 +431,16 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       //
       // If your WindowTable doesn't expose setGeometryDbg, replace this with setGeometry().
       ctx.windows().setGeometryDbg(wid, x, y, w, h, "ConfigureWindow", __FILE__, __LINE__);
+    }
+
+    // ------------------------------------------------------------------
+    // 1.5) Peak pre-map size tracking (SubstructureRedirect emulation)
+    // ------------------------------------------------------------------
+    // Track the largest ConfigureWindow size for unmapped root children.
+    // If the client undoes its resize (e.g., Java AWT ConfigureWindow→1×1)
+    // before MapWindow, flushPendingMaps uses the peak size instead.
+    if (host != 0 && host == wid && (vmask & 0x0C) && !ctx.windows().isMapped(wid)) {
+      ctx.notePeakSize(wid, w, h);
     }
 
     // ------------------------------------------------------------------

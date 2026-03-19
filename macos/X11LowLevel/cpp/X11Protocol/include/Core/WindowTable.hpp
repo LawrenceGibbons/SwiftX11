@@ -33,6 +33,7 @@ public:
   bool exists(uint32_t xid) const;
   
   void setMapped(uint32_t xid, bool mapped);
+  bool isMapped(uint32_t xid) const;
   void setPresentable(uint32_t xid, bool presentable);
   void setSurfaceResizeExposed(uint32_t xid, bool v);
   void markDirty(uint32_t xid);

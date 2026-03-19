@@ -108,6 +108,32 @@ public:
   DrawableSurfaceRegistry& surfaces() { assert(surface_registry_); return *surface_registry_; }
   const DrawableSurfaceRegistry& surfaces() const { assert(surface_registry_); return *surface_registry_; }
 
+  // Pending map callback (SubstructureRedirect emulation).
+  // MapWindow calls this instead of x11_ui_push_map() for tiny root children
+  // so the daemon can defer the map until all buffered client data is drained.
+  using PendingMapFn = void (*)(uint32_t wid, void* user);
+  void setPendingMapCallback(PendingMapFn fn, void* user) {
+    pending_map_fn_ = fn;
+    pending_map_user_ = user;
+  }
+  void addPendingMap(uint32_t wid) {
+    if (pending_map_fn_) pending_map_fn_(wid, pending_map_user_);
+  }
+
+  // Peak pre-map size tracking (SubstructureRedirect emulation).
+  // ConfigureWindow calls this for unmapped root children so the server
+  // remembers the largest size seen before MapWindow.  If the client
+  // later undoes its own ConfigureWindow (e.g., Java AWT resize-to-1×1),
+  // flushPendingMaps uses the peak instead of the current tiny geometry.
+  using PeakSizeFn = void (*)(uint32_t wid, uint16_t w, uint16_t h, void* user);
+  void setPeakSizeCallback(PeakSizeFn fn, void* user) {
+    peak_size_fn_ = fn;
+    peak_size_user_ = user;
+  }
+  void notePeakSize(uint32_t wid, uint16_t w, uint16_t h) {
+    if (peak_size_fn_) peak_size_fn_(wid, w, h, peak_size_user_);
+  }
+
 private:
   // Per-client (set via setClient/clearClient)
   XClient* client_ = nullptr;
@@ -143,6 +169,14 @@ private:
 
   // Grabs
   GrabTable* grab_table_ = nullptr;
+
+  // Pending map callback
+  PendingMapFn pending_map_fn_ = nullptr;
+  void* pending_map_user_ = nullptr;
+
+  // Peak pre-map size callback
+  PeakSizeFn peak_size_fn_ = nullptr;
+  void* peak_size_user_ = nullptr;
 
 };
 

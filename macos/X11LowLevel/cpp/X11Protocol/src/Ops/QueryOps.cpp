@@ -244,10 +244,6 @@ namespace x11 {
   void QueryOps::handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining());
     const uint32_t f = ctx.input().focus_xid ? ctx.input().focus_xid : 0;
-#ifndef NDEBUG
-    fprintf(stderr, "[GetInputFocus] seq=%u fd=%d focus=0x%08X\n",
-            (unsigned)seq, ctx.transport().clientFd(), (unsigned)f);
-#endif
     (void)ctx.reply().sendGetInputFocusReply(seq, /*revertTo*/0, /*focus*/f);
   }
   

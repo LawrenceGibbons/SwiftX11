@@ -554,11 +554,6 @@ bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
 
   ctx_.tracef("[XProtoTransport] sendEvent32 OK wid=0x%08X type=%u\n",
               (unsigned)targetWid, (unsigned)ev[0]);
-#ifndef NDEBUG
-  // Log ALL events sent to diagnose Vivado Edit→Copy hang
-  fprintf(stderr, "[EVT_SEND] fd=%d type=%u wid=0x%08X\n",
-          client_fd_, (unsigned)(ev[0] & 0x7F), (unsigned)targetWid);
-#endif
   return sendAll(ev, 32);
 }
 
@@ -571,10 +566,6 @@ bool XProtoTransport::sendEventVariable(uint32_t targetWid, const uint8_t* ev, s
   if (!wv) return false;
   if (wv->owner_fd <= 0 || wv->owner_fd != client_fd_) return false;
 
-#ifndef NDEBUG
-  fprintf(stderr, "[EVT_SEND] fd=%d type=%u(var,%zu) wid=0x%08X\n",
-          client_fd_, (unsigned)ev[0], len, (unsigned)targetWid);
-#endif
   return sendAll(ev, len);
 }
 

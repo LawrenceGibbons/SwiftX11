@@ -267,7 +267,10 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
     // see the freshest InputState (pointer position updated by PointerMove).
     drainHostCommands();
 
-    // Check client sockets
+    // Check client sockets — drain ALL buffered data per client.
+    // This emulates SubstructureRedirect: all requests in a TCP segment
+    // (CreateWindow, ChangeProperty, ConfigureWindow, MapWindow) are
+    // processed before the map is pushed to the UI.
     std::vector<int> toRemove;
     for (size_t i = 0; i < clientFds.size(); i++) {
       int cfd = clientFds[i];
@@ -280,11 +283,27 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
 
       if (rev & POLLIN) {
         auto* cs = findClient(cfd);
-        if (cs && !readAndDispatch(cfd, *cs)) {
-          toRemove.push_back(cfd);
+        if (!cs) continue;
+
+        // Drain loop: process all complete requests in the socket buffer.
+        for (;;) {
+          DispatchResult dr = readAndDispatch(cfd, *cs);
+          if (dr == DispatchResult::Error) {
+            toRemove.push_back(cfd);
+            break;
+          }
+          if (dr == DispatchResult::NeedMore) {
+            break; // no more complete requests — done draining
+          }
+          // dr == Dispatched → try another request
         }
       }
     }
+
+    // After draining all client data, flush any deferred maps.
+    // Pending maps were queued by MapWindow for tiny root children;
+    // now all ConfigureWindow/ChangeProperty requests have been processed.
+    flushPendingMaps();
 
     for (int fd : toRemove) {
       removeClient(fd);
@@ -441,17 +460,17 @@ void XProtoDaemon::deactivateClient() {
 }
 
 
-bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
+DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Phase 0: read 4-byte request header
   if (cs.hdr_have < 4 && !cs.reading_ext_len) {
     ssize_t r = ::recv(fd, cs.hdr + cs.hdr_have, 4 - cs.hdr_have, 0);
-    if (r == 0) return false; // EOF
+    if (r == 0) return DispatchResult::Error; // EOF
     if (r < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;
-      return false;
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
+      return DispatchResult::Error;
     }
     cs.hdr_have += (size_t)r;
-    if (cs.hdr_have < 4) return true; // need more header bytes
+    if (cs.hdr_have < 4) return DispatchResult::NeedMore; // need more header bytes
 
     // Header complete — parse it
     const uint16_t len_words = (uint16_t)(cs.hdr[2] | ((uint16_t)cs.hdr[3] << 8));
@@ -463,18 +482,18 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
         cs.ext_len_have = 0;
         // fall through to phase 0.5
       } else {
-        return false; // protocol error — BIG-REQUESTS not enabled
+        return DispatchResult::Error; // protocol error — BIG-REQUESTS not enabled
       }
     } else {
       const size_t total = (size_t)len_words * 4u;
-      if (total < 4u) return false;
+      if (total < 4u) return DispatchResult::Error;
 
       cs.buf_need = total - 4u;
       cs.buf_have = 0;
 
       if (cs.buf_need > 0) {
         cs.buf.resize(cs.buf_need);
-        return true; // wait for payload on next poll
+        return DispatchResult::NeedMore; // wait for payload on next poll
       }
 
       // No payload — fall through to dispatch
@@ -484,13 +503,13 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Phase 0.5: read 4-byte extended length (BIG-REQUESTS)
   if (cs.reading_ext_len && cs.ext_len_have < 4) {
     ssize_t r = ::recv(fd, cs.ext_len + cs.ext_len_have, 4 - cs.ext_len_have, 0);
-    if (r == 0) return false;
+    if (r == 0) return DispatchResult::Error;
     if (r < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;
-      return false;
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
+      return DispatchResult::Error;
     }
     cs.ext_len_have += (size_t)r;
-    if (cs.ext_len_have < 4) return true; // need more bytes
+    if (cs.ext_len_have < 4) return DispatchResult::NeedMore; // need more bytes
 
     // Parse 32-bit extended length in words (little-endian)
     const uint32_t ext_words = (uint32_t)cs.ext_len[0]
@@ -498,7 +517,7 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
                              | ((uint32_t)cs.ext_len[2] << 16)
                              | ((uint32_t)cs.ext_len[3] << 24);
 
-    if (ext_words < 2) return false; // minimum is 2 words (8 bytes: 4 hdr + 4 ext_len)
+    if (ext_words < 2) return DispatchResult::Error; // minimum is 2 words (8 bytes: 4 hdr + 4 ext_len)
 
     // Total bytes = ext_words * 4, already consumed 4 (hdr) + 4 (ext_len) = 8
     const size_t total = (size_t)ext_words * 4u;
@@ -508,7 +527,7 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
 
     if (cs.buf_need > 0) {
       cs.buf.resize(cs.buf_need);
-      return true; // wait for payload on next poll
+      return DispatchResult::NeedMore; // wait for payload on next poll
     }
     // No additional payload — fall through to dispatch
   }
@@ -517,13 +536,13 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   if (cs.buf_need > 0 && cs.buf_have < cs.buf_need) {
     ssize_t r = ::recv(fd, cs.buf.data() + cs.buf_have,
                        cs.buf_need - cs.buf_have, 0);
-    if (r == 0) return false;
+    if (r == 0) return DispatchResult::Error;
     if (r < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;
-      return false;
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
+      return DispatchResult::Error;
     }
     cs.buf_have += (size_t)r;
-    if (cs.buf_have < cs.buf_need) return true; // need more payload bytes
+    if (cs.buf_have < cs.buf_need) return DispatchResult::NeedMore; // need more payload bytes
   }
 
   // Full request ready — dispatch
@@ -533,21 +552,6 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   const size_t remain = cs.buf_need;
 
   cs.seq = (uint16_t)(cs.seq + 1);
-
-#ifndef NDEBUG
-  // Log sync/grab/selection opcodes to diagnose Vivado Edit→Copy hang.
-  // Filtered to avoid noise from high-frequency draw ops (PutImage, etc.)
-  if (major == 22 || major == 23 || major == 24 || major == 25 || // Selection ops
-      major == 26 || major == 27 ||                                // GrabPointer/Ungrab
-      major == 31 || major == 32 ||                                // GrabKeyboard/Ungrab
-      major == 34 ||                                               // AllowEvents
-      major == 36 || major == 37 ||                                // GrabServer/Ungrab
-      major == 43) {                                               // GetInputFocus
-    fprintf(stderr, "[REQ] fd=%d seq=%u op=%u.%u len=%zu\n",
-            cs.client->transport().clientFd(), (unsigned)cs.seq,
-            (unsigned)major, (unsigned)minor, remain);
-  }
-#endif
 
   activateClient(cs);
   server_->ctx().transport().noteLastSeq(cs.seq);
@@ -567,7 +571,11 @@ bool XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   cs.reading_ext_len = false;
   cs.ext_len_have = 0;
 
-  return true;
+  return DispatchResult::Dispatched;
+}
+
+void XProtoDaemon::flushPendingMaps() {
+  if (server_) server_->flushPendingMaps();
 }
 
 
@@ -754,15 +762,25 @@ void XProtoDaemon::drainHostCommands() {
     // not reading — e.g., Java EDT in menu tracking), skip the event to
     // prevent the xproto thread from blocking in sendAll's EAGAIN loop.
     // Critical events (Button, Focus, WindowClose, etc.) are never skipped.
+    //
+    // EXCEPTION: During an active pointer grab (GrabPointer — used by menu
+    // popups), the client explicitly requested PointerMotion events via the
+    // grab event_mask.  Dropping them causes multi-second menu highlighting
+    // delays.  Bypass the throttle so motion reaches the client even under
+    // backpressure from heavy PutImage traffic.
     if (c.type == HostCmdType::PointerMove) {
-      struct pollfd pfd = { cs->client->fd(), POLLOUT, 0 };
-      if (::poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLOUT)) {
-        static int skip_count = 0;
-        if (++skip_count <= 3 || (skip_count % 100) == 0) {
-          fprintf(stderr, "[THROTTLE] skipped PointerMove #%d (socket not writable fd=%d)\n",
-                  skip_count, cs->client->fd());
+      x11::PointerGrab pg{};
+      bool haveGrab = server_->ctx().grabs().getPointerGrab(pg) && pg.active;
+      if (!haveGrab) {
+        struct pollfd pfd = { cs->client->fd(), POLLOUT, 0 };
+        if (::poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLOUT)) {
+          static int skip_count = 0;
+          if (++skip_count <= 3 || (skip_count % 100) == 0) {
+            fprintf(stderr, "[THROTTLE] skipped PointerMove #%d (socket not writable fd=%d)\n",
+                    skip_count, cs->client->fd());
+          }
+          continue; // socket not writable — skip this motion event
         }
-        continue; // socket not writable — skip this motion event
       }
     }
 

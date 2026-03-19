@@ -88,7 +88,7 @@ final class X11View: NSView {
   // MARK: -- be authoritative for the tracking events
   private var lastInsideForSyntheticCrossing: Bool = false
   private var isPointerInside: Bool = false
-  
+
   
   // MARK: -- know which window to use
   var xid: UInt32 = 0 {
@@ -494,7 +494,9 @@ final class X11View: NSView {
       self.syncLayerScale()
       
       // All “attach-time” mutating work happens here, never inside viewDidMoveToWindow.
-      self.window?.acceptsMouseMovedEvents = true
+      // acceptsMouseMovedEvents is set on the NSWindow (in X11WindowController).
+      // NSTrackingArea handles inside-view events; acceptsMouseMovedEvents adds
+      // outside-view events for xeyes global tracking (delivered with deliver=0).
       
       // Don’t set responder synchronously on attach; coalesce.
       self.requestFirstResponderCoalesced()
@@ -505,24 +507,40 @@ final class X11View: NSView {
       // Register the host surface and notify presentable.
       // During initial window creation, setContentSize is deferred (async), so
       // the first scheduleAttachSettle often fires with tiny/default bounds (e.g. 1×1).
-      // Registering a 1×1 surface causes all initial client draws to be clipped.
-      // If bounds are still too small, retry after a short delay (by which time
-      // setContentSize should have taken effect).
-      let wX11 = Int32(max(1, Int(bounds.width.rounded(.down))))
-      let hX11 = Int32(max(1, Int(bounds.height.rounded(.down))))
-      if wX11 >= 16 && hX11 >= 16 {
+      // If the X11 geometry is also tiny (client created at 1×1), that's correct —
+      // allocate a tiny surface.  The client will send ConfigureWindow with the
+      // real size, triggering a surface reallocation.
+      // If the X11 geometry is larger (setContentSize lag), retry.
+      let wBounds = Int32(max(1, Int(bounds.width.rounded(.down))))
+      let hBounds = Int32(max(1, Int(bounds.height.rounded(.down))))
+      if wBounds >= 16 && hBounds >= 16 {
         if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds OK %dx%d — registering surface",
-              self.xid, wX11, hX11)) }
-        ensureHostSurface(wPx: wX11, hPx: hX11)
+              self.xid, wBounds, hBounds)) }
+        ensureHostSurface(wPx: wBounds, hPx: hBounds)
         self.notifyPresentableOnce()
       } else {
-        // Bounds too small — setContentSize hasn't taken effect yet.
-        // Retry shortly.
-        if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds too small %dx%d — retrying in 50ms",
-              self.xid, wX11, hX11)) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-          guard let self else { return }
-          self.scheduleAttachSettle()
+        // Bounds are tiny — check if the X11 geometry is also tiny.
+        // If so, the client truly created a tiny window; allocate at that size.
+        // If X11 geometry is larger, setContentSize hasn't taken effect yet — retry.
+        var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
+        var isOR: Bool = false
+        let gotGeom = x11_get_window_geometry(UInt32(self.xid), &x11x, &x11y, &x11w, &x11h, &isOR)
+        let x11AlsoTiny = gotGeom && x11w < 16 && x11h < 16
+        if x11AlsoTiny {
+          // X11 geometry is tiny too — allocate at bounds size (correct).
+          if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds %dx%d, X11 %dx%d (both tiny) — registering surface",
+                self.xid, wBounds, hBounds, x11w, x11h)) }
+          ensureHostSurface(wPx: wBounds, hPx: hBounds)
+          self.notifyPresentableOnce()
+        } else {
+          // X11 geometry is larger — setContentSize hasn't taken effect yet.
+          // Retry shortly.
+          if X11Trace.lifecycle { print(String(format: "[ATTACH_SETTLE] xid=0x%08X bounds %dx%d but X11=%dx%d — retrying in 50ms",
+                self.xid, wBounds, hBounds, x11w, x11h)) }
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            self.scheduleAttachSettle()
+          }
         }
       }
       
@@ -1026,28 +1044,15 @@ final class X11View: NSView {
   
   // MARK: - Mouse
   private func sendMotion(_ event: NSEvent) {
-    // Points
+    // Two sources of mouseMoved:
+    //   1. NSTrackingArea (.inVisibleRect) → pointer inside view → deliver=1
+    //   2. acceptsMouseMovedEvents → pointer anywhere → deliver=0 when outside
+    // deliver=0 events only update root coords (for QueryPointer / xeyes).
+    // Enter/Leave are handled exclusively by mouseEntered/mouseExited.
     let p = convert(event.locationInWindow, from: nil)
-    let insideNow = bounds.contains(p)
     let dragging = (buttonMask != 0)
-    
-    // Enter/leave synth
-    if insideNow && !isPointerInside {
-      isPointerInside = true
-      let (x, y) = pointInX11(event, clampToView: true)
-      x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
-    } else if !insideNow && isPointerInside && !dragging {
-      isPointerInside = false
-      let (x, y) = pointInX11(event, clampToView: true)
-      x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
-    }
-    
-    // controls whether we will send events.  Only send while inside, unless dragging
-    let deliver: UInt8 = (insideNow || dragging) ? 1 : 0
-    
-    // Window-local coords:
-    // - if inside, use true coords
-    // - if outside and not dragging, clamp to edge so winX/winY stay sane
+    let deliver: UInt8 = (bounds.contains(p) || dragging) ? 1 : 0
+
     let (winX, winY) = pointInX11(event, clampToView: !dragging)
     
     // Global root coords (top-left)

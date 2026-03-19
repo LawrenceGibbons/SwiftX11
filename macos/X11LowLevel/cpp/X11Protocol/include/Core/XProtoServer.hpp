@@ -72,6 +72,21 @@ public:
   InputState& input() { return input_; }
   HostCommandQueue& hostCmds() { return hostCmds_; }
 
+  // ---- SubstructureRedirect emulation ----
+  // Tiny root children defer their map UI push until all buffered client
+  // requests have been processed (emulating quartz-wm MapRequest delay).
+  void addPendingMap(uint32_t wid) { pending_maps_.push_back(wid); }
+  bool hasPendingMaps() const { return !pending_maps_.empty(); }
+  // Flush all pending maps: push x11_ui_push_map + resize for each.
+  void flushPendingMaps();
+
+  // Peak pre-map size: track the largest ConfigureWindow size seen on each
+  // unmapped root child.  Used by flushPendingMaps when both geometry and
+  // WM_NORMAL_HINTS are tiny (client undid its own resize before map).
+  void notePeakSize(uint32_t wid, uint16_t w, uint16_t h);
+  bool getPeakSize(uint32_t wid, uint16_t& outW, uint16_t& outH) const;
+  void clearPeakSize(uint32_t wid);
+
   // ---- Test support ----
   void setTestWindow(const WindowView& w);
   void clearTestWindows();
@@ -79,6 +94,8 @@ public:
 private:
   static bool lookupWindowTrampoline(uint32_t xid, WindowView* out, void* user);
   bool lookupWindow(uint32_t xid, WindowView* out);
+  static void pendingMapTrampoline(uint32_t wid, void* user);
+  static void peakSizeTrampoline(uint32_t wid, uint16_t w, uint16_t h, void* user);
 
 private:
   // Server-wide state (persists across client sessions)
@@ -102,6 +119,13 @@ private:
     void* user = nullptr;
   };
   std::array<Entry, 256> table_{};
+
+  // SubstructureRedirect emulation: pending maps.
+  std::vector<uint32_t> pending_maps_;
+
+  // Peak pre-map size: largest ConfigureWindow size seen per unmapped root child.
+  struct PeakSize { uint16_t w = 0; uint16_t h = 0; };
+  std::unordered_map<uint32_t, PeakSize> peak_sizes_;
 
   // Optional injected production lookup.
   WindowLookupFn injected_lookup_ = nullptr;

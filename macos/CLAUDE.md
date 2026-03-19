@@ -200,7 +200,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.15.4)
+### Current State (v1.17.1)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)
@@ -318,14 +318,19 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **XTEST extension** (v1.14.0): Synthesizes keyboard/mouse events via `x11_post_pointer_move2` / `x11_post_button` / `x11_post_key` bridge functions. FakeInput (minor 2) with types 2-6 (KeyPress/Release, ButtonPress/Release, MotionNotify). GetVersion (minor 0) returns v2.2.
 
-### Known Issues (v1.15.4)
+- **Window Shape AA compositing** (v1.15.5): Straight alpha blending for SHAPE extension windows. Metal pipeline uses `sourceAlpha/oneMinusSourceAlpha`. Previous premultiplied attempt (v1.15.0) reverted due to double-application artifacts.
+
+- **Vivado clipboard fix** (v1.15.17–v1.15.22): Five-bug chain fix for Edit→Copy: (1) Missing FocusIn/FocusOut on UngrabKeyboard (v1.15.17) — Java AWT blocked waiting for focus events. (2) Missing PropertyNotify on ChangeProperty (v1.15.18) — Java needed server timestamp from property event. (3–4) Proactive clipboard capture on SetSelectionOwner (v1.15.19–v1.15.20) — server requests selection content and pushes to NSPasteboard. (5) PropertyNotify gated by PropertyChangeMask (v1.15.22) — prevents event flooding during startup. Also: MotionNotify coalescing in HostCommandQueue (v1.15.15) prevents AWT lock starvation from queued motion events.
+
+- **SubstructureRedirect emulation** (v1.17.0–v1.17.1): Replaces timer-based deferred show with proper WM emulation. Clients like Java AWT create windows at 1×1 then configure to real size — without SubstructureRedirect, MapWindow fires before ConfigureWindow arrives. Three-layer fix: (1) **Poll loop drain**: `readAndDispatch` returns `DispatchResult` enum; poll loop drains ALL buffered data per client before flushing pending maps. (2) **Deferred map**: MapWindow on tiny (<50px) root children calls `ctx.addPendingMap(wid)` instead of `x11_ui_push_map`. `flushPendingMaps()` called after drain. (3) **Peak pre-map size tracking**: Tracks largest ConfigureWindow size seen per unmapped root child. At flush time, resolution order: WM_NORMAL_HINTS → peak size → current geometry. Centers resized windows on primary monitor. Also fixes: kWM_NORMAL_HINTS atom constant (41→40), double MAP_SHOW from MapSubwindows+MapWindow (`wasMapped` guard), CreateWindow size floor removed (stored as-is, WM emulation at map time). `pushMapExtras()` helper sends resize/move/_NET_FRAME_EXTENTS after map.
+
+### Known Issues (v1.17.1)
 - **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
 - **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
 - **xeyes shaped window occasional black flash on resize**: During live resize, eyes may briefly flash black as the shape mask is reapplied to the new surface size. Minor cosmetic issue.
+- **Vivado menu highlighting**: Menu item highlighting is sluggish. Menus use lightweight popups (rendered within main window, not OR windows). Needs xscope comparison with XQuartz.
 
 ### Next Major Tasks
 See `docs/TODO.md` for the comprehensive roadmap. Priority order:
-1. **Shape AA compositing** — Re-apply 3×3 box-filter antialiasing to `applyShapeMask()` using straight alpha (Metal pipeline uses `sourceAlpha/oneMinusSourceAlpha`, not premultiplied). Previously reverted.
-2. **Help menu / user guide** — Add a Help menu item with usage documentation
-3. **Build Release + .pkg installer**
-4. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container
+1. **Vivado menu highlighting** — Fix sluggish menu item highlighting
+2. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container

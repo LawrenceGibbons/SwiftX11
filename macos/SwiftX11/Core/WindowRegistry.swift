@@ -254,9 +254,6 @@ final class WindowRegistry {
   // Override-redirect windows whose mapWindow() deferred orderFront
   // because the geometry wasn't available yet. moveWindow() will show them.
   private var pendingORShow = Set<UInt32>()
-  // Non-OR windows at floor size whose show is deferred 50ms to let
-  // WM_NORMAL_HINTS arrive with the real size.
-  private var pendingNonORShow = Set<UInt32>()
 
   // Metal is now required — no software fallback.
   
@@ -375,12 +372,10 @@ final class WindowRegistry {
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
       if x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR) {
-        // WM minimum size floor: only for truly tiny OR windows (< 10px)
-        let effW = x11w < 10 ? max(x11w, 200) : x11w
-        let effH = x11h < 10 ? max(x11h, 100) : x11h
+        // No size floor — use actual X11 geometry.
         let rawOrigin = WindowRegistry.x11RootToMacOSOrigin(
-          x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(effH))
-        let popupSize = NSSize(width: CGFloat(effW), height: CGFloat(effH))
+          x11X: CGFloat(x11x), x11Y: CGFloat(x11y), height: CGFloat(x11h))
+        let popupSize = NSSize(width: max(1, CGFloat(x11w)), height: max(1, CGFloat(x11h)))
         let (origin, adjusted) = WindowRegistry.adjustOROriginForCursorScreen(
           origin: rawOrigin, size: popupSize)
         if adjusted {
@@ -417,35 +412,26 @@ final class WindowRegistry {
       // Sync NSWindow size and position to current X11 geometry BEFORE showing.
       // WM_NORMAL_HINTS may have resized/repositioned the window via UI commands
       // that are deferred (DispatchQueue.main.asyncAfter in applyX11Resize).
-      // Without this sync, the window briefly appears at the stale 200×100 floor
-      // size before the deferred resize applies (visible as a grey ghost).
+      // The C++ MAP_HINTS code may also have resized from WM_NORMAL_HINTS at
+      // map time (emulating quartz-wm MapRequest behavior).
       let hostCopy = host
       var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
       var isOR: Bool = false
       let gotGeom = x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR)
-      // Detect WM-floor windows: the C++ floor enlarges windows < 10px to
-      // 200×100.  Only those truly tiny windows should be deferred — legitimate
-      // small windows (xeyes 150×100, etc.) must show immediately.
-      let isAtFloor = gotGeom && x11w == 200 && x11h == 100
 
       #if DEBUG
-      print("[MAP_SHOW] xid=0x\(String(format:"%X", host)) geom=\(x11w)×\(x11h) isAtFloor=\(isAtFloor)")
+      print("[MAP_SHOW] xid=0x\(String(format:"%X", host)) geom=\(x11w)×\(x11h)")
       #endif
 
-      // If the window is still at the WM floor size (200×100), it was likely
-      // created at 1×1 and the client hasn't sent ConfigureWindow or
-      // WM_NORMAL_HINTS with the real size yet.  Defer showing until:
-      //   (a) applyX11Resize fires (ConfigureWindow/WM_NORMAL_HINTS arrived), or
-      //   (b) first present succeeds (client drew content at floor size), or
-      //   (c) 30s safety timeout (fallback — show at whatever size we have).
-      // This avoids the visual flash of a 200×100 ghost window.
-      if isAtFloor {
-        pendingNonORShow.insert(hostCopy)
-        // Retry loop: check every 500ms if geometry has changed from the floor.
-        // Show immediately once real geometry arrives.  Safety timeout at 30s
-        // (Vivado's banner can take several seconds to receive its real size
-        // via WM_NORMAL_HINTS; 3s was too short and caused 200×100 flash).
-        self.deferredShowRetry(host: hostCopy, attempt: 1, maxAttempts: 60)
+      // WM_HINTS IconicState: client wants this window to start minimized.
+      // Skip showing entirely — just miniaturize without orderFront.
+      if pendingIconicState.remove(hostCopy) != nil {
+        #if DEBUG
+        print("[MAP_ICONIC] xid=0x\(String(format:"%X", hostCopy)) IconicState — miniaturizing without show")
+        #endif
+        if let win = windows[hostCopy]?.window {
+          DispatchQueue.main.async { win.miniaturize(nil) }
+        }
       } else {
         syncAndShowNonORWindow(host: hostCopy, x11x: x11x, x11y: x11y, x11w: x11w, x11h: x11h)
       }
@@ -457,15 +443,6 @@ final class WindowRegistry {
     // For non-OR windows, present immediately to show the window contents.
     if infoByXid[host]?.overrideRedirect != true {
       schedulePresent(xid: host)
-    }
-
-    // WM_HINTS IconicState: if client requested iconic (minimized) start, minimize now
-    if pendingIconicState.remove(host) != nil {
-      if let win = windows[host]?.window {
-        DispatchQueue.main.async {
-          win.miniaturize(nil)
-        }
-      }
     }
   }
 
@@ -481,34 +458,6 @@ final class WindowRegistry {
       // Fallback: show at whatever size the NSWindow has
       NSApp.activate(ignoringOtherApps: true)
       win.makeKeyAndOrderFront(nil)
-    }
-  }
-
-  /// Retry loop for deferred show of floor-sized (200×100) windows.
-  /// Checks every 500ms if the geometry has changed from the WM floor.
-  /// Shows immediately once real geometry arrives; force-shows after max attempts.
-  private func deferredShowRetry(host: UInt32, attempt: Int, maxAttempts: Int) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-      guard let self else { return }
-      // Window already shown by applyX11Resize or present path
-      guard self.pendingNonORShow.contains(host) else { return }
-
-      var x11x: Int32 = 0, x11y: Int32 = 0, x11w: Int32 = 0, x11h: Int32 = 0
-      var isOR: Bool = false
-      let gotGeom = x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR)
-      let stillAtFloor = gotGeom && x11w == 200 && x11h == 100
-
-      if stillAtFloor && attempt < maxAttempts {
-        // Still at floor size — retry
-        #if DEBUG
-        print("[DEFER_SHOW] xid=0x\(String(format:"%X", host)) still at floor 200×100, retry \(attempt)/\(maxAttempts)")
-        #endif
-        self.deferredShowRetry(host: host, attempt: attempt + 1, maxAttempts: maxAttempts)
-      } else {
-        // Either geometry changed or max attempts reached — show now
-        self.pendingNonORShow.remove(host)
-        self.showNonORWindow(host: host)
-      }
     }
   }
 
@@ -587,6 +536,7 @@ final class WindowRegistry {
 
     X11View.logIfInLayout("unmapWindow: orderOut host=0x\(String(host, radix: 16))", view: controller.x11View)
 
+    pendingORShow.remove(host)
     suppressNextUnmapFromCocoa.insert(host)
     controller.window?.orderOut(nil)
   }
@@ -598,6 +548,7 @@ final class WindowRegistry {
     pendingPresentByHost.remove(xid)
     latestSourceByHost.removeValue(forKey: xid)
     ignoreCocoaResizeUntilMapped.remove(xid)
+    pendingORShow.remove(xid)
     // If this xid was a *source* for some host, clear that too.
     // (Safe O(n), n is small.)
     for (host, src) in latestSourceByHost where src == xid {
@@ -701,9 +652,9 @@ final class WindowRegistry {
     if windows[xid] != nil { return }
     guard let info = infoByXid[xid] else { return }
 
-    // C++ CreateWindow already applies the WM minimum size floor (200×100)
-    // in WindowOps::handleCreateWindow, so info.width/height are pre-enlarged.
-    // X11WindowController applies a matching floor as a safety net.
+    // C++ CreateWindow applies a size floor for tiny windows (< 10px → 200×100).
+    // Floored windows are deferred in mapWindow — not shown until the client
+    // sends ConfigureWindow/WM_NORMAL_HINTS with the real size.
     let controller = X11WindowController(
       xid: xid,
       title: info.title,
@@ -816,18 +767,6 @@ final class WindowRegistry {
   /// If the surface is all white (0xFFFFFFFF), the client hasn't drawn yet and
   /// we defer showing to the next present cycle.
   private func showPendingORWindowIfNeeded(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int) {
-    // Non-OR deferred show: if this window was waiting for content (floor-sized
-    // window whose mapWindow was deferred), show it now — BUT only if the
-    // geometry has changed from the WM floor (200×100).  If still at floor,
-    // Non-OR deferred show: if this window was waiting for content (floor-sized
-    // window whose mapWindow was deferred), the client has now drawn content —
-    // show it.  The client accepted the current size and rendered into it, so
-    // this IS the intended appearance (even if it's still 200×100 — e.g.,
-    // Vivado's startup banner genuinely is that size).
-    if pendingNonORShow.remove(xid) != nil {
-      showNonORWindow(host: xid)
-    }
-
     guard pendingORShow.contains(xid) else { return }
 
     // Quick scan: check a few sample locations for non-white pixels.
@@ -1300,23 +1239,6 @@ final class WindowRegistry {
     guard let controller = windows[host],
           let win = controller.window,
           let _ = controller.x11View else { return }
-
-    // If this window's show was deferred (pendingNonORShow) waiting for
-    // the real size, check if we've moved past the WM floor (200×100).
-    // Only show once the geometry is no longer at the floor — the banner
-    // may receive an initial ConfigureWindow that's still at 200×100
-    // before the real full-size WM_NORMAL_HINTS arrives.
-    if pendingNonORShow.contains(host) {
-      var cx: Int32 = 0, cy: Int32 = 0, cw: Int32 = 0, ch: Int32 = 0
-      var cOR: Bool = false
-      let gotG = x11_get_window_geometry(host, &cx, &cy, &cw, &ch, &cOR)
-      let stillFloor = gotG && cw == 200 && ch == 100
-      if !stillFloor {
-        pendingNonORShow.remove(host)
-        showNonORWindow(host: host)
-      }
-      // else: still at floor — keep deferred, wait for real size
-    }
 
     // Suppress Cocoa echo immediately
     suppressCocoaResizeExpected[host] = (wX11: wX11, hX11: hX11)

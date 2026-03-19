@@ -84,8 +84,16 @@ void postMotion(uint32_t host_xid,
   if (host_xid)
     ev->sendXI2RawMotionEvent(*ctx, host_xid);
 
-  // Only deliver core MotionNotify when inside (or dragging/grab)
-  if (!deliver) return;
+  // Only deliver core MotionNotify when inside (or dragging/grab).
+  // Exception: during an active pointer grab, X11 spec requires motion
+  // events be delivered to the grab window regardless of pointer position.
+  // The Cocoa "deliver" flag only reflects "pointer inside NSView" — it
+  // must not gate X11 grab-routed events.
+  if (!deliver) {
+    x11::PointerGrab earlyGrab{};
+    if (!(ctx->grabs().getPointerGrab(earlyGrab) && earlyGrab.active))
+      return;
+  }
 
   // ---- macOS drag correction ----
   // macOS's drag tracking loop routes ALL mouseDragged events to the

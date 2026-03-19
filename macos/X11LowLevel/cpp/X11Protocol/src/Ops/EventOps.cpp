@@ -389,38 +389,14 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
 {
   // event-local coords
   int16_t ex = 0, ey = 0;
-  int coordPath = 0; // 1=hostLocal, 2=fromRoot, 3=fallback
   if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey)) {
     // Host-local failed (target in different host tree, e.g., popup menu
     // while macOS routes drag to original window). Use root-relative path.
     if (!computeEventXYFromRoot(ctx, wid, root_x, root_y, &ex, &ey)) {
       ex = clamp16_i32(ctx.input().win_x_u);
       ey = clamp16_i32(ctx.input().win_y_u);
-      coordPath = 3;
-    } else {
-      coordPath = 2;
-    }
-  } else {
-    coordPath = 1;
-  }
-
-  // Diagnostic: log motion events to popup/OR windows to diagnose menu highlighting
-#ifndef NDEBUG
-  {
-    uint32_t tgt_host = ctx.windows().topLevelAncestorOf(wid);
-    x11::WindowView hv{};
-    bool isOR = (tgt_host && ctx.windows().snapshot(tgt_host, hv) && hv.override_redirect);
-    if (isOR) {
-      static int or_motion_count = 0;
-      if (++or_motion_count <= 10 || (or_motion_count % 50) == 0) {
-        fprintf(stderr, "[OR_MOTION] #%d wid=0x%08X host=0x%08X root=(%d,%d) ev=(%d,%d) path=%d lastHost=0x%08X\n",
-                or_motion_count, (unsigned)wid, (unsigned)tgt_host,
-                (int)root_x, (int)root_y, (int)ex, (int)ey,
-                coordPath, (unsigned)ctx.input().last_xid);
-      }
     }
   }
-#endif
 
   int rootW = 0, rootH = 0;
   getRootWH(ctx, rootW, rootH);

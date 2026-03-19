@@ -20,6 +20,13 @@ class XProtoServer;
 class XProtoModules;
 class XClient;
 
+/// Return value for readAndDispatch — indicates what happened.
+enum class DispatchResult {
+  Dispatched,   // A complete request was dispatched
+  NeedMore,     // Partial read or EAGAIN — no more data available now
+  Error         // Connection error or EOF — remove client
+};
+
 /// Per-connection session state managed by the daemon's poll loop.
 struct ClientSession {
   XClient* client = nullptr;
@@ -67,10 +74,11 @@ private:
   // Poll-loop helpers
   void acceptClient(int listenFd);
   void removeClient(int fd);
-  bool readAndDispatch(int fd, ClientSession& cs);
+  DispatchResult readAndDispatch(int fd, ClientSession& cs);
   void drainHostCommands();
   void activateClient(ClientSession& cs);
   void deactivateClient();
+  void flushPendingMaps();
 
   std::atomic<bool> stop_{false};
   std::atomic<bool> running_{false};

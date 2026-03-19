@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-19 (v1.15.22 — Vivado clipboard fix, PropertyNotify, FocusIn/Out on UngrabKeyboard)
+Last updated: 2026-03-19 (v1.17.1 — SubstructureRedirect emulation, peak pre-map size tracking)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -669,3 +669,22 @@ rendercheck                 # RENDER extension tests
 - **Cross-monitor menu tracking**: After dragging Vivado's main window from one monitor to another, menus appeared correctly but items didn't highlight or respond to clicks. Root cause: Java/Swing caches root window coordinates and only updates on ConfigureNotify. No ConfigureNotify was sent when user dragged the NSWindow. Fixed by adding `WindowMoved` HostCmdType: `x11_set_window_position()` (called from Swift `windowDidMove`) now pushes a WindowMoved host command; `XProtoDaemon::drainHostCommands` sends ConfigureNotify with updated x/y to the owning client. Skip no-op updates when position hasn't changed.
 - **mapWindow geometry sync**: Before showing non-OR windows, mapWindow now queries X11 geometry via `x11_get_window_geometry()` and synchronously applies `setContentSize` + `setFrameOrigin` to avoid flash of wrong-sized/positioned window.
 - **NSApp.activate on mapWindow**: Calls `NSApp.activate(ignoringOtherApps: true)` to ensure X11 windows appear above other macOS apps.
+
+### Features (v1.15.5)
+- **Window Shape AA compositing**: Straight alpha blending for SHAPE extension windows. Metal pipeline uses `sourceAlpha/oneMinusSourceAlpha`. Previous premultiplied attempt (v1.15.0) reverted due to double-application artifacts.
+
+### Bug fixes (v1.15.15-22)
+- **Vivado Edit→Copy hang — MotionNotify flood** (v1.15.15): After menu ungrab, hundreds of MotionNotify events in the socket prevented Java's XAWT thread from releasing the AWT lock. Fix: HostCommandQueue coalesces consecutive same-window PointerMove commands at push time.
+- **Vivado Edit→Copy hang — missing FocusIn/FocusOut on UngrabKeyboard** (v1.15.17): UngrabKeyboard was a silent no-op. X11 spec requires FocusOut(mode=Ungrab) + FocusIn(mode=Ungrab). Java AWT waited for these events before releasing the AWT lock. Fix: GrabOps.cpp sends both focus events via `sendFocusEventDirect()`.
+- **Vivado Edit→Copy hang — missing PropertyNotify** (v1.15.18): Java AWT waited for PropertyNotify after writing `_SUNW_JAVA_AWT_TIME` via ChangeProperty(Append). Fix: PropOps.cpp now calls `sendPropertyNotify()` after every ChangeProperty, gated by PropertyChangeMask (v1.15.22).
+- **Vivado clipboard content not reaching macOS** (v1.15.19-20): After the hang was fixed, Edit→Copy succeeded X11-side but text didn't reach NSPasteboard. Fix: on SetSelectionOwner(CLIPBOARD or PRIMARY), server sends SelectionRequest(UTF8_STRING) to the new owner, intercepts SelectionNotify, and pushes content to NSPasteboard.
+
+### Features (v1.17.0-v1.17.1)
+- **SubstructureRedirect emulation**: Replaces timer-based deferred show with proper WM emulation for window sizing at map time. Three-layer approach:
+  1. **Poll loop drain**: `readAndDispatch` returns `DispatchResult` enum; poll loop drains ALL buffered data per client before flushing pending maps. Allows ConfigureWindow + WM_NORMAL_HINTS to arrive before map is pushed to Swift.
+  2. **Deferred map for tiny windows**: MapWindow on root children with geometry <50px calls `ctx.addPendingMap(wid)` instead of `x11_ui_push_map`. `flushPendingMaps()` called after drain.
+  3. **Peak pre-map size tracking**: Tracks largest ConfigureWindow size seen per unmapped root child. At flush time, resolution order: WM_NORMAL_HINTS (ICCCM authoritative) → peak size (largest ConfigureWindow before map) → current geometry. Centers resized windows on primary monitor.
+- **kWM_NORMAL_HINTS atom fix**: Constant corrected from 41 to 40 (was reading WM_SIZE_HINTS instead of WM_NORMAL_HINTS).
+- **Double MAP_SHOW fix**: `wasMapped` guard in MapWindow handler prevents MapSubwindows + MapWindow from both pushing maps for the same host window, which caused the "genie effect" animation artifact.
+- **CreateWindow size floor removed**: Windows stored at client's requested size. WM emulation at map time handles sizing, matching XQuartz/quartz-wm behavior.
+- **`pushMapExtras()` helper**: Sends resize/move/_NET_FRAME_EXTENTS after map. Used by both immediate and deferred map paths.

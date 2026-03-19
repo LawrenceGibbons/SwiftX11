@@ -25,22 +25,18 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     if overrideRedirect {
       // Convert X11 root coords (top-left, y-down) to macOS global coords.
       // Uses virtual desktop union bounds so windows on any monitor work correctly.
-      // WM minimum size floor: only for truly tiny windows (< 10px) like Vivado's
-      // 1×1 splash screens.  Legitimate small OR windows must keep their size.
-      let effW = width < 10 ? max(width, 200) : width
-      let effH = height < 10 ? max(height, 100) : height
+      // C++ already applies a size floor for tiny windows, so width/height are
+      // pre-enlarged.  Use them directly.
       let origin = WindowRegistry.x11RootToMacOSOrigin(
-        x11X: CGFloat(x), x11Y: CGFloat(y), height: CGFloat(effH))
+        x11X: CGFloat(x), x11Y: CGFloat(y), height: CGFloat(height))
       contentRect = NSRect(origin: origin,
-                           size: NSSize(width: CGFloat(effW), height: CGFloat(effH)))
+                           size: NSSize(width: max(1, CGFloat(width)),
+                                        height: max(1, CGFloat(height))))
     } else {
-      // WM minimum size floor: only for truly tiny windows (< 10px) created at
-      // e.g. 1×1 expecting the WM to resize via WM_NORMAL_HINTS.  Legitimate
-      // small windows (xeyes 150×100, etc.) must NOT be enlarged — the 200×100
-      // floor triggers deferred-show and breaks the Expose lifecycle.
-      let minW = width < 10 ? max(width, 200) : width
-      let minH = height < 10 ? max(height, 100) : height
-      contentRect = NSRect(x: 0, y: 0, width: minW, height: minH)
+      // C++ already applies a size floor for tiny windows (< 10px → 200×100),
+      // so width/height are pre-enlarged.  The mapWindow path defers SHOWING
+      // floored windows until the client sends the real size.
+      contentRect = NSRect(x: 0, y: 0, width: max(1, width), height: max(1, height))
     }
 
     // Override-redirect windows (menus, tooltips, popups) get no WM decoration.
@@ -80,6 +76,12 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     self.x11View = view
     view.ensureMetalSetup()
 
+    // acceptsMouseMovedEvents delivers mouseMoved for ANY mouse position
+    // (including outside the view / in the title bar).  sendMotion sets
+    // deliver=0 for outside-view events so they only update root coords
+    // (for QueryPointer / xeyes global tracking) without sending
+    // MotionNotify.  HostCommandQueue coalescing protects deliver=1
+    // events from being overwritten by subsequent deliver=0 events.
     window.acceptsMouseMovedEvents = true
     window.delegate = self
   }
