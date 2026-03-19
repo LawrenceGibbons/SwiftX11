@@ -24,3 +24,7 @@ DerivedData/
 xcuserdata/
 *.xcuserdatad/
 xorg-server/
+
+# Claude Code
+.claude/
+macos/.claude/

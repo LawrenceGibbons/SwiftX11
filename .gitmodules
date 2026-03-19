@@ -1,4 +1,0 @@
-[submodule "vendor/xorg-server"]
-	path = vendor/xorg-server
-	url = https://github.com/XQuartz/xorg-server.git
-	branch = master
