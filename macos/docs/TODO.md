@@ -688,3 +688,160 @@ rendercheck                 # RENDER extension tests
 - **Double MAP_SHOW fix**: `wasMapped` guard in MapWindow handler prevents MapSubwindows + MapWindow from both pushing maps for the same host window, which caused the "genie effect" animation artifact.
 - **CreateWindow size floor removed**: Windows stored at client's requested size. WM emulation at map time handles sizing, matching XQuartz/quartz-wm behavior.
 - **`pushMapExtras()` helper**: Sends resize/move/_NET_FRAME_EXTENTS after map. Used by both immediate and deferred map paths.
+
+---
+
+## Phase 8: X11 Protocol Hardening
+
+Systematic review of all request handlers for spec compliance. Motivated by bugs in v1.15–v1.17 that stemmed from simplified implementations:
+- `kWM_NORMAL_HINTS` atom off-by-one (was 41, should be 40)
+- Missing `PropertyNotify` on `ChangeProperty` (broke Java AWT)
+- Missing `FocusIn`/`FocusOut` on `UngrabKeyboard` (broke Java AWT)
+- `SubstructureRedirect` race between `MapWindow` and `ConfigureWindow`
+- `CreateWindow` size floor that didn't match WM behavior
+
+### 8.1 Event Delivery Audit (HIGH)
+Ensure every request that must generate events actually does so per the X11 spec.
+
+- [ ] **PropertyNotify completeness**: Audit `ChangeProperty`, `DeleteProperty`, `RotateProperties` — all must send `PropertyNotify` to windows selecting `PropertyChangeMask`. Verify the `state` field is correct (`PropertyNewValue` vs `PropertyDelete`).
+- [ ] **ConfigureNotify completeness**: `ConfigureWindow`, `MoveWindow`, `ResizeWindow` must send `ConfigureNotify` to the window and to the parent if `SubstructureNotifyMask` is set. Verify `above_sibling`, `override_redirect` fields.
+- [ ] **MapNotify / UnmapNotify**: `MapWindow`, `UnmapWindow`, `MapSubwindows`, `UnmapSubwindows` must send `MapNotify`/`UnmapNotify` to selecting clients. Verify parent receives event if `SubstructureNotifyMask`.
+- [ ] **CreateNotify / DestroyNotify**: `CreateWindow` must send `CreateNotify` to parent if `SubstructureNotifyMask`. `DestroyWindow` must send `DestroyNotify`.
+- [ ] **ReparentNotify**: Verify old parent, new parent, and the window itself all receive correct `ReparentNotify`.
+- [ ] **GravityNotify**: If parent resizes with `WinGravity` children, `GravityNotify` should be sent.
+- [ ] **CirculateNotify**: `CirculateWindow` (opcode 13) — currently unimplemented. Add stub or implement with correct event.
+- [ ] **FocusIn/FocusOut audit**: Review all focus transitions (SetInputFocus, GrabKeyboard, UngrabKeyboard, GrabPointer, UngrabPointer, window destroy, window unmap) for correct `mode` (Normal/Grab/Ungrab/WhileGrabbed) and `detail` (Ancestor/Virtual/Inferior/Nonlinear/NonlinearVirtual/Pointer/PointerRoot/None).
+- [ ] **Crossing events (EnterNotify/LeaveNotify)**: Verify `mode` and `detail` fields match spec for all transitions: normal motion, grabs, ungrabs, window map/unmap.
+- [ ] **Exposure events**: Verify `count` field is correct (number of remaining Expose events in the batch). Check that `GraphicsExposure`/`NoExposure` are generated for `CopyArea`/`CopyPlane` when GC has `graphics_exposures=True`.
+- [ ] **SelectionClear**: When `SetSelectionOwner` changes owner, previous owner must receive `SelectionClear`.
+- [ ] **ColormapNotify**: `InstallColormap`/`UninstallColormap` should send `ColormapNotify` to selecting clients.
+
+### 8.2 Error Generation Audit (HIGH)
+All requests must send the correct X11 error for invalid arguments, not silently skip.
+
+- [ ] **BadWindow systematic check**: Every handler that takes a window XID must validate it and send `BadWindow` if not found (except root XID and None where allowed).
+- [ ] **BadDrawable systematic check**: Drawing ops must validate drawable XIDs.
+- [ ] **BadPixmap**: `FreePixmap`, `CopyArea` with pixmap src/dst, tile/stipple GC values.
+- [ ] **BadFont**: `QueryFont`, `QueryTextExtents` with invalid font ID.
+- [ ] **BadGC**: All drawing ops with invalid GC.
+- [ ] **BadAtom**: `InternAtom` (only_if_exists), `GetAtomName`, property ops with invalid atoms.
+- [ ] **BadValue**: Validate enum parameters (e.g., `gravity`, `backing_store`, `stack_mode`, `fill_style`, `cap_style`, `join_style`, `line_style`, `arc_mode`, `subwindow_mode`).
+- [ ] **BadMatch**: Depth mismatch in `CopyArea`/`CopyPlane` (source and dest must have same depth unless root). Window/drawable depth mismatches in `CreateGC`.
+- [ ] **BadLength**: Requests with fewer bytes than minimum. Extended-length requests with inconsistent length fields.
+- [ ] **BadAccess**: `ChangeWindowAttributes` on window not created by requesting client (for certain attributes). `SetSelectionOwner` timestamp validation.
+- [ ] **BadAlloc**: Memory allocation failures (pixmap too large, etc.) — currently not checked.
+- [ ] **BadName**: `OpenFont` with nonexistent font name.
+- [ ] **BadIDChoice**: `CreateWindow`, `CreatePixmap`, `CreateGC`, `CreateCursor` with already-in-use XID.
+
+### 8.3 Reply Format Audit (MEDIUM)
+Ensure every reply-bearing request returns correctly formatted replies.
+
+- [ ] **GetWindowAttributes**: Verify all 44 bytes match spec (backing_store, visual, class, bit_gravity, win_gravity, backing_planes, backing_pixel, save_under, map_is_installed, map_state, override_redirect, colormap, all_event_masks, your_event_masks, do_not_propagate_mask).
+- [ ] **GetGeometry**: Verify root window, depth, x, y, width, height, border_width fields.
+- [ ] **QueryTree**: Verify root, parent, children list. Ensure children are in correct stacking order (bottom-to-top).
+- [ ] **GetProperty**: Verify type, format, bytes_after, value_length. Handle `delete` flag correctly (delete property after read, with `PropertyNotify`).
+- [ ] **QueryPointer**: Verify root, child, root_x, root_y, win_x, win_y, mask fields. `same_screen` must reflect actual screen containment.
+- [ ] **TranslateCoordinates**: Verify dest_x, dest_y, child, same_screen. Handle windows on different screens.
+- [ ] **GetImage**: Verify format (XYPixmap vs ZPixmap), depth, visual, data layout. Currently returns ZPixmap only — XYPixmap support needed for full compliance.
+- [ ] **QueryFont**: Verify all fields (min/max bounds, min/max char, default_char, draw_direction, all_chars_exist, font_ascent/descent, char_infos count). Check per-character metrics accuracy for PCF fonts vs CoreText fonts.
+- [ ] **ListFonts / ListFontsWithInfo**: Verify pattern matching, returned count, name encoding.
+- [ ] **QueryColors**: Verify RGB values match colormap entries.
+- [ ] **LookupColor**: Verify exact vs visual RGB split.
+- [ ] **GetKeyboardMapping**: Verify keysyms_per_keycode, keycode range, keysym values.
+- [ ] **GetModifierMapping**: Verify keycodes_per_modifier and keycode entries.
+
+### 8.4 Window Operations Audit (HIGH)
+Core window hierarchy ops are the most complex and most likely to have edge cases.
+
+- [ ] **CreateWindow depth/visual validation**: Verify depth matches parent (or root) unless `InputOnly`. `InputOnly` windows must have depth 0 and class `InputOnly`.
+- [ ] **CreateWindow attribute inheritance**: `CWBackPixmap`, `CWBackPixel`, `CWBorderPixmap`, `CWBorderPixel`, `CWColormap` — defaults from parent when not specified.
+- [ ] **ConfigureWindow stacking**: Full audit of `CWSibling` + `CWStackMode` interactions. `BadMatch` if sibling specified but sibling is not actually a sibling.
+- [ ] **ConfigureWindow geometry constraints**: Width/height must be non-zero (`BadValue`). Coordinates are signed 16-bit.
+- [ ] **MapWindow on already-mapped window**: Must be no-op (no duplicate `MapNotify`).
+- [ ] **UnmapWindow on already-unmapped window**: Must be no-op.
+- [ ] **DestroyWindow recursive cleanup**: All subwindows destroyed depth-first. All resources (pixmaps, GCs, cursors) owned by destroyed windows freed. Events sent bottom-up.
+- [ ] **ReparentWindow correctness**: Unmap if mapped, change parent, adjust coordinates relative to new parent, remap if was mapped. `BadMatch` if new parent is descendant of window.
+- [ ] **CirculateWindow**: Implement opcode 13 (currently unhandled). `RaiseLowest` and `LowerHighest` operations.
+- [ ] **ChangeSaveSet**: Implement opcode 6 (save-set for reparenting WMs). May be stub for rootless mode.
+
+### 8.5 Graphics Operations Audit (MEDIUM)
+Drawing ops correctness — clipping, coordinate handling, edge cases.
+
+- [ ] **GC subwindow_mode**: `IncludeInferiors` vs `ClipByChildren` — currently ignored. Should affect clipping for all draw ops on windows.
+- [ ] **CopyArea with overlapping src/dst**: Must handle correctly (copy direction matters to avoid corruption).
+- [ ] **CopyArea GraphicsExposure**: When GC has `graphics_exposures=True` and source region is obscured, must send `GraphicsExposure` events for obscured sub-rects, followed by `NoExposure` if fully visible.
+- [ ] **PutImage XYBitmap/XYPixmap**: Currently only ZPixmap fully supported. XYBitmap uses foreground/background. XYPixmap uses planemask. Verify bit order and padding.
+- [ ] **GetImage XYPixmap**: Currently stub or ZPixmap-only. Need XYPixmap format support.
+- [ ] **PolyLine join behavior**: `JoinMiter`, `JoinRound`, `JoinBevel` — currently not implemented (only square joins).
+- [ ] **Line cap styles**: `CapNotLast`, `CapButt`, `CapRound`, `CapProjecting` — verify all are correct.
+- [ ] **Dashed lines**: `SetDashes` stores dash list but verify `PolyLine`/`PolySegment` actually apply dash patterns.
+- [ ] **Wide lines**: `line_width > 0` should produce thick lines. Currently may only draw 1px.
+- [ ] **PolyArc angles**: Verify 1/64th degree units, counterclockwise direction, correct arc rendering for all quadrants.
+- [ ] **FillPoly fill rule**: `EvenOddRule` vs `WindingRule` — verify both are correct for complex polygons.
+- [ ] **GC plane_mask**: Verify plane_mask is applied to all drawing operations, not just shape ops.
+- [ ] **GC function (ROP)**: Verify all 16 GC functions (GXclear through GXset) work correctly in all draw ops, not just shape ops.
+
+### 8.6 Grab Semantics Audit (MEDIUM)
+Pointer and keyboard grabs are complex and affect event routing globally.
+
+- [ ] **GrabPointer event filtering**: Active grab should deliver only events matching `event_mask`. Events outside mask are discarded, not queued.
+- [ ] **GrabPointer confine_to**: Pointer should be confined to the specified window. Currently not implemented.
+- [ ] **GrabPointer cursor**: Grab cursor should replace the normal cursor during grab.
+- [ ] **GrabButton passive grab activation**: Verify button/modifiers matching, `AnyButton`/`AnyModifier` wildcards, owner_events semantics.
+- [ ] **GrabKey passive grab activation**: Same as GrabButton but for keyboard.
+- [ ] **AllowEvents modes**: `AsyncPointer`, `SyncPointer`, `ReplayPointer`, `AsyncKeyboard`, `SyncKeyboard`, `ReplayKeyboard`, `AsyncBoth`, `SyncBoth` — currently stub. Need at least `AsyncPointer`/`AsyncKeyboard` for basic functionality.
+- [ ] **GrabServer**: Should freeze all other clients' event processing. Currently a no-op stub.
+- [ ] **Grab freezing**: `pointer_mode`/`keyboard_mode` Sync should freeze events until `AllowEvents`. Currently all grabs are async.
+- [ ] **Automatic ungrab on window destroy**: Active grab on destroyed window should auto-ungrab.
+- [ ] **Grab and focus interaction**: `GrabKeyboard` should send `FocusIn(mode=Grab)` / `FocusOut(mode=Grab)`. `UngrabKeyboard` should send `FocusIn(mode=Ungrab)` / `FocusOut(mode=Ungrab)`. Partially done (v1.15.17) — need full audit.
+
+### 8.7 Atom and Property Audit (LOW)
+Relatively simple but important for toolkit interop.
+
+- [ ] **InternAtom only_if_exists**: When `only_if_exists=True` and atom doesn't exist, must reply with `atom=None` (not create it).
+- [ ] **GetProperty delete semantics**: When `delete=True`, property should be deleted after read and `PropertyNotify(PropertyDelete)` sent. Verify partial reads with `long_offset`/`long_length` don't delete.
+- [ ] **ChangeProperty modes**: `Replace`, `Prepend`, `Append` — verify all three modes work correctly with existing property data. Type and format must match for Prepend/Append (`BadMatch` if not).
+- [ ] **RotateProperties**: Currently a void stub. Should rotate property values among the listed properties and send `PropertyNotify` for each.
+- [ ] **ListProperties**: Verify returns all properties on the window, including pre-registered well-known atoms that have been set.
+
+### 8.8 Selection Protocol Audit (MEDIUM)
+Critical for clipboard and inter-client communication (already partially hardened in v1.15.18-22).
+
+- [ ] **SetSelectionOwner timestamp validation**: If timestamp is earlier than last-set time, request should be ignored.
+- [ ] **ConvertSelection with no owner**: Must send `SelectionNotify` with `property=None` to requestor.
+- [ ] **MULTIPLE target**: Handle `MULTIPLE` target in `ConvertSelection` (multiple targets in single request).
+- [ ] **INCR protocol**: Large property transfers via incremental protocol. Currently not implemented — large clipboard content will fail.
+- [ ] **Selection timestamp**: `SelectionNotify` must include the timestamp from `ConvertSelection`, not current time.
+
+### 8.9 Colormap Audit (LOW)
+Minimal impact for TrueColor visuals but should be correct.
+
+- [ ] **AllocColorCells / AllocColorPlanes**: Currently stubs. Should return `BadAlloc` for read-only colormaps (TrueColor).
+- [ ] **FreeColors**: Verify plane_mask handling and pixel validation.
+- [ ] **StoreColors / StoreNamedColor**: Should return `BadAccess` for read-only (TrueColor) colormaps.
+- [ ] **CopyColormapAndFree**: Verify deep copy semantics.
+
+### 8.10 Extension Protocol Audit (MEDIUM)
+Review extension handlers for spec compliance.
+
+- [ ] **RENDER format negotiation**: Verify `QueryPictFormats` returns formats matching the server's visual capabilities.
+- [ ] **RENDER Composite clipping**: Verify clip rectangles, source/mask origins, and repeat modes.
+- [ ] **RENDER glyph ops**: `CompositeGlyphs8/16/32` — verify glyph positioning, delta encoding, glyph set management.
+- [ ] **SHAPE input shape**: Verify `ShapeInput` kind affects hit testing correctly.
+- [ ] **RANDR reply sizes**: Verify all RANDR replies have correct padding and alignment for variable-length data.
+- [ ] **XFIXES region ops**: Evaluate which XFIXES region operations are actually needed by target apps (Vivado, GTK apps) and implement those.
+- [ ] **XInput2 event delivery**: Verify XI2 events have correct fields (deviceid, sourceid, time, valuators, modifiers, group).
+
+### Testing Strategy
+For each audit category, use a combination of:
+1. **Code review**: Read the X11 protocol spec alongside the handler code
+2. **xev validation**: Run `xev` and verify event fields match spec
+3. **xdpyinfo / xprop / xwininfo**: Verify reply data
+4. **x11perf**: Stress-test drawing ops at volume
+5. **Vivado regression**: Run Vivado after each batch of fixes to ensure no regressions
+6. **Protocol spec references**:
+   - Core protocol: https://www.x.org/releases/current/doc/xproto/x11protocol.html
+   - ICCCM: https://www.x.org/releases/current/doc/icccm/icccm.html
+   - EWMH: https://specifications.freedesktop.org/wm-spec/latest/
+   - RENDER: https://www.x.org/releases/current/doc/renderproto/renderproto.txt
+   - SHAPE: https://www.x.org/releases/current/doc/shapeproto/shapeproto.txt
