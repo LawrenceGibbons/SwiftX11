@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-18 (v1.15.7 — XI2 events, Shape AA, clipboard fix, trace cleanup)
+Last updated: 2026-03-19 (v1.15.22 — Vivado clipboard fix, PropertyNotify, FocusIn/Out on UngrabKeyboard)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -563,8 +563,15 @@ rendercheck                 # RENDER extension tests
 - **v1.15.5**: Shape AA compositing with straight alpha (3×3 box-filter, cardinal-neighbor fast-path). Previous premultiplied attempt reverted.
 - **v1.15.6**: Clipboard thread-safety fix — NSPasteboard callbacks dispatched to main thread via `DispatchQueue.main.sync`. Fixes Vivado Edit→Copy hang (deadlock between xproto thread and main thread).
 - **v1.15.7**: Debug trace cleanup (~50 `#ifndef NDEBUG` fprintf removed). Vivado startup banner race fix — present path no longer shows window while still at WM floor size (200×100).
+- **v1.15.15**: MotionNotify coalescing — HostCommandQueue deduplicates consecutive same-window PointerMove commands at push time, preventing motion event flood that live-locked Java AWT's XAWT thread (held AWT lock in XPending loop, starved EDT from clipboard ops).
+- **v1.15.17**: Vivado Edit→Copy hang fix — UngrabKeyboard now sends FocusOut(mode=Ungrab) + FocusIn(mode=Ungrab) per X11 spec. Java AWT required these to release the AWT lock after menu dismiss. Root cause identified via xscope wire comparison with XQuartz.
+- **v1.15.18**: PropertyNotify on ChangeProperty — X11 spec requires PropertyNotify (type 28) whenever a property changes. Java AWT writes `_SUNW_JAVA_AWT_TIME` via ChangeProperty(Append) and waits for PropertyNotify to extract server timestamp for SetSelectionOwner(CLIPBOARD). Without it, Java blocked after InternAtom("CLIPBOARD").
+- **v1.15.19-20**: Proactive clipboard capture — on SetSelectionOwner(CLIPBOARD or PRIMARY), server sends SelectionRequest(UTF8_STRING) to new owner, intercepts SelectionNotify response, pushes content to NSPasteboard. Enables Vivado Edit→Copy → macOS Cmd+V and xterm select → macOS Cmd+V.
+- **v1.15.22**: PropertyNotify event mask filtering — only sent to windows with PropertyChangeMask (bit 22) selected. Previously sent unconditionally, flooding Java with hundreds of type=28 events during Vivado startup.
 
-**Next priorities**: (1) Vitis testing (Phase 8), (2) SYNC extension if needed (Phase 7.4), (3) DAMAGE extension if needed (Phase 7.5).
+**Known issue (v1.15.22)**: Vivado menu item highlighting is sluggish (many-second delays). Menus use lightweight popups (rendered within main window, not OR windows). Only ~8 MotionNotify events delivered during menu grab. Needs xscope comparison with XQuartz.
+
+**Next priorities**: (1) Fix Vivado menu highlighting, (2) Clean up diagnostic traces, (3) Update CLAUDE.md, (4) Vitis testing (Phase 8).
 
 ### Bug fixes (v1.6.0)
 - **whitePixel fix**: X11 setup reply was sending whitePixel=0x00000000 instead of 0x00FFFFFF. Fixed in X11Setup.cpp.
