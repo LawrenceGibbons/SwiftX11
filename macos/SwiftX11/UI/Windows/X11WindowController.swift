@@ -234,16 +234,17 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   func windowDidBecomeKey(_ notification: Notification) {
       assert(Thread.isMainThread)
       postSyntheticEnterForCurrentMouseLocation()
-      x11_post_focus_event(xid, true)
-      // Cocoa → X11 event injection (intentionally NOT using client API)
-      // This reflects a native window-manager action, not a client request.
-      x11_post_window_raise(xid)
+      // Focus & raise events are posted by WindowRegistry's didBecomeKey
+      // observer — it has suppressNextRaiseFromCocoa logic that prevents
+      // feedback loops when a raise was initiated from the X11/C++ side.
+      // Posting here too would bypass that suppression and cause the
+      // WM_TAKE_FOCUS bounce loop between dialog and main window.
   }
 
   func windowDidResignKey(_ notification: Notification) {
       assert(Thread.isMainThread)
       postSyntheticLeaveForCurrentMouseLocation()
-      x11_post_focus_event(xid, false)
+      // Focus-loss event posted by WindowRegistry's didResignKey observer.
   }
 
   @objc

@@ -61,7 +61,7 @@ typedef struct {
   int32_t           x_u, y_u, w_u, h_u;  // used by DAMAGE/RESIZE/CREATE
   uint32_t          flags;                // X11_UI_FLAG_* bits (used by CREATE)
   uint8_t           title_len;
-  char              title_utf8[32];
+  char              title_utf8[128];
 
   // explicit cursor payload (only meaningful for X11_UI_SET_CURSOR)
   x11_ui_cursor_t   cursor;
@@ -272,6 +272,12 @@ void x11_register_log_callback(x11_log_callback_fn fn);
 void x11_ui_push_log(int level, const char* message);
 void x11_set_log_verbosity(int level);
 int  x11_get_log_verbosity(void);
+
+// -------------------------------------------------------------------------------------
+// Wire trace toggle — live fprintf of every outgoing packet to stderr (Xcode console)
+// -------------------------------------------------------------------------------------
+void x11_set_wire_trace(int enabled);
+int  x11_get_wire_trace(void);
 
 // -------------------------------------------------------------------------------------
 // Font antialiasing toggle

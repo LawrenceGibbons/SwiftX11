@@ -877,28 +877,30 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t rev
   const uint32_t newFocus = (focus == 0) ? 0 : (focus == 1) ? kRootXid : focus;
 
   // Send FocusOut to old focus window
+  const uint16_t evSeq = ctx.transport().lastSeq();
   if (oldFocus != 0 && oldFocus != newFocus) {
     uint8_t ev[32] = {};
     ev[0] = 10; // FocusOut
     ev[1] = 0;  // detail = Ancestor
-    wire::wr16_le(ev + 2, 0);
+    wire::wr16_le(ev + 2, evSeq);
     wire::wr32_le(ev + 4, oldFocus);
     ev[8] = 0; // mode = Normal
     (void)ctx.transport().sendEvent32(oldFocus, ev);
   }
 
-  // Update focus state
+  // Update X11-level input focus — only focus_xid, NOT focus_host.
+  // focus_host tracks the Cocoa key window and must only be set by
+  // HostCmdType::Focus (didBecomeKey/didResignKey).  Updating it here
+  // would desync from Cocoa and defeat the duplicate-focus guard,
+  // enabling WM_TAKE_FOCUS bounce loops between dialog and main window.
   ctx.input().focus_xid = newFocus;
-  if (newFocus != 0 && newFocus != kRootXid) {
-    ctx.input().focus_host = ctx.windows().topLevelAncestorOf(newFocus);
-  }
 
   // Send FocusIn to new focus window
   if (newFocus != 0) {
     uint8_t ev[32] = {};
     ev[0] = 9; // FocusIn
     ev[1] = 0; // detail = Ancestor
-    wire::wr16_le(ev + 2, 0);
+    wire::wr16_le(ev + 2, evSeq);
     wire::wr32_le(ev + 4, newFocus);
     ev[8] = 0; // mode = Normal
     (void)ctx.transport().sendEvent32(newFocus, ev);

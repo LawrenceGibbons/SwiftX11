@@ -553,6 +553,14 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t oldFocus = ctx.input().focus_xid;
 
           if (c.focused) {
+            // Skip if this host already has focus — prevents duplicate
+            // processing from the two Cocoa notification paths
+            // (X11WindowController + WindowRegistry) that both fire
+            // didBecomeKey.
+            if (ctx.input().focus_host == host) {
+              break;
+            }
+
             ctx.input().focus_host = host;
 
             // Focus the HOST — let the toolkit propagate to children
@@ -568,26 +576,50 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
             // ICCCM WM_TAKE_FOCUS: if client advertises it in WM_PROTOCOLS,
             // send ClientMessage so the client calls SetInputFocus itself.
-            // Globally active input model (input=False + WM_TAKE_FOCUS) uses
-            // this instead of direct FocusIn for focus acquisition.
+            //
+            // Bounce detection: Java/Swing responds to WM_TAKE_FOCUS by
+            // calling SetInputFocus (which may target a window on a different
+            // host) and sometimes raising the target host window.  This causes
+            // Cocoa to fire didBecomeKey for the other host, which triggers
+            // another WM_TAKE_FOCUS — creating an A→B→A bounce loop between
+            // dialog and main window.
+            //
+            // We track the last two WM_TAKE_FOCUS targets (prev, last).
+            // If prev == current host, we're in a bounce and suppress.
+            // Same-host duplicate (last == host) is also suppressed.
+            // Tracking is cleared on button press (genuine user interaction).
             x11::WindowView hostView{};
             if (ctx.windows().snapshot(host, hostView) && hostView.wants_take_focus) {
-              uint8_t ev[32] = {0};
-              ev[0] = 33;       // ClientMessage
-              ev[1] = 32;       // format = 32
-              x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-              x11::wire::wr32_le(ev + 4, host);
-              x11::wire::wr32_le(ev + 8, x11::atom::kWM_PROTOCOLS);
-              x11::wire::wr32_le(ev + 12, x11::atom::kWM_TAKE_FOCUS);
-              x11::wire::wr32_le(ev + 16, x11_now_ms_monotonic());
-              (void)ctx.transport().sendEvent32(host, ev);
+              const bool sameHost  = (ctx.input().take_focus_last_ == host);
+              const bool abaBounce = (ctx.input().take_focus_prev_ == host);
+              if (!sameHost && !abaBounce) {
+                // Shift history and send
+                ctx.input().take_focus_prev_ = ctx.input().take_focus_last_;
+                ctx.input().take_focus_last_ = host;
+                uint8_t ev[32] = {0};
+                ev[0] = 33;       // ClientMessage
+                ev[1] = 32;       // format = 32
+                x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+                x11::wire::wr32_le(ev + 4, host);
+                x11::wire::wr32_le(ev + 8, x11::atom::kWM_PROTOCOLS);
+                x11::wire::wr32_le(ev + 12, x11::atom::kWM_TAKE_FOCUS);
+                x11::wire::wr32_le(ev + 16, x11_now_ms_monotonic());
+                (void)ctx.transport().sendEvent32(host, ev);
 #ifndef NDEBUG
-              fprintf(stderr, "[WM_TAKE_FOCUS] sent to host=0x%08X\n", (unsigned)host);
+                fprintf(stderr, "[WM_TAKE_FOCUS] sent to host=0x%08X\n", (unsigned)host);
+#endif
+              }
+#ifndef NDEBUG
+              else {
+                fprintf(stderr, "[WM_TAKE_FOCUS] suppressed bounce to host=0x%08X (prev=0x%08X last=0x%08X)\n",
+                        (unsigned)host, (unsigned)ctx.input().take_focus_prev_, (unsigned)ctx.input().take_focus_last_);
+              }
 #endif
             }
 
-            // FocusIn to HOST — always delivered (bypass mask check).
-            // Even with WM_TAKE_FOCUS, passively focusable clients need FocusIn.
+            // Always send FocusIn — needed for Stage Manager to group
+            // dialogs with their parent app, and for toolkits that rely
+            // on FocusIn regardless of WM_TAKE_FOCUS.
             srv->eventOps().sendFocusEventDirect(ctx, host, /*is_in=*/true);
             srv->eventOps().sendXI2FocusEvent(ctx, host, /*is_in=*/true);
 
@@ -597,6 +629,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // must not steal focus from the real focus holder.
             if (ctx.input().focus_host == host) {
               ctx.input().focus_host = 0;
+              // NOTE: do NOT clear take_focus_prev_/last_ here — the bounce
+              // detection depends on history surviving across loss/gain pairs.
+              // Only button press (user interaction) clears the history.
 
               if (oldFocus) {
                 srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);

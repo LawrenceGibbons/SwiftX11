@@ -368,6 +368,21 @@ extern "C" int x11_get_log_verbosity(void)
 }
 
 // -------------------------------------------------------------------------------------
+// Wire trace toggle (live logging of every outgoing packet)
+// -------------------------------------------------------------------------------------
+static std::atomic<int> g_wire_trace{0};
+
+extern "C" void x11_set_wire_trace(int enabled)
+{
+  g_wire_trace.store(enabled, std::memory_order_relaxed);
+}
+
+extern "C" int x11_get_wire_trace(void)
+{
+  return g_wire_trace.load(std::memory_order_relaxed);
+}
+
+// -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
 extern "C" void x11_set_font_antialiased(int enabled)

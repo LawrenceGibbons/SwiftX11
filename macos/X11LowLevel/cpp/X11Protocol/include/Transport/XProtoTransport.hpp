@@ -132,7 +132,24 @@ private:
 
   // True if a reply (byte[0]==1) or error (byte[0]==0) was sent since resetReplySent().
   bool reply_sent_ = false;
-  
+
+public:
+  // Outgoing wire ring buffer — records every packet header sent to the client.
+  // Dumped on disconnect for crash diagnosis.
+  struct WireRecord {
+    uint8_t  type = 0;    // 0=error, 1=reply, 2-34=event type
+    uint8_t  detail = 0;  // byte[1] of packet (error code, reply data, event detail)
+    uint16_t seq = 0;     // bytes[2:3] of packet (as sent on wire, after floor)
+    uint16_t extra = 0;   // context: for errors=majorCode(byte[10]), for replies=lenw low16
+  };
+  static constexpr int kWireHistorySize = 32;
+  WireRecord wire_history_[kWireHistorySize]{};
+  int wire_history_idx_ = 0;
+
+  void recordWirePacket(const uint8_t* p, std::size_t n);
+  void dumpWireHistory() const;
+
+private:
   XProtoNotifyQueue notifyQueue_;
 
   // Internal helper: coalesce by wid

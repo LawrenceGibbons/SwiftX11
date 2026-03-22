@@ -29,6 +29,12 @@ namespace x11 {
     uint32_t focus_xid = 0;   // current X input focus window
     uint32_t focus_host = 0;  // top-level host that currently has Cocoa focus (optional)
     uint32_t drag_xid = 0;    // active grab window (nonzero buttons)
+    // WM_TAKE_FOCUS bounce detection: two-entry history.
+    // If we're about to send to X and prev == X, we have an A→B→A pattern
+    // (bounce between dialog and main window).  Cleared on button press
+    // (genuine user interaction).
+    uint32_t take_focus_prev_ = 0;  // second-to-last WM_TAKE_FOCUS target
+    uint32_t take_focus_last_ = 0;  // most recent WM_TAKE_FOCUS target
     uint32_t last_cursor_host = 0;
     uint32_t last_cursor_cid  = 0;
 
@@ -122,7 +128,13 @@ namespace x11 {
       }
 
       // click implies pointer ownership
-      if (is_press) pointer_xid = xid;
+      if (is_press) {
+        pointer_xid = xid;
+        // Clear WM_TAKE_FOCUS bounce tracking — a genuine click means
+        // the user chose this window, so any A→B→A history is stale.
+        take_focus_prev_ = 0;
+        take_focus_last_ = 0;
+      }
 
       buttons = mask;
 

@@ -324,13 +324,50 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **SubstructureRedirect emulation** (v1.17.0–v1.17.1): Replaces timer-based deferred show with proper WM emulation. Clients like Java AWT create windows at 1×1 then configure to real size — without SubstructureRedirect, MapWindow fires before ConfigureWindow arrives. Three-layer fix: (1) **Poll loop drain**: `readAndDispatch` returns `DispatchResult` enum; poll loop drains ALL buffered data per client before flushing pending maps. (2) **Deferred map**: MapWindow on tiny (<50px) root children calls `ctx.addPendingMap(wid)` instead of `x11_ui_push_map`. `flushPendingMaps()` called after drain. (3) **Peak pre-map size tracking**: Tracks largest ConfigureWindow size seen per unmapped root child. At flush time, resolution order: WM_NORMAL_HINTS → peak size → current geometry. Centers resized windows on primary monitor. Also fixes: kWM_NORMAL_HINTS atom constant (41→40), double MAP_SHOW from MapSubwindows+MapWindow (`wasMapped` guard), CreateWindow size floor removed (stored as-is, WM emulation at map time). `pushMapExtras()` helper sends resize/move/_NET_FRAME_EXTENTS after map.
 
-### Known Issues (v1.17.1)
-- **xcalc -rpn extra button labels**: xcalc creates 54 buttons in HP/RPN mode but the XCalc app-defaults file only defines resources for buttons 1-39. Buttons 40-54 show their widget names ("button40", etc.) as labels. Same behavior on XQuartz — client-side issue.
-- **xclock/xcalc FontSet warnings**: "Missing charsets in String to FontSet conversion" — Xlib's XCreateFontSet() expects multiple subset fonts; not all charsets covered.
-- **xeyes shaped window occasional black flash on resize**: During live resize, eyes may briefly flash black as the shape mask is reapplied to the new surface size. Minor cosmetic issue.
-- **Vivado menu highlighting**: Menu item highlighting is sluggish. Menus use lightweight popups (rendered within main window, not OR windows). Needs xscope comparison with XQuartz.
+- **Phase 8 Protocol Hardening** (v1.18.0–v1.19.14):
+  - **Event delivery audit** (v1.18.1): Comprehensive fix for event delivery across ~50 handlers.
+  - **XCB sequence desync fix** (v1.18.2): Replace `nextEventSeq()` with `lastSeq()`.
+  - **IconicState fix** (v1.18.3): Fix sliding window glitch on Vivado startup.
+  - **Dialog title fix** (v1.19.6): Child windows (FocusProxy, Content window) no longer overwrite parent's WM_NAME. Only top-level windows (wid == host) push title updates.
+  - **Dispatch ring buffer** (v1.19.5): 16-entry ring buffer in ClientSession recording every dispatched request (major, minor, seq, reply_sent). Dumped on client disconnect for crash diagnosis.
+  - **Wire ring buffer** (v1.19.9): 32-entry ring buffer in XProtoTransport recording every outgoing packet header. Dumped on client disconnect.
+  - **Wire trace toggle** (v1.19.10): Atomic flag `g_wire_trace` controlled by UI toggle "Wire Trace (stderr)", gates live fprintf of every incoming request and outgoing packet to Xcode console.
+  - **JidePopup close fix** (v1.19.12): Windows without WM_DELETE_WINDOW now receive UnmapNotify + DestroyNotify instead of force-disconnecting the entire client. Prevents Vivado crash when closing JidePopup windows.
+  - **XTEST 2.0 safe mode** (v1.19.14): XTEST GetVersion reports v2.0 (not 2.2) to prevent GrabControl-triggered crash. CompareCursor stub added (returns same=true). FakeInput and GrabControl silently consumed. Full XTEST 2.2 spec coverage implemented but version downgraded due to unresolved crash.
+
+### XTEST / GrabControl Crash Investigation (v1.19.x)
+
+**Status**: Root cause isolated but not yet fixed.
+
+**The crash**: Vivado segfaults (signal 11) ~58ms after calling XTEST GrabControl (minor 3). Crash occurs in `gdk_display_manager_get_default_display`. Only happens when XTEST reports v2.2 (which enables GrabControl). Reporting v2.0 prevents the crash entirely.
+
+**What has been ruled out**:
+- AT-SPI / DBus: Crash occurs even with dbus running and NO_AT_BRIDGE=0
+- Malformed XTEST replies: GetVersion reply is byte-perfect per spec
+- Sequence desync: No SEQ_FLOOR bumps observed
+- Interleaved events: Suppressing flushNotifyQueue after XTEST still crashes
+
+**What is known**:
+- GrabControl(impervious=true) is a void request (no reply) — our no-op stub consumes it
+- The crash happens AFTER GrabControl returns, not during
+- XQuartz handles XTEST 2.2 + GrabControl without issues
+- The client may expect grab-impervious state to be set, affecting subsequent grab operations
+
+**Next investigation**: What does GrabControl actually do in Xorg/XQuartz? Does it modify grab state that affects subsequent operations? The no-op stub may leave inconsistent state.
+
+**Workaround**: Report XTEST v2.0 — client never calls GrabControl, no crash.
+
+### Known Issues (v1.19.14)
+- **JidePopup decorated windows**: JidePopup windows appear as full decorated NSWindows with title bars instead of borderless popups. Need to honor `_NET_WM_WINDOW_TYPE` / `_MOTIF_WM_HINTS` for undecorated windows. (HIGH priority)
+- **Ctrl+click regression**: Ctrl+click no longer triggers context menus (button 3) in Vivado. Two-finger trackpad click works. Regression in v1.17→v1.19 range. (MEDIUM)
+- **Pointer offset after left-edge resize**: Menu selections offset horizontally after resizing window by dragging left edge. Likely stale origin in coordinate transform. (MEDIUM)
+- **xcalc -rpn extra button labels**: Client-side issue, same on XQuartz.
+- **xclock/xcalc FontSet warnings**: Xlib XCreateFontSet() charset coverage issue.
+- **Vivado menu highlighting**: Sluggish; needs xscope comparison with XQuartz.
 
 ### Next Major Tasks
 See `docs/TODO.md` for the comprehensive roadmap. Priority order:
-1. **Vivado menu highlighting** — Fix sluggish menu item highlighting
-2. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container
+1. **GrabControl crash root cause** — Investigate what GrabControl does in Xorg/XQuartz
+2. **JidePopup windows** — Honor window type hints for borderless popups
+3. **Ctrl+click regression** — Identify which change broke it
+4. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container

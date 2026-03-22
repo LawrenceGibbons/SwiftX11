@@ -1017,6 +1017,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // XINPUT2 (XInput2) — major opcode 141
   // -------------------------------------------------------------------
   if (major == ext::kXInput2) {
+    { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] fd=%d minor=%u seq=%u\n",
+        ctx.transport().clientFd(), (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
     switch (minor) {
 
     // ---- minor 1: GetExtensionVersion (XI1 legacy — reply-bearing) ----
@@ -1045,13 +1047,88 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    // ---- XI1 legacy void stubs (minor 3-39) ----
-    case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10:
-    case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18:
-    case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26:
-    case 27: case 28: case 29: case 30: case 31: case 32: case 33: case 34:
-    case 35: case 36: case 37: case 38: case 39:
-      // XI1 legacy requests — silently consume (all void or rarely used)
+    // ---- minor 7: GrabDevice (XI1 reply-bearing) ----
+    case 7: {
+      // Request: CARD32 grab_window, CARD32 time, CARD16 num_classes,
+      //          CARD8 this_device_mode, CARD8 other_device_mode,
+      //          BOOL owner_events, CARD8 deviceid, CARD16 pad,
+      //          then class list.
+      br.skip(br.remaining());
+      // Reply: status = Success (0).
+      // xGrabDeviceReply: repType(1), RepType(byte1), seq(2-3),
+      //   length(4-7)=0, status(8), pad...
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);  // length = 0
+        rep[8] = 0;                          // status = Success
+      });
+      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 GrabDevice minor=7 seq=%u — replied Success\n", (unsigned)seq); x11_ui_push_log(1, buf); }
+      return;
+    }
+
+    // ---- minor 10: GetDeviceFocus (XI1 reply-bearing) ----
+    case 10: {
+      // Request: CARD8 deviceid, pad*3
+      br.skip(br.remaining());
+      // Reply: focus window, time, revert-to.
+      // xGetDeviceFocusReply: repType(1), RepType(byte1), seq(2-3),
+      //   length(4-7)=0, focus(8-11), time(12-15), revertTo(16), pad...
+      const uint32_t focusWin = ctx.input().focus_xid ? ctx.input().focus_xid : 1; // PointerRoot=1
+      (void)ctx.reply().sendReply32(seq, [focusWin](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);         // length = 0
+        wire::wr32_le(rep.data() + 8, focusWin);  // focus window
+        wire::wr32_le(rep.data() + 12, 0);        // time = CurrentTime
+        rep[16] = 1;                                // revertTo = PointerRoot
+      });
+      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 GetDeviceFocus minor=10 seq=%u focus=0x%X\n", (unsigned)seq, focusWin); x11_ui_push_log(1, buf); }
+      return;
+    }
+
+    // ---- minor 24: QueryDeviceState (XI1 reply-bearing) ----
+    case 24: {
+      // Request: CARD8 deviceid, pad*3
+      br.skip(br.remaining());
+      // Reply: num_classes=0, no trailing class data.
+      // xQueryDeviceStateReply: repType(1), RepType(byte1), seq(2-3),
+      //   length(4-7)=0, num_classes(8), pad...
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);  // length = 0 (no trailing classes)
+        rep[8] = 0;                          // num_classes = 0
+      });
+      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 QueryDeviceState minor=24 seq=%u\n", (unsigned)seq); x11_ui_push_log(1, buf); }
+      return;
+    }
+
+    // ---- remaining XI1 legacy reply-bearing stubs (send error to keep XCB in sync) ----
+    case 3:  // GetDeviceDontPropagateList (reply)
+    case 4:  // GetDeviceMotionEvents (reply)
+    case 5:  // ChangeKeyboardDevice (reply)
+    case 6:  // ChangePointerDevice (reply)
+    case 14: // GetFeedbackControl (reply)
+    case 18: // GetDeviceKeyMapping (reply)
+    case 20: // GetDeviceModifierMapping (reply)
+    case 22: // GetDeviceButtonMapping (reply)
+    case 30: // GetSelectedExtensionEvents (reply)
+    case 31: // GetDeviceInfo (reply, XI1.5)
+      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 reply-bearing minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+      return;
+
+    // ---- XI1 legacy void stubs (no reply expected) ----
+    case 8:  // UngrabDevice
+    case 9:  // FocusIn/FocusOut (event, not request)
+    case 11: // SetDeviceFocus
+    case 12: // ChangeFeedbackControl
+    case 13: // GetDeviceModifierMapping — already covered above
+    case 15: // ChangeDeviceDontPropagateList
+    case 16: // GetDeviceMotionEvents — already covered above
+    case 17: // ChangeDeviceKeyMapping
+    case 19: // ChangeDeviceKeyMapping
+    case 21: // SetDeviceModifierMapping
+    case 23: // SetDeviceButtonMapping
+    case 25: // SendExtensionEvent
+    case 26: case 27: case 28: case 29:
+    case 32: case 33: case 34: case 35: case 36: case 37: case 38: case 39:
       br.skip(br.remaining());
       return;
 
@@ -1280,12 +1357,17 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    // ---- minor 52-55: XI2 void stubs ----
-    case 52: // XIUngrabDevice
-    case 53: // XIAllowEvents
-    case 54: // XIPassiveGrabDevice — should be reply-bearing but rare
-    case 55: // XIPassiveUngrabDevice
+    // ---- minor 52-55: XI2 stubs ----
+    case 52: // XIUngrabDevice (void)
+    case 53: // XIAllowEvents (void)
+    case 55: // XIPassiveUngrabDevice (void)
       br.skip(br.remaining());
+      return;
+
+    case 54: // XIPassiveGrabDevice (reply-bearing)
+      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XIPassiveGrabDevice minor=54 seq=%u — sending BadRequest\n", (unsigned)seq); x11_ui_push_log(1, buf); }
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
       return;
 
     // ---- minor 56: XIListProperties (reply-bearing) ----
@@ -1352,9 +1434,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     default:
       break;
     }
-    // Unhandled XI2 minor — silently consume (shouldn't reach here now).
-    { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] unhandled minor=%u seq=%u — silently consumed\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+    // Unhandled XI2 minor — send BadRequest so XCB sequence stays in sync.
+    // Without an error reply, a reply-bearing minor we haven't implemented
+    // would leave XCB hanging, eventually causing a sequence desync crash.
+    { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
     br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;
   }
 
@@ -1362,6 +1447,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // XTEST — major opcode 142
   // -------------------------------------------------------------------
   if (major == ext::kXTEST) {
+    { char buf[128]; snprintf(buf, sizeof(buf), "[XTEST] fd=%d minor=%u seq=%u\n",
+        ctx.transport().clientFd(), (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
     switch (minor) {
 
     // ---- minor 0: XTestGetVersion (reply-bearing) ----
@@ -1369,10 +1456,53 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // Request: CARD8 client_major, pad, CARD16 client_minor
       br.skip(br.remaining());
       // Reply: server_major in byte 1, server_minor at bytes 8-9
+      // Build locally so we can hex-dump for crash diagnosis
+      std::array<uint8_t, 32> rep{};
+      rep.fill(0);
+      rep[0] = 1;                            // Reply
+      rep[1] = 2;                            // server_major_version
+      wire::wr16_le(rep.data() + 2, seq);   // sequence
+      wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
+      wire::wr16_le(rep.data() + 8, 0);     // server_minor_version (2.0)
+      // NOTE: Reporting v2.0 to prevent crash. v2.2 causes Vivado to call
+      // GrabControl which triggers a crash ~58ms later. Crash happens even
+      // with DBus running and NO_AT_BRIDGE=0, ruling out AT-SPI/DBus.
+      // Root cause still unknown — GrabControl side-effects need investigation.
+
+      // Hex dump first 16 bytes of reply for crash diagnosis
+      {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+          "[XTEST] GetVersion reply fd=%d seq=%u hex: "
+          "%02X %02X %02X %02X %02X %02X %02X %02X "
+          "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+          ctx.transport().clientFd(), (unsigned)seq,
+          rep[0], rep[1], rep[2], rep[3], rep[4], rep[5], rep[6], rep[7],
+          rep[8], rep[9], rep[10], rep[11], rep[12], rep[13], rep[14], rep[15]);
+        x11_ui_push_log(1, buf);
+      }
+
+      (void)ctx.reply().sendReplyRaw(rep.data(), rep.size());
+      return;
+    }
+
+    // ---- minor 1: XTestCompareCursor (reply-bearing) ----
+    case 1: {
+      // Request: CARD32 window, CARD32 cursor
+      // Reply: byte 1 = BOOL same
+      // Always report same=1 (true) — we don't track per-window cursors.
+      uint32_t window = br.readU32();
+      uint32_t cursor = br.readU32();
+      br.skip(br.remaining());
+
+      { char buf[128]; snprintf(buf, sizeof(buf),
+          "[XTEST] CompareCursor fd=%d seq=%u window=0x%08X cursor=0x%08X → same=1\n",
+          ctx.transport().clientFd(), (unsigned)seq, window, cursor);
+        x11_ui_push_log(2, buf); }
+
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 1;                            // same = true
         wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
-        rep[1] = 2;                            // server_major_version
-        wire::wr16_le(rep.data() + 8, 2);     // server_minor_version
       });
       return;
     }
@@ -1404,11 +1534,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     return;
   }
 
-  // Fallthrough
-#ifndef NDEBUG
-  fprintf(stderr, "[ExtensionOps] unknown major=%u minor=%u seq=%u\n",
-          (unsigned)major, (unsigned)minor, (unsigned)seq);
-#endif
+  // Fallthrough — unknown extension major (not dispatched by ExtDispatcher)
+  { char buf[128]; snprintf(buf, sizeof(buf), "[ExtensionOps] unknown major=%u minor=%u seq=%u\n", (unsigned)major, (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
   br.skip(br.remaining());
 }
 

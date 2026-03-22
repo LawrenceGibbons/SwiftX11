@@ -43,4 +43,10 @@ final class SettingsStore: ObservableObject {
       x11_set_log_verbosity(Int32(logVerbosity))
     }
   }
+
+  @Published var wireTrace: Bool = false {
+    didSet {
+      x11_set_wire_trace(wireTrace ? 1 : 0)
+    }
+  }
 }

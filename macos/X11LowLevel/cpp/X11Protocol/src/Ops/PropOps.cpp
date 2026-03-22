@@ -26,6 +26,8 @@
 #include "Core/ScreenLayout.hpp"
 #include "Core/timestamp.hpp"
 
+extern "C" void x11_ui_push_log(int level, const char* message);
+
 // Send PropertyNotify (type 28) for ChangeProperty/DeleteProperty.
 // X11 spec: PropertyNotify is delivered only to clients that selected
 // PropertyChangeMask (bit 22) on the window's event_mask.
@@ -164,12 +166,28 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
   }
 #endif
 
-  // Push title update to UI when WM_NAME or _NET_WM_NAME is set
+  // Push title update to UI when WM_NAME or _NET_WM_NAME is set.
+  // Only from the top-level window itself — child windows like "FocusProxy"
+  // and "Content window" set their own WM_NAME which must NOT overwrite
+  // the parent's real title (e.g. "Generate Output Products").
   if (atom == x11::atom::kWM_NAME || atom == x11::atom::k_NET_WM_NAME) {
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
     std::string title(reinterpret_cast<const char*>(data), dataBytes);
-    x11_ui_push_title(host, title.c_str());
+    {
+      char buf[200];
+      snprintf(buf, sizeof(buf),
+               "[TITLE] wid=0x%08X host=0x%08X atom=%u \"%.*s\"%s\n",
+               (unsigned)wid, (unsigned)host,
+               (unsigned)atom,
+               (int)(dataBytes > 80 ? 80 : dataBytes),
+               reinterpret_cast<const char*>(data),
+               (host != wid) ? " (child — skipped)" : "");
+      x11_ui_push_log(1, buf);
+    }
+    if (host == wid) {
+      x11_ui_push_title(host, title.c_str());
+    }
   }
 
   // -----------------------------------------------------------------------

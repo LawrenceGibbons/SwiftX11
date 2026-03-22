@@ -45,6 +45,8 @@
 extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
 extern "C" void x11_cpp_notify_shutdown(void);
 extern "C" void x11_ui_push_destroy(uint32_t xid);
+extern "C" void x11_ui_push_log(int level, const char* message);
+extern "C" int x11_get_wire_trace(void);
 
 static std::atomic<uint32_t> g_nextClientSlot{1}; // 0 reserved
 
@@ -276,19 +278,29 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
       int cfd = clientFds[i];
       short rev = fds[i + numListeners].revents;
 
-      if (rev & (POLLHUP | POLLERR)) {
-        toRemove.push_back(cfd);
-        continue;
-      }
+      // When POLLIN and POLLHUP arrive together (revents=0x11), the client
+      // sent data and then closed its end.  We MUST drain and process any
+      // remaining requests before disconnecting — they may be reply-bearing
+      // (e.g. XTestGetVersion, XIQueryVersion on a probe connection).  If we
+      // skip them, XCB never receives the expected reply and Vivado's probe
+      // thread can dereference a NULL reply → signal 11.
+      const bool wantDisconnect = (rev & (POLLHUP | POLLERR)) != 0;
 
       if (rev & POLLIN) {
         auto* cs = findClient(cfd);
-        if (!cs) continue;
+        if (!cs) { if (wantDisconnect) toRemove.push_back(cfd); continue; }
 
         // Drain loop: process all complete requests in the socket buffer.
         for (;;) {
           DispatchResult dr = readAndDispatch(cfd, *cs);
           if (dr == DispatchResult::Error) {
+            {
+              char buf[128];
+              snprintf(buf, sizeof(buf),
+                       "[X11] readAndDispatch error fd=%d seq=%u\n",
+                       cfd, (unsigned)cs->seq);
+              x11_ui_push_log(1, buf);
+            }
             toRemove.push_back(cfd);
             break;
           }
@@ -297,6 +309,20 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
           }
           // dr == Dispatched → try another request
         }
+      }
+
+      // Disconnect after draining (or immediately if no POLLIN data).
+      if (wantDisconnect && std::find(toRemove.begin(), toRemove.end(), cfd) == toRemove.end()) {
+        {
+          char buf[128];
+          snprintf(buf, sizeof(buf),
+                   "[X11] poll disconnect fd=%d revents=0x%x (%s%s)\n",
+                   cfd, (unsigned)rev,
+                   (rev & POLLHUP) ? "HUP" : "",
+                   (rev & POLLERR) ? "ERR" : "");
+          x11_ui_push_log(1, buf);
+        }
+        toRemove.push_back(cfd);
       }
     }
 
@@ -331,12 +357,18 @@ void XProtoDaemon::acceptClient(int listenFd) {
   // ---- Setup handshake (blocking — tiny, happens once per client) ----
   uint8_t req[12];
   if (!recv_waitall(cfd, req, sizeof(req))) {
+    { char buf[128]; snprintf(buf, sizeof(buf),
+        "[X11] acceptClient fd=%d handshake recv failed errno=%d (%s)\n",
+        cfd, errno, strerror(errno)); x11_ui_push_log(1, buf); }
     ::close(cfd);
     return;
   }
 
   const char byte_order = (char)req[0];
   if (byte_order != 'l') {
+    { char buf[128]; snprintf(buf, sizeof(buf),
+        "[X11] acceptClient fd=%d rejected: byte_order=0x%02X (not little-endian)\n",
+        cfd, (unsigned)(uint8_t)byte_order); x11_ui_push_log(1, buf); }
     x11_send_setup_failed_le(cfd, "SwiftX11: only little-endian supported");
     ::close(cfd);
     return;
@@ -349,6 +381,9 @@ void XProtoDaemon::acceptClient(int listenFd) {
   skip += ((size_t)auth_proto_len + 3u) & ~3u;
   skip += ((size_t)auth_data_len  + 3u) & ~3u;
   if (skip && !skip_bytes(cfd, skip)) {
+    { char buf[128]; snprintf(buf, sizeof(buf),
+        "[X11] acceptClient fd=%d auth skip failed (%zu bytes) errno=%d\n",
+        cfd, skip, errno); x11_ui_push_log(1, buf); }
     ::close(cfd);
     return;
   }
@@ -362,11 +397,14 @@ void XProtoDaemon::acceptClient(int listenFd) {
 
   x11_send_setup_success_minimal_little_endian(cfd, rid_base, rid_mask);
 
-#ifndef NDEBUG
-  fprintf(stderr, "[X11] accept fd=%d slot=%u rid_base=0x%08X rid_mask=0x%08X clients=%zu\n",
-          cfd, (unsigned)clientSlot, (unsigned)rid_base, (unsigned)rid_mask,
-          clients_.size() + 1);
-#endif
+  {
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "[X11] accept fd=%d slot=%u rid_base=0x%08X clients=%zu\n",
+             cfd, (unsigned)clientSlot, (unsigned)rid_base,
+             clients_.size() + 1);
+    x11_ui_push_log(1, buf);
+  }
 
   // Enlarge socket send buffer to 1MB to reduce backpressure when the client
   // is slow to read (e.g., Java Swing during menu tracking).  The default
@@ -403,10 +441,35 @@ void XProtoDaemon::removeClient(int fd) {
 
   ClientSession& cs = it->second;
 
-#ifndef NDEBUG
-  fprintf(stderr, "[X11] disconnect fd=%d remaining=%zu\n",
-          fd, clients_.size() - 1);
-#endif
+  {
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "[X11] disconnect fd=%d remaining=%zu seq=%u\n",
+             fd, clients_.size() - 1,
+             (unsigned)cs.seq);
+    x11_ui_push_log(1, buf);
+  }
+
+  // Dump last dispatched requests (ring buffer) for crash diagnosis
+  {
+    x11_ui_push_log(1, "[X11] last dispatched requests (newest last):\n");
+    const int total = std::min(cs.history_idx, ClientSession::kHistorySize);
+    const int start = cs.history_idx - total;
+    for (int i = start; i < cs.history_idx; i++) {
+      const auto& r = cs.history[i % ClientSession::kHistorySize];
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "  [%d] major=%u minor=%u seq=%u reply=%s\n",
+               i - start, (unsigned)r.major, (unsigned)r.minor,
+               (unsigned)r.seq, r.reply_sent ? "yes" : "no");
+      x11_ui_push_log(1, buf);
+    }
+  }
+
+  // Dump last outgoing wire packets for crash diagnosis
+  activateClient(cs);
+  server_->ctx().transport().dumpWireHistory();
+  deactivateClient();
 
   // Activate this client for teardown
   activateClient(cs);
@@ -553,6 +616,14 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
 
   cs.seq = (uint16_t)(cs.seq + 1);
 
+  // Live wire trace: log every incoming request to stderr when enabled.
+  {
+    if (x11_get_wire_trace()) {
+      fprintf(stderr, "[WIRE] fd=%d REQ major=%u minor=%u seq=%u len=%zu\n",
+              fd, (unsigned)major, (unsigned)minor, (unsigned)cs.seq, remain);
+    }
+  }
+
   activateClient(cs);
   server_->ctx().transport().noteLastSeq(cs.seq);
   (void)server_->dispatch(major, minor, cs.seq, payload, remain);
@@ -561,6 +632,10 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // those are drained separately in drainHostCommands with correct
   // per-client activation).
   server_->flushNotifyQueue();
+
+  // Record in ring buffer for crash diagnosis
+  cs.recordDispatch(major, minor, cs.seq,
+                    server_->ctx().transport().wasReplySent());
 
   deactivateClient();
 
@@ -737,12 +812,38 @@ void XProtoDaemon::drainHostCommands() {
         sendDeleteWindowMessage(server_->ctx(), c.xid);
         server_->flushNotifyQueue();
       } else {
-        // Client doesn't support WM_DELETE_WINDOW — forceful disconnect
-#ifndef NDEBUG
-        fprintf(stderr, "[WINDOW_CLOSE] no WM_DELETE_WINDOW on xid=0x%08X, "
-                "force disconnect fd=%d\n", (unsigned)c.xid, owner_fd);
-#endif
-        forceDisconnect.push_back(owner_fd);
+        // Client doesn't support WM_DELETE_WINDOW — send UnmapNotify +
+        // DestroyNotify so the client tears down this window gracefully.
+        // NEVER disconnect the whole client just because one popup lacks
+        // the WM_DELETE_WINDOW protocol (e.g. JidePopup in Vivado).
+        {
+          char buf[128];
+          snprintf(buf, sizeof(buf),
+            "[WINDOW_CLOSE] no WM_DELETE_WINDOW on xid=0x%08X fd=%d — "
+            "sending Unmap+Destroy (not disconnecting)\n",
+            (unsigned)c.xid, owner_fd);
+          x11_ui_push_log(1, buf);
+        }
+
+        // UnmapNotify (type 18)
+        {
+          std::array<uint8_t, 32> ev{};
+          ev[0] = 18; // UnmapNotify
+          wire::wr32_le(ev.data() + 4, c.xid);  // event window
+          wire::wr32_le(ev.data() + 8, c.xid);  // window
+          ev[12] = 0; // from_configure = false
+          server_->ctx().transport().sendAll(ev.data(), 32);
+        }
+
+        // DestroyNotify (type 17)
+        {
+          std::array<uint8_t, 32> ev{};
+          ev[0] = 17; // DestroyNotify
+          wire::wr32_le(ev.data() + 4, c.xid);  // event window
+          wire::wr32_le(ev.data() + 8, c.xid);  // window
+          server_->ctx().transport().sendAll(ev.data(), 32);
+        }
+
       }
 
       deactivateClient();

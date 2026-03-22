@@ -22,6 +22,9 @@
 #include "Utils/WireErrors.hpp"
 #include "Utils/TraceDefs.hpp"
 
+extern "C" void x11_ui_push_log(int level, const char* message);
+extern "C" int x11_get_wire_trace(void);
+
 // Stub: the old C-level xproto thread check was in the deleted x11_xproto.c.
 // XProtoTransport::sendAll() has its own thread check (xproto_thread_valid_),
 // so this is now a no-op.
@@ -221,10 +224,14 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
       int16_t delta = (int16_t)(pkt_seq - max_wire_seq_);
       if (delta < 0) {
         // Sequence would regress — bump to monotonic floor
-#ifndef NDEBUG
-        fprintf(stderr, "[SEQ_FLOOR] bumped seq %u → %u (type=%u)\n",
-                (unsigned)pkt_seq, (unsigned)max_wire_seq_, (unsigned)bp[0]);
-#endif
+        {
+          char lbuf[128];
+          snprintf(lbuf, sizeof(lbuf),
+                   "[SEQ_FLOOR] bumped seq %u → %u (type=%u fd=%d)\n",
+                   (unsigned)pkt_seq, (unsigned)max_wire_seq_,
+                   (unsigned)bp[0], client_fd_);
+          x11_ui_push_log(1, lbuf);
+        }
         std::memcpy(fixedPkt, bp, 32);
         wire::wr16_le(fixedPkt + 2, max_wire_seq_);
         pkt_seq = max_wire_seq_;
@@ -282,6 +289,30 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     }
   }
 
+  // Record outgoing packet in wire ring buffer (for crash diagnosis).
+  // sendBuf points to the final bytes (after floor fix), n is the total size.
+  recordWirePacket(static_cast<const uint8_t*>(sendBuf), n);
+
+  // Live wire trace to stderr (gated by x11_set_wire_trace toggle).
+  if (n >= 32 && payload_remaining_ == 0) {
+    if (x11_get_wire_trace()) {
+      const uint8_t* h = static_cast<const uint8_t*>(sendBuf);
+      uint16_t ws = uint16_t(h[2] | (uint16_t(h[3]) << 8));
+      if (h[0] == 0) {
+        fprintf(stderr, "[WIRE] fd=%d ERROR code=%u seq=%u res=0x%02X%02X%02X%02X major=%u minor=%u\n",
+                client_fd_, h[1], ws, h[7],h[6],h[5],h[4], h[10], h[11]);
+      } else if (h[0] == 1) {
+        uint32_t lw = uint32_t(h[4])|(uint32_t(h[5])<<8)|(uint32_t(h[6])<<16)|(uint32_t(h[7])<<24);
+        fprintf(stderr, "[WIRE] fd=%d REPLY seq=%u data=%u lenw=%u\n",
+                client_fd_, ws, h[1], lw);
+      } else {
+        uint32_t w = uint32_t(h[4])|(uint32_t(h[5])<<8)|(uint32_t(h[6])<<16)|(uint32_t(h[7])<<24);
+        fprintf(stderr, "[WIRE] fd=%d EVENT type=%u seq=%u detail=%u wid=0x%08X\n",
+                client_fd_, h[0], ws, h[1], w);
+      }
+    }
+  }
+
   const uint8_t* p = static_cast<const uint8_t*>(sendBuf);
   std::size_t left = n;
 
@@ -305,9 +336,26 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
         ::poll(&pfd, 1, 50);
         continue;
       }
+      {
+        int e = errno;
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "[X11] sendAll failed fd=%d errno=%d (%s) n=%zu left=%zu\n",
+                 client_fd_, e, strerror(e), n, left);
+        x11_ui_push_log(0, buf);
+      }
       return false;
     }
-    if (w == 0) return false;
+    if (w == 0) {
+      {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "[X11] sendAll zero-write fd=%d n=%zu left=%zu\n",
+                 client_fd_, n, left);
+        x11_ui_push_log(0, buf);
+      }
+      return false;
+    }
     p += static_cast<size_t>(w);
     left -= static_cast<size_t>(w);
   }
@@ -592,6 +640,14 @@ void XProtoTransport::flushNotifyQueue() {
 
   if (n == 0) return;
 
+  {
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "[FLUSH] fd=%d seq=%u pending=%zu\n",
+             client_fd_, (unsigned)seq0, n);
+    x11_ui_push_log(1, buf);
+  }
+
 #ifndef NDEBUG
   for (size_t i=0;i<n;i++){
     ctx_.tracef("  pn[%zu] wid=0x%08X cfg=%u exp=%u rect=%u\n",
@@ -675,4 +731,60 @@ bool XProtoTransport::sendErrorCore(uint8_t errorCode, uint16_t seq,
 }
   
   
+// ---------------------------------------------------------------------------
+// Wire ring buffer — records every outgoing packet header for crash diagnosis
+// ---------------------------------------------------------------------------
+
+void XProtoTransport::recordWirePacket(const uint8_t* p, std::size_t n) {
+  // Only record packet headers (≥32 bytes), skip payload continuations.
+  if (n < 32 || payload_remaining_ > 0) return;
+
+  auto& r = wire_history_[wire_history_idx_ % kWireHistorySize];
+  r.type   = p[0];
+  r.detail = p[1];
+  r.seq    = uint16_t(p[2] | (uint16_t(p[3]) << 8));
+
+  if (p[0] == 0) {
+    // Error: byte[10] is the major opcode that caused the error
+    r.extra = (n > 10) ? p[10] : 0;
+  } else if (p[0] == 1) {
+    // Reply: bytes[4:5] are low 16 bits of length-in-words
+    r.extra = uint16_t(p[4] | (uint16_t(p[5]) << 8));
+  } else {
+    // Event: extra = bytes[4:7] as window ID (first 16 bits)
+    r.extra = uint16_t(p[4] | (uint16_t(p[5]) << 8));
+  }
+  wire_history_idx_++;
+}
+
+void XProtoTransport::dumpWireHistory() const {
+  x11_ui_push_log(1, "[X11] last outgoing packets (newest last):\n");
+  const int total = (wire_history_idx_ < kWireHistorySize)
+                      ? wire_history_idx_ : kWireHistorySize;
+  const int start = wire_history_idx_ - total;
+  for (int i = start; i < wire_history_idx_; i++) {
+    const auto& r = wire_history_[i % kWireHistorySize];
+    const char* kind = (r.type == 0) ? "ERROR" :
+                       (r.type == 1) ? "REPLY" : "EVENT";
+    char buf[128];
+    if (r.type == 0) {
+      snprintf(buf, sizeof(buf),
+               "  [%d] %s code=%u seq=%u major=%u\n",
+               i - start, kind, (unsigned)r.detail,
+               (unsigned)r.seq, (unsigned)r.extra);
+    } else if (r.type == 1) {
+      snprintf(buf, sizeof(buf),
+               "  [%d] %s data=%u seq=%u lenw=%u\n",
+               i - start, kind, (unsigned)r.detail,
+               (unsigned)r.seq, (unsigned)r.extra);
+    } else {
+      snprintf(buf, sizeof(buf),
+               "  [%d] %s type=%u seq=%u detail=%u\n",
+               i - start, kind, (unsigned)r.type,
+               (unsigned)r.seq, (unsigned)r.detail);
+    }
+    x11_ui_push_log(1, buf);
+  }
+}
+
 } // namespace x11

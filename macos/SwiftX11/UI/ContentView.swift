@@ -57,6 +57,9 @@ struct ContentView: View {
           server.logText = ""
         }
         Spacer()
+        Toggle("Wire Trace (stderr)", isOn: $settings.wireTrace)
+          .toggleStyle(.switch)
+          .help("Log every incoming request and outgoing packet to the Xcode console")
       }
 
       LogTextView(text: $server.logText)

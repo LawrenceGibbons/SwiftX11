@@ -27,6 +27,14 @@ enum class DispatchResult {
   Error         // Connection error or EOF — remove client
 };
 
+/// Ring buffer entry for the last N dispatched requests (crash diagnosis).
+struct DispatchRecord {
+  uint8_t  major = 0;
+  uint8_t  minor = 0;
+  uint16_t seq   = 0;
+  bool     reply_sent = false;
+};
+
 /// Per-connection session state managed by the daemon's poll loop.
 struct ClientSession {
   XClient* client = nullptr;
@@ -47,6 +55,17 @@ struct ClientSession {
   std::vector<uint8_t> buf;
   size_t buf_have = 0;          // payload bytes received so far
   size_t buf_need = 0;          // total payload bytes needed
+
+  // Ring buffer of last 16 dispatched requests for crash diagnosis.
+  static constexpr int kHistorySize = 16;
+  DispatchRecord history[16]{};
+  int history_idx = 0;          // next write position (wraps)
+
+  void recordDispatch(uint8_t maj, uint8_t min, uint16_t s, bool replied) {
+    auto& r = history[history_idx % kHistorySize];
+    r.major = maj; r.minor = min; r.seq = s; r.reply_sent = replied;
+    history_idx++;
+  }
 };
 
 class XProtoDaemon {

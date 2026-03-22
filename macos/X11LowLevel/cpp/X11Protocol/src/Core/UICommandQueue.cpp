@@ -131,7 +131,7 @@ static inline void push_cmd(const x11_ui_cmd_t& c) {
 
 static inline void fill_title(x11_ui_cmd_t& c, const char* title_utf8) {
   if (!title_utf8) title_utf8 = "";
-  // Cap at 32 bytes (struct fixed)
+  // Cap at sizeof(title_utf8) = 128 bytes
   size_t n = strnlen(title_utf8, sizeof(c.title_utf8));
   c.title_len = (uint8_t)n;
   std::memset(c.title_utf8, 0, sizeof(c.title_utf8));

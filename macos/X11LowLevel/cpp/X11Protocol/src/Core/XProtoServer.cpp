@@ -253,36 +253,58 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
     // This catches handlers that early-return without sending a reply (e.g.,
     // when br.remaining() < required bytes), preventing XCB sequence desync.
     if (ctx_.hasClient() && isReplyBearingCore(major) && !ctx_.transport().wasReplySent()) {
-      fprintf(stderr,
-              "[DISPATCH] MISSING REPLY — sending BadImplementation for major=%u minor=%u seq=%u\n",
-              (unsigned)major, (unsigned)minor, (unsigned)seq);
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] MISSING REPLY — sending BadImplementation for major=%u minor=%u seq=%u\n",
+               (unsigned)major, (unsigned)minor, (unsigned)seq);
+      x11_ui_push_log(1, buf);
       ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
+    }
+    // Extension diagnostic: log when no reply was sent for extension opcodes.
+    // Many extension minors are void (no reply), so we don't auto-send an error,
+    // but the log helps diagnose sequence desyncs caused by missing replies.
+    if (ctx_.hasClient() && major >= 128 && !ctx_.transport().wasReplySent()) {
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] ext major=%u minor=%u seq=%u completed (no reply sent — void op)\n",
+               (unsigned)major, (unsigned)minor, (unsigned)seq);
+      x11_ui_push_log(2, buf);
     }
 
     return 1;
   } catch (const std::exception& ex) {
-#ifndef NDEBUG
-    ctx_.tracef("[XProtoServer] dispatch EXCEPTION major=%u minor=%u seq=%u remain=%zu: %s\n",
-                (unsigned)major, (unsigned)minor, (unsigned)seq, remain, ex.what());
-#endif
+    {
+      char buf[256];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] EXCEPTION major=%u minor=%u seq=%u: %s\n",
+               (unsigned)major, (unsigned)minor, (unsigned)seq, ex.what());
+      x11_ui_push_log(0, buf);
+    }
     // Safety net: if reply-bearing and no reply sent before exception, send error.
     if (ctx_.hasClient() && isReplyBearingCore(major) && !ctx_.transport().wasReplySent()) {
-      fprintf(stderr,
-              "[DISPATCH] EXCEPTION — sending BadImplementation for major=%u seq=%u\n",
-              (unsigned)major, (unsigned)seq);
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] EXCEPTION — sending BadImplementation for major=%u seq=%u\n",
+               (unsigned)major, (unsigned)seq);
+      x11_ui_push_log(1, buf);
       ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
     }
     return 1;
   } catch (...) {
-#ifndef NDEBUG
-    ctx_.tracef("[XProtoServer] dispatch UNKNOWN EXCEPTION major=%u minor=%u seq=%u remain=%zu\n",
-                (unsigned)major, (unsigned)minor, (unsigned)seq, remain);
-#endif
+    {
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] UNKNOWN EXCEPTION major=%u minor=%u seq=%u\n",
+               (unsigned)major, (unsigned)minor, (unsigned)seq);
+      x11_ui_push_log(0, buf);
+    }
     // Safety net: if reply-bearing and no reply sent before exception, send error.
     if (ctx_.hasClient() && isReplyBearingCore(major) && !ctx_.transport().wasReplySent()) {
-      fprintf(stderr,
-              "[DISPATCH] UNKNOWN EXCEPTION — sending BadImplementation for major=%u seq=%u\n",
-              (unsigned)major, (unsigned)seq);
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "[DISPATCH] UNKNOWN EXCEPTION — sending BadImplementation for major=%u seq=%u\n",
+               (unsigned)major, (unsigned)seq);
+      x11_ui_push_log(1, buf);
       ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
     }
     return 1;

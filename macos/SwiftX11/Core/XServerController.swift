@@ -299,7 +299,7 @@ final class XServerController: ObservableObject {
     case X11_UI_TITLE:
       let xid = cmd.xid
       let len = Int(cmd.title_len)
-      let cappedLen = max(0, min(len, 32))
+      let cappedLen = max(0, min(len, 128))
 
       let title = withUnsafeBytes(of: cmd.title_utf8) { raw -> String in
         let bytes = Array(raw.prefix(cappedLen))

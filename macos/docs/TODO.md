@@ -691,6 +691,42 @@ rendercheck                 # RENDER extension tests
 
 ---
 
+## HIGH PRIORITY — Active Bugs
+
+### JidePopup / Undecorated Window Handling (HIGH — causes visible artifacts + crash risk)
+Java Swing JidePopup windows (tooltips, dropdown menus, context menus) appear as full decorated NSWindows with title bars instead of borderless ephemeral popups. This makes them visible, persistent, and closable — leading to user confusion and (before v1.19.12) crashes when closed.
+
+**Root cause**: These windows are created as top-level managed windows but should be rendered without decorations. They may use:
+- `_NET_WM_WINDOW_TYPE_POPUP_MENU` / `_NET_WM_WINDOW_TYPE_TOOLTIP` / `_NET_WM_WINDOW_TYPE_DROPDOWN_MENU`
+- `_MOTIF_WM_HINTS` with no-decoration flags
+- Override-redirect (already handled for some popups, but JidePopup may not set this)
+
+**Tasks**:
+- [ ] Investigate which hints JidePopup sets (log `_NET_WM_WINDOW_TYPE`, `_MOTIF_WM_HINTS`, `override_redirect` for windows titled "JidePopup")
+- [ ] Honor `_NET_WM_WINDOW_TYPE` — render popup/tooltip/dropdown types as borderless NSWindows (no title bar, no close button)
+- [ ] Honor `_MOTIF_WM_HINTS` decoration flags — suppress title bar/resize handles when requested
+- [ ] Ensure borderless popups are not user-closable (no macOS close button to trigger WindowClose)
+- [ ] Verify xterm Ctrl+click menus (override-redirect) are not affected by changes
+
+**Workaround (v1.19.12)**: Closing a window without `WM_DELETE_WINDOW` now sends UnmapNotify + DestroyNotify instead of force-disconnecting the client. This prevents Vivado crashes but doesn't fix the visual artifact.
+
+### Ctrl+Click → Right-Click Regression (MEDIUM — usability)
+Ctrl+click no longer triggers context menus in Vivado (button 3 / right-click). Two-finger trackpad click works as a workaround. Need to identify which change in the v1.17→v1.19 range broke this. Ctrl+click still needs to work for xterm menus (Ctrl+Button1 = font menu, Ctrl+Button2 = VT options).
+
+### JidePopup Windows Showing as Decorated Top-Level Windows (HIGH — usability)
+Vivado's JidePopup windows (Java Swing popups used for tooltips, dropdowns, context menus) appear as full decorated NSWindows with title bars. In XQuartz/xpra these are borderless/ephemeral. SwiftX11 should honor `_NET_WM_WINDOW_TYPE`, `_MOTIF_WM_HINTS`, or other hints that indicate a window should be undecorated. v1.19.12 fixed the crash when closing these (was force-disconnecting the entire client), but they still shouldn't be visible as decorated windows. The title " " (single space) pattern and "JidePopup" title are both indicators of these transient windows.
+
+### Pointer Coordinate Offset After Left-Edge Resize (MEDIUM — usability)
+When resizing a Vivado window by dragging the left edge to the right, menu selections and clicks are offset horizontally (selected item is a couple of inches to the right of where the user clicks). Likely cause: the X11 client's understanding of the window origin doesn't update when the macOS window origin shifts during a left-edge resize. The coordinate transform from macOS screen coords to X11 window-local coords uses the stale origin. Need to verify ConfigureNotify is sent with the updated x/y position after left-edge resizes.
+
+### Add Timestamps to Swift Log Window (LOW — diagnostics)
+Add identical timestamps to the Swift UI log output so it can be correlated with the stderr/Xcode debug console output. Currently the two logs use different timestamp formats making it hard to match events across them.
+
+### Add Find/Search to Swift Log Window (LOW — diagnostics)
+Add a search/filter capability to the SwiftX11 log window so the user can search for specific window IDs, request types, or error messages without manually scrolling.
+
+---
+
 ## Phase 8: X11 Protocol Hardening
 
 Systematic review of all request handlers for spec compliance. Motivated by bugs in v1.15–v1.17 that stemmed from simplified implementations:
