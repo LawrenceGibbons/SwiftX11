@@ -494,6 +494,10 @@ final class WindowRegistry {
     }
     win.setFrameOrigin(origin)
 
+    // Borderless windows (MOTIF decor=0, e.g. JidePopup) cannot become key —
+    // use orderFront and don't steal focus. Treat like override-redirect popups.
+    let isBorderless = win.styleMask.contains(.borderless)
+
     // For transient (dialog) windows, order above the parent to stay in the
     // same Stage Manager stage. For non-transient windows, use the normal
     // activate + makeKeyAndOrderFront path.
@@ -508,8 +512,12 @@ final class WindowRegistry {
         win.setFrameOrigin(NSPoint(x: cx, y: cy))
       }
       win.order(.above, relativeTo: parentWin.windowNumber)
-      win.makeKey()
-      print("[TRANSIENT_SHOW] xid=0x\(String(format:"%X", host)) above parent=0x\(String(format:"%X", parentHost))")
+      if !isBorderless { win.makeKey() }
+      print("[TRANSIENT_SHOW] xid=0x\(String(format:"%X", host)) above parent=0x\(String(format:"%X", parentHost)) borderless=\(isBorderless)")
+    } else if isBorderless {
+      // Undecorated non-transient (JidePopup with parent=0): show without focus steal
+      win.orderFront(nil)
+      print("[POPUP_SHOW] xid=0x\(String(format:"%X", host)) borderless — orderFront (no focus steal)")
     } else {
       NSApp.activate(ignoringOtherApps: true)
       win.makeKeyAndOrderFront(nil)
