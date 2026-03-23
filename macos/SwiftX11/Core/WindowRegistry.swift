@@ -498,26 +498,25 @@ final class WindowRegistry {
     // use orderFront and don't steal focus. Treat like override-redirect popups.
     let isBorderless = win.styleMask.contains(.borderless)
 
-    // For transient (dialog) windows, order above the parent to stay in the
-    // same Stage Manager stage. For non-transient windows, use the normal
-    // activate + makeKeyAndOrderFront path.
-    if let parentHost = pendingTransientFor[host],
-       let parentController = windows[parentHost],
-       let parentWin = parentController.window {
-      // Center on parent if position looks like a default (y near 0 or top of screen)
+    if isBorderless {
+      // Undecorated (JidePopup, tooltips): show without focus steal.
+      // Borderless NSWindows return NO from canBecomeKeyWindow.
+      win.orderFront(nil)
+      print("[POPUP_SHOW] xid=0x\(String(format:"%X", host)) borderless — orderFront (no focus steal)")
+    } else if let parentHost = pendingTransientFor[host],
+              let parentController = windows[parentHost],
+              let parentWin = parentController.window {
+      // Decorated transient dialog: center on parent if position is default,
+      // then show normally. Stage Manager keeps same-app windows together.
       if x11y <= 0 {
         let parentFrame = parentWin.frame
         let cx = parentFrame.midX - newSize.width / 2
         let cy = parentFrame.midY - newSize.height / 2
         win.setFrameOrigin(NSPoint(x: cx, y: cy))
       }
-      win.order(.above, relativeTo: parentWin.windowNumber)
-      if !isBorderless { win.makeKey() }
-      print("[TRANSIENT_SHOW] xid=0x\(String(format:"%X", host)) above parent=0x\(String(format:"%X", parentHost)) borderless=\(isBorderless)")
-    } else if isBorderless {
-      // Undecorated non-transient (JidePopup with parent=0): show without focus steal
-      win.orderFront(nil)
-      print("[POPUP_SHOW] xid=0x\(String(format:"%X", host)) borderless — orderFront (no focus steal)")
+      NSApp.activate(ignoringOtherApps: true)
+      win.makeKeyAndOrderFront(nil)
+      print("[TRANSIENT_SHOW] xid=0x\(String(format:"%X", host)) dialog, parent=0x\(String(format:"%X", parentHost))")
     } else {
       NSApp.activate(ignoringOtherApps: true)
       win.makeKeyAndOrderFront(nil)
