@@ -409,6 +409,10 @@ final class XServerController: ObservableObject {
       // WM_HINTS initial_state: 3 = IconicState (start minimized)
       WindowRegistry.shared.applyInitialState(xid: cmd.xid, state: cmd.flags)
 
+    case X11_UI_TRANSIENT_FOR:
+      // WM_TRANSIENT_FOR: dialog parent window relationship
+      WindowRegistry.shared.applyTransientFor(xid: cmd.xid, transientForXid: cmd.parent_xid)
+
     default:
       break
     }

@@ -327,6 +327,16 @@ extern "C" void x11_ui_push_initial_state(uint32_t xid, uint32_t state) {
   push_cmd(c);
 }
 
+// ICCCM: WM_TRANSIENT_FOR
+extern "C" void x11_ui_push_transient_for(uint32_t xid, uint32_t transient_for_xid) {
+  if (xid == 0) return;
+  x11_ui_cmd_t c = make_empty();
+  c.type = X11_UI_TRANSIENT_FOR;
+  c.xid = xid;
+  c.parent_xid = transient_for_xid;
+  push_cmd(c);
+}
+
 // =============================================================================
 // Shared damage accumulator — bypasses UI command queue latency.
 // C++ writes here from the server thread; Swift reads at present time.

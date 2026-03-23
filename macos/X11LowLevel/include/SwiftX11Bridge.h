@@ -40,6 +40,7 @@ typedef enum {
   X11_UI_SIZE_HINTS,      // WM_NORMAL_HINTS: min/max/increment via size_hints
   X11_UI_WINDOW_TYPE,     // _NET_WM_WINDOW_TYPE: type_atom in flags
   X11_UI_INITIAL_STATE,   // WM_HINTS initial_state: state in flags (1=Normal, 3=Iconic)
+  X11_UI_TRANSIENT_FOR,   // WM_TRANSIENT_FOR: parent_xid = transient-for window
 } x11_ui_cmd_type_t;
 
 // SwiftX11Bridge.h
@@ -110,6 +111,7 @@ void x11_ui_push_size_hints(uint32_t xid, int32_t min_w, int32_t min_h,
                             int32_t inc_w, int32_t inc_h);
 void x11_ui_push_window_type(uint32_t xid, uint32_t type_atom);
 void x11_ui_push_initial_state(uint32_t xid, uint32_t state);
+void x11_ui_push_transient_for(uint32_t xid, uint32_t transient_for_xid);
 
 // SHAPE extension — query shape data from C++ (called by Swift at present time)
 bool x11_shape_is_shaped(uint32_t xid);

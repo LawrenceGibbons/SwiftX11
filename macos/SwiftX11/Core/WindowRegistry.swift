@@ -438,6 +438,12 @@ final class WindowRegistry {
       }
     }
 
+    // Apply deferred WM_TRANSIENT_FOR child-window relationship.
+    // This must happen after the window is shown so NSWindow exists.
+    if let parentHost = pendingTransientFor[host] {
+      applyTransientForNow(dialogHost: host, parentHost: parentHost)
+    }
+
     // For OR windows, skip the initial present — the surface is blank at this point
     // because the client hasn't received Expose yet.  The damage-triggered present
     // (after client draws) will show content AND reveal the window via pendingORShow.
@@ -550,6 +556,7 @@ final class WindowRegistry {
     latestSourceByHost.removeValue(forKey: xid)
     ignoreCocoaResizeUntilMapped.remove(xid)
     pendingORShow.remove(xid)
+    pendingTransientFor.removeValue(forKey: xid)
     // If this xid was a *source* for some host, clear that too.
     // (Safe O(n), n is small.)
     for (host, src) in latestSourceByHost where src == xid {
@@ -1436,6 +1443,56 @@ final class WindowRegistry {
 
   /// Track windows that should start minimized (WM_HINTS IconicState)
   private var pendingIconicState = Set<UInt32>()
+
+  /// WM_TRANSIENT_FOR: maps dialog host XID → parent host XID
+  /// Stored always (even before map) so deferred application works.
+  private var pendingTransientFor: [UInt32: UInt32] = [:]
+
+  /// WM_TRANSIENT_FOR: make dialog a child of its parent NSWindow.
+  /// If the dialog NSWindow doesn't exist yet, the relationship is stored
+  /// in pendingTransientFor and applied at map time.
+  @MainActor
+  func applyTransientFor(xid: UInt32, transientForXid: UInt32) {
+    let host = topLevelAncestor(of: xid)
+
+    // transient_for root (1) or None (0) means "transient for group" — no specific parent
+    let kRootXid: UInt32 = 1
+    guard transientForXid != 0 && transientForXid != kRootXid else {
+      pendingTransientFor.removeValue(forKey: host)
+      // Remove existing child relationship if any
+      if let controller = windows[host], let win = controller.window,
+         let parent = win.parent {
+        parent.removeChildWindow(win)
+        print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", host)) cleared (root/none)")
+      }
+      return
+    }
+
+    let parentHost = topLevelAncestor(of: transientForXid)
+
+    // Always store for deferred application at map time
+    pendingTransientFor[host] = parentHost
+
+    // Try to apply immediately if both windows exist and dialog is mapped
+    applyTransientForNow(dialogHost: host, parentHost: parentHost)
+  }
+
+  /// Actually wire up the NSWindow child relationship if both windows exist.
+  @MainActor
+  private func applyTransientForNow(dialogHost: UInt32, parentHost: UInt32) {
+    guard let dialogController = windows[dialogHost], let dialogWin = dialogController.window,
+          let parentController = windows[parentHost], let parentWin = parentController.window else {
+      return
+    }
+    // Don't re-add if already a child of the correct parent
+    if dialogWin.parent == parentWin { return }
+    // Remove from previous parent if any
+    if let oldParent = dialogWin.parent {
+      oldParent.removeChildWindow(dialogWin)
+    }
+    parentWin.addChildWindow(dialogWin, ordered: .above)
+    print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", dialogHost)) → parent=0x\(String(format:"%X", parentHost)) (applied)")
+  }
 
   func flushRepaintNow(xid: UInt32) {
     let host = hostXid(xid)

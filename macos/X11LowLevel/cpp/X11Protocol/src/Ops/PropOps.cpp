@@ -58,6 +58,7 @@ extern "C" void x11_ui_push_size_hints(uint32_t xid, int32_t min_w, int32_t min_
 extern "C" void x11_ui_push_move(uint32_t xid, int32_t x_px, int32_t y_px);
 extern "C" void x11_ui_push_window_type(uint32_t xid, uint32_t type_atom);
 extern "C" void x11_ui_push_initial_state(uint32_t xid, uint32_t state);
+extern "C" void x11_ui_push_transient_for(uint32_t xid, uint32_t transient_for_xid);
 
 namespace x11 {
 
@@ -413,6 +414,22 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
           wid, host, flags, decorations);
         x11_ui_push_log(1, buf); }
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // WM_TRANSIENT_FOR (atom 68): dialog parent window relationship
+  // Value: CARD32 parent window XID (or root for "transient for group")
+  // -----------------------------------------------------------------------
+  if (atom == 68 /* WM_TRANSIENT_FOR */ && fmt == 32 && dataBytes >= 4) {
+    const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
+    uint32_t transient_for_xid = d32[0];
+    uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    if (host == 0) host = wid;
+    x11_ui_push_transient_for(host, transient_for_xid);
+    { char buf[128]; snprintf(buf, sizeof(buf),
+        "[WM_TRANSIENT_FOR] wid=0x%X host=0x%X parent=0x%X\n",
+        wid, host, transient_for_xid);
+      x11_ui_push_log(1, buf); }
   }
 }
 
