@@ -545,6 +545,11 @@ final class WindowRegistry {
 
     pendingORShow.remove(host)
     suppressNextUnmapFromCocoa.insert(host)
+    // Detach from parent before hiding — addChildWindow keeps the child
+    // visible/grouped even after orderOut, leaving a grey shell.
+    if let win = controller.window, let parent = win.parent {
+      parent.removeChildWindow(win)
+    }
     controller.window?.orderOut(nil)
   }
   
@@ -583,7 +588,12 @@ final class WindowRegistry {
     childrenByParent.removeValue(forKey: xid)
     infoByXid.removeValue(forKey: xid)
 
-    // 4) If it’s a top-level Cocoa host, actually close the NSWindow.
+    // 4) Detach NSWindow child relationship before closing.
+    if let controller = windows[xid], let win = controller.window, let parent = win.parent {
+      parent.removeChildWindow(win)
+    }
+
+    // 5) If it’s a top-level Cocoa host, actually close the NSWindow.
     if isTopLevelX11Window(xid) {
       // IMPORTANT: closeWindow currently inserts into closingXids; we just removed it above,
       // but closeWindow may re-insert. Fix closeWindow (see below).
