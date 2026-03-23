@@ -406,12 +406,13 @@ void XProtoDaemon::acceptClient(int listenFd) {
     x11_ui_push_log(1, buf);
   }
 
-  // Enlarge socket send buffer to 1MB to reduce backpressure when the client
-  // is slow to read (e.g., Java Swing during menu tracking).  The default
-  // macOS SO_SNDBUF (~128KB) fills up quickly with MotionNotify + RawMotion
-  // events from GlobalPointerTracker, blocking the xproto thread.
+  // Enlarge socket send buffer to reduce backpressure when the client
+  // is slow to read (e.g., Java Swing during menu tracking, or Docker
+  // VM network bridge bottleneck with large PutImage bursts).  The default
+  // macOS SO_SNDBUF (~128KB) fills up quickly.  4MB absorbs typical
+  // Vivado dialog rendering bursts over the Docker bridge.
   {
-    int sndbuf = 1024 * 1024;
+    int sndbuf = 4 * 1024 * 1024;
     ::setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
   }
 

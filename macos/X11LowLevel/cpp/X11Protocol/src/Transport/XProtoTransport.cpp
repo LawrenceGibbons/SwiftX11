@@ -324,8 +324,8 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         // Socket buffer full — wait with poll() instead of tight-spinning.
         // We MUST NOT drop data: it could be part of a reply the client is
-        // waiting for.  The 1MB SO_SNDBUF set at accept time makes this
-        // very rare.  poll() yields the CPU and wakes when the client reads.
+        // waiting for.  The 4MB SO_SNDBUF set at accept time reduces this
+        // significantly.  poll() yields the CPU and wakes when the client reads.
         if (++eagain_waits == 1) {
           // First EAGAIN — log to help diagnose backpressure issues
           const uint8_t* hdr = static_cast<const uint8_t*>(sendBuf);
