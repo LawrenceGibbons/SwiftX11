@@ -494,8 +494,26 @@ final class WindowRegistry {
     }
     win.setFrameOrigin(origin)
 
-    NSApp.activate(ignoringOtherApps: true)
-    win.makeKeyAndOrderFront(nil)
+    // For transient (dialog) windows, order above the parent to stay in the
+    // same Stage Manager stage. For non-transient windows, use the normal
+    // activate + makeKeyAndOrderFront path.
+    if let parentHost = pendingTransientFor[host],
+       let parentController = windows[parentHost],
+       let parentWin = parentController.window {
+      // Center on parent if position looks like a default (y near 0 or top of screen)
+      if x11y <= 0 {
+        let parentFrame = parentWin.frame
+        let cx = parentFrame.midX - newSize.width / 2
+        let cy = parentFrame.midY - newSize.height / 2
+        win.setFrameOrigin(NSPoint(x: cx, y: cy))
+      }
+      win.order(.above, relativeTo: parentWin.windowNumber)
+      win.makeKey()
+      print("[TRANSIENT_SHOW] xid=0x\(String(format:"%X", host)) above parent=0x\(String(format:"%X", parentHost))")
+    } else {
+      NSApp.activate(ignoringOtherApps: true)
+      win.makeKeyAndOrderFront(nil)
+    }
     // Sync NSWindow's actual screen position back to X11 WindowTable.
     let hostCopy = host
     DispatchQueue.main.async { [weak self] in
@@ -545,11 +563,6 @@ final class WindowRegistry {
 
     pendingORShow.remove(host)
     suppressNextUnmapFromCocoa.insert(host)
-    // Detach from parent before hiding — addChildWindow keeps the child
-    // visible/grouped even after orderOut, leaving a grey shell.
-    if let win = controller.window, let parent = win.parent {
-      parent.removeChildWindow(win)
-    }
     controller.window?.orderOut(nil)
   }
   
@@ -588,12 +601,7 @@ final class WindowRegistry {
     childrenByParent.removeValue(forKey: xid)
     infoByXid.removeValue(forKey: xid)
 
-    // 4) Detach NSWindow child relationship before closing.
-    if let controller = windows[xid], let win = controller.window, let parent = win.parent {
-      parent.removeChildWindow(win)
-    }
-
-    // 5) If it’s a top-level Cocoa host, actually close the NSWindow.
+    // 4) If it’s a top-level Cocoa host, actually close the NSWindow.
     if isTopLevelX11Window(xid) {
       // IMPORTANT: closeWindow currently inserts into closingXids; we just removed it above,
       // but closeWindow may re-insert. Fix closeWindow (see below).
@@ -1469,12 +1477,7 @@ final class WindowRegistry {
     let kRootXid: UInt32 = 1
     guard transientForXid != 0 && transientForXid != kRootXid else {
       pendingTransientFor.removeValue(forKey: host)
-      // Remove existing child relationship if any
-      if let controller = windows[host], let win = controller.window,
-         let parent = win.parent {
-        parent.removeChildWindow(win)
-        print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", host)) cleared (root/none)")
-      }
+      print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", host)) cleared (root/none)")
       return
     }
 
@@ -1500,9 +1503,11 @@ final class WindowRegistry {
     if let oldParent = dialogWin.parent {
       oldParent.removeChildWindow(dialogWin)
     }
-    // TODO: addChildWindow disabled for debugging — grey window persistence issue.
-    // parentWin.addChildWindow(dialogWin, ordered: .above)
-    print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", dialogHost)) → parent=0x\(String(format:"%X", parentHost)) (logged, addChildWindow disabled)")
+    // Note: we intentionally do NOT use addChildWindow here — it causes
+    // grey window persistence when the dialog is unmapped/destroyed.
+    // Instead, transient windows are shown via orderWindow(.above, relativeTo:)
+    // in syncAndShowNonORWindow, which keeps them in the same Stage Manager stage.
+    print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", dialogHost)) → parent=0x\(String(format:"%X", parentHost)) (stored)")
   }
 
   func flushRepaintNow(xid: UInt32) {
