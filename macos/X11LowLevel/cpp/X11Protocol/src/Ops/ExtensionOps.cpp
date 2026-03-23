@@ -1463,11 +1463,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       rep[1] = 2;                            // server_major_version
       wire::wr16_le(rep.data() + 2, seq);   // sequence
       wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
-      wire::wr16_le(rep.data() + 8, 0);     // server_minor_version (2.0)
-      // NOTE: Reporting v2.0 to prevent crash. v2.2 causes Vivado to call
-      // GrabControl which triggers a crash ~58ms later. Crash happens even
-      // with DBus running and NO_AT_BRIDGE=0, ruling out AT-SPI/DBus.
-      // Root cause still unknown — GrabControl side-effects need investigation.
+      wire::wr16_le(rep.data() + 8, 2);     // server_minor_version (2.2)
+      // Was reporting v2.0 to prevent GrabControl crash. Re-enabled v2.2
+      // for testing with fixed dbus-launch (DISPLAY must be set before
+      // dbus-launch in start_vivado_sx11.sh).
 
       // Hex dump first 16 bytes of reply for crash diagnosis
       {

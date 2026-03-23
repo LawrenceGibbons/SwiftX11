@@ -134,6 +134,8 @@ struct AtomTableState {
       { "_NET_WM_STATE_MODAL",        x11::atom::k_NET_WM_STATE_MODAL },
       { "_NET_WM_STATE_FULLSCREEN",   x11::atom::k_NET_WM_STATE_FULLSCREEN },
       { "_NET_FRAME_EXTENTS",         x11::atom::k_NET_FRAME_EXTENTS },
+      // Motif WM hints
+      { "_MOTIF_WM_HINTS",            x11::atom::k_MOTIF_WM_HINTS },
     };
     for (const auto& e : kExtra) {
       name_to_atom.emplace(std::string(e.name), e.id);

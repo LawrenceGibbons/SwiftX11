@@ -42,6 +42,9 @@ static constexpr uint32_t k_NET_WM_STATE_MODAL        = 90;
 static constexpr uint32_t k_NET_WM_STATE_FULLSCREEN   = 91;
 static constexpr uint32_t k_NET_FRAME_EXTENTS         = 92;
 
+// Motif WM hints
+static constexpr uint32_t k_MOTIF_WM_HINTS            = 93;
+
 // Predefined atoms (1-68) commonly needed
 static constexpr uint32_t kPRIMARY           = 1;
 static constexpr uint32_t kSECONDARY         = 2;
@@ -52,7 +55,7 @@ static constexpr uint32_t kWM_NAME           = 39;
 static constexpr uint32_t kWM_NORMAL_HINTS   = 40;
 
 static constexpr uint32_t kFirstPreRegistered = 69;
-static constexpr uint32_t kLastPreRegistered  = 92;
+static constexpr uint32_t kLastPreRegistered  = 93;
 
 } // namespace atom
 } // namespace x11

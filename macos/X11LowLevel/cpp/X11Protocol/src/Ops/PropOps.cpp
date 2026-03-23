@@ -389,6 +389,31 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     if (modal)      x11_ui_push_window_type(host, 0x80000001);
     if (fullscreen)  x11_ui_push_window_type(host, 0x80000002);
   }
+
+  // -----------------------------------------------------------------------
+  // _MOTIF_WM_HINTS: decoration suppression (used by Java Swing / JidePopup)
+  // Struct: 5 × CARD32 (flags, functions, decorations, input_mode, status)
+  // flags bit 1 = MWM_HINTS_DECORATIONS; decorations == 0 → undecorated
+  // -----------------------------------------------------------------------
+  if (atom == x11::atom::k_MOTIF_WM_HINTS && fmt == 32 && dataBytes >= 12) {
+    const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
+    uint32_t flags       = d32[0];
+    // uint32_t functions = d32[1]; // not used
+    uint32_t decorations = d32[2];
+    constexpr uint32_t MWM_HINTS_DECORATIONS = (1u << 1);
+    if (flags & MWM_HINTS_DECORATIONS) {
+      uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+      if (host == 0) host = wid;
+      if (decorations == 0) {
+        // No decorations requested — make borderless
+        x11_ui_push_window_type(host, 0x80000003);
+      }
+      { char buf[128]; snprintf(buf, sizeof(buf),
+          "[MOTIF_WM_HINTS] wid=0x%X host=0x%X flags=0x%X decor=%u\n",
+          wid, host, flags, decorations);
+        x11_ui_push_log(1, buf); }
+    }
+  }
 }
 
 // -----------------------------

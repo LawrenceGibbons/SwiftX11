@@ -1349,6 +1349,14 @@ final class WindowRegistry {
       print("[NET_WM_STATE] xid=0x\(String(format:"%X", host)) → fullscreen")
       return
     }
+    if typeAtom == 0x80000003 {
+      // MOTIF undecorated (JidePopup, Java Swing undecorated frames)
+      win.styleMask = [.borderless]
+      win.level = .floating
+      win.hasShadow = true
+      print("[MOTIF_WM_HINTS] xid=0x\(String(format:"%X", host)) → undecorated")
+      return
+    }
 
     // _NET_WM_WINDOW_TYPE atoms (values from ClipboardAtoms.hpp)
     let typeNormal:  UInt32 = 82
