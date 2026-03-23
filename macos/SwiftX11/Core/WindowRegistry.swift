@@ -1500,8 +1500,9 @@ final class WindowRegistry {
     if let oldParent = dialogWin.parent {
       oldParent.removeChildWindow(dialogWin)
     }
-    parentWin.addChildWindow(dialogWin, ordered: .above)
-    print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", dialogHost)) → parent=0x\(String(format:"%X", parentHost)) (applied)")
+    // TODO: addChildWindow disabled for debugging — grey window persistence issue.
+    // parentWin.addChildWindow(dialogWin, ordered: .above)
+    print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", dialogHost)) → parent=0x\(String(format:"%X", parentHost)) (logged, addChildWindow disabled)")
   }
 
   func flushRepaintNow(xid: UInt32) {
