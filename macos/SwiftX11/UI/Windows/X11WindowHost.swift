@@ -55,6 +55,10 @@ final class X11MTKView: MTKView {
 }
 
 final class X11View: NSView {
+  // X11 has no "click to focus" — clicks always go through to the content.
+  // Without this, macOS eats the first click on a non-key window just to focus it.
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
   private var trackingArea: NSTrackingArea?
 
   // MARK: - Metal rendering
