@@ -810,7 +810,7 @@ Core window hierarchy ops are the most complex and most likely to have edge case
 ### 8.5 Graphics Operations Audit (MEDIUM) — AUDITED (v1.19.30)
 Drawing ops correctness — clipping, coordinate handling, edge cases.
 
-Audit: 4/13 fully implemented, 5 stored-but-unused (line styling), 4 partially/not implemented.
+Audit: 8/13 implemented (wide lines, dashed lines, cap styles added v1.19.31).
 
 - [ ] **GC subwindow_mode**: Field stored in GCState but never consulted during drawing. All drawing is ClipByChildren. `IncludeInferiors` would require drawing through child windows. LOW — rarely used by modern toolkits.
 - [x] **CopyArea with overlapping src/dst** (pre-existing): Correctly detects same-backing overlap, reverses row iteration order when needed, uses `std::memmove()` for overlap-safe copy.
@@ -818,9 +818,9 @@ Audit: 4/13 fully implemented, 5 stored-but-unused (line styling), 4 partially/n
 - [x] **PutImage XYBitmap/XYPixmap** (pre-existing): Both format=0 (XYBitmap) and format=1 (XYPixmap) supported for depth-1 pixmaps with correct leftPad handling and bit order. ZPixmap (format=2) for 32-bit windows.
 - [ ] **GetImage XYPixmap**: Only ZPixmap (format=2) supported. XYPixmap returns BadValue. LOW — rarely used.
 - [ ] **PolyLine join behavior**: `join_style` stored in GCState but never used. All joins are square. LOW — cosmetic, only visible at corners of thick lines (which are also unimplemented).
-- [ ] **Line cap styles**: `cap_style` stored in GCState but never applied. All endpoints are Butt. LOW — cosmetic, only visible on thick lines.
-- [ ] **Dashed lines**: `SetDashes` stores dash_list/dash_offset but `drawThinLine()` never consults them. All lines solid. MEDIUM — some apps use dashed lines for selection rectangles.
-- [ ] **Wide lines**: `line_width` stored but ignored. All lines are 1px. MEDIUM — some apps depend on thick lines for borders/highlights.
+- [x] **Line cap styles** (v1.19.31): `CapNotLast` (skip last pixel) and `CapButt` (default) implemented. `CapRound` and `CapProjecting` deferred — only visible on thick lines.
+- [x] **Dashed lines** (v1.19.31): `drawLine()` consults `line_style`, `dash_list`, `dash_offset`. OnOffDash skips "off" pixels; DoubleDash draws background color during "off" segments.
+- [x] **Wide lines** (v1.19.31): `drawLine()` applies perpendicular stroke expansion when `line_width > 1`. Horizontal/vertical fast paths fill rectangles; general case uses Bresenham baseline + perpendicular fill.
 - [x] **PolyArc angles** (pre-existing): Correct 1/64° units, counterclockwise from X-axis, proper angle wrapping, negative extents for clockwise arcs.
 - [ ] **FillPoly fill rule**: Only EvenOddRule implemented. `fill_rule` (0=EvenOdd, 1=Winding) field and `shape` parameter both ignored. LOW — only affects self-intersecting polygons.
 - [x] **GC plane_mask** (pre-existing): Applied via `x11_apply_rop_argb()` in all draw ops (PutImage, CopyArea, CopyPlane, PolyLine, PolySegment, FillPoly, PolyFillRectangle, PolyFillArc, PolyArc).

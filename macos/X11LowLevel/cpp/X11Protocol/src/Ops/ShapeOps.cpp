@@ -161,6 +161,145 @@ static void drawThinLine(uint32_t* pixels, uint32_t stride,
 }
 
 // =============================================================================
+// General line drawing — supports width, dash, and cap styles
+// =============================================================================
+
+// Fill a perpendicular band of width W centered on (cx, cy) along the
+// perpendicular direction to the line (dx, dy).  For axis-aligned lines,
+// this reduces to a simple horizontal or vertical fill.
+static void fillPerp(uint32_t* pixels, uint32_t stride,
+                     int32_t clipW, int32_t clipH,
+                     int32_t cx, int32_t cy,
+                     float perpX, float perpY, int32_t halfW,
+                     uint32_t color, uint8_t fn, uint32_t planeMask,
+                     const x11::GCState* gc)
+{
+  for (int32_t d = -halfW; d <= halfW; d++) {
+    int32_t px = cx + (int32_t)(d * perpX + 0.5f);
+    int32_t py = cy + (int32_t)(d * perpY + 0.5f);
+    plotPixel(pixels, stride, clipW, clipH, px, py, color, fn, planeMask, gc);
+  }
+}
+
+static void drawLine(uint32_t* pixels, uint32_t stride,
+                     int32_t clipW, int32_t clipH,
+                     int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                     const x11::GCState& gc, uint32_t fgColor, uint32_t bgColor)
+{
+  const uint8_t fn = (uint8_t)(gc.function & 0x0Fu);
+  const uint32_t pm = gc.plane_mask;
+  const x11::GCState* gcClip = gc.has_clip ? &gc : nullptr;
+  const int32_t lineW = (int32_t)gc.line_width;
+  const bool isThin = (lineW <= 1);
+  const bool isSolid = (gc.line_style == 0);
+
+  // Fast path: thin solid line (most common case — zero overhead)
+  if (isThin && isSolid && gc.cap_style != 0) {
+    drawThinLine(pixels, stride, clipW, clipH, x0, y0, x1, y1,
+                 fgColor, fn, pm, gcClip);
+    return;
+  }
+
+  // CapNotLast for thin solid lines: skip last pixel
+  if (isThin && isSolid && gc.cap_style == 0) {
+    // Draw without last pixel: use Bresenham but stop one pixel early
+    if (x0 == x1 && y0 == y1) return; // zero-length, CapNotLast draws nothing
+    // Swap endpoint so we can just skip the final plotPixel
+    // Actually, just draw normally but clip the last point
+    int32_t dx = std::abs(x1 - x0);
+    int32_t dy = std::abs(y1 - y0);
+    int32_t sx = (x0 < x1) ? 1 : -1;
+    int32_t sy = (y0 < y1) ? 1 : -1;
+    int32_t err = dx - dy;
+    int32_t cx = x0, cy = y0;
+    for (;;) {
+      if (cx == x1 && cy == y1) break; // skip last pixel
+      plotPixel(pixels, stride, clipW, clipH, cx, cy, fgColor, fn, pm, gcClip);
+      int32_t e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; cx += sx; }
+      if (e2 <  dx) { err += dx; cy += sy; }
+    }
+    return;
+  }
+
+  // ---- Wide and/or dashed line ----
+
+  // Compute perpendicular direction for wide lines
+  float perpX = 0.0f, perpY = 0.0f;
+  int32_t halfW = 0;
+  if (!isThin) {
+    halfW = (lineW - 1) / 2;
+    float fdx = (float)(x1 - x0);
+    float fdy = (float)(y1 - y0);
+    float len = std::sqrt(fdx * fdx + fdy * fdy);
+    if (len > 0.001f) {
+      perpX = -fdy / len;
+      perpY =  fdx / len;
+    } else {
+      // Zero-length line with width: draw a square
+      perpX = 1.0f; perpY = 0.0f;
+    }
+  }
+
+  // Compute dash cycle length
+  int32_t dashCycle = 0;
+  if (!isSolid && !gc.dash_list.empty()) {
+    for (uint8_t d : gc.dash_list) dashCycle += d;
+  }
+  const bool hasDash = (!isSolid && dashCycle > 0);
+
+  // Walk Bresenham path
+  int32_t dx = std::abs(x1 - x0);
+  int32_t dy = std::abs(y1 - y0);
+  int32_t sx = (x0 < x1) ? 1 : -1;
+  int32_t sy = (y0 < y1) ? 1 : -1;
+  int32_t err = dx - dy;
+  int32_t cx = x0, cy = y0;
+  int32_t pixelIdx = 0;
+
+  for (;;) {
+    // Determine if this pixel is in an "on" or "off" dash segment
+    bool drawFg = true;
+    bool drawBg = false;
+    if (hasDash) {
+      int32_t pos = ((pixelIdx + (int32_t)gc.dash_offset) % dashCycle + dashCycle) % dashCycle;
+      int32_t acc = 0;
+      for (size_t i = 0; i < gc.dash_list.size(); i++) {
+        acc += gc.dash_list[i];
+        if (pos < acc) {
+          drawFg = ((i & 1) == 0);
+          drawBg = ((i & 1) != 0) && (gc.line_style == 2); // DoubleDash
+          break;
+        }
+      }
+    }
+
+    if (drawFg) {
+      if (isThin) {
+        plotPixel(pixels, stride, clipW, clipH, cx, cy, fgColor, fn, pm, gcClip);
+      } else {
+        fillPerp(pixels, stride, clipW, clipH, cx, cy, perpX, perpY, halfW,
+                 fgColor, fn, pm, gcClip);
+      }
+    } else if (drawBg) {
+      if (isThin) {
+        plotPixel(pixels, stride, clipW, clipH, cx, cy, bgColor, fn, pm, gcClip);
+      } else {
+        fillPerp(pixels, stride, clipW, clipH, cx, cy, perpX, perpY, halfW,
+                 bgColor, fn, pm, gcClip);
+      }
+    }
+    // OnOffDash "off" segments: neither drawFg nor drawBg → skip pixel
+
+    if (cx == x1 && cy == y1) break;
+    int32_t e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; cx += sx; }
+    if (e2 <  dx) { err += dx; cy += sy; }
+    pixelIdx++;
+  }
+}
+
+// =============================================================================
 // PolyPoint (64)
 // =============================================================================
 void ShapeOps::handlePolyPoint(XProtoContext& ctx, uint16_t seq, uint8_t coordMode, ByteReader& br) {
@@ -224,9 +363,7 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t seq, uint8_t coordMod
 
   x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
   const uint32_t fgOpaque = gst.fg | 0xFF000000u;
-  const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
-  const uint32_t pm = gst.plane_mask;
-  const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
+  const uint32_t bgOpaque = gst.bg | 0xFF000000u;
 
   // Read first point
   int32_t prevX = br.readI16();
@@ -244,8 +381,8 @@ void ShapeOps::handlePolyLine(XProtoContext& ctx, uint16_t seq, uint8_t coordMod
       curX = px;
       curY = py;
     }
-    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 prevX, prevY, curX, curY, fgOpaque, fn, pm, gcClip);
+    drawLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+             prevX, prevY, curX, curY, gst, fgOpaque, bgOpaque);
     prevX = curX;
     prevY = curY;
   }
@@ -275,9 +412,7 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t seq, ByteReader& b
 
   x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
   const uint32_t fgOpaque = gst.fg | 0xFF000000u;
-  const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
-  const uint32_t pm = gst.plane_mask;
-  const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
+  const uint32_t bgOpaque = gst.bg | 0xFF000000u;
 
   for (size_t i = 0; i < nSegs; i++) {
     if (br.remaining() < 8) break;
@@ -285,8 +420,8 @@ void ShapeOps::handlePolySegment(XProtoContext& ctx, uint16_t seq, ByteReader& b
     int32_t y1 = br.readI16();
     int32_t x2 = br.readI16();
     int32_t y2 = br.readI16();
-    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x1, y1, x2, y2, fgOpaque, fn, pm, gcClip);
+    drawLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+             x1, y1, x2, y2, gst, fgOpaque, bgOpaque);
   }
   br.skip(br.remaining());
   if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
@@ -314,9 +449,7 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t seq, ByteReader&
 
   x11::GCState gst = x11::GCTable::instance().getOrCreate(gcXid);
   const uint32_t fgOpaque = gst.fg | 0xFF000000u;
-  const uint8_t fn = (uint8_t)(gst.function & 0x0Fu);
-  const uint32_t pm = gst.plane_mask;
-  const x11::GCState* gcClip = gst.has_clip ? &gst : nullptr;
+  const uint32_t bgOpaque = gst.bg | 0xFF000000u;
 
   for (size_t i = 0; i < nRects; i++) {
     if (br.remaining() < 8) break;
@@ -330,14 +463,14 @@ void ShapeOps::handlePolyRectangle(XProtoContext& ctx, uint16_t seq, ByteReader&
     int32_t x0 = rx, y0 = ry;
     int32_t x1 = rx + rw, y1 = ry + rh;
 
-    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x0, y0, x1, y0, fgOpaque, fn, pm, gcClip); // top
-    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x0, y1, x1, y1, fgOpaque, fn, pm, gcClip); // bottom
-    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x0, y0, x0, y1, fgOpaque, fn, pm, gcClip); // left
-    drawThinLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
-                 x1, y0, x1, y1, fgOpaque, fn, pm, gcClip); // right
+    drawLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+             x0, y0, x1, y0, gst, fgOpaque, bgOpaque); // top
+    drawLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+             x0, y1, x1, y1, gst, fgOpaque, bgOpaque); // bottom
+    drawLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+             x0, y0, x0, y1, gst, fgOpaque, bgOpaque); // left
+    drawLine(dst.pixels32, dst.stridePixels, dst.w, dst.h,
+             x1, y0, x1, y1, gst, fgOpaque, bgOpaque); // right
   }
   br.skip(br.remaining());
   if (dst.isWindow) damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
