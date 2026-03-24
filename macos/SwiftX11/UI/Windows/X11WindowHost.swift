@@ -31,7 +31,9 @@ final class X11MTKView: MTKView {
 
 
   override var acceptsFirstResponder: Bool { true }
-  
+  // X11 has no "click to focus" — clicks always pass through immediately.
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
   override func mouseDown(with event: NSEvent) { owner?.mouseDown(with: event) }
   override func mouseUp(with event: NSEvent) { owner?.mouseUp(with: event) }
   override func rightMouseDown(with event: NSEvent) { owner?.rightMouseDown(with: event) }
