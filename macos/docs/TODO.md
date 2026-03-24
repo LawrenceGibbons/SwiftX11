@@ -824,19 +824,21 @@ Drawing ops correctness — clipping, coordinate handling, edge cases.
 - [ ] **GC plane_mask**: Verify plane_mask is applied to all drawing operations, not just shape ops.
 - [ ] **GC function (ROP)**: Verify all 16 GC functions (GXclear through GXset) work correctly in all draw ops, not just shape ops.
 
-### 8.6 Grab Semantics Audit (MEDIUM)
+### 8.6 Grab Semantics Audit (MEDIUM) — AUDITED (v1.19.30)
 Pointer and keyboard grabs are complex and affect event routing globally.
 
-- [ ] **GrabPointer event filtering**: Active grab should deliver only events matching `event_mask`. Events outside mask are discarded, not queued.
-- [ ] **GrabPointer confine_to**: Pointer should be confined to the specified window. Currently not implemented.
-- [ ] **GrabPointer cursor**: Grab cursor should replace the normal cursor during grab.
-- [ ] **GrabButton passive grab activation**: Verify button/modifiers matching, `AnyButton`/`AnyModifier` wildcards, owner_events semantics.
-- [ ] **GrabKey passive grab activation**: Same as GrabButton but for keyboard.
-- [ ] **AllowEvents modes**: `AsyncPointer`, `SyncPointer`, `ReplayPointer`, `AsyncKeyboard`, `SyncKeyboard`, `ReplayKeyboard`, `AsyncBoth`, `SyncBoth` — currently stub. Need at least `AsyncPointer`/`AsyncKeyboard` for basic functionality.
-- [ ] **GrabServer**: Should freeze all other clients' event processing. Currently a no-op stub.
-- [ ] **Grab freezing**: `pointer_mode`/`keyboard_mode` Sync should freeze events until `AllowEvents`. Currently all grabs are async.
-- [ ] **Automatic ungrab on window destroy**: Active grab on destroyed window should auto-ungrab.
-- [ ] **Grab and focus interaction**: `GrabKeyboard` should send `FocusIn(mode=Grab)` / `FocusOut(mode=Grab)`. `UngrabKeyboard` should send `FocusIn(mode=Ungrab)` / `FocusOut(mode=Ungrab)`. Partially done (v1.15.17) — need full audit.
+Audit: 3/10 implemented, 1 fixed, 6 remaining (mostly sync/freeze subsystem).
+
+- [ ] **GrabPointer event filtering**: Active grab stores eventMask but button events in XProtoServerBridge don't filter against it. Motion events do check. MEDIUM — could cause extra events during grabs.
+- [ ] **GrabPointer confine_to**: Parameter parsed and discarded. No pointer confinement implemented. LOW — rarely used by toolkits.
+- [ ] **GrabPointer cursor**: Parameter parsed and discarded. Grab cursor not applied. LOW — cosmetic only.
+- [x] **GrabButton passive grab activation** (pre-existing): Button/modifiers matching correct with AnyButton/AnyModifier wildcards and preferential scoring. owner_events stored. Activation in XProtoServerBridge walks window hierarchy.
+- [ ] **GrabKey passive grab activation**: Stub — parameters not parsed, no grab storage. MEDIUM — accessibility tools use keyboard grabs.
+- [ ] **AllowEvents modes**: Stub — all 8 modes unimplemented. LOW — only needed for Sync grab modes which are also unimplemented.
+- [x] **GrabServer/UngrabServer** (pre-existing): No-op stubs. Correct for rootless single-process server. XTEST GrabControl impervious flag also N/A since no server grab mechanism.
+- [ ] **Grab freezing (Sync modes)**: pointerMode/keyboardMode parsed and discarded. All grabs behave as Async. LOW — no known client depends on sync grabs.
+- [x] **Automatic ungrab on window destroy** (v1.19.30): DestroyWindow and DestroySubwindows now call `removeForWindows()` to clear passive + active grabs for destroyed windows. Client disconnect already cleaned up via `eraseOwnedBy`.
+- [x] **Grab and focus interaction** (pre-existing v1.18.1): GrabKeyboard sends FocusOut(mode=NotifyGrab) + FocusIn(mode=NotifyGrab). UngrabKeyboard sends FocusOut(mode=NotifyUngrab) + FocusIn(mode=NotifyUngrab). Correct per spec.
 
 ### 8.7 Atom and Property Audit (LOW)
 Relatively simple but important for toolkit interop.

@@ -17,6 +17,7 @@
 #include "UI/UICommandQueue.hpp"
 #include "Utils/WireEvents.hpp"
 #include "Core/PropertyTable.hpp"
+#include "Core/GrabTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/ScreenLayout.hpp"
 #include "Utils/WireLE.hpp"
@@ -613,10 +614,13 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
     }
   }
 
-  // 1) Authoritative C++ state
+  // 1) Clear any grabs referencing this window (passive + active)
+  ctx.grabs().removeForWindows({wid});
+
+  // 2) Authoritative C++ state
   ctx.windows().erase(wid);
 
-  // 2) Swift/UI teardown event path
+  // 3) Swift/UI teardown event path
   x11_ui_push_destroy(wid);
 }
 
@@ -661,6 +665,7 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
       }
     }
 
+    ctx.grabs().removeForWindows({child});
     ctx.windows().erase(child);
     x11_ui_push_destroy(child);
   }
