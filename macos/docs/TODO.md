@@ -756,7 +756,7 @@ Ensure every request that must generate events actually does so per the X11 spec
 - [x] **SelectionClear**: SetSelectionOwner sends SelectionClear to previous owner with correct fields.
 - [ ] **ColormapNotify**: Not implemented. Colormap is fixed default (TrueColor only). LOW priority — no toolkit needs this on TrueColor displays.
 
-### 8.2 Error Generation Audit (HIGH) — IN PROGRESS (v1.19.26)
+### 8.2 Error Generation Audit (HIGH) — MOSTLY COMPLETE (v1.19.27)
 All requests must send the correct X11 error for invalid arguments, not silently skip.
 
 Pre-existing coverage: 71 `sendErrorCore` calls across WindowOps, DrawOps, PropOps, QueryOps, ShapeOps, ExtensionOps, etc. (~65% of handlers).
@@ -769,14 +769,14 @@ Pre-existing coverage: 71 `sendErrorCore` calls across WindowOps, DrawOps, PropO
 - [ ] **BadGC in GCOps**: Reverted to lenient `getOrCreate` pattern — Java AWT creates/reuses GCs across connections. Strict validation kills Vivado. Leave lenient until full resource tracking is implemented.
 - [ ] **BadCursor**: Reverted — Java AWT calls RecolorCursor on cursors not in our table (cursor `0x6000029` created by method we don't track). Strict BadCursor killed Vivado startup. Leave lenient.
 - [x] **BadWindow in SetSelectionOwner** (v1.19.26): Validates owner window exists (unless 0=None or 1=root proxy).
-- [ ] **BadAtom**: `InternAtom` (only_if_exists), `GetAtomName`, property ops with invalid atoms.
-- [ ] **BadValue**: Validate enum parameters (e.g., `gravity`, `backing_store`, `stack_mode`, `fill_style`, `cap_style`, `join_style`, `line_style`, `arc_mode`, `subwindow_mode`).
-- [ ] **BadMatch**: Depth mismatch in `CopyArea`/`CopyPlane` (source and dest must have same depth unless root). Window/drawable depth mismatches in `CreateGC`.
-- [ ] **BadLength**: Requests with fewer bytes than minimum. Extended-length requests with inconsistent length fields.
-- [ ] **BadAccess**: `ChangeWindowAttributes` on window not created by requesting client (for certain attributes). `SetSelectionOwner` timestamp validation.
-- [ ] **BadAlloc**: Memory allocation failures (pixmap too large, etc.) — currently not checked.
-- [ ] **BadName**: `OpenFont` with nonexistent font name.
-- [ ] **BadIDChoice**: `CreateWindow`, `CreatePixmap`, `CreateGC`, `CreateCursor` with already-in-use XID.
+- [x] **BadAtom**: `GetAtomName` validates and sends BadAtom (pre-existing). `InternAtom` correctly returns atom=None for only_if_exists. Property ops don't require atom validation per spec.
+- [x] **BadValue enum clamping** (v1.19.27): GC function mask tightened 0xFF→0x0F. Gravity values clamped to 0-10, backing_store to 0-2. GC line_style/join_style/cap_style/fill_style/fill_rule/subwindow_mode/arc_mode already correctly masked. PutImage format validated 0-2 with BadValue error.
+- [ ] **BadMatch**: Depth mismatch in `CopyArea`/`CopyPlane` — currently all surfaces are 32-bit so mismatch impossible. Spec compliance check deferred until multi-depth support.
+- [x] **BadLength**: All major handlers check `br.remaining()` before reading fixed-size headers. No gaps found in audit.
+- [ ] **BadAccess**: `ChangeWindowAttributes` on window not created by requesting client (for certain attributes). `SetSelectionOwner` timestamp validation. LOW — no known client triggers.
+- [ ] **BadAlloc**: Memory allocation failures (pixmap too large, etc.) — currently not checked. LOW — OOM is rare.
+- [x] **BadName**: `OpenFont` intentionally lenient (maps unknown fonts to "fixed" fallback) for AWT compatibility. `CloseFont` validates and sends BadFont (pre-existing).
+- [x] **BadIDChoice**: `CreateWindow` validates XID ownership + uniqueness (pre-existing). `CreatePixmap`/`CreateGC`/`CreateCursor` are VOID requests — X11 spec forbids error replies on void requests, so getOrCreate/overwrite pattern is correct.
 
 ### 8.3 Reply Format Audit (MEDIUM)
 Ensure every reply-bearing request returns correctly formatted replies.

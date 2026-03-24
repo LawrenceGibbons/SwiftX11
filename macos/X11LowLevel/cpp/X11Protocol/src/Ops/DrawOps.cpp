@@ -158,6 +158,13 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   //   data...
   if (br.remaining() < 20) { br.skip(br.remaining()); return; }
 
+  // format: 0=Bitmap, 1=XYPixmap, 2=ZPixmap
+  if (format > 2) {
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, format, x11::opcode::PutImage);
+    return;
+  }
+
   const uint32_t drawable = br.readU32();
   const uint32_t gcXid    = br.readU32();
 

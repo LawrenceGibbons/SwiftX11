@@ -415,16 +415,16 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
         border_pixel_raw = val;
         has_border_pixel = true;
         break;
-      case 4: // CWBitGravity
-        bit_gravity = (uint8_t)(val & 0xFF);
+      case 4: // CWBitGravity (0-10: Forget..Static)
+        bit_gravity = (uint8_t)(val <= 10 ? val : 10);
         has_bit_gravity = true;
         break;
-      case 5: // CWWinGravity
-        win_gravity = (uint8_t)(val & 0xFF);
+      case 5: // CWWinGravity (0-10: Unmap..Static)
+        win_gravity = (uint8_t)(val <= 10 ? val : 10);
         has_win_gravity = true;
         break;
-      case 6: // CWBackingStore
-        backing_store = (uint8_t)(val & 0xFF);
+      case 6: // CWBackingStore (0-2: NotUseful/WhenMapped/Always)
+        backing_store = (uint8_t)(val <= 2 ? val : 2);
         has_backing_store = true;
         break;
       case 9: // CWOverrideRedirect

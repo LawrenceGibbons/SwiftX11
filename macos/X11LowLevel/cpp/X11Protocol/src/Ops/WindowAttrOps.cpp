@@ -165,18 +165,18 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
                      wid, val, newBorderPixel);
           break;
 
-        case 4: // CWBitGravity
-          newBitGravity = (uint8_t)(val & 0xFF);
+        case 4: // CWBitGravity (0-10: Forget..Static)
+          newBitGravity = (uint8_t)(val <= 10 ? val : 10);
           sawBitGravity = true;
           break;
 
-        case 5: // CWWinGravity
-          newWinGravity = (uint8_t)(val & 0xFF);
+        case 5: // CWWinGravity (0-10: Unmap..Static)
+          newWinGravity = (uint8_t)(val <= 10 ? val : 10);
           sawWinGravity = true;
           break;
 
-        case 6: // CWBackingStore
-          newBackingStore = (uint8_t)(val & 0xFF);
+        case 6: // CWBackingStore (0-2: NotUseful/WhenMapped/Always)
+          newBackingStore = (uint8_t)(val <= 2 ? val : 2);
           sawBackingStore = true;
           break;
 

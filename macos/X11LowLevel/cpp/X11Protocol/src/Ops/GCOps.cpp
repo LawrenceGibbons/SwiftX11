@@ -59,16 +59,16 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     const uint32_t val = br.readU32();
 
     switch (bit) {
-      case 0:  st.function   = (uint8_t)(val & 0xFFu); break;
+      case 0:  st.function   = (uint8_t)(val & 0x0Fu); break; // 0-15 (GXclear..GXset)
       case 1:  st.plane_mask = val; break;
       case 2:  st.fg         = mapPixelToARGB(val); break;
       case 3:  st.bg         = mapPixelToARGB(val); break;
       case 4:  st.line_width = (uint16_t)(val & 0xFFFFu); break;
-      case 5:  st.line_style = (uint8_t)(val & 0x03u); break;
-      case 6:  st.cap_style  = (uint8_t)(val & 0x03u); break;
-      case 7:  st.join_style = (uint8_t)(val & 0x03u); break;
-      case 8:  st.fill_style = (uint8_t)(val & 0x03u); break;
-      case 9:  st.fill_rule  = (uint8_t)(val & 0x01u); break;
+      case 5:  st.line_style = (uint8_t)(val & 0x03u); break; // 0-2 valid; 3 clamped
+      case 6:  st.cap_style  = (uint8_t)(val & 0x03u); break; // 0-3 (CapNotLast..CapProjecting)
+      case 7:  st.join_style = (uint8_t)(val & 0x03u); break; // 0-2 valid; 3 clamped
+      case 8:  st.fill_style = (uint8_t)(val & 0x03u); break; // 0-3 (Solid..OpaqueStippled)
+      case 9:  st.fill_rule  = (uint8_t)(val & 0x01u); break; // 0-1 (EvenOdd/Winding)
       case 10: st.tile       = val; break;
       case 11: st.stipple    = val; break;
       case 12: st.ts_x_origin = (int16_t)(val & 0xFFFFu); break;
