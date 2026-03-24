@@ -7,6 +7,7 @@
 
 #include "CursorOps.hpp"
 #include "XProtoContext.hpp"
+#include "Transport/XProtoTransport.hpp"
 #include "ByteReader.hpp"
 #include "CursorTable.hpp"
 #include "Core/X11CoreOpcodes.hpp"
@@ -110,17 +111,15 @@ void CursorOps::handleCreateGlyphCursor(XProtoContext& ctx, uint16_t /*seq*/, By
 
 // 95 FreeCursor
 // xFreeCursorReq: cursor(CARD32) => remain 4
-void CursorOps::handleFreeCursor(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void CursorOps::handleFreeCursor(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t cid = br.readU32();
   br.skip(br.remaining());
 
   const bool removed = ctx.cursors().erase(cid);
-
-#ifndef NDEBUG
-  ctx.tracef("[CursorOps] FreeCursor cid=0x%08X removed=%d\n",
-             (unsigned)cid, removed ? 1 : 0);
-#endif
+  if (!removed) {
+    ctx.transport().sendErrorCore(x11::error::BadCursor, seq, cid, x11::opcode::FreeCursor);
+  }
   // VOID: no reply
 }
 
@@ -130,7 +129,7 @@ void CursorOps::handleFreeCursor(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
 //   foreRGB (3*CARD16)
 //   backRGB (3*CARD16)
 // remain 16
-void CursorOps::handleRecolorCursor(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void CursorOps::handleRecolorCursor(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 16) { br.skip(br.remaining()); return; }
   const uint32_t cid = br.readU32();
 
@@ -141,11 +140,9 @@ void CursorOps::handleRecolorCursor(XProtoContext& ctx, uint16_t /*seq*/, ByteRe
   br.skip(br.remaining());
 
   const bool ok = ctx.cursors().recolor(cid, fg, bg);
-
-#ifndef NDEBUG
-  ctx.tracef("[CursorOps] RecolorCursor cid=0x%08X ok=%d\n",
-             (unsigned)cid, ok ? 1 : 0);
-#endif
+  if (!ok) {
+    ctx.transport().sendErrorCore(x11::error::BadCursor, seq, cid, x11::opcode::RecolorCursor);
+  }
   // VOID: no reply
 }
 

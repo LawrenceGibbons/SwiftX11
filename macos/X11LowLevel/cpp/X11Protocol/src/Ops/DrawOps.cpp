@@ -809,9 +809,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
         srcDepth1 = false;
       }
     } else {
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, src, x11::opcode::CopyPlane);
       return;
     }
-    
+
     // Bring-up correctness: CopyPlane is expected from depth-1 pixmaps.
     // If the source isn't depth-1, do nothing (better than wrong masks).
     if (!srcDepth1) return;

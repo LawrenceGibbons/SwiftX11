@@ -1,6 +1,7 @@
 #include "Ops/GCOps.hpp"
 
 #include "Core/XProtoContext.hpp"
+#include "Transport/XProtoTransport.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Core/GCTable.hpp"
 #include "Core/FontTable.hpp"
@@ -124,7 +125,7 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
   }
 
 // major 56 ChangeGC
-  void GCOps::handleChangeGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  void GCOps::handleChangeGC(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     // Body:
     //   CARD32 gc
     //   CARD32 valueMask
@@ -134,7 +135,12 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     const uint32_t gcXid = br.readU32();
     const uint32_t vmask = br.readU32();
 
-    auto st = GCTable::instance().getOrCreate(gcXid);
+    GCState st;
+    if (!GCTable::instance().find(gcXid, st)) {
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::ChangeGC);
+      return;
+    }
 #ifdef X11_TRACE_VERBOSE
     const uint32_t oldFont = st.font;
 #endif
@@ -155,7 +161,7 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
   }
 
 // major 57 CopyGC
-void GCOps::handleCopyGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void GCOps::handleCopyGC(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // Body: CARD32 srcGC, CARD32 dstGC, CARD32 valueMask
   if (br.remaining() < 12) { br.skip(br.remaining()); return; }
   const uint32_t srcGcXid = br.readU32();
@@ -163,8 +169,15 @@ void GCOps::handleCopyGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   const uint32_t vmask    = br.readU32();
   br.skip(br.remaining());
 
-  auto src = GCTable::instance().getOrCreate(srcGcXid);
-  auto dst = GCTable::instance().getOrCreate(dstGcXid);
+  GCState src, dst;
+  if (!GCTable::instance().find(srcGcXid, src)) {
+    ctx.transport().sendErrorCore(x11::error::BadGC, seq, srcGcXid, x11::opcode::CopyGC);
+    return;
+  }
+  if (!GCTable::instance().find(dstGcXid, dst)) {
+    ctx.transport().sendErrorCore(x11::error::BadGC, seq, dstGcXid, x11::opcode::CopyGC);
+    return;
+  }
 
   if (vmask & (1u << 0))  dst.function   = src.function;
   if (vmask & (1u << 1))  dst.plane_mask = src.plane_mask;
@@ -196,14 +209,19 @@ void GCOps::handleCopyGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
 }
 
 // major 58 SetDashes
-void GCOps::handleSetDashes(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+void GCOps::handleSetDashes(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // Wire format: CARD32 gc + CARD16 dashOffset + CARD16 nDashes + nDashes bytes (padded to 4)
   if (br.remaining() < 8) { br.skip(br.remaining()); return; }
   const uint32_t gcXid      = br.readU32();
   const uint16_t dashOffset = br.readU16();
   const uint16_t nDashes    = br.readU16();
 
-  auto st = GCTable::instance().getOrCreate(gcXid);
+  GCState st;
+  if (!GCTable::instance().find(gcXid, st)) {
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::SetDashes);
+    return;
+  }
   st.dash_offset = dashOffset;
   st.dash_list.clear();
   st.dash_list.reserve(nDashes);
@@ -215,7 +233,7 @@ void GCOps::handleSetDashes(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader
 }
 
 // major 59 SetClipRectangles
-void GCOps::handleSetClipRectangles(XProtoContext& ctx, uint16_t /*seq*/, uint8_t ordering, ByteReader& br) {
+void GCOps::handleSetClipRectangles(XProtoContext& ctx, uint16_t seq, uint8_t ordering, ByteReader& br) {
   // Wire format (after 4-byte header):
   //   CARD32 gc
   //   INT16  clip-x-origin
@@ -227,7 +245,12 @@ void GCOps::handleSetClipRectangles(XProtoContext& ctx, uint16_t /*seq*/, uint8_
   const int16_t  cxo   = br.readI16();
   const int16_t  cyo   = br.readI16();
 
-  auto st = GCTable::instance().getOrCreate(gcXid);
+  GCState st;
+  if (!GCTable::instance().find(gcXid, st)) {
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::SetClipRectangles);
+    return;
+  }
   st.clip_x_origin = cxo;
   st.clip_y_origin = cyo;
   st.has_clip = true;
@@ -251,13 +274,17 @@ void GCOps::handleSetClipRectangles(XProtoContext& ctx, uint16_t /*seq*/, uint8_
 }
 
 // major 60 FreeGC
-void GCOps::handleFreeGC(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void GCOps::handleFreeGC(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 4) { br.skip(br.remaining()); return; }
   const uint32_t gcXid = br.readU32();
   br.skip(br.remaining());
 
+  GCState tmp;
+  if (!GCTable::instance().find(gcXid, tmp)) {
+    ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::FreeGC);
+    return;
+  }
   GCTable::instance().erase(gcXid);
-  // ctx.tracef("[GCOps] FreeGC gc=0x%08X\n", (unsigned)gcXid);
 }
 
 } // namespace x11

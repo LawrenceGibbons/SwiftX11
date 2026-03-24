@@ -75,7 +75,7 @@ void SelectionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 // 22 SetSelectionOwner  (void — no reply)
 // Body (12 bytes): CARD32 owner, CARD32 selection, CARD32 time
 // ---------------------------------------------------------------------------
-void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 12) { br.skip(br.remaining()); return; }
 
   const uint32_t owner     = br.readU32();
@@ -83,6 +83,12 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
   const uint32_t time      = br.readU32();
 
   br.skip(br.remaining());
+
+  // Validate owner window (0 = None means "no owner", root = 1 is our proxy)
+  if (owner != 0 && owner != 1 && !ctx.windows().exists(owner)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, owner, x11::opcode::SetSelectionOwner);
+    return;
+  }
 
   TS_FPRINTF("[SEL] SetSelectionOwner sel=%u owner=0x%08X\n",
           (unsigned)selection, (unsigned)owner);

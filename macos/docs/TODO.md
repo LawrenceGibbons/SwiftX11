@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-23 (v1.19.24 — WM compliance hardening, XTEST v2.2 re-enabled)
+Last updated: 2026-03-24 (v1.19.25 — WM compliance, error cleanup, find bar, resize fix)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -93,6 +93,9 @@ Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK r
 - [x] **`acceptsFirstMouse` click-through** (v1.19.23–v1.19.24): Override on X11MTKView (the actual hit target) so clicks pass through to X11 content immediately. X11 has no "click to focus first" concept — all clicks are delivered.
 - [x] **SO_SNDBUF 4MB** (v1.19.19): Increase TCP send buffer to reduce backpressure events during large PutImage bursts over Docker bridge network.
 - [x] **Borderless popup focus handling** (v1.19.20): Windows made borderless via `_MOTIF_WM_HINTS` use `orderFront` instead of `makeKeyAndOrderFront` (borderless NSWindows can't become key). Prevents `canBecomeKeyWindow` warning.
+- [x] **Pointer coordinate offset after edge resize** (v1.19.25): Sync window position in `windowDidResize` before C++ resize path runs. Left/top edge resize changes both origin and size; without position sync, ConfigureNotify had stale x/y.
+- [x] **Stderr log timestamps** (v1.19.25): C++ `TS_FPRINTF` macro using `mach_absolute_time()` for consistent timestamps on wire trace, backpressure, error, and event-drop messages. Removed 24 unconditional Swift `print()` debug statements.
+- [x] **Log window Find/Search** (v1.19.25): Cmd+F opens NSTextView find bar with incremental search. Find button in toolbar also works via `performFindPanelAction` with proper `NSMenuItem` tag.
 
 ---
 
@@ -717,14 +720,14 @@ Root cause: GTK2/GTK3 library conflict from `LD_PRELOAD=libgdk-x11-2.0.so.0` in 
 ### Ctrl+Click → Right-Click Regression (MEDIUM — usability)
 Ctrl+click no longer triggers context menus in Vivado (button 3 / right-click). Two-finger trackpad click works as a workaround. Need to identify which change in the v1.17→v1.19 range broke this. Ctrl+click still needs to work for xterm menus (Ctrl+Button1 = font menu, Ctrl+Button2 = VT options).
 
-### Pointer Coordinate Offset After Left-Edge Resize (MEDIUM — usability)
-When resizing a Vivado window by dragging the left edge to the right, menu selections and clicks are offset horizontally (selected item is a couple of inches to the right of where the user clicks). Likely cause: the X11 client's understanding of the window origin doesn't update when the macOS window origin shifts during a left-edge resize. The coordinate transform from macOS screen coords to X11 window-local coords uses the stale origin. Need to verify ConfigureNotify is sent with the updated x/y position after left-edge resizes.
+### Pointer Coordinate Offset After Left-Edge Resize — ✅ FIXED (v1.19.25)
+Sync window position in `windowDidResize` before C++ resize path. Fixes stale origin in coordinate transform after left/top edge resize.
 
-### Add Timestamps to Swift Log Window (LOW — diagnostics)
-Add identical timestamps to the Swift UI log output so it can be correlated with the stderr/Xcode debug console output. Currently the two logs use different timestamp formats making it hard to match events across them.
+### Add Timestamps to Stderr Log — ✅ FIXED (v1.19.25)
+C++ `TS_FPRINTF` macro with `mach_absolute_time()`. Removed unconditional Swift `print()` debug statements.
 
-### Add Find/Search to Swift Log Window (LOW — diagnostics)
-Add a search/filter capability to the SwiftX11 log window so the user can search for specific window IDs, request types, or error messages without manually scrolling.
+### Add Find/Search to Swift Log Window — ✅ FIXED (v1.19.25)
+Cmd+F opens NSTextView find bar. Find toolbar button also works.
 
 ---
 
@@ -753,14 +756,19 @@ Ensure every request that must generate events actually does so per the X11 spec
 - [x] **SelectionClear**: SetSelectionOwner sends SelectionClear to previous owner with correct fields.
 - [ ] **ColormapNotify**: Not implemented. Colormap is fixed default (TrueColor only). LOW priority — no toolkit needs this on TrueColor displays.
 
-### 8.2 Error Generation Audit (HIGH)
+### 8.2 Error Generation Audit (HIGH) — IN PROGRESS (v1.19.26)
 All requests must send the correct X11 error for invalid arguments, not silently skip.
+
+Pre-existing coverage: 71 `sendErrorCore` calls across WindowOps, DrawOps, PropOps, QueryOps, ShapeOps, ExtensionOps, etc. (~65% of handlers).
 
 - [ ] **BadWindow systematic check**: Every handler that takes a window XID must validate it and send `BadWindow` if not found (except root XID and None where allowed).
 - [ ] **BadDrawable systematic check**: Drawing ops must validate drawable XIDs.
+- [x] **BadDrawable in CopyPlane** (v1.19.26): CopyPlane now sends `BadDrawable` when source is neither window nor pixmap (was silent return).
 - [ ] **BadPixmap**: `FreePixmap`, `CopyArea` with pixmap src/dst, tile/stipple GC values.
 - [ ] **BadFont**: `QueryFont`, `QueryTextExtents` with invalid font ID.
-- [ ] **BadGC**: All drawing ops with invalid GC.
+- [x] **BadGC in GCOps** (v1.19.26): ChangeGC, CopyGC, SetDashes, SetClipRectangles, FreeGC all validate GC exists via `find()` and send `BadGC`. CreateGC unchanged (uses `getOrCreate` for creation).
+- [x] **BadCursor** (v1.19.26): FreeCursor and RecolorCursor send `BadCursor` when cursor doesn't exist.
+- [x] **BadWindow in SetSelectionOwner** (v1.19.26): Validates owner window exists (unless 0=None or 1=root proxy).
 - [ ] **BadAtom**: `InternAtom` (only_if_exists), `GetAtomName`, property ops with invalid atoms.
 - [ ] **BadValue**: Validate enum parameters (e.g., `gravity`, `backing_store`, `stack_mode`, `fill_style`, `cap_style`, `join_style`, `line_style`, `arc_mode`, `subwindow_mode`).
 - [ ] **BadMatch**: Depth mismatch in `CopyArea`/`CopyPlane` (source and dest must have same depth unless root). Window/drawable depth mismatches in `CreateGC`.
