@@ -116,11 +116,9 @@ void CursorOps::handleFreeCursor(XProtoContext& ctx, uint16_t seq, ByteReader& b
   const uint32_t cid = br.readU32();
   br.skip(br.remaining());
 
-  const bool removed = ctx.cursors().erase(cid);
-  if (!removed) {
-    ctx.transport().sendErrorCore(x11::error::BadCursor, seq, cid, x11::opcode::FreeCursor);
-  }
-  // VOID: no reply
+  (void)seq;
+  ctx.cursors().erase(cid);
+  // VOID: no reply — lenient: silent skip if cursor doesn't exist
 }
 
 // 96 RecolorCursor
@@ -139,11 +137,9 @@ void CursorOps::handleRecolorCursor(XProtoContext& ctx, uint16_t seq, ByteReader
 
   br.skip(br.remaining());
 
-  const bool ok = ctx.cursors().recolor(cid, fg, bg);
-  if (!ok) {
-    ctx.transport().sendErrorCore(x11::error::BadCursor, seq, cid, x11::opcode::RecolorCursor);
-  }
-  // VOID: no reply
+  (void)seq;
+  ctx.cursors().recolor(cid, fg, bg);
+  // VOID: no reply — lenient: silent skip if cursor doesn't exist
 }
 
 } // namespace x11

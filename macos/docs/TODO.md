@@ -766,8 +766,8 @@ Pre-existing coverage: 71 `sendErrorCore` calls across WindowOps, DrawOps, PropO
 - [x] **BadDrawable in CopyPlane** (v1.19.26): CopyPlane now sends `BadDrawable` when source is neither window nor pixmap (was silent return).
 - [ ] **BadPixmap**: `FreePixmap`, `CopyArea` with pixmap src/dst, tile/stipple GC values.
 - [ ] **BadFont**: `QueryFont`, `QueryTextExtents` with invalid font ID.
-- [x] **BadGC in GCOps** (v1.19.26): ChangeGC, CopyGC, SetDashes, SetClipRectangles, FreeGC all validate GC exists via `find()` and send `BadGC`. CreateGC unchanged (uses `getOrCreate` for creation).
-- [x] **BadCursor** (v1.19.26): FreeCursor and RecolorCursor send `BadCursor` when cursor doesn't exist.
+- [ ] **BadGC in GCOps**: Reverted to lenient `getOrCreate` pattern — Java AWT creates/reuses GCs across connections. Strict validation kills Vivado. Leave lenient until full resource tracking is implemented.
+- [ ] **BadCursor**: Reverted — Java AWT calls RecolorCursor on cursors not in our table (cursor `0x6000029` created by method we don't track). Strict BadCursor killed Vivado startup. Leave lenient.
 - [x] **BadWindow in SetSelectionOwner** (v1.19.26): Validates owner window exists (unless 0=None or 1=root proxy).
 - [ ] **BadAtom**: `InternAtom` (only_if_exists), `GetAtomName`, property ops with invalid atoms.
 - [ ] **BadValue**: Validate enum parameters (e.g., `gravity`, `backing_store`, `stack_mode`, `fill_style`, `cap_style`, `join_style`, `line_style`, `arc_mode`, `subwindow_mode`).

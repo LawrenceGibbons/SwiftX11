@@ -135,12 +135,8 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
     const uint32_t gcXid = br.readU32();
     const uint32_t vmask = br.readU32();
 
-    GCState st;
-    if (!GCTable::instance().find(gcXid, st)) {
-      br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::ChangeGC);
-      return;
-    }
+    (void)seq;
+    auto st = GCTable::instance().getOrCreate(gcXid);
 #ifdef X11_TRACE_VERBOSE
     const uint32_t oldFont = st.font;
 #endif
@@ -169,15 +165,9 @@ void GCOps::handleCopyGC(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const uint32_t vmask    = br.readU32();
   br.skip(br.remaining());
 
-  GCState src, dst;
-  if (!GCTable::instance().find(srcGcXid, src)) {
-    ctx.transport().sendErrorCore(x11::error::BadGC, seq, srcGcXid, x11::opcode::CopyGC);
-    return;
-  }
-  if (!GCTable::instance().find(dstGcXid, dst)) {
-    ctx.transport().sendErrorCore(x11::error::BadGC, seq, dstGcXid, x11::opcode::CopyGC);
-    return;
-  }
+  (void)seq;
+  auto src = GCTable::instance().getOrCreate(srcGcXid);
+  auto dst = GCTable::instance().getOrCreate(dstGcXid);
 
   if (vmask & (1u << 0))  dst.function   = src.function;
   if (vmask & (1u << 1))  dst.plane_mask = src.plane_mask;
@@ -216,12 +206,8 @@ void GCOps::handleSetDashes(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const uint16_t dashOffset = br.readU16();
   const uint16_t nDashes    = br.readU16();
 
-  GCState st;
-  if (!GCTable::instance().find(gcXid, st)) {
-    br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::SetDashes);
-    return;
-  }
+  (void)seq;
+  auto st = GCTable::instance().getOrCreate(gcXid);
   st.dash_offset = dashOffset;
   st.dash_list.clear();
   st.dash_list.reserve(nDashes);
@@ -245,12 +231,8 @@ void GCOps::handleSetClipRectangles(XProtoContext& ctx, uint16_t seq, uint8_t or
   const int16_t  cxo   = br.readI16();
   const int16_t  cyo   = br.readI16();
 
-  GCState st;
-  if (!GCTable::instance().find(gcXid, st)) {
-    br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::SetClipRectangles);
-    return;
-  }
+  (void)seq;
+  auto st = GCTable::instance().getOrCreate(gcXid);
   st.clip_x_origin = cxo;
   st.clip_y_origin = cyo;
   st.has_clip = true;
@@ -279,12 +261,9 @@ void GCOps::handleFreeGC(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const uint32_t gcXid = br.readU32();
   br.skip(br.remaining());
 
-  GCState tmp;
-  if (!GCTable::instance().find(gcXid, tmp)) {
-    ctx.transport().sendErrorCore(x11::error::BadGC, seq, gcXid, x11::opcode::FreeGC);
-    return;
-  }
+  (void)seq;
   GCTable::instance().erase(gcXid);
+  // Lenient: silent skip if GC doesn't exist
 }
 
 } // namespace x11
