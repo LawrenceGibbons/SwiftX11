@@ -39,6 +39,7 @@ private:
   
   void handleConfigureWindow(XProtoContext& ctx, uint16_t seq, ByteReader& br);                     // major 12
   void handleCirculateWindow(XProtoContext& ctx, uint16_t seq, uint8_t direction, ByteReader& br);  // major 13
+  void handleChangeSaveSet(XProtoContext& ctx, uint16_t seq, uint8_t mode, ByteReader& br);        // major 6
 };
 
 } // namespace x11

@@ -795,19 +795,19 @@ Ensure every reply-bearing request returns correctly formatted replies.
 - [ ] **GetKeyboardMapping**: Verify keysyms_per_keycode, keycode range, keysym values.
 - [ ] **GetModifierMapping**: Verify keycodes_per_modifier and keycode entries.
 
-### 8.4 Window Operations Audit (HIGH)
+### 8.4 Window Operations Audit (HIGH) — MOSTLY COMPLETE (v1.19.28)
 Core window hierarchy ops are the most complex and most likely to have edge cases.
 
-- [ ] **CreateWindow depth/visual validation**: Verify depth matches parent (or root) unless `InputOnly`. `InputOnly` windows must have depth 0 and class `InputOnly`.
-- [ ] **CreateWindow attribute inheritance**: `CWBackPixmap`, `CWBackPixel`, `CWBorderPixmap`, `CWBorderPixel`, `CWColormap` — defaults from parent when not specified.
-- [ ] **ConfigureWindow stacking**: Full audit of `CWSibling` + `CWStackMode` interactions. `BadMatch` if sibling specified but sibling is not actually a sibling.
-- [ ] **ConfigureWindow geometry constraints**: Width/height must be non-zero (`BadValue`). Coordinates are signed 16-bit.
-- [ ] **MapWindow on already-mapped window**: Must be no-op (no duplicate `MapNotify`).
-- [ ] **UnmapWindow on already-unmapped window**: Must be no-op.
-- [ ] **DestroyWindow recursive cleanup**: All subwindows destroyed depth-first. All resources (pixmaps, GCs, cursors) owned by destroyed windows freed. Events sent bottom-up.
-- [ ] **ReparentWindow correctness**: Unmap if mapped, change parent, adjust coordinates relative to new parent, remap if was mapped. `BadMatch` if new parent is descendant of window.
-- [ ] **CirculateWindow**: Implement opcode 13 (currently unhandled). `RaiseLowest` and `LowerHighest` operations.
-- [ ] **ChangeSaveSet**: Implement opcode 6 (save-set for reparenting WMs). May be stub for rootless mode.
+- [ ] **CreateWindow depth/visual validation**: InputOnly class not validated (depth 0, visual 0). LOW — no client we support uses InputOnly windows.
+- [ ] **CreateWindow attribute inheritance**: ParentRelative background works. Full colormap/visual inheritance chain incomplete. LOW — toolkits manage this client-side.
+- [x] **ConfigureWindow stacking** (pre-existing + v1.19.28): Above/Below/TopIf/BottomIf/Opposite all implemented. Sibling validation added — sends `BadMatch` if sibling doesn't share same parent.
+- [x] **ConfigureWindow geometry constraints** (v1.19.28): Width/height == 0 now sends `BadValue`. Non-zero values clamped to uint16 range.
+- [x] **MapWindow on already-mapped window** (pre-existing): Correctly checks `wasMapped`, skips MapNotify and UI push.
+- [x] **UnmapWindow on already-unmapped window** (pre-existing): Correctly checks `wasMapped`, skips UnmapNotify.
+- [x] **DestroyWindow recursive cleanup** (pre-existing): `descendantsOf` + reverse iteration for depth-first. DestroyNotify sent to child and parent. Resources freed via `erase()`.
+- [x] **ReparentWindow correctness** (pre-existing + v1.19.28): Unmap/reparent/remap cycle correct. Added `BadMatch` if new parent is window itself or a descendant.
+- [x] **CirculateWindow** (pre-existing): RaiseLowest and LowerHighest fully implemented with CirculateNotify events.
+- [x] **ChangeSaveSet** (v1.19.28): Opcode 6 registered as no-op stub. Save-set only meaningful for reparenting WMs; safe no-op in rootless mode.
 
 ### 8.5 Graphics Operations Audit (MEDIUM)
 Drawing ops correctness — clipping, coordinate handling, edge cases.

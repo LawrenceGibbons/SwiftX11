@@ -334,6 +334,7 @@ WindowOps::WindowOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::MapSubwindows,   &WindowOps::onMajor, this);  // MapSubwindows
   reg.registerMajor(x11::opcode::UnmapWindow  ,   &WindowOps::onMajor, this);  // UnmapWindow
   reg.registerMajor(x11::opcode::UnmapSubwindows, &WindowOps::onMajor, this);  // UnmapSubwindows
+  reg.registerMajor(x11::opcode::ChangeSaveSet,   &WindowOps::onMajor, this);  // 6
   reg.registerMajor(x11::opcode::CirculateWindow, &WindowOps::onMajor, this);  // 13
 }
 
@@ -352,6 +353,7 @@ void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::MapSubwindows   :  handleMapSubwindows(ctx, dc.seq, dc.br); return;
     case x11::opcode::UnmapWindow     : handleUnmapWindow(ctx, dc.seq, dc.br); return;
     case x11::opcode::UnmapSubwindows : handleUnmapSubwindows(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ChangeSaveSet   : handleChangeSaveSet(ctx, dc.seq, dc.minor, dc.br); return;
     case x11::opcode::CirculateWindow : handleCirculateWindow(ctx, dc.seq, dc.minor, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
@@ -686,6 +688,21 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     return;
   }
   const bool wasMapped = vw.mapped;
+
+  // BadMatch if new parent is the window itself or a descendant of it
+  if (newParent == wid) {
+    ctx.transport().sendErrorCore(x11::error::BadMatch, seq, newParent, x11::opcode::ReparentWindow);
+    return;
+  }
+  {
+    auto desc = ctx.windows().descendantsOf(wid);
+    for (uint32_t d : desc) {
+      if (d == newParent) {
+        ctx.transport().sendErrorCore(x11::error::BadMatch, seq, newParent, x11::opcode::ReparentWindow);
+        return;
+      }
+    }
+  }
 
   // If mapped, unmap first (X11 spec: ReparentWindow unmaps if mapped)
   if (wasMapped) {
@@ -1191,6 +1208,15 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteRead
 }
   
   
+// -------------------- ChangeSaveSet (opcode 6) --------------------------
+// mode (dc.minor): 0=Insert, 1=Delete
+// Save-set is only meaningful for reparenting window managers.
+// In rootless mode, this is a safe no-op.
+void WindowOps::handleChangeSaveSet(XProtoContext& /*ctx*/, uint16_t /*seq*/,
+                                     uint8_t /*mode*/, ByteReader& br) {
+  br.skip(br.remaining());
+}
+
 // -------------------- CirculateWindow (opcode 13)
 // dc.minor = direction: 0=RaiseLowest, 1=LowerHighest
 void WindowOps::handleCirculateWindow(XProtoContext& ctx, uint16_t seq,

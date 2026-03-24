@@ -362,14 +362,20 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Consume any trailing bytes (defensive)
     br.skip(br.remaining());
 
+    // BadValue if client explicitly sets width or height to 0
+    if ((vmask & (1u << 2)) && w32 == 0) {
+      ctx.transport().sendErrorCore(x11::error::BadValue, seq, 0, x11::opcode::ConfigureWindow);
+      return;
+    }
+    if ((vmask & (1u << 3)) && h32 == 0) {
+      ctx.transport().sendErrorCore(x11::error::BadValue, seq, 0, x11::opcode::ConfigureWindow);
+      return;
+    }
+
     const int16_t  x = clamp_i16(x32);
     const int16_t  y = clamp_i16(y32);
     uint16_t w = clamp_u16_nonzero(w32);
     uint16_t h = clamp_u16_nonzero(h32);
-
-    // No size floor — let the client set any size.  The CreateWindow floor
-    // was removed (v1.16.5) to match XQuartz behavior.  Tiny windows (1×1)
-    // simply stay tiny until the client sends ConfigureWindow with the real size.
 
     ctx.tracef("[CONFIGURE] wid=0x%08X x=%d y=%d w=%u h=%u bw=%u host=0x%08X\n",
                wid, (int)x, (int)y, (unsigned)w, (unsigned)h, (unsigned)borderW, host);
@@ -389,6 +395,16 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // 0.5) Stacking order (CWStackMode, optionally with CWSibling)
     // ------------------------------------------------------------------
     if (hasStackMode) {
+      // Validate sibling shares same parent as wid (BadMatch if not)
+      if (hasSibling && sibling != 0) {
+        WindowView widView{}, sibView{};
+        if (ctx.windows().snapshot(wid, widView) && ctx.windows().snapshot(sibling, sibView)) {
+          if (widView.parent_xid != sibView.parent_xid) {
+            ctx.transport().sendErrorCore(x11::error::BadMatch, seq, sibling, x11::opcode::ConfigureWindow);
+            return;
+          }
+        }
+      }
       switch (stackMode) {
         case 0: // Above
           if (hasSibling)
