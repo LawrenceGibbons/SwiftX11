@@ -67,7 +67,7 @@ bool ReplyWriter::sendGetGeometryReply(uint16_t seq,
   rep.fill(0);
 
   rep[0] = 1;                  // Reply
-  // rep[1] unused
+  rep[1] = (uint8_t)depth;    // depth (CARD8 at byte 1 per spec)
   wire::wr16_le(rep.data() + 2, seq);
   wire::wr32_le(rep.data() + 4, 0);  // length_words = 0 (no extra bytes)
 
@@ -77,7 +77,7 @@ bool ReplyWriter::sendGetGeometryReply(uint16_t seq,
   wire::wr16_le(rep.data() + 16, w);
   wire::wr16_le(rep.data() + 18, h);
   wire::wr16_le(rep.data() + 20, borderWidth);
-  wire::wr16_le(rep.data() + 22, depth);
+  // bytes 22-23: pad (zero from fill)
 
   return sendReply32Bytes(rep.data());
 }
