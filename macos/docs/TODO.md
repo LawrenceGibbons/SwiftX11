@@ -807,22 +807,24 @@ Core window hierarchy ops are the most complex and most likely to have edge case
 - [x] **CirculateWindow** (pre-existing): RaiseLowest and LowerHighest fully implemented with CirculateNotify events.
 - [x] **ChangeSaveSet** (v1.19.28): Opcode 6 registered as no-op stub. Save-set only meaningful for reparenting WMs; safe no-op in rootless mode.
 
-### 8.5 Graphics Operations Audit (MEDIUM)
+### 8.5 Graphics Operations Audit (MEDIUM) — AUDITED (v1.19.30)
 Drawing ops correctness — clipping, coordinate handling, edge cases.
 
-- [ ] **GC subwindow_mode**: `IncludeInferiors` vs `ClipByChildren` — currently ignored. Should affect clipping for all draw ops on windows.
-- [ ] **CopyArea with overlapping src/dst**: Must handle correctly (copy direction matters to avoid corruption).
-- [ ] **CopyArea GraphicsExposure**: When GC has `graphics_exposures=True` and source region is obscured, must send `GraphicsExposure` events for obscured sub-rects, followed by `NoExposure` if fully visible.
-- [ ] **PutImage XYBitmap/XYPixmap**: Currently only ZPixmap fully supported. XYBitmap uses foreground/background. XYPixmap uses planemask. Verify bit order and padding.
-- [ ] **GetImage XYPixmap**: Currently stub or ZPixmap-only. Need XYPixmap format support.
-- [ ] **PolyLine join behavior**: `JoinMiter`, `JoinRound`, `JoinBevel` — currently not implemented (only square joins).
-- [ ] **Line cap styles**: `CapNotLast`, `CapButt`, `CapRound`, `CapProjecting` — verify all are correct.
-- [ ] **Dashed lines**: `SetDashes` stores dash list but verify `PolyLine`/`PolySegment` actually apply dash patterns.
-- [ ] **Wide lines**: `line_width > 0` should produce thick lines. Currently may only draw 1px.
-- [ ] **PolyArc angles**: Verify 1/64th degree units, counterclockwise direction, correct arc rendering for all quadrants.
-- [ ] **FillPoly fill rule**: `EvenOddRule` vs `WindingRule` — verify both are correct for complex polygons.
-- [ ] **GC plane_mask**: Verify plane_mask is applied to all drawing operations, not just shape ops.
-- [ ] **GC function (ROP)**: Verify all 16 GC functions (GXclear through GXset) work correctly in all draw ops, not just shape ops.
+Audit: 4/13 fully implemented, 5 stored-but-unused (line styling), 4 partially/not implemented.
+
+- [ ] **GC subwindow_mode**: Field stored in GCState but never consulted during drawing. All drawing is ClipByChildren. `IncludeInferiors` would require drawing through child windows. LOW — rarely used by modern toolkits.
+- [x] **CopyArea with overlapping src/dst** (pre-existing): Correctly detects same-backing overlap, reverses row iteration order when needed, uses `std::memmove()` for overlap-safe copy.
+- [ ] **CopyArea GraphicsExposure**: Sends `NoExposure` unconditionally when `graphics_exposures=True`. Should send `GraphicsExposure` for obscured sub-rects. MEDIUM — affects client-side redraw optimization.
+- [x] **PutImage XYBitmap/XYPixmap** (pre-existing): Both format=0 (XYBitmap) and format=1 (XYPixmap) supported for depth-1 pixmaps with correct leftPad handling and bit order. ZPixmap (format=2) for 32-bit windows.
+- [ ] **GetImage XYPixmap**: Only ZPixmap (format=2) supported. XYPixmap returns BadValue. LOW — rarely used.
+- [ ] **PolyLine join behavior**: `join_style` stored in GCState but never used. All joins are square. LOW — cosmetic, only visible at corners of thick lines (which are also unimplemented).
+- [ ] **Line cap styles**: `cap_style` stored in GCState but never applied. All endpoints are Butt. LOW — cosmetic, only visible on thick lines.
+- [ ] **Dashed lines**: `SetDashes` stores dash_list/dash_offset but `drawThinLine()` never consults them. All lines solid. MEDIUM — some apps use dashed lines for selection rectangles.
+- [ ] **Wide lines**: `line_width` stored but ignored. All lines are 1px. MEDIUM — some apps depend on thick lines for borders/highlights.
+- [x] **PolyArc angles** (pre-existing): Correct 1/64° units, counterclockwise from X-axis, proper angle wrapping, negative extents for clockwise arcs.
+- [ ] **FillPoly fill rule**: Only EvenOddRule implemented. `fill_rule` (0=EvenOdd, 1=Winding) field and `shape` parameter both ignored. LOW — only affects self-intersecting polygons.
+- [x] **GC plane_mask** (pre-existing): Applied via `x11_apply_rop_argb()` in all draw ops (PutImage, CopyArea, CopyPlane, PolyLine, PolySegment, FillPoly, PolyFillRectangle, PolyFillArc, PolyArc).
+- [x] **GC function (ROP)** (pre-existing): All 16 GXclear–GXset functions implemented in `x11_rop24()`. Applied everywhere via `x11_apply_rop_argb()`. Fast path for GXcopy+full-planemask skips ROP.
 
 ### 8.6 Grab Semantics Audit (MEDIUM) — AUDITED (v1.19.30)
 Pointer and keyboard grabs are complex and affect event routing globally.
