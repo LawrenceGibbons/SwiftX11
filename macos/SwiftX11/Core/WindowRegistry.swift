@@ -1356,7 +1356,6 @@ final class WindowRegistry {
       win.contentResizeIncrements = NSSize(width: CGFloat(incW), height: CGFloat(incH))
     }
 
-    print("[WM_SIZE_HINTS] xid=0x\(String(format:"%X", host)) min=\(minW)x\(minH) max=\(maxW)x\(maxH) inc=\(incW)x\(incH)")
   }
 
   /// _NET_WM_WINDOW_TYPE: adjust NSWindow style based on EWMH window type.
@@ -1370,7 +1369,6 @@ final class WindowRegistry {
     if typeAtom == 0x80000001 {
       // MODAL: raise to modal panel level
       win.level = .modalPanel
-      print("[NET_WM_STATE] xid=0x\(String(format:"%X", host)) → modal")
       return
     }
     if typeAtom == 0x80000002 {
@@ -1378,7 +1376,6 @@ final class WindowRegistry {
       if !win.styleMask.contains(.fullScreen) {
         win.toggleFullScreen(nil)
       }
-      print("[NET_WM_STATE] xid=0x\(String(format:"%X", host)) → fullscreen")
       return
     }
     if typeAtom == 0x80000003 {
@@ -1386,7 +1383,6 @@ final class WindowRegistry {
       win.styleMask = [.borderless]
       win.level = .floating
       win.hasShadow = true
-      print("[MOTIF_WM_HINTS] xid=0x\(String(format:"%X", host)) → undecorated")
       return
     }
 
@@ -1404,27 +1400,27 @@ final class WindowRegistry {
       // Dialog: titled, closable, non-resizable, floating if appropriate
       win.styleMask = [.titled, .closable]
       win.level = .floating
-      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → dialog")
+
 
     case typeToolbar, typeUtility:
       // Toolbar/Utility: titled, closable, utility level
       win.styleMask = [.titled, .closable, .resizable]
       win.level = .floating
-      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → toolbar/utility")
+
 
     case typeMenu:
       // Menu: borderless, floating (same as override-redirect)
       win.styleMask = [.borderless]
       win.level = .floating
       win.hasShadow = true
-      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → menu")
+
 
     case typeTooltip:
       // Tooltip: borderless, floating, no shadow
       win.styleMask = [.borderless]
       win.level = .floating
       win.hasShadow = false
-      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → tooltip")
+
 
     case typeSplash:
       // Splash: borderless, floating, centered
@@ -1433,17 +1429,16 @@ final class WindowRegistry {
       win.hasShadow = true
       // Center on the screen where the window currently appears
       win.center()
-      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → splash")
+
 
     case typeNormal:
       // Normal: standard decoration
       win.styleMask = [.titled, .closable, .resizable, .miniaturizable]
       win.level = .normal
-      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) → normal")
+
 
     default:
-      // Unknown type atom — treat as normal
-      print("[NET_WM_TYPE] xid=0x\(String(format:"%X", host)) unknown type_atom=\(typeAtom)")
+      break // Unknown type atom — no action
     }
   }
 
@@ -1462,7 +1457,6 @@ final class WindowRegistry {
       } else {
         pendingIconicState.insert(host)
       }
-      print("[WM_HINTS] xid=0x\(String(format:"%X", host)) initial_state=IconicState(3)")
     }
   }
 
@@ -1484,7 +1478,6 @@ final class WindowRegistry {
     let kRootXid: UInt32 = 1
     guard transientForXid != 0 && transientForXid != kRootXid else {
       pendingTransientFor.removeValue(forKey: host)
-      print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", host)) cleared (root/none)")
       return
     }
 
@@ -1514,7 +1507,6 @@ final class WindowRegistry {
     // grey window persistence when the dialog is unmapped/destroyed.
     // Instead, transient windows are shown via orderWindow(.above, relativeTo:)
     // in syncAndShowNonORWindow, which keeps them in the same Stage Manager stage.
-    print("[WM_TRANSIENT_FOR] xid=0x\(String(format:"%X", dialogHost)) → parent=0x\(String(format:"%X", parentHost)) (stored)")
   }
 
   func flushRepaintNow(xid: UInt32) {

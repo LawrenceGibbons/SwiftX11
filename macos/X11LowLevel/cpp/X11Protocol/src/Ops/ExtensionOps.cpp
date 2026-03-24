@@ -1447,16 +1447,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // XTEST — major opcode 142
   // -------------------------------------------------------------------
   if (major == ext::kXTEST) {
-    { char buf[128]; snprintf(buf, sizeof(buf), "[XTEST] fd=%d minor=%u seq=%u\n",
-        ctx.transport().clientFd(), (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
     switch (minor) {
 
     // ---- minor 0: XTestGetVersion (reply-bearing) ----
     case 0: {
-      // Request: CARD8 client_major, pad, CARD16 client_minor
       br.skip(br.remaining());
-      // Reply: server_major in byte 1, server_minor at bytes 8-9
-      // Build locally so we can hex-dump for crash diagnosis
       std::array<uint8_t, 32> rep{};
       rep.fill(0);
       rep[0] = 1;                            // Reply
@@ -1464,40 +1459,16 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       wire::wr16_le(rep.data() + 2, seq);   // sequence
       wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
       wire::wr16_le(rep.data() + 8, 2);     // server_minor_version (2.2)
-      // Was reporting v2.0 to prevent GrabControl crash. Re-enabled v2.2
-      // for testing with fixed dbus-launch (DISPLAY must be set before
-      // dbus-launch in start_vivado_sx11.sh).
-
-      // Hex dump first 16 bytes of reply for crash diagnosis
-      {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-          "[XTEST] GetVersion reply fd=%d seq=%u hex: "
-          "%02X %02X %02X %02X %02X %02X %02X %02X "
-          "%02X %02X %02X %02X %02X %02X %02X %02X\n",
-          ctx.transport().clientFd(), (unsigned)seq,
-          rep[0], rep[1], rep[2], rep[3], rep[4], rep[5], rep[6], rep[7],
-          rep[8], rep[9], rep[10], rep[11], rep[12], rep[13], rep[14], rep[15]);
-        x11_ui_push_log(1, buf);
-      }
-
       (void)ctx.reply().sendReplyRaw(rep.data(), rep.size());
       return;
     }
 
     // ---- minor 1: XTestCompareCursor (reply-bearing) ----
     case 1: {
-      // Request: CARD32 window, CARD32 cursor
-      // Reply: byte 1 = BOOL same
-      // Always report same=1 (true) — we don't track per-window cursors.
       uint32_t window = br.readU32();
       uint32_t cursor = br.readU32();
+      (void)window; (void)cursor;
       br.skip(br.remaining());
-
-      { char buf[128]; snprintf(buf, sizeof(buf),
-          "[XTEST] CompareCursor fd=%d seq=%u window=0x%08X cursor=0x%08X → same=1\n",
-          ctx.transport().clientFd(), (unsigned)seq, window, cursor);
-        x11_ui_push_log(2, buf); }
 
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
         rep[1] = 1;                            // same = true

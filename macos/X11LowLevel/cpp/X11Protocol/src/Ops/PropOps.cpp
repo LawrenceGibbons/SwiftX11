@@ -242,11 +242,6 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
 
-    fprintf(stderr, "[WM_HINTS_DBG] xid=0x%08X host=0x%08X flags=0x%X desired=%dx%d min=%dx%d max=%dx%d pos=(%d,%d) hasPos=%d\n",
-            (unsigned)wid, (unsigned)host, (unsigned)flags,
-            (int)desired_w, (int)desired_h, (int)min_w, (int)min_h,
-            (int)max_w, (int)max_h, (int)pos_x, (int)pos_y, (int)has_position);
-
     // If we have a desired size and the window should be resized, do it (WM role).
     //
     // Resize when:
@@ -412,7 +407,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       { char buf[128]; snprintf(buf, sizeof(buf),
           "[MOTIF_WM_HINTS] wid=0x%X host=0x%X flags=0x%X decor=%u\n",
           wid, host, flags, decorations);
-        x11_ui_push_log(1, buf); }
+        x11_ui_push_log(2, buf); }
     }
   }
 
@@ -429,7 +424,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     { char buf[128]; snprintf(buf, sizeof(buf),
         "[WM_TRANSIENT_FOR] wid=0x%X host=0x%X parent=0x%X\n",
         wid, host, transient_for_xid);
-      x11_ui_push_log(1, buf); }
+      x11_ui_push_log(2, buf); }
   }
 }
 
