@@ -8,6 +8,7 @@
 #include "Ops/ReplyWriter.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Utils/WireLE.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 

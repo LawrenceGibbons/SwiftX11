@@ -5,6 +5,7 @@
 #include "Core/GCTable.hpp"
 #include "Core/FontTable.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -115,7 +116,7 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
 #ifdef X11_TRACE_VERBOSE
     if (st.font != oldFont) {
       const x11::font::BdfFont* ff = ctx.fonts().get(st.font);
-      fprintf(stderr, "[GCOps] GCFont gc=0x%08X font=0x%08X resolved=\"%s\"\n",
+      TS_FPRINTF("[GCOps] GCFont gc=0x%08X font=0x%08X resolved=\"%s\"\n",
               (unsigned)gcXid, (unsigned)st.font,
               ff ? ff->name.c_str() : "<unresolved>");
     }
@@ -146,7 +147,7 @@ void GCOps::applyValueMask(uint32_t vmask, ByteReader& br, GCState& st)
 #ifdef X11_TRACE_VERBOSE
     if (st.font != oldFont) {
       const x11::font::BdfFont* ff = ctx.fonts().get(st.font);
-      fprintf(stderr, "[GCOps] GCFont gc=0x%08X font=0x%08X resolved=\"%s\"\n",
+      TS_FPRINTF("[GCOps] GCFont gc=0x%08X font=0x%08X resolved=\"%s\"\n",
               (unsigned)gcXid, (unsigned)st.font,
               ff ? ff->name.c_str() : "<unresolved>");
     }

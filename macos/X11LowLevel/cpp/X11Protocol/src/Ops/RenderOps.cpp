@@ -39,6 +39,7 @@ extern "C" {
 #include "Core/DrawableRW.hpp"
 #include "Core/WindowTable.hpp"
 #include "Damage.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -456,7 +457,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       sPictures[pid] = ps;
     }
 #if X11_TRACE_RENDER_ENABLED
-    fprintf(stderr, "[RENDER CreatePicture] pid=0x%X drw=0x%X fmt=0x%X repeat=%d\n",
+    TS_FPRINTF("[RENDER CreatePicture] pid=0x%X drw=0x%X fmt=0x%X repeat=%d\n",
             pid, drawable, format, ps.repeat);
 #endif
     return;
@@ -589,7 +590,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) return;
 
 #if X11_TRACE_RENDER_ENABLED
-    fprintf(stderr, "[RENDER Composite] op=%u src=0x%X(solid=%d repeat=%d drw=0x%X) "
+    TS_FPRINTF("[RENDER Composite] op=%u src=0x%X(solid=%d repeat=%d drw=0x%X) "
             "msk=0x%X(has=%d solid=%d repeat=%d drw=0x%X) dst=0x%X(drw=0x%X win=%d) "
             "src(%d,%d) msk(%d,%d) dst(%d,%d) %ux%u\n",
             (unsigned)op, srcPid, srcIsSolid, srcRepeat, srcDrawable,
@@ -609,7 +610,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           srcIsSolid = true;
           srcColor   = srcDrw.pixels32[0];
 #if X11_TRACE_RENDER_ENABLED
-          fprintf(stderr, "[RENDER Composite] promoted 1x1 Repeat to solid=0x%08X\n",
+          TS_FPRINTF("[RENDER Composite] promoted 1x1 Repeat to solid=0x%08X\n",
                   srcColor);
 #endif
         }
@@ -754,7 +755,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (traps.empty()) return;
 
 #if X11_TRACE_RENDER_ENABLED
-    fprintf(stderr, "[RENDER Trapezoids] op=%u src=0x%X dst=0x%X maskFmt=0x%X nTraps=%zu\n",
+    TS_FPRINTF("[RENDER Trapezoids] op=%u src=0x%X dst=0x%X maskFmt=0x%X nTraps=%zu\n",
             (unsigned)op, srcPid, dstPid, maskFmt, traps.size());
 #endif
 
@@ -1135,7 +1136,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
                              (format == kFmtA8) ? "A8" :
                              (format == kFmtA4) ? "A4" :
                              (format == kFmtA1) ? "A1" : "?";
-      fprintf(stderr, "[RENDER] CreateGlyphSet gsid=0x%x format=0x%x (%s)\n",
+      TS_FPRINTF("[RENDER] CreateGlyphSet gsid=0x%x format=0x%x (%s)\n",
               gsid, format, fmtName);
     }
 #endif
@@ -1305,7 +1306,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 #if X11_TRACE_RENDER_ENABLED
     if (nglyphs > 0) {
       const auto& info0 = infos[0];
-      fprintf(stderr, "[RENDER] AddGlyphs gsid=0x%x n=%u bpp=%d  "
+      TS_FPRINTF("[RENDER] AddGlyphs gsid=0x%x n=%u bpp=%d  "
               "glyph0: id=%u %ux%u origin=(%d,%d) adv=(%d,%d)\n",
               gsid, nglyphs, bpp,
               ids[0], info0.w, info0.h, info0.x, info0.y, info0.xOff, info0.yOff);
@@ -1370,7 +1371,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
               srcIsSolid = true;
               srcColor = srcDrw.pixels32[0];
 #if X11_TRACE_RENDER_ENABLED
-              fprintf(stderr, "[RENDER] CompositeGlyphs: promoted 1x1 Repeat to solid=0x%08X\n",
+              TS_FPRINTF("[RENDER] CompositeGlyphs: promoted 1x1 Repeat to solid=0x%08X\n",
                       srcColor);
 #endif
             } else {
@@ -1378,7 +1379,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
               srcIsSolid = true;
               srcColor = srcDrw.pixels32[0];
 #if X11_TRACE_RENDER_ENABLED
-              fprintf(stderr, "[RENDER] CompositeGlyphs: non-1x1 source %ux%u, using pixel[0]=0x%08X\n",
+              TS_FPRINTF("[RENDER] CompositeGlyphs: non-1x1 source %ux%u, using pixel[0]=0x%08X\n",
                       srcDrw.w, srcDrw.h, srcColor);
 #endif
             }
@@ -1401,7 +1402,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
 #if X11_TRACE_RENDER_ENABLED
-    fprintf(stderr, "[RENDER] CompositeGlyphs%d op=%d src=0x%x(solid=%d,color=0x%08x) "
+    TS_FPRINTF("[RENDER] CompositeGlyphs%d op=%d src=0x%x(solid=%d,color=0x%08x) "
             "dst=0x%x(draw=0x%x %ux%u stride=%u) mask=0x%x gs=0x%x\n",
             glyphIdSize * 8, op, srcPid,
             srcIsSolid ? 1 : 0, srcColor,
@@ -1512,7 +1513,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
 #if X11_TRACE_RENDER_ENABLED
     if (!cmds.empty()) {
-      fprintf(stderr, "[RENDER]   → %zu glyphs, pen=(%d,%d), useMask=%d\n",
+      TS_FPRINTF("[RENDER]   → %zu glyphs, pen=(%d,%d), useMask=%d\n",
               cmds.size(), penX, penY, useMask ? 1 : 0);
       std::lock_guard<std::mutex> lk2(sGlyphMtx);
       for (size_t ci = 0; ci < std::min(cmds.size(), (size_t)3); ci++) {
@@ -1521,7 +1522,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         auto gIt = gsIt->second.glyphs.find(cmds[ci].glyphId);
         if (gIt == gsIt->second.glyphs.end()) continue;
         const auto& rg = gIt->second;
-        fprintf(stderr, "[RENDER]   glyph[%zu] id=%u pen=(%d,%d) "
+        TS_FPRINTF("[RENDER]   glyph[%zu] id=%u pen=(%d,%d) "
                 "%ux%u origin=(%d,%d) → draw@(%d,%d)\n",
                 ci, cmds[ci].glyphId, cmds[ci].penX, cmds[ci].penY,
                 rg.width, rg.height, rg.x, rg.y,
@@ -1691,7 +1692,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0) { br.skip(br.remaining()); return; }
 
 #if X11_TRACE_RENDER_ENABLED
-    fprintf(stderr, "[RENDER FillRects] op=%u dst=0x%X(drw=0x%X win=%d) color=0x%08X\n",
+    TS_FPRINTF("[RENDER FillRects] op=%u dst=0x%X(drw=0x%X win=%d) color=0x%08X\n",
             (unsigned)op, dstPid, dstDrawable, dst.isWindow, fillColor);
 #endif
 
@@ -1796,7 +1797,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       sPictures[pid] = ps;
     }
 #if X11_TRACE_RENDER_ENABLED
-    fprintf(stderr, "[RENDER CreateSolidFill] pid=0x%X argb=0x%08X\n",
+    TS_FPRINTF("[RENDER CreateSolidFill] pid=0x%X argb=0x%08X\n",
             pid, ps.solidARGB);
 #endif
     return;

@@ -11,6 +11,7 @@
 #include "UI/UICommandQueue.hpp"
 #include "Core/X11CursorShape.hpp"   // the enum + mapping above
 #include "Core/CursorTable.hpp" 
+#include "Utils/MachTime.hpp"
 
   // Call when you have a host (top-level) and a target (deepest under pointer).
   void x11::maybeApplyCursor(x11::XProtoContext& ctx, uint32_t host, uint32_t target) {
@@ -40,7 +41,7 @@
     }
     
 #ifdef X11_TRACE_VERBOSE
-    fprintf(stderr, "[CURSOR_APPLY] host=0x%08X target=0x%08X cursor=0x%08X shape=%d\n",
+    TS_FPRINTF("[CURSOR_APPLY] host=0x%08X target=0x%08X cursor=0x%08X shape=%d\n",
             (unsigned)host, (unsigned)target, (unsigned)cursorXid, (int)shape);
 #endif
     

@@ -136,7 +136,7 @@ static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
 #if X11_TRACE_PRESENT_ENABLED
-    fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X pixmap=0x%08X wh=%ux%u stride=%u\n",
+    TS_FPRINTF("[BG_FILL_RETRY] wid=0x%08X pixmap=0x%08X wh=%ux%u stride=%u\n",
             (unsigned)wid, (unsigned)bgPixmap,
             (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
 #endif
@@ -154,14 +154,14 @@ static void fillWindowBackgroundIfReady(x11::XProtoContext& ctx, uint32_t wid) {
   x11::DrawableRW dst{};
   if (!x11::resolveDrawableRW(ctx, wid, dst)) {
 #if X11_TRACE_PRESENT_ENABLED
-    fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
+    TS_FPRINTF("[BG_FILL_RETRY] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
 #endif
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
 #if X11_TRACE_PRESENT_ENABLED
-  fprintf(stderr, "[BG_FILL_RETRY] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u off=(%d,%d)\n",
+  TS_FPRINTF("[BG_FILL_RETRY] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u off=(%d,%d)\n",
           (unsigned)wid, (unsigned)bg,
           (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels,
           (int)dst.offsetX, (int)dst.offsetY);
@@ -223,7 +223,7 @@ static void fillWindowBorderIfReady(x11::XProtoContext& ctx, uint32_t childXid) 
   fillRect(bx + bw + (int32_t)cv.w, by + bw, bw, (int32_t)cv.h); // right
 
 #if X11_TRACE_PRESENT_ENABLED
-  fprintf(stderr, "[BORDER_RETRY] childXid=0x%08X parent=0x%08X bw=%d bp=0x%08X at=(%d,%d) total=%dx%d\n",
+  TS_FPRINTF("[BORDER_RETRY] childXid=0x%08X parent=0x%08X bw=%d bp=0x%08X at=(%d,%d) total=%dx%d\n",
           (unsigned)childXid, (unsigned)cv.parent_xid,
           (int)bw, (unsigned)bp, (int)bx, (int)by, (int)totalW, (int)totalH);
 #endif
@@ -240,13 +240,13 @@ static inline void sendExposeNow(x11::XProtoContext& ctx,
   const x11::WindowView* wv = ctx.window(wid);
   if (!wv) {
 #if X11_TRACE_LIFECYCLE_ENABLED
-    fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X SKIP (no WindowView)\n", (unsigned)wid);
+    TS_FPRINTF("[EXPOSE_SEND] wid=0x%08X SKIP (no WindowView)\n", (unsigned)wid);
 #endif
     return;
   }
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[EXPOSE_SEND] wid=0x%08X wh=%ux%u mapped=%d evmask=0x%08X count=%u\n",
+  TS_FPRINTF("[EXPOSE_SEND] wid=0x%08X wh=%ux%u mapped=%d evmask=0x%08X count=%u\n",
           (unsigned)wid, (unsigned)wv->w, (unsigned)wv->h,
           (int)wv->mapped, (unsigned)wv->event_mask, (unsigned)count);
 #endif
@@ -273,7 +273,7 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
                                      uint32_t hostXid)
 {
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
+  TS_FPRINTF("[EXPOSE_SUBTREE] host=0x%08X\n", (unsigned)hostXid);
 #endif
 
   // Fill background + Expose the host itself.
@@ -284,7 +284,7 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
   auto kids = ctx.windows().descendantsOf(hostXid);
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
+  TS_FPRINTF("[EXPOSE_SUBTREE] host=0x%08X descendants=%zu\n",
           (unsigned)hostXid, kids.size());
 #endif
 
@@ -303,7 +303,7 @@ static inline void sendExposeSubtree(x11::XProtoContext& ctx,
     {
       x11::DrawableRW dbgDst{};
       bool resolved = x11::resolveDrawableRW(ctx, kid, dbgDst);
-      fprintf(stderr, "[EXPOSE_SUBTREE] kid=0x%08X resolved=%d wh=%ux%u off=(%d,%d) stride=%u\n",
+      TS_FPRINTF("[EXPOSE_SUBTREE] kid=0x%08X resolved=%d wh=%ux%u off=(%d,%d) stride=%u\n",
               (unsigned)kid, (int)resolved,
               resolved ? (unsigned)dbgDst.w : 0u,
               resolved ? (unsigned)dbgDst.h : 0u,
@@ -359,11 +359,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // to owner?.notifyPresentableOnce() instead of posting independently.
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-          fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X\n", (unsigned)c.xid);
+          TS_FPRINTF("[SET_PRESENTABLE] xid=0x%08X\n", (unsigned)c.xid);
           {
             x11::SurfaceDesc dbgS{};
             bool hasSurf = ctx.surfaces().get(c.xid, dbgS);
-            fprintf(stderr, "[SET_PRESENTABLE] xid=0x%08X hasSurface=%d surfWH=%ux%u bpr=%u ptr=%p\n",
+            TS_FPRINTF("[SET_PRESENTABLE] xid=0x%08X hasSurface=%d surfWH=%ux%u bpr=%u ptr=%p\n",
                     (unsigned)c.xid, (int)hasSurf,
                     (unsigned)dbgS.w, (unsigned)dbgS.h,
                     (unsigned)dbgS.bytesPerRow, dbgS.ptr);
@@ -416,7 +416,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // SetPresentable may have already set presentable=true while the
             // surface was still small.
 #if X11_TRACE_RESIZE_ENABLED
-            fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (initial) -> re-expose subtree\n",
+            TS_FPRINTF("[SURFACE_RESIZED] xid=0x%08X (initial) -> re-expose subtree\n",
                     (unsigned)c.xid);
 #endif
             sendExposeSubtree(ctx, srv->eventOps(), c.xid);
@@ -436,7 +436,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // ConfigureWindow handler (triggered by xterm's response to
             // ConfigureNotify) fills child backgrounds + sends Expose.
 #if X11_TRACE_RESIZE_ENABLED
-            fprintf(stderr, "[SURFACE_RESIZED] xid=0x%08X (resize) -> skip\n",
+            TS_FPRINTF("[SURFACE_RESIZED] xid=0x%08X (resize) -> skip\n",
                     (unsigned)c.xid);
 #endif
           }
@@ -606,12 +606,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 x11::wire::wr32_le(ev + 16, x11_now_ms_monotonic());
                 (void)ctx.transport().sendEvent32(host, ev);
 #ifndef NDEBUG
-                fprintf(stderr, "[WM_TAKE_FOCUS] sent to host=0x%08X\n", (unsigned)host);
+                TS_FPRINTF("[WM_TAKE_FOCUS] sent to host=0x%08X\n", (unsigned)host);
 #endif
               }
 #ifndef NDEBUG
               else {
-                fprintf(stderr, "[WM_TAKE_FOCUS] suppressed bounce to host=0x%08X (prev=0x%08X last=0x%08X)\n",
+                TS_FPRINTF("[WM_TAKE_FOCUS] suppressed bounce to host=0x%08X (prev=0x%08X last=0x%08X)\n",
                         (unsigned)host, (unsigned)ctx.input().take_focus_prev_, (unsigned)ctx.input().take_focus_last_);
               }
 #endif
@@ -1230,6 +1230,7 @@ static x11::XProtoDaemon g_daemon;
 
 // Version string: single source of truth is SwiftX11Version.h
 #include "SwiftX11Version.h"
+#include "Utils/MachTime.hpp"
 static constexpr const char* kSwiftX11Version = SWIFTX11_VERSION;
 
 const char* swiftx11_version(void)
@@ -1570,7 +1571,7 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
   x11::SurfaceDesc s{};
   if (!ctx.surfaces().get(host, s) || !s.ptr || s.bytesPerRow == 0 || s.w == 0 || s.h == 0) {
 #if X11_TRACE_PRESENT_ENABLED
-    fprintf(stderr, "[COPY_SURFACE] xid=0x%08X host=0x%08X FAIL no surface (ptr=%p wh=%ux%u bpr=%u)\n",
+    TS_FPRINTF("[COPY_SURFACE] xid=0x%08X host=0x%08X FAIL no surface (ptr=%p wh=%ux%u bpr=%u)\n",
             (unsigned)xid, (unsigned)host, s.ptr, (unsigned)s.w, (unsigned)s.h, (unsigned)s.bytesPerRow);
 #endif
     return 0;
@@ -1619,7 +1620,7 @@ extern "C" int x11_cpp_copy_host_surface_bgra(uint32_t xid,
     for (int32_t x = 0; x < w; x++) {
       if ((px[x] & 0x00FFFFFFu) != 0x00FFFFFFu) nonwhite++;
     }
-    fprintf(stderr, "[COPY_SURFACE] xid=0x%08X host=0x%08X wh=%dx%d bpr=%d "
+    TS_FPRINTF("[COPY_SURFACE] xid=0x%08X host=0x%08X wh=%dx%d bpr=%d "
             "p0=0x%08X pmid=0x%08X row0_nonwhite=%u\n",
             (unsigned)xid, (unsigned)host, (int)w, (int)hgt, (int)tightBpr,
             (unsigned)p0, (unsigned)pm, (unsigned)nonwhite);

@@ -17,6 +17,7 @@
 #include <mutex>
 
 #include <CoreGraphics/CoreGraphics.h>
+#include "Utils/MachTime.hpp"
 
 // Forward: push a ScreenLayoutChanged host command so the server thread
 // can send ConfigureNotify on the root window.
@@ -234,11 +235,11 @@ ScreenLayout getScreenLayout() {
     if (s_layout.monitors.empty()) {
         // First call — populate lazily
         s_layout = buildLayout();
-        fprintf(stderr, "[SCREEN] initial layout: %dx%d, %zu monitor(s)\n",
+        TS_FPRINTF("[SCREEN] initial layout: %dx%d, %zu monitor(s)\n",
                 (int)s_layout.virtual_w, (int)s_layout.virtual_h,
                 s_layout.monitors.size());
         for (auto& m : s_layout.monitors) {
-            fprintf(stderr, "[SCREEN]   %s: pos=(%d,%d) size=%dx%d px=%dx%d mm=%dx%d%s\n",
+            TS_FPRINTF("[SCREEN]   %s: pos=(%d,%d) size=%dx%d px=%dx%d mm=%dx%d%s\n",
                     m.name, (int)m.x, (int)m.y,
                     (int)m.w, (int)m.h,
                     (int)m.w_px, (int)m.h_px,
@@ -257,11 +258,11 @@ void refreshScreenLayout() {
         s_layout = std::move(fresh);
     }
 
-    fprintf(stderr, "[SCREEN] layout refreshed: %dx%d, %zu monitor(s)\n",
+    TS_FPRINTF("[SCREEN] layout refreshed: %dx%d, %zu monitor(s)\n",
             (int)s_layout.virtual_w, (int)s_layout.virtual_h,
             s_layout.monitors.size());
     for (auto& m : s_layout.monitors) {
-        fprintf(stderr, "[SCREEN]   %s: pos=(%d,%d) size=%dx%d px=%dx%d mm=%dx%d%s\n",
+        TS_FPRINTF("[SCREEN]   %s: pos=(%d,%d) size=%dx%d px=%dx%d mm=%dx%d%s\n",
                 m.name, (int)m.x, (int)m.y,
                 (int)m.w, (int)m.h,
                 (int)m.w_px, (int)m.h_px,
@@ -281,7 +282,7 @@ static void displayReconfigCallback(CGDirectDisplayID display,
     if (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag |
                  kCGDisplayMovedFlag | kCGDisplaySetModeFlag |
                  kCGDisplaySetMainFlag | kCGDisplayDesktopShapeChangedFlag)) {
-        fprintf(stderr, "[SCREEN] display reconfiguration detected (flags=0x%X), refreshing\n",
+        TS_FPRINTF("[SCREEN] display reconfiguration detected (flags=0x%X), refreshing\n",
                 (unsigned)flags);
         refreshScreenLayout();
     }

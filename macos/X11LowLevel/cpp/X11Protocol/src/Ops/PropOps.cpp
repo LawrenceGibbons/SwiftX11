@@ -25,6 +25,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/ScreenLayout.hpp"
 #include "Core/timestamp.hpp"
+#include "Utils/MachTime.hpp"
 
 extern "C" void x11_ui_push_log(int level, const char* message);
 
@@ -161,7 +162,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
     if (host == wid) {
-      fprintf(stderr, "[PROP_TOPLEVEL] wid=0x%08X atom=%u fmt=%u bytes=%zu\n",
+      TS_FPRINTF("[PROP_TOPLEVEL] wid=0x%08X atom=%u fmt=%u bytes=%zu\n",
               (unsigned)wid, (unsigned)atom, (unsigned)fmt, dataBytes);
     }
   }

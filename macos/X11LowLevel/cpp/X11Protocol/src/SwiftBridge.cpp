@@ -354,7 +354,7 @@ extern "C" void x11_ui_push_log(int level, const char* message)
     g_log_cb(level, message);
   } else {
     // Fallback: stderr (pre-registration or if Swift didn't register)
-    fprintf(stderr, "[%.6f] %s", x11::util::machTimeSeconds(), message);
+    TS_FPRINTF("[%.6f] %s", x11::util::machTimeSeconds(), message);
   }
 }
 

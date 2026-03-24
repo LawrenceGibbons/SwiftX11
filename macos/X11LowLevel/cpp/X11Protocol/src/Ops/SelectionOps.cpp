@@ -24,6 +24,7 @@
 
 extern "C" {
 #include "SwiftX11Bridge.h"
+#include "Utils/MachTime.hpp"
 }
 
 // Access the server's HostCommandQueue for deferred clipboard capture.
@@ -83,7 +84,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
 
   br.skip(br.remaining());
 
-  fprintf(stderr, "[SEL] SetSelectionOwner sel=%u owner=0x%08X\n",
+  TS_FPRINTF("[SEL] SetSelectionOwner sel=%u owner=0x%08X\n",
           (unsigned)selection, (unsigned)owner);
 
   uint32_t prevOwner = 0;
@@ -140,7 +141,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t /*seq*/,
     (void)ctx.transport().sendEvent32(owner, ev);
 
 #ifndef NDEBUG
-    fprintf(stderr, "[CLIPBOARD] Sent proactive SelectionRequest(UTF8_STRING) to owner 0x%08X\n",
+    TS_FPRINTF("[CLIPBOARD] Sent proactive SelectionRequest(UTF8_STRING) to owner 0x%08X\n",
             (unsigned)owner);
 #endif
   }
@@ -226,7 +227,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     (void)ctx.transport().sendEvent32(requestor, ev);
 
 #ifndef NDEBUG
-    fprintf(stderr, "[CLIPBOARD] Served TARGETS (%u atoms) to 0x%08X\n",
+    TS_FPRINTF("[CLIPBOARD] Served TARGETS (%u atoms) to 0x%08X\n",
             nTargets, (unsigned)requestor);
 #endif
     return true;
@@ -296,7 +297,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     (void)ctx.transport().sendEvent32(requestor, ev);
 
 #ifndef NDEBUG
-    fprintf(stderr, "[CLIPBOARD] Served %u bytes from macOS pasteboard to 0x%08X\n",
+    TS_FPRINTF("[CLIPBOARD] Served %u bytes from macOS pasteboard to 0x%08X\n",
             len, (unsigned)requestor);
 #endif
     return true;
@@ -331,7 +332,7 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
 
   br.skip(br.remaining());
 
-  fprintf(stderr, "[SEL] ConvertSelection sel=%u target=%u req=0x%08X prop=%u\n",
+  TS_FPRINTF("[SEL] ConvertSelection sel=%u target=%u req=0x%08X prop=%u\n",
           (unsigned)selection, (unsigned)target, (unsigned)requestor, (unsigned)property);
 
   // Per ICCCM: if property is None, use target as property
@@ -357,14 +358,14 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
       int64_t currentCC = x11_clipboard_get_change_count();
       if (currentCC > storedCC) {
 #ifndef NDEBUG
-        fprintf(stderr, "[CLIPBOARD] macOS clipboard newer (cc %lld > %lld) — serving from macOS\n",
+        TS_FPRINTF("[CLIPBOARD] macOS clipboard newer (cc %lld > %lld) — serving from macOS\n",
                 (long long)currentCC, (long long)storedCC);
 #endif
         serveMacOSClipboard(ctx, requestor, selection, target, property, time);
         return;
       }
 #ifndef NDEBUG
-      fprintf(stderr, "[CLIPBOARD] macOS NOT newer (cc %lld <= %lld) — forwarding to X11 owner 0x%08X\n",
+      TS_FPRINTF("[CLIPBOARD] macOS NOT newer (cc %lld <= %lld) — forwarding to X11 owner 0x%08X\n",
               (long long)currentCC, (long long)storedCC, (unsigned)owner);
 #endif
     }
@@ -373,7 +374,7 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     // Root has no client transport, so serve from macOS clipboard directly.
     if (owner == 1) {
 #ifndef NDEBUG
-      fprintf(stderr, "[CLIPBOARD] owner=root (proxy) — serving from macOS\n");
+      TS_FPRINTF("[CLIPBOARD] owner=root (proxy) — serving from macOS\n");
 #endif
       if (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD) {
         serveMacOSClipboard(ctx, requestor, selection, target, property, time);
@@ -529,7 +530,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
 
 #ifndef NDEBUG
         int64_t cc = x11_clipboard_get_change_count();
-        fprintf(stderr, "[CLIPBOARD] Captured %zu bytes from X11 (sel=%u) -> macOS (cc=%lld), owner→root\n",
+        TS_FPRINTF("[CLIPBOARD] Captured %zu bytes from X11 (sel=%u) -> macOS (cc=%lld), owner→root\n",
                 p.data.size(), (unsigned)selAtom, (long long)cc);
 #endif
       }

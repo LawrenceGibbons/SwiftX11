@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include "Utils/MachTime.hpp"
 
 namespace x11::font {
 
@@ -343,7 +344,7 @@ std::unique_ptr<BdfFont> createCoreTextFont(const std::string& xlfdOrName,
   CTFontRef ctFont = createCTFont(family, pxSize, bold, italic);
   if (!ctFont) {
 #if X11_TRACE_FONT_ENABLED
-    fprintf(stderr, "[CoreText] FAILED to create font: family=\"%s\" px=%d bold=%d italic=%d\n",
+    TS_FPRINTF("[CoreText] FAILED to create font: family=\"%s\" px=%d bold=%d italic=%d\n",
             family.c_str(), pxSize, bold ? 1 : 0, italic ? 1 : 0);
 #endif
     return nullptr;

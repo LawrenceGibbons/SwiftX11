@@ -24,6 +24,7 @@
 
 extern "C" {
 #include "SwiftX11Bridge.h"
+#include "Utils/MachTime.hpp"
 }
 
 namespace x11 {
@@ -626,7 +627,7 @@ namespace x11 {
     }
 
 #ifndef NDEBUG
-    fprintf(stderr, "[QueryExtension] \"%s\" -> present=%u major=%u\n",
+    TS_FPRINTF("[QueryExtension] \"%s\" -> present=%u major=%u\n",
             name.c_str(), (unsigned)present, (unsigned)major);
 #endif
 

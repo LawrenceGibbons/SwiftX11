@@ -26,6 +26,7 @@
 #include <unordered_set>
 #include <vector>
 #include "Utils/TraceDefs.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -134,7 +135,7 @@ void FontOps::handleOpenFont(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& b
   [[maybe_unused]] const bool ok = ctx.fonts().open(fid, name);
 
 #if X11_TRACE_FONT_ENABLED
-  fprintf(stderr, "[FontOps] OpenFont fid=0x%08X name=\"%s\" -> %s\n",
+  TS_FPRINTF("[FontOps] OpenFont fid=0x%08X name=\"%s\" -> %s\n",
           (unsigned)fid, name.c_str(), ok ? "OK" : "FAIL");
 #endif
 

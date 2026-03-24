@@ -10,6 +10,7 @@
 #include "ByteReader.hpp"
 #include "CursorTable.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -88,7 +89,7 @@ void CursorOps::handleCreateGlyphCursor(XProtoContext& ctx, uint16_t /*seq*/, By
   const uint16_t srcChar = br.readU16();
   const uint16_t maskChar = br.readU16();
 
-  fprintf(stderr, "[CURSOR] CreateGlyphCursor cid=0x%08X srcChar=%u maskChar=%u\n",
+  TS_FPRINTF("[CURSOR] CreateGlyphCursor cid=0x%08X srcChar=%u maskChar=%u\n",
           (unsigned)cid, (unsigned)srcChar, (unsigned)maskChar);
   
   CursorTable::RGB16 fg, bg;

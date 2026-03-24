@@ -18,6 +18,7 @@ extern "C" {
 
 // xxx temp
 #include "WindowTable.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace {
 
@@ -164,7 +165,7 @@ extern "C" void x11_ui_push_set_cursor(uint32_t host_xid, uint32_t cursor_xid, i
   if (host_xid == 0) return;
 
 #ifdef X11_TRACE_VERBOSE
-  fprintf(stderr, "[UI_PUSH] SET_CURSOR host=0x%08X cursor=0x%08X shape=%d\n",
+  TS_FPRINTF("[UI_PUSH] SET_CURSOR host=0x%08X cursor=0x%08X shape=%d\n",
           (unsigned)host_xid, (unsigned)cursor_xid, (int)shape);
 #endif
 
@@ -251,7 +252,7 @@ extern "C" void x11_ui_push_damage(uint32_t xid, int32_t x_u, int32_t y_u, int32
   clamp_wh(w_u, h_u);
 
 #ifdef X11_TRACE_VERBOSE
-  fprintf(stderr, "[UI_DAMAGE] xid=0x%08X rect=(%d,%d %dx%d)\n",
+  TS_FPRINTF("[UI_DAMAGE] xid=0x%08X rect=(%d,%d %dx%d)\n",
           (unsigned)xid, (int)x_u, (int)y_u, (int)w_u, (int)h_u);
 #endif
   x11_ui_cmd_t c = make_empty();

@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include "Utils/MachTime.hpp"
 
 // For SIGPIPE avoidance on macOS
 #ifndef MSG_NOSIGNAL
@@ -110,7 +111,7 @@ extern "C" void x11_send_setup_success_minimal_little_endian(int fd,
   const uint16_t screen_h_u  = layout.virtual_h;
   const uint16_t screen_w_mm = layout.virtual_w_mm;
   const uint16_t screen_h_mm = layout.virtual_h_mm;
-  fprintf(stderr, "[DISPLAY] advertised screen_w_u = %d  screen_h_u = %d  (%zu monitor%s)\n",
+  TS_FPRINTF("[DISPLAY] advertised screen_w_u = %d  screen_h_u = %d  (%zu monitor%s)\n",
           screen_w_u, screen_h_u,
           layout.monitors.size(), layout.monitors.size() == 1 ? "" : "s");
 
@@ -219,7 +220,7 @@ extern "C" void x11_send_setup_success_minimal_little_endian(int fd,
 
 #ifndef NDEBUG
   if (off != total_bytes) {
-    fprintf(stderr, "[SwiftX11] xproto: SetupSuccess size mismatch off=%zu total=%zu\n",
+    TS_FPRINTF("[SwiftX11] xproto: SetupSuccess size mismatch off=%zu total=%zu\n",
             off, total_bytes);
   }
 #endif

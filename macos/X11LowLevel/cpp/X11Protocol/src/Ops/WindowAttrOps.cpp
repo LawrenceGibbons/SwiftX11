@@ -31,6 +31,7 @@ extern "C" {
 
 // util
 #include "Damage.hpp"
+#include "Utils/MachTime.hpp"
 
 
 
@@ -74,7 +75,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   void WindowAttrOps::handleChangeWindowAttributes(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     ctx.tracef("[CWA] ENTER remain=%zu\n", br.remaining());
 #ifdef X11_TRACE_VERBOSE
-    fprintf(stderr, "[CWA] ENTER remain=%zu\n", br.remaining());
+    TS_FPRINTF("[CWA] ENTER remain=%zu\n", br.remaining());
 #endif
     if (br.remaining() < 8) { br.skip(br.remaining()); return; }
 
@@ -292,7 +293,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       const WindowView* dbg_vw = ctx.window(wid);
       if (dbg_vw && dbg_vw->override_redirect) {
-        fprintf(stderr, "[CONFIGURE_OR] wid=0x%08X vmask=0x%04X cur_pos=(%d,%d) cur_size=%ux%u bits=%s%s%s%s%s%s%s\n",
+        TS_FPRINTF("[CONFIGURE_OR] wid=0x%08X vmask=0x%04X cur_pos=(%d,%d) cur_size=%ux%u bits=%s%s%s%s%s%s%s\n",
                 (unsigned)wid, (unsigned)vmask,
                 (int)dbg_vw->x, (int)dbg_vw->y,
                 (unsigned)dbg_vw->w, (unsigned)dbg_vw->h,
@@ -374,7 +375,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
                wid, (int)x, (int)y, (unsigned)w, (unsigned)h, (unsigned)borderW, host);
 #ifndef NDEBUG
     if (host != 0 && host == wid) {
-      fprintf(stderr, "[CONFIGURE_TOPLEVEL] wid=0x%08X vmask=0x%X w=%u h=%u pos=(%d,%d)\n",
+      TS_FPRINTF("[CONFIGURE_TOPLEVEL] wid=0x%08X vmask=0x%X w=%u h=%u pos=(%d,%d)\n",
               (unsigned)wid, (unsigned)vmask, (unsigned)w, (unsigned)h, (int)x, (int)y);
     }
 #endif

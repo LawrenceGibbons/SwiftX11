@@ -14,6 +14,7 @@
 #include "Ops/ReplyWriter.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Core/WindowTable.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -45,7 +46,7 @@ void XProtoContext::tracef(const char* fmt, ...) {
 XProtoTransport& XProtoContext::transport() {
   if (!transport_) {
 #ifndef NDEBUG
-    std::fprintf(stderr, "[XProtoContext] FATAL: transport() called but transport_ is null\n");
+    std::TS_FPRINTF("[XProtoContext] FATAL: transport() called but transport_ is null\n");
 #endif
     std::abort();
   }

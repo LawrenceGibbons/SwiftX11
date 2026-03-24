@@ -23,6 +23,7 @@
 
 extern "C" {
 #include "SwiftX11Bridge.h"
+#include "Utils/MachTime.hpp"
 }
 
 namespace x11 {
@@ -161,10 +162,10 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
       major == 63 || major == 72 || major == 74 || major == 75 ||
       major == 76 || major == 77 || major == 65 || major == 66)
   {
-    fprintf(stderr, "[WATCH] major=%u minor=%u seq=%u remain=%zu\n",
+    TS_FPRINTF("[WATCH] major=%u minor=%u seq=%u remain=%zu\n",
             (unsigned)major, (unsigned)minor, (unsigned)seq, br.remaining());
   }
-  fprintf(stderr, "[DISPATCH] major=%u minor=%u seq=%u remain=%zu\n",
+  TS_FPRINTF("[DISPATCH] major=%u minor=%u seq=%u remain=%zu\n",
           (unsigned)major, (unsigned)minor, (unsigned)seq, remain);
 #endif
   if ( major == 91 ) {
@@ -194,7 +195,7 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
         ByteReader tmp = br;
         tmp.skip(4);
         uint16_t v = tmp.readU16();
-        fprintf(stderr, "[QC READU16] bytes=%02X%02X -> readU16()=%u\n",
+        TS_FPRINTF("[QC READU16] bytes=%02X%02X -> readU16()=%u\n",
                 p[4], p[5], (unsigned)v);
       }
     }
@@ -398,7 +399,7 @@ void XProtoServer::flushPendingMaps() {
           desired_w = (int32_t)pw;
           desired_h = (int32_t)ph;
 #ifndef NDEBUG
-          fprintf(stderr, "[FLUSH_MAP_PEAK] wid=0x%08X: geom %ux%u → peak %ux%u\n",
+          TS_FPRINTF("[FLUSH_MAP_PEAK] wid=0x%08X: geom %ux%u → peak %ux%u\n",
                   (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
                   (unsigned)pw, (unsigned)ph);
 #endif
@@ -410,7 +411,7 @@ void XProtoServer::flushPendingMaps() {
         uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
         uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
 #ifndef NDEBUG
-        fprintf(stderr, "[FLUSH_MAP_RESIZE] wid=0x%08X: geom %ux%u → %ux%u\n",
+        TS_FPRINTF("[FLUSH_MAP_RESIZE] wid=0x%08X: geom %ux%u → %ux%u\n",
                 (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
                 (unsigned)nw, (unsigned)nh);
 #endif
@@ -440,7 +441,7 @@ void XProtoServer::flushPendingMaps() {
     clearPeakSize(wid);
 
 #ifndef NDEBUG
-    fprintf(stderr, "[FLUSH_MAP] wid=0x%08X geom=%ux%u — pushing deferred map\n",
+    TS_FPRINTF("[FLUSH_MAP] wid=0x%08X geom=%ux%u — pushing deferred map\n",
             (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h);
 #endif
     x11_ui_push_map(wid);
@@ -486,7 +487,7 @@ void XProtoServer::notePeakSize(uint32_t wid, uint16_t w, uint16_t h) {
   }
 #ifndef NDEBUG
   auto& ps = peak_sizes_[wid];
-  fprintf(stderr, "[PEAK_SIZE] wid=0x%08X configure=%ux%u peak=%ux%u\n",
+  TS_FPRINTF("[PEAK_SIZE] wid=0x%08X configure=%ux%u peak=%ux%u\n",
           (unsigned)wid, (unsigned)w, (unsigned)h,
           (unsigned)ps.w, (unsigned)ps.h);
 #endif
@@ -530,7 +531,7 @@ void XProtoServer::updateSurface(uint32_t xid, const SurfaceDesc& s) {
   const uint32_t key  = host ? host : xid;
 
 #ifdef X11_TRACE_VERBOSE
-  fprintf(stderr, "[UPDATE_SURFACE] xid=0x%08X -> host/key=0x%08X wh=%ux%u bpr=%u ptr=%p\n",
+  TS_FPRINTF("[UPDATE_SURFACE] xid=0x%08X -> host/key=0x%08X wh=%ux%u bpr=%u ptr=%p\n",
           (unsigned)xid, (unsigned)key,
           (unsigned)s.w, (unsigned)s.h, (unsigned)s.bytesPerRow, s.ptr);
 #endif

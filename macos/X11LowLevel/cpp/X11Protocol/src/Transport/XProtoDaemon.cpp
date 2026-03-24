@@ -160,7 +160,7 @@ bool XProtoDaemon::start(int display, bool enableTCP, bool enableUnix,
   if (running_.load(std::memory_order_acquire)) return true;
 
   if (!enableTCP && !enableUnix) {
-    fprintf(stderr, "[X11] ERROR: both TCP and Unix socket disabled — no listeners!\n");
+    TS_FPRINTF("[X11] ERROR: both TCP and Unix socket disabled — no listeners!\n");
     return false;
   }
 
@@ -210,10 +210,10 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
     int tcpFd = make_listen_socket(display, tcpBindAddr);
     if (tcpFd >= 0) {
       listen_fds_.push_back(tcpFd);
-      fprintf(stderr, "[X11] TCP listener on %s:%d (fd=%d)\n",
+      TS_FPRINTF("[X11] TCP listener on %s:%d (fd=%d)\n",
               tcpBindAddr, 6000 + display, tcpFd);
     } else {
-      fprintf(stderr, "[X11] WARNING: failed to create TCP listener on %s:%d\n",
+      TS_FPRINTF("[X11] WARNING: failed to create TCP listener on %s:%d\n",
               tcpBindAddr, 6000 + display);
     }
   }
@@ -224,15 +224,15 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
     if (unixFd >= 0) {
       listen_fds_.push_back(unixFd);
       unix_socket_path_ = unixPath;
-      fprintf(stderr, "[X11] Unix socket listener on %s (fd=%d)\n",
+      TS_FPRINTF("[X11] Unix socket listener on %s (fd=%d)\n",
               unixPath.c_str(), unixFd);
     } else {
-      fprintf(stderr, "[X11] WARNING: failed to create Unix socket listener\n");
+      TS_FPRINTF("[X11] WARNING: failed to create Unix socket listener\n");
     }
   }
 
   if (listen_fds_.empty()) {
-    fprintf(stderr, "[X11] ERROR: no listeners created — aborting\n");
+    TS_FPRINTF("[X11] ERROR: no listeners created — aborting\n");
     running_.store(false, std::memory_order_release);
     return;
   }
@@ -687,7 +687,7 @@ static void sendDeleteWindowMessage(XProtoContext& ctx, uint32_t xid) {
   (void)ctx.transport().sendEvent32(xid, ev);
 
 #ifndef NDEBUG
-  fprintf(stderr, "[WINDOW_CLOSE] sent WM_DELETE_WINDOW to xid=0x%08X\n",
+  TS_FPRINTF("[WINDOW_CLOSE] sent WM_DELETE_WINDOW to xid=0x%08X\n",
           (unsigned)xid);
 #endif
 }
@@ -721,7 +721,7 @@ void XProtoDaemon::drainHostCommands() {
       const uint16_t rh = layout.virtual_h;
       const uint16_t rw_mm = layout.virtual_w_mm;
       const uint16_t rh_mm = layout.virtual_h_mm;
-      fprintf(stderr, "[SCREEN_NOTIFY] sending ConfigureNotify + RRScreenChangeNotify "
+      TS_FPRINTF("[SCREEN_NOTIFY] sending ConfigureNotify + RRScreenChangeNotify "
               "to %zu client(s), new size=%dx%d mm=%dx%d\n",
               clients_.size(), (int)rw, (int)rh, (int)rw_mm, (int)rh_mm);
 
@@ -879,7 +879,7 @@ void XProtoDaemon::drainHostCommands() {
         if (::poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLOUT)) {
           static int skip_count = 0;
           if (++skip_count <= 3 || (skip_count % 100) == 0) {
-            fprintf(stderr, "[THROTTLE] skipped PointerMove #%d (socket not writable fd=%d)\n",
+            TS_FPRINTF("[THROTTLE] skipped PointerMove #%d (socket not writable fd=%d)\n",
                     skip_count, cs->client->fd());
           }
           continue; // socket not writable — skip this motion event

@@ -25,6 +25,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/timestamp.hpp"
 #include "Utils/WireEvents.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -556,7 +557,7 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
               // but for our 32-byte wire event union this is acceptable for bring-up.
 
 #ifdef X11_TRACE_VERBOSE
-  fprintf(stderr, "[CROSS] wid=0x%08X %s time=%u root=(%d,%d) event=(%d,%d) state=0x%04X\n",
+  TS_FPRINTF("[CROSS] wid=0x%08X %s time=%u root=(%d,%d) event=(%d,%d) state=0x%04X\n",
           (unsigned)wid, is_enter ? "Enter" : "Leave",
           (unsigned)wire::rd32_le(ev + 4),
           (int)rx, (int)ry, (int)ex, (int)ey, (unsigned)st);

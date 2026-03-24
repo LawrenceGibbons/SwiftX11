@@ -12,6 +12,7 @@
 
 extern "C" {
 #include "SwiftX11Bridge.h"
+#include "Utils/MachTime.hpp"
 }
 
 namespace x11 {
@@ -42,7 +43,7 @@ namespace x11 {
     const uint32_t host = hostForPresent(ctx, drawableXid);
     if (host == 0) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[DAMAGE] drawable=0x%08X SKIP host=0\n", (unsigned)drawableXid);
+      TS_FPRINTF("[DAMAGE] drawable=0x%08X SKIP host=0\n", (unsigned)drawableXid);
 #endif
       return;
     }
@@ -67,7 +68,7 @@ namespace x11 {
     x11_ui_push_damage(host, hostX, hostY, w, h);
 
 #ifdef X11_TRACE_VERBOSE
-    fprintf(stderr, "[DAMAGE] drawable=0x%08X host=0x%08X rect=(%d,%d %dx%d)\n",
+    TS_FPRINTF("[DAMAGE] drawable=0x%08X host=0x%08X rect=(%d,%d %dx%d)\n",
             (unsigned)drawableXid, (unsigned)host, (int)hostX, (int)hostY, (int)w, (int)h);
 #endif
   }

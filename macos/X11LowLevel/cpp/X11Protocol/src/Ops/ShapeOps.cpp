@@ -28,6 +28,7 @@
 #include "Utils/TraceDefs.hpp"
 #include "Utils/GCClip.hpp"
 #include "Utils/FillStyle.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -665,7 +666,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
 #ifdef X11_TRACE_VERBOSE
-    fprintf(stderr, "[PolyFillArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
+    TS_FPRINTF("[PolyFillArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
             (unsigned)drawable, (unsigned)gc_id, narcs);
 #endif
 
@@ -742,7 +743,7 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[PolyFillArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+      TS_FPRINTF("[PolyFillArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
 #endif
       br.skip(br.remaining());
       if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))
@@ -847,14 +848,14 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
     if (narcs == 0) { br.skip(br.remaining()); return; }
 
 #ifdef X11_TRACE_VERBOSE
-    fprintf(stderr, "[PolyArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
+    TS_FPRINTF("[PolyArc] drawable=0x%08X gc=0x%08X narcs=%zu\n",
             (unsigned)drawable, (unsigned)gc_id, narcs);
 #endif
 
     DrawableRW dst{};
     if (!resolveDrawableRW(ctx, drawable, dst)) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[PolyArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
+      TS_FPRINTF("[PolyArc] drawable=0x%08X FAIL resolveDrawableRW\n", (unsigned)drawable);
 #endif
       br.skip(br.remaining());
       if (!ctx.windows().exists(drawable) && !ctx.pixmaps().exists(drawable))

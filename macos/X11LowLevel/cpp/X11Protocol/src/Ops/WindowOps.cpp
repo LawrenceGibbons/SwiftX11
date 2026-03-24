@@ -32,6 +32,7 @@ extern "C" {
 #include "SwiftX11Bridge.h"
 }
 #include "Utils/TraceDefs.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -47,7 +48,7 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
     if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
 #if X11_TRACE_PRESENT_ENABLED
-    fprintf(stderr, "[BG_FILL] wid=0x%08X pixmap=0x%08X wh=%ux%u stride=%u\n",
+    TS_FPRINTF("[BG_FILL] wid=0x%08X pixmap=0x%08X wh=%ux%u stride=%u\n",
             (unsigned)wid, (unsigned)bgPixmap,
             (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
 #endif
@@ -70,14 +71,14 @@ static void fillWindowBackground(XProtoContext& ctx, uint32_t wid) {
   DrawableRW dst{};
   if (!resolveDrawableRW(ctx, wid, dst)) {
 #if X11_TRACE_PRESENT_ENABLED
-    fprintf(stderr, "[BG_FILL] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
+    TS_FPRINTF("[BG_FILL] wid=0x%08X SKIP resolve failed\n", (unsigned)wid);
 #endif
     return;
   }
   if (!dst.pixels32 || dst.w == 0 || dst.h == 0 || dst.stridePixels == 0) return;
 
 #if X11_TRACE_PRESENT_ENABLED
-  fprintf(stderr, "[BG_FILL] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u\n",
+  TS_FPRINTF("[BG_FILL] wid=0x%08X bg=0x%08X wh=%ux%u stride=%u\n",
           (unsigned)wid, (unsigned)bg,
           (unsigned)dst.w, (unsigned)dst.h, (unsigned)dst.stridePixels);
 #endif
@@ -123,7 +124,7 @@ static void fillWindowBorder(XProtoContext& ctx, uint32_t childXid) {
   DrawableRW parentDst{};
   if (!resolveDrawableRW(ctx, cv.parent_xid, parentDst)) {
 #if X11_TRACE_PRESENT_ENABLED
-    fprintf(stderr, "[BORDER] childXid=0x%08X SKIP parent resolve failed\n", (unsigned)childXid);
+    TS_FPRINTF("[BORDER] childXid=0x%08X SKIP parent resolve failed\n", (unsigned)childXid);
 #endif
     return;
   }
@@ -223,7 +224,7 @@ static void fillWindowBorder(XProtoContext& ctx, uint32_t childXid) {
   }
 
 #if X11_TRACE_PRESENT_ENABLED
-  fprintf(stderr, "[BORDER] childXid=0x%08X parent=0x%08X bw=%d bp=0x%08X at=(%d,%d) total=%dx%d\n",
+  TS_FPRINTF("[BORDER] childXid=0x%08X parent=0x%08X bw=%d bp=0x%08X at=(%d,%d) total=%dx%d\n",
           (unsigned)childXid, (unsigned)cv.parent_xid,
           (int)bw, (unsigned)bp,
           (int)bx, (int)by, (int)totalW, (int)totalH);
@@ -483,7 +484,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   const int owner_fd = ctx.transport().clientFd();
 #ifndef NDEBUG
   if (parent == x11::kRootXid) {
-    fprintf(stderr, "[CREATE_TOPLEVEL] wid=0x%08X requested=%ux%u pos=(%d,%d) bw=%u\n",
+    TS_FPRINTF("[CREATE_TOPLEVEL] wid=0x%08X requested=%ux%u pos=(%d,%d) bw=%u\n",
             (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (int)x, (int)y, (unsigned)borderWidth);
   }
 #endif
@@ -549,7 +550,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[LIFECYCLE] CreateWindow wid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u evmask=0x%08X bg=%s\n",
+  TS_FPRINTF("[LIFECYCLE] CreateWindow wid=0x%08X parent=0x%08X xy=(%d,%d) wh=%ux%u evmask=0x%08X bg=%s\n",
           (unsigned)wid, (unsigned)parent,
           (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
           (unsigned)event_mask,
@@ -663,7 +664,7 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
   }
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[LIFECYCLE] DestroySubwindows parent=0x%08X destroyed=%zu children\n",
+  TS_FPRINTF("[LIFECYCLE] DestroySubwindows parent=0x%08X destroyed=%zu children\n",
           (unsigned)wid, desc.size());
 #endif
 }
@@ -747,7 +748,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
   }
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[LIFECYCLE] ReparentWindow wid=0x%08X newParent=0x%08X xy=(%d,%d) wasMapped=%d\n",
+  TS_FPRINTF("[LIFECYCLE] ReparentWindow wid=0x%08X newParent=0x%08X xy=(%d,%d) wasMapped=%d\n",
           (unsigned)wid, (unsigned)newParent, (int)x, (int)y, (int)wasMapped);
 #endif
 }
@@ -804,7 +805,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
     {
       WindowView mv{};
       ctx.windows().snapshot(wid, mv);
-      fprintf(stderr, "[LIFECYCLE] MapWindow wid=0x%08X host=0x%08X isHost=%d parent=0x%08X xy=(%d,%d) wh=%ux%u wasMapped=%d\n",
+      TS_FPRINTF("[LIFECYCLE] MapWindow wid=0x%08X host=0x%08X isHost=%d parent=0x%08X xy=(%d,%d) wh=%ux%u wasMapped=%d\n",
               (unsigned)wid, (unsigned)host, (int)(host == wid),
               (unsigned)mv.parent_xid,
               (int)mv.x, (int)mv.y, (unsigned)mv.w, (unsigned)mv.h, (int)wasMapped);
@@ -815,7 +816,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
     if (host != wid) {
       WindowView mv_dbg{};
       ctx.windows().snapshot(wid, mv_dbg);
-      fprintf(stderr, "[LABEL] MapWindow child wid=0x%08X host=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u\n",
+      TS_FPRINTF("[LABEL] MapWindow child wid=0x%08X host=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u\n",
               (unsigned)wid, (unsigned)host,
               (unsigned)mv_dbg.parent_xid,
               (int)mv_dbg.x, (int)mv_dbg.y, (unsigned)mv_dbg.w, (unsigned)mv_dbg.h);
@@ -868,7 +869,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
 
         if (is_tiny) {
 #ifndef NDEBUG
-          fprintf(stderr, "[MAP_DEFER] wid=0x%08X geom=%ux%u — deferring map (tiny root child)\n",
+          TS_FPRINTF("[MAP_DEFER] wid=0x%08X geom=%ux%u — deferring map (tiny root child)\n",
                   (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h);
 #endif
           ctx.addPendingMap(wid);
@@ -937,12 +938,12 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader
   auto desc = ctx.windows().childrenInStackOrder(parent);
 
 #if X11_TRACE_LIFECYCLE_ENABLED
-  fprintf(stderr, "[LIFECYCLE] MapSubwindows parent=0x%08X host=0x%08X numChildren=%zu\n",
+  TS_FPRINTF("[LIFECYCLE] MapSubwindows parent=0x%08X host=0x%08X numChildren=%zu\n",
           (unsigned)parent, (unsigned)host, desc.size());
   for (uint32_t xid : desc) {
     WindowView dv{};
     bool ok = ctx.windows().snapshot(xid, dv);
-    fprintf(stderr, "[LIFECYCLE]   child=0x%08X mapped=%d parent=0x%08X xy=(%d,%d) wh=%ux%u\n",
+    TS_FPRINTF("[LIFECYCLE]   child=0x%08X mapped=%d parent=0x%08X xy=(%d,%d) wh=%ux%u\n",
             (unsigned)xid, ok ? (int)dv.mapped : -1,
             ok ? (unsigned)dv.parent_xid : 0u,
             ok ? (int)dv.x : 0, ok ? (int)dv.y : 0,
@@ -955,13 +956,13 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader
   // Shows stacking order, which helps identify misplaced/overlapping children.
   if (desc.size() >= 10) {
     auto siblings = ctx.windows().childrenInStackOrder(parent);
-    fprintf(stderr, "[HIERARCHY] parent=0x%08X numChildren=%zu (bottom-to-top stacking):\n",
+    TS_FPRINTF("[HIERARCHY] parent=0x%08X numChildren=%zu (bottom-to-top stacking):\n",
             (unsigned)parent, siblings.size());
     int stackIdx = 0;
     for (uint32_t sib : siblings) {
       WindowView sv{};
       bool ok = ctx.windows().snapshot(sib, sv);
-      fprintf(stderr, "[HIERARCHY]   [%2d] xid=0x%08X xy=(%4d,%4d) wh=%4ux%4u bw=%u bg=%s\n",
+      TS_FPRINTF("[HIERARCHY]   [%2d] xid=0x%08X xy=(%4d,%4d) wh=%4ux%4u bw=%u bg=%s\n",
               stackIdx++, (unsigned)sib,
               ok ? (int)sv.x : 0, ok ? (int)sv.y : 0,
               ok ? (unsigned)sv.w : 0u, ok ? (unsigned)sv.h : 0u,

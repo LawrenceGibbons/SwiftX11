@@ -17,6 +17,7 @@
 #include "Core/SurfaceDesc.hpp"
 #include "Core/DrawableSurfaceRegistry.hpp"
 #include "Utils/TraceDefs.hpp"
+#include "Utils/MachTime.hpp"
 
 
 namespace x11 {
@@ -70,7 +71,7 @@ bool resolveDrawableRW(XProtoContext& ctx,
     WindowView dv{};
     if (!ctx.windows().snapshot(drawable, dv)) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[RESOLVE] drawable=0x%08X FAIL snapshot\n", (unsigned)drawable);
+      TS_FPRINTF("[RESOLVE] drawable=0x%08X FAIL snapshot\n", (unsigned)drawable);
 #endif
       return false;
     }
@@ -100,7 +101,7 @@ bool resolveDrawableRW(XProtoContext& ctx,
 
     if ((s.bytesPerRow & 3u) != 0) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL bpr alignment (%u)\n",
+      TS_FPRINTF("[RESOLVE] drawable=0x%08X host=0x%08X FAIL bpr alignment (%u)\n",
               (unsigned)drawable, (unsigned)key, (unsigned)s.bytesPerRow);
 #endif
       return false;
@@ -112,7 +113,7 @@ bool resolveDrawableRW(XProtoContext& ctx,
     int32_t ox = 0, oy = 0;
     if (!computeOffsetInHost(ctx.windows(), key, drawable, ox, oy)) {
 #ifdef X11_TRACE_VERBOSE
-      fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL offset computation\n",
+      TS_FPRINTF("[RESOLVE] drawable=0x%08X host=0x%08X FAIL offset computation\n",
               (unsigned)drawable, (unsigned)key);
 #endif
       return false;
@@ -287,7 +288,7 @@ bool resolveDrawableRW(XProtoContext& ctx,
     }
     if (effW == 0 || effH == 0) {
 #if X11_TRACE_RESOLVE_ENABLED
-      fprintf(stderr, "[RESOLVE] drawable=0x%08X host=0x%08X FAIL effWH=%ux%u (dv.wh=%ux%u off=%d,%d surf=%ux%u)\n",
+      TS_FPRINTF("[RESOLVE] drawable=0x%08X host=0x%08X FAIL effWH=%ux%u (dv.wh=%ux%u off=%d,%d surf=%ux%u)\n",
               (unsigned)drawable, (unsigned)key, (unsigned)effW, (unsigned)effH,
               (unsigned)dv.w, (unsigned)dv.h, (int)ox, (int)oy,
               (unsigned)s.w, (unsigned)s.h);

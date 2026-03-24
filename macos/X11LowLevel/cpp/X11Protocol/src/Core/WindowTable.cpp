@@ -12,6 +12,7 @@
 
 #include "Core/WindowTable.hpp"
 #include "Core/WindowView.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -653,7 +654,7 @@ void WindowTable::noteFbResizeDbg(uint32_t xid,
   st->lastFbLine = line;
 
 #ifdef X11_TRACE_VERBOSE
-  fprintf(stderr, "[WT] noteFbResize xid=0x%08X why=%s @%s:%d\n",
+  TS_FPRINTF("[WT] noteFbResize xid=0x%08X why=%s @%s:%d\n",
           (unsigned)xid, why ? why : "?", file ? file : "?", line);
 #endif
 }  
@@ -870,7 +871,7 @@ void WindowTable::setCursor(uint32_t xid, uint32_t cursor_xid) {
   st->cursor_xid = cursor_xid;
   st->serial++;
 #ifdef X11_TRACE_VERBOSE
-  fprintf(stderr, "[WT] setCursor xid=0x%08X cursor=0x%08X\n",
+  TS_FPRINTF("[WT] setCursor xid=0x%08X cursor=0x%08X\n",
           (unsigned)xid, (unsigned)cursor_xid);
 #endif
 }  

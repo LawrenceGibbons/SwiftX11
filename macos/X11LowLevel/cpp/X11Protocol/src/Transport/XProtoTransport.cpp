@@ -112,13 +112,13 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
         (uint32_t(b[5]) << 8) |
         (uint32_t(b[6]) << 16) |
         (uint32_t(b[7]) << 24);
-      fprintf(stderr, "[SENDALL REPLY32] seq=%u lenw=%u (%u bytes) rep1=%u\n",
+      TS_FPRINTF("[SENDALL REPLY32] seq=%u lenw=%u (%u bytes) rep1=%u\n",
               (unsigned)seq, (unsigned)lenw, (unsigned)(lenw * 4u), (unsigned)b[1]);
     } else if (b0 == 0) {
-      fprintf(stderr, "[SENDALL ERROR32] seq=%u code=%u minor=%u major=%u\n",
+      TS_FPRINTF("[SENDALL ERROR32] seq=%u code=%u minor=%u major=%u\n",
               (unsigned)seq, (unsigned)b[1], (unsigned)b[10], (unsigned)b[11]);
     } else {
-      fprintf(stderr, "[SENDALL EVENT32] type=%u detail=%u seqField=%u\n",
+      TS_FPRINTF("[SENDALL EVENT32] type=%u detail=%u seqField=%u\n",
               (unsigned)b0, (unsigned)b[1], (unsigned)seq);
     }
   }
@@ -164,16 +164,16 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     // Gated by X11_TRACE_WIRE (or X11_TRACE_VERBOSE) — very noisy.
 #if X11_TRACE_WIRE_ENABLED
     if (b0 == 0) {
-      fprintf(stderr, "[WIRE] #%u ERROR seq=%u code=%u major=%u\n",
+      TS_FPRINTF("[WIRE] #%u ERROR seq=%u code=%u major=%u\n",
               send_count, (unsigned)seq, (unsigned)bb[1], (unsigned)bb[11]);
     } else if (b0 == 1) {
       const uint32_t lenw =
         uint32_t(bb[4]) | (uint32_t(bb[5])<<8) |
         (uint32_t(bb[6])<<16) | (uint32_t(bb[7])<<24);
-      fprintf(stderr, "[WIRE] #%u REPLY seq=%u lenw=%u rep1=%u\n",
+      TS_FPRINTF("[WIRE] #%u REPLY seq=%u lenw=%u rep1=%u\n",
               send_count, (unsigned)seq, (unsigned)lenw, (unsigned)bb[1]);
     } else {
-      fprintf(stderr, "[WIRE] #%u EVENT type=%u seq=%u\n",
+      TS_FPRINTF("[WIRE] #%u EVENT type=%u seq=%u\n",
               send_count, (unsigned)b0, (unsigned)seq);
     }
 #endif
@@ -434,7 +434,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     fprintf(stderr,
             "[REPLYHDR] (combined) seq=%u lenw=%u (%u bytes)\n",
             (unsigned)seq, (unsigned)lenw, (unsigned)expectPayload);
-    fprintf(stderr, "[REPLYDONE] seq=%u payload=%u\n",
+    TS_FPRINTF("[REPLYDONE] seq=%u payload=%u\n",
             (unsigned)seq, (unsigned)expectPayload);
 
     // combined send completes immediately
@@ -457,7 +457,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     const uint32_t lenw = rd32le(b + 4);
 
     if (r0 != 1) {
-      fprintf(stderr, "[PROTO BUG] sendReplyBytes header but r0=%u seq=%u\n",
+      TS_FPRINTF("[PROTO BUG] sendReplyBytes header but r0=%u seq=%u\n",
               (unsigned)r0, (unsigned)seq);
       dumpHex("[PROTO BUG] hdr=", b, 32);
       return false;
@@ -484,7 +484,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
             (unsigned)seq, (unsigned)lenw, (unsigned)dbg_openExpectBytes_, (unsigned)rep1);
 
     if (dbg_openExpectBytes_ == 0) {
-      fprintf(stderr, "[REPLYDONE] seq=%u payload=0\n", (unsigned)dbg_openSeq_);
+      TS_FPRINTF("[REPLYDONE] seq=%u payload=0\n", (unsigned)dbg_openSeq_);
       dbg_haveOpenReply_ = false;
     }
 
@@ -514,7 +514,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
             (unsigned)dbg_openSentBytes_, (unsigned)dbg_openExpectBytes_);
 
     if (dbg_openSentBytes_ == dbg_openExpectBytes_) {
-      fprintf(stderr, "[REPLYDONE] seq=%u payload=%u\n",
+      TS_FPRINTF("[REPLYDONE] seq=%u payload=%u\n",
               (unsigned)dbg_openSeq_, (unsigned)dbg_openExpectBytes_);
       dbg_haveOpenReply_ = false;
     }

@@ -42,6 +42,7 @@
 #include "Damage.hpp"
 #include "Utils/GCClip.hpp"
 #include "Utils/TraceDefs.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -996,7 +997,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       }
 
 #if X11_TRACE_FONT_ENABLED
-      fprintf(stderr, "[CA_DBG] wid=0x%X clear=[%d,%d]->[%d,%d] (%dx%d) dst=%ux%u\n",
+      TS_FPRINTF("[CA_DBG] wid=0x%X clear=[%d,%d]->[%d,%d] (%dx%d) dst=%ux%u\n",
               (unsigned)wid, x0, y0, x1, y1,
               x1 - x0, y1 - y0, (unsigned)dst.w, (unsigned)dst.h);
 #endif
@@ -1065,7 +1066,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       x11::WindowView wv{};
       bool isWin = ctx.windows().snapshot(drawable, wv);
       if (isWin) {
-        fprintf(stderr, "[LABEL] PolyText8 drawable=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u at (%d,%d)\n",
+        TS_FPRINTF("[LABEL] PolyText8 drawable=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u at (%d,%d)\n",
                 (unsigned)drawable, (unsigned)wv.parent_xid,
                 (int)wv.x, (int)wv.y, (unsigned)wv.w, (unsigned)wv.h,
                 (int)penX, (int)baseY);
@@ -1175,7 +1176,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const bool useAA = x11::font::antialiasedFonts();
 
 #if X11_TRACE_FONT_ENABLED
-    fprintf(stderr, "[PT8_DBG] draw=0x%X pen=(%d,%d) fontAsc=%d fontDesc=%d "
+    TS_FPRINTF("[PT8_DBG] draw=0x%X pen=(%d,%d) fontAsc=%d fontDesc=%d "
             "dst=%ux%u font=\"%s\"\n",
             (unsigned)drawable, (int)penX, (int)baseY,
             f->ascent, f->descent,
@@ -1209,7 +1210,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
         const uint8_t* peek = br.peekBytes(len);
         if (peek) {
           std::string seg((const char*)peek, len);
-          fprintf(stderr, "[LABEL]   PolyText8 item drawable=0x%08X text=\"%s\"\n",
+          TS_FPRINTF("[LABEL]   PolyText8 item drawable=0x%08X text=\"%s\"\n",
                   (unsigned)drawable, seg.c_str());
         }
       }
@@ -1267,12 +1268,12 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       x11::WindowView wv{};
       bool isWin = ctx.windows().snapshot(drawable, wv);
       if (isWin) {
-        fprintf(stderr, "[LABEL] ImageText8 drawable=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u text=\"%s\" at (%d,%d)\n",
+        TS_FPRINTF("[LABEL] ImageText8 drawable=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u text=\"%s\" at (%d,%d)\n",
                 (unsigned)drawable, (unsigned)wv.parent_xid,
                 (int)wv.x, (int)wv.y, (unsigned)wv.w, (unsigned)wv.h,
                 txt.c_str(), (int)x, (int)y);
       } else {
-        fprintf(stderr, "[LABEL] ImageText8 drawable=0x%08X (pixmap) text=\"%s\" at (%d,%d)\n",
+        TS_FPRINTF("[LABEL] ImageText8 drawable=0x%08X (pixmap) text=\"%s\" at (%d,%d)\n",
                 (unsigned)drawable, txt.c_str(), (int)x, (int)y);
       }
     }
@@ -1295,7 +1296,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (!f) return;
 
   #ifdef X11_TRACE_VERBOSE
-    fprintf(stderr, "[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
+    TS_FPRINTF("[TEXT] drawable=0x%08X gc=0x%08X gc.font=0x%08X usingFont=\"%s\" bbx=%dx%d ascent=%d descent=%d\n",
             (unsigned)drawable, (unsigned)gcXid, (unsigned)gc.font,
             f ? f->name.c_str() : "<null>",
             f ? f->bbx_w : -1, f ? f->bbx_h : -1,
@@ -1415,7 +1416,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const bool useAA = x11::font::antialiasedFonts();
 
 #if X11_TRACE_FONT_ENABLED
-    fprintf(stderr, "[IT8_DBG] draw=0x%X baseline_y=%d fontAsc=%d fontDesc=%d "
+    TS_FPRINTF("[IT8_DBG] draw=0x%X baseline_y=%d fontAsc=%d fontDesc=%d "
             "bgH=%d dst=%ux%u font=\"%s\"\n",
             (unsigned)drawable, (int)y, fontAscent, fontDescent,
             fontAscent + fontDescent,

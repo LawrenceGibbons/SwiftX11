@@ -8,6 +8,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <string>
 #include <vector>
+#include "Utils/MachTime.hpp"
 
 static std::string readFileURLToString(CFURLRef url) {
   if (!url) return {};
