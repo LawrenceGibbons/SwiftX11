@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-19 (v1.17.1 — SubstructureRedirect emulation, peak pre-map size tracking)
+Last updated: 2026-03-23 (v1.19.24 — WM compliance hardening, XTEST v2.2 re-enabled)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -85,6 +85,14 @@ Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK r
 ### Debug / Instrumentation
 - [x] Two-tier trace system: #ifndef NDEBUG lifecycle traces + #ifdef X11_TRACE_VERBOSE per-op traces
 - [x] Version banner: SwiftX11 v{version} at startup
+
+### WM Compliance Hardening (v1.19.15–v1.19.24)
+- [x] **`_MOTIF_WM_HINTS` support** (v1.19.15): Parse Motif decoration hints (atom 93). When flags & MWM_HINTS_DECORATIONS and decorations == 0, make window borderless+floating. Fixes JidePopup windows appearing with full title bar decorations.
+- [x] **XTEST v2.2 re-enabled** (v1.19.15): Root cause of crash was GTK2/GTK3 library conflict from `LD_PRELOAD=libgdk-x11-2.0.so.0` in Docker container, not SwiftX11 bug. Fixed by removing GTK2 preload and fixing dbus-launch ordering (DISPLAY must be set before dbus-launch).
+- [x] **`WM_TRANSIENT_FOR` dialog ordering** (v1.19.16–v1.19.22): Parse WM_TRANSIENT_FOR property, store parent relationship, show dialog windows above their parent via `NSApp.activate` + `makeKeyAndOrderFront` for decorated dialogs. Borderless popups use quiet `orderFront` to avoid Stage Manager disruption. `addChildWindow` approach abandoned (caused grey persistent windows on unmap).
+- [x] **`acceptsFirstMouse` click-through** (v1.19.23–v1.19.24): Override on X11MTKView (the actual hit target) so clicks pass through to X11 content immediately. X11 has no "click to focus first" concept — all clicks are delivered.
+- [x] **SO_SNDBUF 4MB** (v1.19.19): Increase TCP send buffer to reduce backpressure events during large PutImage bursts over Docker bridge network.
+- [x] **Borderless popup focus handling** (v1.19.20): Windows made borderless via `_MOTIF_WM_HINTS` use `orderFront` instead of `makeKeyAndOrderFront` (borderless NSWindows can't become key). Prevents `canBecomeKeyWindow` warning.
 
 ---
 
@@ -736,21 +744,21 @@ Systematic review of all request handlers for spec compliance. Motivated by bugs
 - `SubstructureRedirect` race between `MapWindow` and `ConfigureWindow`
 - `CreateWindow` size floor that didn't match WM behavior
 
-### 8.1 Event Delivery Audit (HIGH)
+### 8.1 Event Delivery Audit (HIGH) — MOSTLY COMPLETE (v1.18.1)
 Ensure every request that must generate events actually does so per the X11 spec.
 
-- [ ] **PropertyNotify completeness**: Audit `ChangeProperty`, `DeleteProperty`, `RotateProperties` — all must send `PropertyNotify` to windows selecting `PropertyChangeMask`. Verify the `state` field is correct (`PropertyNewValue` vs `PropertyDelete`).
-- [ ] **ConfigureNotify completeness**: `ConfigureWindow`, `MoveWindow`, `ResizeWindow` must send `ConfigureNotify` to the window and to the parent if `SubstructureNotifyMask` is set. Verify `above_sibling`, `override_redirect` fields.
-- [ ] **MapNotify / UnmapNotify**: `MapWindow`, `UnmapWindow`, `MapSubwindows`, `UnmapSubwindows` must send `MapNotify`/`UnmapNotify` to selecting clients. Verify parent receives event if `SubstructureNotifyMask`.
-- [ ] **CreateNotify / DestroyNotify**: `CreateWindow` must send `CreateNotify` to parent if `SubstructureNotifyMask`. `DestroyWindow` must send `DestroyNotify`.
-- [ ] **ReparentNotify**: Verify old parent, new parent, and the window itself all receive correct `ReparentNotify`.
-- [ ] **GravityNotify**: If parent resizes with `WinGravity` children, `GravityNotify` should be sent.
-- [ ] **CirculateNotify**: `CirculateWindow` (opcode 13) — currently unimplemented. Add stub or implement with correct event.
-- [ ] **FocusIn/FocusOut audit**: Review all focus transitions (SetInputFocus, GrabKeyboard, UngrabKeyboard, GrabPointer, UngrabPointer, window destroy, window unmap) for correct `mode` (Normal/Grab/Ungrab/WhileGrabbed) and `detail` (Ancestor/Virtual/Inferior/Nonlinear/NonlinearVirtual/Pointer/PointerRoot/None).
-- [ ] **Crossing events (EnterNotify/LeaveNotify)**: Verify `mode` and `detail` fields match spec for all transitions: normal motion, grabs, ungrabs, window map/unmap.
-- [ ] **Exposure events**: Verify `count` field is correct (number of remaining Expose events in the batch). Check that `GraphicsExposure`/`NoExposure` are generated for `CopyArea`/`CopyPlane` when GC has `graphics_exposures=True`.
-- [ ] **SelectionClear**: When `SetSelectionOwner` changes owner, previous owner must receive `SelectionClear`.
-- [ ] **ColormapNotify**: `InstallColormap`/`UninstallColormap` should send `ColormapNotify` to selecting clients.
+- [x] **PropertyNotify completeness**: `ChangeProperty` sends PropertyNotify(NewValue), `DeleteProperty` sends PropertyNotify(Deleted), both gated by PropertyChangeMask. RotateProperties still a stub.
+- [x] **ConfigureNotify completeness**: `ConfigureWindow` sends ConfigureNotify to window (StructureNotifyMask) and parent (SubstructureNotifyMask) with correct above_sibling, override_redirect fields.
+- [x] **MapNotify / UnmapNotify**: MapWindow, UnmapWindow, MapSubwindows, UnmapSubwindows all send MapNotify/UnmapNotify to window and parent with correct masks.
+- [x] **CreateNotify / DestroyNotify**: CreateWindow sends CreateNotify to parent (SubstructureNotifyMask). DestroyWindow/DestroySubwindows send DestroyNotify to window and parent. (DestroySubwindows fixed v1.18.1.)
+- [x] **ReparentNotify**: Sent to window, old parent, and new parent with correct override_redirect field.
+- [ ] **GravityNotify**: Not implemented. Gravity attributes stored but gravity-based repositioning on resize not done (toolkits handle client-side). LOW priority.
+- [x] **CirculateNotify**: CirculateWindow (opcode 13) fully implemented with RaiseLowest/LowerHighest and CirculateNotify to window and parent.
+- [x] **FocusIn/FocusOut audit**: GrabKeyboard sends FocusOut/FocusIn(mode=Grab), UngrabKeyboard sends FocusOut/FocusIn(mode=Ungrab). DestroyWindow and UnmapWindow send FocusOut on focused window and clear focus. (v1.15.17 + v1.18.1.)
+- [x] **Crossing events (EnterNotify/LeaveNotify)**: Correct mode and detail fields on normal motion and child-to-child transitions (v1.5.5).
+- [ ] **Exposure events**: Expose events sent correctly. Count field passed but coalescing may not preserve individual counts. `GraphicsExposure`/`NoExposure` for CopyArea NOT implemented. LOW priority — no known client depends on this.
+- [x] **SelectionClear**: SetSelectionOwner sends SelectionClear to previous owner with correct fields.
+- [ ] **ColormapNotify**: Not implemented. Colormap is fixed default (TrueColor only). LOW priority — no toolkit needs this on TrueColor displays.
 
 ### 8.2 Error Generation Audit (HIGH)
 All requests must send the correct X11 error for invalid arguments, not silently skip.
