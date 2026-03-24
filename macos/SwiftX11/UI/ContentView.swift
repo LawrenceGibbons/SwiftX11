@@ -34,7 +34,11 @@ struct LogTextView: NSViewRepresentable {
   static func showFindBar(in scrollView: NSScrollView) {
     guard let tv = scrollView.documentView as? NSTextView else { return }
     tv.window?.makeFirstResponder(tv)
-    tv.performFindPanelAction(nil)
+    // NSTextView.performFindPanelAction needs a sender with tag == NSFindPanelAction rawValue.
+    // Tag 1 = showFindPanel.  Using an NSMenuItem as the sender.
+    let item = NSMenuItem()
+    item.tag = 1  // NSTextFinder.Action.showFindInterface.rawValue
+    tv.performFindPanelAction(item)
   }
 }
 

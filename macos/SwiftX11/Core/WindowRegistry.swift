@@ -102,9 +102,6 @@ final class WindowRegistry {
     if newY < cs.minY { newY = cs.minY }
     if newY + size.height > cs.maxY { newY = cs.maxY - size.height }
 
-    print("[POPUP_ADJUST] cursor on screen \(cursorScreen.frame), " +
-          "popup was at \(origin) (screen \(popupScreen?.frame.debugDescription ?? "none")), " +
-          "adjusted to (\(newX), \(newY))")
     return (NSPoint(x: newX, y: newY), true)
   }
 
@@ -146,7 +143,6 @@ final class WindowRegistry {
     if newY < vs.minY { newY = vs.minY }
 
     #if DEBUG
-    print("[WM_PLACE] window at X11(0,0) adjusted from \(origin) to (\(newX), \(newY)) on main screen \(mainScreen.frame)")
     #endif
     return (NSPoint(x: newX, y: newY), true)
   }
@@ -385,7 +381,6 @@ final class WindowRegistry {
           x11_set_window_position(host, newX11X, newX11Y)
         }
         let frame = NSRect(origin: origin, size: popupSize)
-        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) x11=(\(x11x),\(x11y),\(x11w)x\(x11h)) macFrame=\(frame) adjusted=\(adjusted)")
         win.setFrame(frame, display: true)
         // Defer orderFront until the first present succeeds so the popup
         // doesn't flash blank.  Metal needs at least one frame uploaded before
@@ -398,12 +393,10 @@ final class WindowRegistry {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
           guard let self else { return }
           if self.pendingORShow.remove(hostCopy) != nil {
-            print("[POPUP_SAFETY] xid=0x\(String(format:"%X", hostCopy)) force-showing after 150ms timeout")
             self.windows[hostCopy]?.window?.orderFront(nil)
           }
         }
       } else {
-        print("[POPUP_MAP] xid=0x\(String(format:"%X", host)) geometry query FAILED — deferring show to moveWindow")
         // Don't show yet. The X11_UI_MOVE command (pushed by MapWindow handler)
         // will position and show the window with correct coordinates.
         pendingORShow.insert(host)
@@ -420,7 +413,6 @@ final class WindowRegistry {
       let gotGeom = x11_get_window_geometry(host, &x11x, &x11y, &x11w, &x11h, &isOR)
 
       #if DEBUG
-      print("[MAP_SHOW] xid=0x\(String(format:"%X", host)) geom=\(x11w)×\(x11h)")
       #endif
 
       // WM_HINTS IconicState: client wants this window to start minimized.
@@ -430,7 +422,6 @@ final class WindowRegistry {
       // (MapNotify was sent) but the NSWindow stays off-screen.
       if pendingIconicState.remove(hostCopy) != nil {
         #if DEBUG
-        print("[MAP_ICONIC] xid=0x\(String(format:"%X", hostCopy)) IconicState — keeping hidden")
         #endif
         // Window stays hidden — no orderFront, no miniaturize
       } else {
@@ -502,7 +493,6 @@ final class WindowRegistry {
       // Undecorated (JidePopup, tooltips): show without focus steal.
       // Borderless NSWindows return NO from canBecomeKeyWindow.
       win.orderFront(nil)
-      print("[POPUP_SHOW] xid=0x\(String(format:"%X", host)) borderless — orderFront (no focus steal)")
     } else if let parentHost = pendingTransientFor[host],
               let parentController = windows[parentHost],
               let parentWin = parentController.window {
@@ -516,7 +506,6 @@ final class WindowRegistry {
       }
       NSApp.activate(ignoringOtherApps: true)
       win.makeKeyAndOrderFront(nil)
-      print("[TRANSIENT_SHOW] xid=0x\(String(format:"%X", host)) dialog, parent=0x\(String(format:"%X", parentHost))")
     } else {
       NSApp.activate(ignoringOtherApps: true)
       win.makeKeyAndOrderFront(nil)
@@ -637,7 +626,6 @@ final class WindowRegistry {
     let parent_xids = String(format: "0x%X", parentXid)
 
     if overrideRedirect {
-      print("[OR_CREATE] xid=\(xids) parent=\(parent_xids) \(width)x\(height) @(\(x),\(y)) override_redirect=true")
     }
     if X11Trace.lifecycle { logAppend?("noteX11WindowCreated: xid=\(xids), parent=\(parent_xids), \(width)x\(height) @(\(x),\(y)) or=\(overrideRedirect)") }
     // Update/insert metadata (idempotent).
@@ -826,12 +814,10 @@ final class WindowRegistry {
     if hasContent {
       pendingORShow.remove(xid)
       #if DEBUG
-      print("[POPUP_SHOW] xid=0x\(String(format:"%X", xid)) showing after present with content")
       #endif
       windows[xid]?.window?.orderFront(nil)
     } else {
       #if DEBUG
-      print("[POPUP_DEFER] xid=0x\(String(format:"%X", xid)) surface still blank — deferring show")
       #endif
     }
   }
@@ -1075,7 +1061,6 @@ final class WindowRegistry {
       // snapshotAndPresentNow reveal it via pendingORShow once the
       // client has drawn actual content (prevents blank popup flash).
       if pendingORShow.contains(xid) {
-        print("[POPUP_MOVE] xid=0x\(String(format:"%X", xid)) position updated to (\(x11X),\(x11Y)) — still waiting for content")
       }
     }
   }

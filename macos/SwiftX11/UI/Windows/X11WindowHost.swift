@@ -147,9 +147,6 @@ final class X11View: NSView {
       #if DEBUG
       // OR window = borderless style
       if window?.styleMask == .borderless {
-        print("[OR_SURFACE_ALLOC] xid=0x\(String(format:"%X", xid)) " +
-              "old=\(hostSurfaceW)x\(hostSurfaceH) new=\(wPx)x\(hPx) " +
-              "hadSurface=\(hostSurface != nil)")
       }
       #endif
       let old = hostSurface
@@ -388,7 +385,6 @@ final class X11View: NSView {
     // Enable X11Trace.lifecycle to debug layout-related issues.
     guard X11Trace.lifecycle else { return }
     if view == nil {
-      print("[LAYOUT?] \(label) (view=nil)")
       return
     }
 
@@ -652,13 +648,11 @@ final class X11View: NSView {
     // Metal present path
     guard let mv = self.mtkView else {
       #if DEBUG
-      print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) mtkView=nil")
       #endif
       return
     }
     guard mv.drawableSize.width > 0, mv.drawableSize.height > 0 else {
       #if DEBUG
-      print("[PRESENT_FAIL] xid=0x\(String(format:"%X",xid)) drawableSize=\(mv.drawableSize) frame=\(mv.frame) retry=\(presentRetryCount)/\(Self.maxPresentRetries)")
       #endif
       retryPresentIfNeeded()
       return
@@ -1319,7 +1313,6 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     let w = Int(size.width.rounded())
     let h = Int(size.height.rounded())
     if h == 0 || w <= 4 || h <= 4 {
-      print("[MTK] drawableSizeWillChange (pre guard) xid=\(String(xid, radix:16)) -> \(w)x\(h) window=\(String(describing: view.window)) frame=\(view.frame)")
     }
 #endif
 
@@ -1340,7 +1333,6 @@ final class X11Renderer: NSObject, MTKViewDelegate {
 
 #if DEBUG
     if h == 0 || w <= 4 || h <= 4 {
-      print("[MTK] drawableSizeWillChange (post guard) xid=\(String(xid, radix:16)) -> \(w)x\(h) window=\(String(describing: view.window)) frame=\(view.frame)")
     }
 #endif
     

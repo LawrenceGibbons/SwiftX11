@@ -165,7 +165,6 @@ final class X11MetalRenderer {
     // BGRA8 sanity
     let minBpr = width * 4
     guard bytesPerRow >= minBpr else {
-      print("[Metal] updateTexture: DROP bad bytesPerRow=\(bytesPerRow) < \(minBpr) (w=\(width))")
       return
     }
 
@@ -187,7 +186,6 @@ final class X11MetalRenderer {
 
       texture = device.makeTexture(descriptor: desc)
       if texture == nil {
-        print("[Metal] updateTexture: FAILED to allocate texture \(width)x\(height)")
         return
       }
       textureIsNew = true
@@ -235,7 +233,6 @@ final class X11MetalRenderer {
       pendingDraw = true
       #if DEBUG
       if isBorderless {
-        print("[OR_RENDER] BLOCKED by inFlight — pendingDraw=true")
       }
       #endif
       return
@@ -329,13 +326,11 @@ final class X11MetalRenderer {
   private func scheduleDrawRetry(view: MTKView) {
     guard drawRetryCount < Self.maxDrawRetries else {
       #if DEBUG
-      print("[DRAW_RETRY] EXHAUSTED retries (\(Self.maxDrawRetries)) — giving up")
       #endif
       return
     }
     drawRetryCount += 1
     #if DEBUG
-    print("[DRAW_RETRY] drawable/RPD nil, retry \(drawRetryCount)/\(Self.maxDrawRetries)")
     #endif
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak view] in
       guard let view else { return }
