@@ -868,7 +868,16 @@ Minimal impact for TrueColor visuals but should be correct.
 - [ ] **StoreColors / StoreNamedColor**: Should return `BadAccess` for read-only (TrueColor) colormaps.
 - [ ] **CopyColormapAndFree**: Verify deep copy semantics.
 
-### 8.10 Extension Protocol Audit (MEDIUM)
+### 8.10 Font Audit (HIGH) — AUDITED (v1.19.31)
+Font system is comprehensive (21 bundled BDF, PCF lazy-loading, CoreText bridge, XLFD glob matching).
+All 6 font protocol handlers (OpenFont, CloseFont, QueryFont, QueryTextExtents, ListFonts, ListFontsWithInfo) are fully implemented.
+
+- [x] **Cursor font** (v1.19.32): OpenFont("cursor") now loads `cursor.pcf.gz` from `/opt/X11/share/fonts/misc/`. The PCF registry skipped it because fonts.dir lists it by short name (not XLFD). Added direct PCF loading with fallback paths.
+- [ ] **Font properties from BDF**: BDF parser doesn't extract FAMILY_NAME, WEIGHT_NAME, SLANT, SETWIDTH_NAME from PROPERTIES section. QueryFont returns only 8 properties. LOW — modern apps use RENDER, not core font properties.
+- [ ] **Font properties from XLFD**: XLFD component parsing (family, weight, slant) not done. SPACING always "C", charset always "ISO10646". LOW — cosmetic metadata.
+- [x] **QueryFont FONT property** (v1.19.32): Added `FONT` atom property to QueryFont reply — the font's own name (XLFD or short name). Fixes `xfd` showing "unknown font!".
+
+### 8.11 Extension Protocol Audit (MEDIUM)
 Review extension handlers for spec compliance.
 
 - [ ] **RENDER format negotiation**: Verify `QueryPictFormats` returns formats matching the server's visual capabilities.

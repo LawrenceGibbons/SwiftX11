@@ -230,6 +230,13 @@ void FontOps::handleQueryFont(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
     props.push_back(p);
   };
 
+  // FONT property: the font's own name (XLFD or short name) as an atom
+  if (!f->name.empty()) {
+    xFontProp p{};
+    p.name  = (CARD32)atom("FONT");
+    p.value = (CARD32)atom(f->name.c_str());
+    props.push_back(p);
+  }
   pushProp("FONT_ASCENT",  (uint32_t)f->ascent);
   pushProp("FONT_DESCENT", (uint32_t)f->descent);
   // SPACING is an ATOM value

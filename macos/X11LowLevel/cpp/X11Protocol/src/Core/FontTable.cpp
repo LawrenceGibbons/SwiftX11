@@ -428,8 +428,31 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
     return f;
   }
 
-  // Cursor font (until you ship cursor.bdf)
+  // Cursor font — load from system PCF (fonts.dir lists it as short name "cursor",
+  // not an XLFD, so the PCF registry skips it). Load directly.
   if (key == "cursor") {
+    if (auto it = pcfCache_.find("cursor"); it != pcfCache_.end()) {
+      dbgFontResolve(name, "cursor(pcf-cached)", it->second.get());
+      return it->second.get();
+    }
+    static const char* cursorPaths[] = {
+      "/opt/X11/share/fonts/misc/cursor.pcf.gz",
+      "/usr/share/fonts/X11/misc/cursor.pcf.gz",
+      "/usr/share/fonts/misc/cursor.pcf.gz",
+    };
+    for (const char* path : cursorPaths) {
+      auto font = std::make_unique<x11::font::BdfFont>();
+      auto res = x11::font::loadPcfGz(path, *font);
+      if (res.ok) {
+        if (font->name.empty()) font->name = "cursor";
+        if (!font->boundsValid) font->computeBounds();
+        auto* raw = font.get();
+        pcfCache_["cursor"] = std::move(font);
+        dbgFontResolve(name, "cursor(pcf)", raw);
+        return raw;
+      }
+    }
+    // Fallback to default if cursor.pcf.gz not found
     auto [rk, f] = defaultFont();
     dbgFontResolve(name, rk, f);
     return f;
