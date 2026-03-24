@@ -115,17 +115,29 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     }
 
     guard let win = window else { return }
-    
+
+    // Sync position FIRST — left/top edge resize changes origin + size
+    // simultaneously.  Without this, applyRootlessResize reads stale x/y
+    // from WindowTable, sending ConfigureNotify with wrong origin and
+    // causing pointer coordinate offsets in the client.
+    if WindowRegistry.shared.isMapped(xid: xid),
+       !(WindowRegistry.shared.isOverrideRedirect(xid: xid)) {
+      let contentFrame = win.contentView?.frame ?? win.contentLayoutRect
+      let (x11X, x11Y) = WindowRegistry.macOSOriginToX11Root(
+        macOrigin: win.frame.origin, height: contentFrame.size.height)
+      x11_set_window_position(xid, x11X, x11Y)
+    }
+
     // Size in points (logical)
     let sizePoints = win.contentView?.bounds.size ?? win.contentLayoutRect.size
 
     // Scale factor (1.0 on non-Retina, 2.0 on Retina, etc.)
     let scale = win.backingScaleFactor
-    
+
     // Size in pixels (physical)
     let sizePixels = CGSize(width: sizePoints.width * scale,
                             height: sizePoints.height * scale)
-    
+
     WindowRegistry.shared.windowResized(
       xid: xid,
       sizePoints: sizePoints,

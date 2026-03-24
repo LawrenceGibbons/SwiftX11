@@ -11,6 +11,8 @@ struct LogTextView: NSViewRepresentable {
     tv.isSelectable = true
     tv.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
     tv.textContainerInset = NSSize(width: 6, height: 6)
+    tv.usesFindBar = true
+    tv.isIncrementalSearchingEnabled = true
 
     let sv = NSScrollView()
     sv.hasVerticalScroller = true

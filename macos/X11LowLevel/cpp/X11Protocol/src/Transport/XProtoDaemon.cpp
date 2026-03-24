@@ -41,6 +41,7 @@
 #include "Ops/EventOps.hpp"
 #include "Transport/X11Setup.hpp"
 #include "Utils/WireLE.hpp"
+#include "Utils/MachTime.hpp"
 
 extern "C" void x11_cpp_notify_init(void* ctx_ptr, void* event_ops_ptr, void* queue_ptr);
 extern "C" void x11_cpp_notify_shutdown(void);
@@ -620,7 +621,7 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Live wire trace: log every incoming request to stderr when enabled.
   {
     if (x11_get_wire_trace()) {
-      fprintf(stderr, "[WIRE] fd=%d REQ major=%u minor=%u seq=%u len=%zu\n",
+      TS_FPRINTF("[WIRE] fd=%d REQ major=%u minor=%u seq=%u len=%zu\n",
               fd, (unsigned)major, (unsigned)minor, (unsigned)cs.seq, remain);
     }
   }

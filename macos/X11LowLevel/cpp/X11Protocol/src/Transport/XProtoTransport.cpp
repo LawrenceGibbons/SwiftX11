@@ -21,6 +21,7 @@
 #include "Utils/WireLE.hpp" // your wire::wr16_le / wr32_le etc
 #include "Utils/WireErrors.hpp"
 #include "Utils/TraceDefs.hpp"
+#include "Utils/MachTime.hpp"
 
 extern "C" void x11_ui_push_log(int level, const char* message);
 extern "C" int x11_get_wire_trace(void);
@@ -299,15 +300,15 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
       const uint8_t* h = static_cast<const uint8_t*>(sendBuf);
       uint16_t ws = uint16_t(h[2] | (uint16_t(h[3]) << 8));
       if (h[0] == 0) {
-        fprintf(stderr, "[WIRE] fd=%d ERROR code=%u seq=%u res=0x%02X%02X%02X%02X major=%u minor=%u\n",
+        TS_FPRINTF("[WIRE] fd=%d ERROR code=%u seq=%u res=0x%02X%02X%02X%02X major=%u minor=%u\n",
                 client_fd_, h[1], ws, h[7],h[6],h[5],h[4], h[10], h[11]);
       } else if (h[0] == 1) {
         uint32_t lw = uint32_t(h[4])|(uint32_t(h[5])<<8)|(uint32_t(h[6])<<16)|(uint32_t(h[7])<<24);
-        fprintf(stderr, "[WIRE] fd=%d REPLY seq=%u data=%u lenw=%u\n",
+        TS_FPRINTF("[WIRE] fd=%d REPLY seq=%u data=%u lenw=%u\n",
                 client_fd_, ws, h[1], lw);
       } else {
         uint32_t w = uint32_t(h[4])|(uint32_t(h[5])<<8)|(uint32_t(h[6])<<16)|(uint32_t(h[7])<<24);
-        fprintf(stderr, "[WIRE] fd=%d EVENT type=%u seq=%u detail=%u wid=0x%08X\n",
+        TS_FPRINTF("[WIRE] fd=%d EVENT type=%u seq=%u detail=%u wid=0x%08X\n",
                 client_fd_, h[0], ws, h[1], w);
       }
     }
@@ -329,7 +330,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
         if (++eagain_waits == 1) {
           // First EAGAIN — log to help diagnose backpressure issues
           const uint8_t* hdr = static_cast<const uint8_t*>(sendBuf);
-          fprintf(stderr, "[BACKPRESSURE] sendAll EAGAIN fd=%d n=%zu left=%zu type=%u\n",
+          TS_FPRINTF("[BACKPRESSURE] sendAll EAGAIN fd=%d n=%zu left=%zu type=%u\n",
                   client_fd_, n, left, (unsigned)hdr[0]);
         }
         struct pollfd pfd = { client_fd_, POLLOUT, 0 };
@@ -360,7 +361,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     left -= static_cast<size_t>(w);
   }
   if (eagain_waits > 0) {
-    fprintf(stderr, "[BACKPRESSURE] resolved after %d waits (%zu bytes)\n",
+    TS_FPRINTF("[BACKPRESSURE] resolved after %d waits (%zu bytes)\n",
             eagain_waits, n);
   }
   return true;
@@ -592,7 +593,7 @@ bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
 
   if (wv->owner_fd <= 0 || wv->owner_fd != client_fd_) {
 #ifndef NDEBUG
-    fprintf(stderr, "[EVENT_DROP] sendEvent32 owner mismatch wid=0x%08X type=%u owner_fd=%d client_fd=%d\n",
+    TS_FPRINTF("[EVENT_DROP] sendEvent32 owner mismatch wid=0x%08X type=%u owner_fd=%d client_fd=%d\n",
             (unsigned)targetWid, (unsigned)ev[0], wv->owner_fd, client_fd_);
 #endif
     ctx_.tracef("[XProtoTransport] sendEvent32 DROP owner mismatch wid=0x%08X owner_fd=%d client_fd=%d\n",
@@ -723,7 +724,7 @@ bool XProtoTransport::sendErrorCore(uint8_t errorCode, uint16_t seq,
                                     uint32_t resourceId, uint8_t majorCode)
 {
 #ifndef NDEBUG
-  fprintf(stderr, "[X11_ERROR] code=%u seq=%u rid=0x%X major=%u\n",
+  TS_FPRINTF("[X11_ERROR] code=%u seq=%u rid=0x%X major=%u\n",
           (unsigned)errorCode, (unsigned)seq, resourceId, (unsigned)majorCode);
 #endif
   const auto e = x11::wireerr::buildCoreError32(errorCode, seq, resourceId, majorCode);
