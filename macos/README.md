@@ -145,6 +145,39 @@ The built-in log window supports search (Cmd+F or Find button) and adjustable ve
 
 Add `-DX11_TRACE_VERBOSE` to `OTHER_CPLUSPLUSFLAGS` in Xcode build settings for high-frequency per-operation traces.
 
+## Installation
+
+### Installer Package (recommended)
+
+Download the latest `SwiftX11-{VERSION}.pkg` from the [Releases](../../releases) page. The installer provides:
+
+- **SwiftX11.app** — installs to `/Applications`
+- **X11 Fonts** (optional) — standard PCF bitmap fonts installed to `/opt/X11/share/fonts/`. Not needed if XQuartz fonts are already present; the installer detects existing fonts and deselects this option automatically.
+
+On first launch, you may need to right-click the app and select "Open" to bypass Gatekeeper (the installer is unsigned).
+
+After installation, add to your shell profile (`~/.zprofile` or `~/.profile`):
+
+```bash
+export DISPLAY=127.0.0.1:1
+```
+
+### Building the Installer
+
+To build the `.pkg` installer from source:
+
+```bash
+bash macos/scripts/build-installer.sh
+```
+
+This reads the version from `SwiftX11Version.h`, builds a Release configuration via Xcode, stages the app and font payloads, and produces `SwiftX11-{VERSION}.pkg` in `macos/build/`.
+
+Prerequisites: Xcode command line tools. Font bundling requires X11 fonts at `/opt/X11/share/fonts/` (from XQuartz or a previous SwiftX11 install).
+
+### Building from Source
+
+See the [Build](#build) section above. For development, build the Debug configuration in Xcode and run directly.
+
 ## Documentation
 
 - **Architecture & development guide:** `docs/CLAUDE.md`
@@ -152,4 +185,6 @@ Add `-DX11_TRACE_VERBOSE` to `OTHER_CPLUSPLUSFLAGS` in Xcode build settings for 
 
 ## License
 
-Copyright (c) 2026 Lawrence Gibbons. All rights reserved.
+This project is licensed under the **GNU General Public License v3.0** (GPL-3.0). See [LICENSE](../LICENSE) for the full text.
+
+Copyright (c) 2026 Lawrence Gibbons.
