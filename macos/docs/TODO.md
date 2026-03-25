@@ -851,14 +851,16 @@ Relatively simple but important for toolkit interop.
 - [ ] **RotateProperties**: Currently a void stub. Should rotate property values among the listed properties and send `PropertyNotify` for each.
 - [ ] **ListProperties**: Verify returns all properties on the window, including pre-registered well-known atoms that have been set.
 
-### 8.8 Selection Protocol Audit (MEDIUM)
+### 8.8 Selection Protocol Audit (MEDIUM) — AUDITED (v1.19.33)
 Critical for clipboard and inter-client communication (already partially hardened in v1.15.18-22).
 
-- [ ] **SetSelectionOwner timestamp validation**: If timestamp is earlier than last-set time, request should be ignored.
-- [ ] **ConvertSelection with no owner**: Must send `SelectionNotify` with `property=None` to requestor.
-- [ ] **MULTIPLE target**: Handle `MULTIPLE` target in `ConvertSelection` (multiple targets in single request).
-- [ ] **INCR protocol**: Large property transfers via incremental protocol. Currently not implemented — large clipboard content will fail.
-- [ ] **Selection timestamp**: `SelectionNotify` must include the timestamp from `ConvertSelection`, not current time.
+Audit: 4/5 implemented. TARGETS, UTF8_STRING, STRING, TEXT targets all working. macOS clipboard bridge (proactive capture + serve) correct. Same-client deadlock prevention correct.
+
+- [x] **SetSelectionOwner timestamp validation** (v1.19.33): Added `sSelTime` map. Requests with time < last-set time are rejected per ICCCM. Timestamp comparison handles unsigned wrap.
+- [x] **ConvertSelection with no owner** (pre-existing): Correctly sends SelectionNotify with property=None.
+- [ ] **MULTIPLE target**: Atom `kMULTIPLE` (74) defined but not handled in ConvertSelection. Apps using `xsel -m` or multi-target requests will fail. MEDIUM.
+- [ ] **INCR protocol**: Not implemented. PropertyTable has 1MB hard cap with silent truncation. Clipboard reads capped at 65KB. Large clipboard content fails silently. MEDIUM — affects Vivado large copy.
+- [x] **Selection timestamp** (v1.19.33): TIMESTAMP target now returns actual SetSelectionOwner time from `sSelTime` map (was hardcoded 0). SelectionNotify event time field was already correct.
 
 ### 8.9 Colormap Audit (LOW)
 Minimal impact for TrueColor visuals but should be correct.

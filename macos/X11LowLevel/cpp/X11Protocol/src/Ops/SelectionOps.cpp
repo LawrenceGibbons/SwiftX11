@@ -43,6 +43,10 @@ static std::unordered_map<uint32_t /*atom*/, uint32_t /*owner_wid*/> sSelOwner;
 // user Cmd+C in Safari) after an X11 app claimed the selection.
 static std::unordered_map<uint32_t /*atom*/, int64_t> sSelMacCC;
 
+// Timestamp of last SetSelectionOwner per selection atom (ICCCM compliance).
+// Used to reject stale requests and return via TIMESTAMP target.
+static std::unordered_map<uint32_t /*atom*/, uint32_t /*time*/> sSelTime;
+
 
 // ---------------------------------------------------------------------------
 // Construction — register opcodes 22-25
@@ -90,12 +94,28 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     return;
   }
 
-  TS_FPRINTF("[SEL] SetSelectionOwner sel=%u owner=0x%08X\n",
-          (unsigned)selection, (unsigned)owner);
+  TS_FPRINTF("[SEL] SetSelectionOwner sel=%u owner=0x%08X time=%u\n",
+          (unsigned)selection, (unsigned)owner, (unsigned)time);
 
   uint32_t prevOwner = 0;
   {
     std::lock_guard<std::mutex> lk(sSelMtx);
+
+    // ICCCM timestamp validation: if time is not CurrentTime (0) and is
+    // earlier than the last SetSelectionOwner time, ignore the request.
+    if (time != 0) {
+      auto tIt = sSelTime.find(selection);
+      if (tIt != sSelTime.end() && tIt->second != 0) {
+        // Compare as unsigned (X11 timestamps wrap at 2^32)
+        int32_t diff = (int32_t)(time - tIt->second);
+        if (diff < 0) {
+          TS_FPRINTF("[SEL] SetSelectionOwner REJECTED: time %u < last %u\n",
+                  (unsigned)time, (unsigned)tIt->second);
+          return;
+        }
+      }
+    }
+
     auto it = sSelOwner.find(selection);
     if (it != sSelOwner.end()) {
       prevOwner = it->second;
@@ -103,6 +123,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     } else {
       sSelOwner[selection] = owner;
     }
+    sSelTime[selection] = time;
   }
 
   // If previous owner was different and non-zero, send SelectionClear (type 29)
@@ -239,10 +260,16 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     return true;
   }
 
-  // If target == TIMESTAMP, return CurrentTime (0)
+  // If target == TIMESTAMP, return the time the selection was last acquired
   if (target == atom::kTIMESTAMP) {
+    uint32_t selTime = 0;
+    {
+      std::lock_guard<std::mutex> lk(sSelMtx);
+      auto tIt = sSelTime.find(selection);
+      if (tIt != sSelTime.end()) selTime = tIt->second;
+    }
     uint8_t ts[4] = {0};
-    wire::wr32_le(ts, 0); // CurrentTime
+    wire::wr32_le(ts, selTime);
     PropertyTable::instance().setReplace(
       requestor, property,
       atom::kTIMESTAMP, 32, ts, 4
