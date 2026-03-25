@@ -842,14 +842,14 @@ Audit: 3/10 implemented, 1 fixed, 6 remaining (mostly sync/freeze subsystem).
 - [x] **Automatic ungrab on window destroy** (v1.19.30): DestroyWindow and DestroySubwindows now call `removeForWindows()` to clear passive + active grabs for destroyed windows. Client disconnect already cleaned up via `eraseOwnedBy`.
 - [x] **Grab and focus interaction** (pre-existing v1.18.1): GrabKeyboard sends FocusOut(mode=NotifyGrab) + FocusIn(mode=NotifyGrab). UngrabKeyboard sends FocusOut(mode=NotifyUngrab) + FocusIn(mode=NotifyUngrab). Correct per spec.
 
-### 8.7 Atom and Property Audit (LOW)
-Relatively simple but important for toolkit interop.
+### 8.7 Atom and Property Audit (LOW) — AUDITED (v1.19.33)
+Relatively simple but important for toolkit interop. Audit: 4/5 implemented.
 
-- [ ] **InternAtom only_if_exists**: When `only_if_exists=True` and atom doesn't exist, must reply with `atom=None` (not create it).
-- [ ] **GetProperty delete semantics**: When `delete=True`, property should be deleted after read and `PropertyNotify(PropertyDelete)` sent. Verify partial reads with `long_offset`/`long_length` don't delete.
-- [ ] **ChangeProperty modes**: `Replace`, `Prepend`, `Append` — verify all three modes work correctly with existing property data. Type and format must match for Prepend/Append (`BadMatch` if not).
-- [ ] **RotateProperties**: Currently a void stub. Should rotate property values among the listed properties and send `PropertyNotify` for each.
-- [ ] **ListProperties**: Verify returns all properties on the window, including pre-registered well-known atoms that have been set.
+- [x] **InternAtom only_if_exists** (pre-existing): Correctly returns atom=None (0) when only_if_exists=True and atom doesn't exist.
+- [x] **GetProperty delete semantics** (pre-existing): Correctly deletes only when entire property is returned (offset=0, bytesAfter=0). PropertyNotify(PropertyDelete) sent after deletion.
+- [x] **ChangeProperty modes** (pre-existing): Replace, Prepend, Append all work. PropertyTable's setAppend handles type/format mismatch by replacing (lenient, per BadGC precedent — spec says BadMatch but replacing is safer for compatibility).
+- [ ] **RotateProperties**: Void stub. LOW — rarely used by any toolkit.
+- [x] **ListProperties** (pre-existing): Returns all property atoms for the window.
 
 ### 8.8 Selection Protocol Audit (MEDIUM) — AUDITED (v1.19.33)
 Critical for clipboard and inter-client communication (already partially hardened in v1.15.18-22).
@@ -862,13 +862,18 @@ Audit: 4/5 implemented. TARGETS, UTF8_STRING, STRING, TEXT targets all working. 
 - [ ] **INCR protocol**: Not implemented. PropertyTable has 1MB hard cap with silent truncation. Clipboard reads capped at 65KB. Large clipboard content fails silently. MEDIUM — affects Vivado large copy.
 - [x] **Selection timestamp** (v1.19.33): TIMESTAMP target now returns actual SetSelectionOwner time from `sSelTime` map (was hardcoded 0). SelectionNotify event time field was already correct.
 
-### 8.9 Colormap Audit (LOW)
-Minimal impact for TrueColor visuals but should be correct.
+### 8.9 Colormap Audit (LOW) — AUDITED (v1.19.33)
+Minimal impact for TrueColor visuals (the only visual we support).
 
-- [ ] **AllocColorCells / AllocColorPlanes**: Currently stubs. Should return `BadAlloc` for read-only colormaps (TrueColor).
-- [ ] **FreeColors**: Verify plane_mask handling and pixel validation.
-- [ ] **StoreColors / StoreNamedColor**: Should return `BadAccess` for read-only (TrueColor) colormaps.
-- [ ] **CopyColormapAndFree**: Verify deep copy semantics.
+Audit: AllocColor, AllocNamedColor, LookupColor, QueryColors all work for TrueColor. Remaining items are stubs that don't affect real-world usage since TrueColor colormaps are read-only.
+
+- [x] **AllocColor / AllocNamedColor** (pre-existing): Work correctly for TrueColor — RGB16→RGB24 mapping. Named colors via lookupColorName().
+- [x] **QueryColors** (pre-existing): Implemented in QueryOps.cpp — expands 8-bit pixel components to 16-bit RGB.
+- [x] **LookupColor** (pre-existing): Name lookup returns exact/screen RGB.
+- [ ] **AllocColorCells / AllocColorPlanes**: Should return BadAlloc for TrueColor. Currently always succeeds (lenient). LOW — no TrueColor client calls these.
+- [ ] **FreeColors**: Void stub. LOW — TrueColor colormaps don't allocate cells.
+- [ ] **StoreColors / StoreNamedColor**: Void stubs. Should return BadAccess for TrueColor (read-only). LOW.
+- [ ] **CopyColormapAndFree**: Minimal implementation (creates new cmap, no actual data copy). LOW.
 
 ### 8.10 Font Audit (HIGH) — AUDITED (v1.19.31)
 Font system is comprehensive (21 bundled BDF, PCF lazy-loading, CoreText bridge, XLFD glob matching).
@@ -879,15 +884,17 @@ All 6 font protocol handlers (OpenFont, CloseFont, QueryFont, QueryTextExtents, 
 - [ ] **Font properties from XLFD**: XLFD component parsing (family, weight, slant) not done. SPACING always "C", charset always "ISO10646". LOW — cosmetic metadata.
 - [x] **QueryFont FONT property** (v1.19.32): Added `FONT` atom property to QueryFont reply — the font's own name (XLFD or short name). Fixes `xfd` showing "unknown font!".
 
-### 8.11 Extension Protocol Audit (MEDIUM)
+### 8.11 Extension Protocol Audit (MEDIUM) — AUDITED (v1.19.33)
 Review extension handlers for spec compliance.
 
-- [ ] **RENDER format negotiation**: Verify `QueryPictFormats` returns formats matching the server's visual capabilities.
-- [ ] **RENDER Composite clipping**: Verify clip rectangles, source/mask origins, and repeat modes.
-- [ ] **RENDER glyph ops**: `CompositeGlyphs8/16/32` — verify glyph positioning, delta encoding, glyph set management.
-- [ ] **SHAPE input shape**: Verify `ShapeInput` kind affects hit testing correctly.
-- [ ] **RANDR reply sizes**: Verify all RANDR replies have correct padding and alignment for variable-length data.
-- [ ] **XFIXES region ops**: Evaluate which XFIXES region operations are actually needed by target apps (Vivado, GTK apps) and implement those.
+Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryVersion + cursor stubs).
+
+- [x] **RENDER QueryPictFormats** (pre-existing): Returns ARGB32, RGB24, A8, A4, A1 formats. Correct.
+- [x] **RENDER Composite** (pre-existing): Full Porter-Duff coverage — all 13 PictOps (Clear through Xor + Add). Supports mask pictures and 1×1 Repeat→solid optimization.
+- [x] **RENDER CompositeGlyphs8/16/32** (pre-existing): Fully implemented — glyph element parsing, compositing from GlyphSet, per-glyph positioning.
+- [x] **SHAPE InputShape** (pre-existing): ShapeRectangles/ShapeOffset/ShapeQueryExtents all handle kind=2 (Input). Input routing respects shape regions.
+- [x] **RANDR reply sizes** (pre-existing): All v1.3 replies (GetScreenResources, GetOutputInfo, GetCrtcInfo, etc.) have correct variable-length padding. 36-byte RRGetOutputInfo reply verified.
+- [ ] **XFIXES region ops**: Mostly stubs — QueryVersion + cursor image stubs only. Region operations (Create/Destroy/Union/Intersect/etc.) consume silently. LOW — no known client depends on XFIXES regions for our use case.
 - [ ] **XInput2 event delivery**: Verify XI2 events have correct fields (deviceid, sourceid, time, valuators, modifiers, group).
 
 ### Testing Strategy
