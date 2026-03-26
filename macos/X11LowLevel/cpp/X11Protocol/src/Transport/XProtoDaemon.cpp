@@ -852,9 +852,21 @@ void XProtoDaemon::drainHostCommands() {
       continue;
     }
 
-    // For input events that update server-wide InputState, we need a client
-    // active for event delivery. If no specific owner found, use any client.
+    // For non-input host commands that update server-wide state (e.g.,
+    // ScreenLayoutChanged, SetPresentable), we need a client active.
+    // But for input events (Key, Button, PointerMove, ScrollTicks, Focus),
+    // only deliver to the owning client — never a fallback. Delivering
+    // input to the wrong client corrupts its XCB sequence state (the
+    // event arrives mid-reply, causing disconnect).
     if (!cs && !clients_.empty()) {
+      // Skip input events if owner not found (window was destroyed)
+      if (c.type == HostCmdType::Key ||
+          c.type == HostCmdType::Button ||
+          c.type == HostCmdType::PointerMove ||
+          c.type == HostCmdType::ScrollTicks ||
+          c.type == HostCmdType::Focus) {
+        continue;
+      }
       cs = &clients_.begin()->second;
     }
 
