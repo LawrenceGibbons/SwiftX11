@@ -1364,10 +1364,27 @@ final class WindowRegistry {
       return
     }
     if typeAtom == 0x80000003 {
-      // MOTIF undecorated (JidePopup, Java Swing undecorated frames)
-      win.styleMask = [.borderless]
-      win.level = .floating
-      win.hasShadow = true
+      // MOTIF undecorated: check if this is a known popup pattern.
+      // Empty title is NOT enough — Electron/Vitis sets MOTIF hints before
+      // the title property, so the title is empty at this point.
+      // Only classify as popup if the title is a known popup pattern.
+      let title = win.title
+      let isPopup = title == " " || title == "JidePopup"
+                    || title.hasPrefix("JidePopup")
+      if isPopup {
+        // Popup/tooltip: borderless, floating, no title bar
+        win.styleMask = [.borderless]
+        win.level = .floating
+        win.hasShadow = true
+      } else {
+        // Main window or not-yet-titled window with custom chrome (Electron):
+        // borderless (no macOS title bar) but normal level, movable, resizable.
+        // NSWindow.isMovableByWindowBackground lets user drag anywhere in content.
+        win.styleMask = [.borderless, .resizable]
+        win.level = .normal
+        win.hasShadow = true
+        win.isMovableByWindowBackground = true
+      }
       return
     }
 
