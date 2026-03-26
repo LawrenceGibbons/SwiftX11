@@ -1036,11 +1036,16 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    // ---- minor 2: XISelectEvents (XI2, void) / ListInputDevices (XI1, reply) ----
-    // XI2 clients (Electron/Chromium) send this as XISelectEvents after XIQueryVersion.
-    // Since we advertise XI2, treat as XISelectEvents. Falls through to case 46.
-    case 2:
-      goto xi_select_events;  // share parser with case 46
+    // ---- minor 2: ListInputDevices (XI1 — reply-bearing) ----
+    case 2: {
+      // Return empty device list — XI2 clients use XIQueryDevice (minor 48) instead.
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
+        rep[1] = 0;                             // ndevices = 0
+      });
+      return;
+    }
 
     // ---- minor 7: GrabDevice (XI1 reply-bearing) ----
     case 7: {
@@ -1163,8 +1168,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     // ---- minor 46: XISelectEvents (void — no reply) ----
-    case 46:
-    xi_select_events: {
+    case 46: {
       // XISelectEvents: CARD32 window, CARD16 num_masks, pad16
       //   then per mask: CARD16 deviceid, CARD16 mask_len, mask_len*4 bytes
       if (br.remaining() < 8) { br.skip(br.remaining()); return; }
