@@ -895,7 +895,21 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 - [x] **SHAPE InputShape** (pre-existing): ShapeRectangles/ShapeOffset/ShapeQueryExtents all handle kind=2 (Input). Input routing respects shape regions.
 - [x] **RANDR reply sizes** (pre-existing): All v1.3 replies (GetScreenResources, GetOutputInfo, GetCrtcInfo, etc.) have correct variable-length padding. 36-byte RRGetOutputInfo reply verified.
 - [ ] **XFIXES region ops**: Mostly stubs — QueryVersion + cursor image stubs only. Region operations (Create/Destroy/Union/Intersect/etc.) consume silently. LOW — no known client depends on XFIXES regions for our use case.
+- [ ] **XInput2 XIQueryDevice reply format** (HIGH — blocks Vitis/Electron): Chromium/Electron disconnects at XIQueryDevice (minor 48). Wire format analysis (v1.19.35) confirmed header and device structures are correct. Likely cause: `sendReplyRaw` + `sendBytes` bypasses reply sequence tracking, or stale event interleaving. Fix: revert to `sendReply32` + `sendBytes`, fix master keyboard attachment (4→2), test with XI enabled. Also add ScrollClass entries for pointer devices (Chromium expects them).
 - [ ] **XInput2 event delivery**: Verify XI2 events have correct fields (deviceid, sourceid, time, valuators, modifiers, group).
+
+---
+
+## Future Enhancements
+
+### Native macOS Title Bar for Undecorated Windows
+Windows that set `_MOTIF_WM_HINTS decor=0` (Electron/Vitis, custom-chrome apps) currently use `.borderless` with `isMovableByWindowBackground`. This works but loses native traffic light buttons, Stage Manager title, and resize handles.
+
+**Enhancement**: Add an optional native macOS title bar above the X11 content area. The NSWindow frame grows by ~28px, the X11View is offset downward, and `_NET_FRAME_EXTENTS` reports the decoration size. This is how real X11 WMs work — decorations wrap the client window. Requires changes to:
+- `X11WindowController`: conditional title bar based on window type
+- Resize/coordinate handling: frame vs content offset
+- `_NET_FRAME_EXTENTS` property: report actual decoration extents
+- ConfigureNotify: content position, not frame position
 
 ### Testing Strategy
 For each audit category, use a combination of:

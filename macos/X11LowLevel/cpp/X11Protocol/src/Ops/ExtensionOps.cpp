@@ -1228,13 +1228,13 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         uint16_t use;        // 1=MasterPointer, 2=MasterKeyboard, 3=SlavePointer, 4=SlaveKeyboard
         uint16_t attachment;
         const char* name;
-        bool has_buttons;    // pointer devices get ButtonClass
+        bool has_buttons;    // pointer devices get ButtonClass + ValuatorClass (X,Y)
         bool has_keys;       // keyboard devices get KeyClass
       };
 
       static const DeviceDesc allDevices[] = {
         { 2, 1, 3, "Virtual core pointer",         true,  false },
-        { 3, 2, 4, "Virtual core keyboard",        false, true  },
+        { 3, 2, 2, "Virtual core keyboard",        false, true  },  // attachment=2 (paired master pointer)
         { 4, 3, 2, "Virtual core XTEST pointer",   true,  false },
         { 5, 4, 3, "Virtual core XTEST keyboard",  false, true  },
       };
@@ -1263,7 +1263,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         const uint16_t name_len = (uint16_t)std::strlen(dev->name);
         const uint16_t name_pad = (4 - (name_len % 4)) % 4;
         uint16_t num_classes = 0;
-        if (dev->has_buttons) num_classes++;
+        if (dev->has_buttons) num_classes += 3; // ButtonClass + 2 ValuatorClass (X, Y)
         if (dev->has_keys) num_classes++;
 
         // XIDeviceInfo header (12 bytes)
@@ -1297,6 +1297,43 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           appendU32(0);
           // Labels (atom per button — 0=None for all)
           for (uint16_t b = 0; b < num_buttons; b++) appendU32(0);
+
+          // ValuatorClass for X axis (axis 0)
+          // Format: type(2) + length(2) + sourceid(2) + number(2) +
+          //         label(4) + min(4+4 FP3232) + max(4+4) + value(4+4) +
+          //         resolution(4) + mode(1) + pad(3)
+          // Total: 2+2+2+2+4+8+8+8+4+1+3 = 44 bytes = 11 words
+          appendU16(2);              // type = ValuatorClass
+          appendU16(11);             // length = 11 words
+          appendU16(dev->id);        // sourceid
+          appendU16(0);              // number = 0 (X axis)
+          appendU32(0);              // label = None
+          // min: FP3232 = 0.0
+          appendU32(0); appendU32(0);
+          // max: FP3232 = screen width (use 4288 as integer part)
+          appendU32(4288); appendU32(0);
+          // value: FP3232 = 0.0
+          appendU32(0); appendU32(0);
+          appendU32(1);              // resolution
+          payload.push_back(0);      // mode = Relative
+          payload.push_back(0);      // pad
+          payload.push_back(0);      // pad
+          payload.push_back(0);      // pad
+
+          // ValuatorClass for Y axis (axis 1) — same structure
+          appendU16(2);              // type = ValuatorClass
+          appendU16(11);             // length = 11 words
+          appendU16(dev->id);        // sourceid
+          appendU16(1);              // number = 1 (Y axis)
+          appendU32(0);              // label = None
+          appendU32(0); appendU32(0);  // min
+          appendU32(1967); appendU32(0); // max (screen height)
+          appendU32(0); appendU32(0);  // value
+          appendU32(1);              // resolution
+          payload.push_back(0);      // mode = Relative
+          payload.push_back(0);
+          payload.push_back(0);
+          payload.push_back(0);
         }
 
         // KeyClass for keyboard devices
@@ -1322,13 +1359,17 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint32_t payload_words = (uint32_t)(payload.size() / 4u);
       const uint16_t num_devices = (uint16_t)devices.size();
 
-      (void)ctx.reply().sendReply32(seq, [payload_words, num_devices](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, payload_words);  // length
-        wire::wr16_le(rep.data() + 8, num_devices);    // num_infos
-      });
-      if (!payload.empty()) {
-        ctx.reply().sendBytes(payload.data(), payload.size());
-      }
+      // Build combined reply: 32-byte header + payload in one buffer
+      // to ensure a single sendAll() call (no interleaving opportunity).
+      std::vector<uint8_t> reply(32 + payload.size(), 0);
+      reply[0] = 1; // Reply
+      reply[1] = 0;
+      wire::wr16_le(reply.data() + 2, seq);
+      wire::wr32_le(reply.data() + 4, payload_words);
+      wire::wr16_le(reply.data() + 8, num_devices);
+      std::memcpy(reply.data() + 32, payload.data(), payload.size());
+
+      (void)ctx.reply().sendReplyRaw(reply.data(), reply.size());
       return;
     }
 
