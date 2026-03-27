@@ -200,7 +200,24 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Watch for stride vs width mismatches — the most common class of rendering bug
 - **Version banner**: `SwiftX11 v{version}` printed at startup (Swift `XServerController.buildVersion` + C++ `kSwiftX11Version`). Bump version when making changes to verify the correct build is running.
 
-### Current State (v1.17.1)
+### Version Numbering Convention
+- **Release**: `SWIFTX11_VERSION_BASE` (e.g., "1.19.35")
+- **Debug iterations**: `SWIFTX11_DEBUG_BUILD` counter appends `.N-dbg` (e.g., "1.19.35.12-dbg"). Set to 0 for release.
+- Both defined in `X11LowLevel/include/SwiftX11Version.h`
+
+### Development Workflow
+- **Worktree**: Claude Code uses a git worktree under `.claude/worktrees/`. Changes are committed there, then merged to `develop` for testing.
+- **Standard practice**: Commit on worktree branch, then `cd /Users/lkg/Documents/Vivado/SwiftX11/macos && git merge <branch> --no-edit` to fast-forward `develop`.
+- **Building**: User builds from Xcode (Cmd+B). Avoid `xcodebuild` from CLI as it can interfere with Xcode.app.
+- **Docker image rebuilds**: The `x64-linux-dbus` Docker image bakes in `docker-entrypoint.sh`. After editing the entrypoint, rebuild: `cd /Users/lkg/Documents/Vivado/vivado2023 && docker build --platform linux/amd64 -t x64-linux-dbus -f Dockerfile .`
+
+### Vitis (Electron) Support — Known Issues (v1.19.35)
+- **XInputExtension must be hidden** from Chromium/Electron: `present=0` in QueryExtension. Without this, Electron's XI2 initialization (XIQueryDevice) causes immediate disconnect. Workaround in place; root cause under investigation (see TODO.md 8.11).
+- **`_MOTIF_WM_HINTS decor=0`**: Electron sets this for custom chrome. Our handler makes the window borderless + `isMovableByWindowBackground=true` at `.normal` level (not `.floating`).
+- **`--disable-gpu`** flag required for Electron in Docker/Rosetta. Injected via entrypoint patching of the Vitis wrapper script (`sed` on line 567 of `/Xilinx/2025.1.1/Vitis/bin/vitis`).
+- **Vitis works perfectly under xpra** with full XI2 — this confirms the issue is specific to our XI2 implementation, not the Docker/Rosetta environment.
+
+### Current State (v1.19.35)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
 - **No C request queue**: UICommandQueue::push() calls x11_ui_push_*() directly. No C runloop thread. HostCommandQueue handles all Cocoa→server communication
 - `resolveDrawableRW` is Swift-surface-only (no C FB fallback)

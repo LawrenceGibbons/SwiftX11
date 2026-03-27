@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-24 (v1.19.25 — WM compliance, error cleanup, find bar, resize fix)
+Last updated: 2026-03-27 (v1.19.35 — Phase 8 hardening, Vitis/Electron support, MOTIF_WM_HINTS, WM_TRANSIENT_FOR, acceptsFirstMouse, wide/dashed lines, cursor font, stale event fix)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -895,8 +895,8 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 - [x] **SHAPE InputShape** (pre-existing): ShapeRectangles/ShapeOffset/ShapeQueryExtents all handle kind=2 (Input). Input routing respects shape regions.
 - [x] **RANDR reply sizes** (pre-existing): All v1.3 replies (GetScreenResources, GetOutputInfo, GetCrtcInfo, etc.) have correct variable-length padding. 36-byte RRGetOutputInfo reply verified.
 - [ ] **XFIXES region ops**: Mostly stubs — QueryVersion + cursor image stubs only. Region operations (Create/Destroy/Union/Intersect/etc.) consume silently. LOW — no known client depends on XFIXES regions for our use case.
-- [ ] **XInput2 XIQueryDevice reply format** (HIGH — blocks Vitis/Electron): Chromium/Electron disconnects at XIQueryDevice (minor 48). Wire format analysis (v1.19.35) confirmed header and device structures are correct. Likely cause: `sendReplyRaw` + `sendBytes` bypasses reply sequence tracking, or stale event interleaving. Fix: revert to `sendReply32` + `sendBytes`, fix master keyboard attachment (4→2), test with XI enabled. Also add ScrollClass entries for pointer devices (Chromium expects them).
-- [ ] **XInput2 event delivery**: Verify XI2 events have correct fields (deviceid, sourceid, time, valuators, modifiers, group).
+- [ ] **XInput2 XIQueryDevice — Chromium disconnect** (HIGH — blocks Vitis/Electron with XI2): Chromium/Electron disconnects immediately after receiving XIQueryDevice reply. Exhaustive analysis (v1.19.35.12-dbg): wire format is byte-perfect (full hex dump verified against XI2proto.h structs), all device structures correct (ButtonClass, ValuatorClass, ScrollClass, KeyClass). Tried: zero devices, masters-only, pointer-only, XI 2.0→2.2, Absolute mode, ScrollClass — ALL disconnect. The client receives the complete reply and intentionally closes the connection (EOF on read). **Workaround**: hiding XInputExtension (`present=0` in QueryExtension) makes Vitis work perfectly — Electron falls back to core X11 input. Vitis also works under xpra with full XI2. **Next steps**: read Chromium's `device_data_manager_x11.cc` source to understand what validation it does post-XIQueryDevice. The issue may be something subtle (missing XI2 event registration, or the Chromium GPU process dying and cascading).
+- [ ] **XInput2 event delivery**: Verify XI2 events have correct fields (deviceid, sourceid, time, valuators, modifiers, group). Currently XI2 events work for Java Swing (Vivado) but Electron/Chromium's expectations are stricter.
 
 ---
 
