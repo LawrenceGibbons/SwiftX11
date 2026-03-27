@@ -1201,11 +1201,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case 47: {
       // Request: CARD16 client_major_version, CARD16 client_minor_version
       br.skip(br.remaining());
-      // Reply: server_major=2, server_minor=0
+      // Reply: server_major=2, server_minor=2
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
         wire::wr16_le(rep.data() + 8, 2);     // server_major_version
-        wire::wr16_le(rep.data() + 10, 0);    // server_minor_version
+        wire::wr16_le(rep.data() + 10, 2);    // server_minor_version (2.2 for ScrollClass)
       });
       return;
     }
@@ -1215,6 +1215,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // Request: CARD16 deviceid (0=XIAllDevices, 1=XIAllMasterDevices, or specific)
       const uint16_t requested_device = br.remaining() >= 2 ? br.readU16() : 0;
       br.skip(br.remaining());
+      const auto layout = x11::getScreenLayout();
       { char buf[128]; snprintf(buf, sizeof(buf),
           "[XIQueryDevice] seq=%u requested_device=%u\n",
           (unsigned)seq, (unsigned)requested_device);
@@ -1249,7 +1250,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (requested_device == 0 /* XIAllDevices */ ||
             requested_device == 1 /* XIAllMasterDevices (masters only) */ ||
             d.id == requested_device) {
-          if (d.id != 2) continue; // DEBUG: pointer-only to isolate XI2 disconnect
+          if (requested_device == 1 && d.use > 2) continue; // skip slaves for XIAllMasterDevices
           devices.push_back(&d);
         }
       }
@@ -1267,7 +1268,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         const uint16_t name_len = (uint16_t)std::strlen(dev->name);
         const uint16_t name_pad = (4 - (name_len % 4)) % 4;
         uint16_t num_classes = 0;
-        if (dev->has_buttons) num_classes += 3; // ButtonClass + 2 ValuatorClass (X, Y)
+        if (dev->has_buttons) num_classes += 5; // ButtonClass + 2 ValuatorClass + 2 ScrollClass
         if (dev->has_keys) num_classes++;
 
         // XIDeviceInfo header (12 bytes)
@@ -1314,12 +1315,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           appendU32(0);              // label = None
           // min: FP3232 = 0.0
           appendU32(0); appendU32(0);
-          // max: FP3232 = screen width (use 4288 as integer part)
-          appendU32(4288); appendU32(0);
+          // max: FP3232 = screen width
+          appendU32((uint32_t)layout.virtual_w); appendU32(0);
           // value: FP3232 = 0.0
           appendU32(0); appendU32(0);
           appendU32(1);              // resolution
-          payload.push_back(0);      // mode = Relative
+          payload.push_back(1);      // mode = Absolute (master pointer uses Absolute)
           payload.push_back(0);      // pad
           payload.push_back(0);      // pad
           payload.push_back(0);      // pad
@@ -1331,13 +1332,35 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           appendU16(1);              // number = 1 (Y axis)
           appendU32(0);              // label = None
           appendU32(0); appendU32(0);  // min
-          appendU32(1967); appendU32(0); // max (screen height)
+          appendU32((uint32_t)layout.virtual_h); appendU32(0); // max (screen height)
           appendU32(0); appendU32(0);  // value
           appendU32(1);              // resolution
-          payload.push_back(0);      // mode = Relative
+          payload.push_back(1);      // mode = Absolute
           payload.push_back(0);
           payload.push_back(0);
           payload.push_back(0);
+
+          // ScrollClass for vertical scroll (axis 0, mapped to Y valuator)
+          // xXIScrollInfo: 24 bytes = 6 words
+          appendU16(3);              // type = ScrollClass (XI2: 3)
+          appendU16(6);              // length = 6 words
+          appendU16(dev->id);        // sourceid
+          appendU16(0);              // number = 0 (axis number, maps to valuator 0)
+          appendU16(0);              // scroll_type = 0 (Vertical)
+          appendU16(0);              // pad
+          appendU32(2);              // flags = XIScrollFlagPreferred (2)
+          // increment: FP3232 = 1.0 (one scroll unit per click)
+          appendU32(1); appendU32(0);
+
+          // ScrollClass for horizontal scroll (axis 1)
+          appendU16(3);              // type = ScrollClass
+          appendU16(6);              // length = 6 words
+          appendU16(dev->id);        // sourceid
+          appendU16(1);              // number = 1 (axis number, maps to valuator 1)
+          appendU16(1);              // scroll_type = 1 (Horizontal)
+          appendU16(0);              // pad
+          appendU32(0);              // flags = 0
+          appendU32(1); appendU32(0); // increment = 1.0
         }
 
         // KeyClass for keyboard devices
