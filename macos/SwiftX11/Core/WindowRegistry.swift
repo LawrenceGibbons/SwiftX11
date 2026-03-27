@@ -1378,12 +1378,15 @@ final class WindowRegistry {
         win.hasShadow = true
       } else {
         // Main window or not-yet-titled window with custom chrome (Electron):
-        // borderless (no macOS title bar) but normal level, movable, resizable.
-        // NSWindow.isMovableByWindowBackground lets user drag anywhere in content.
+        // borderless (no macOS title bar) but normal level, resizable.
+        // NOTE: Do NOT set isMovableByWindowBackground — it causes macOS to
+        // intercept ALL mouseDown events for window dragging, preventing clicks
+        // from reaching the X11 client (breaks Electron menus, buttons, etc.).
+        // Electron handles its own title-bar drag via _NET_WM_MOVERESIZE or
+        // manual XMoveWindow. We'll add a native macOS title bar later.
         win.styleMask = [.borderless, .resizable]
         win.level = .normal
         win.hasShadow = true
-        win.isMovableByWindowBackground = true
       }
       return
     }
