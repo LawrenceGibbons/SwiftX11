@@ -1373,6 +1373,17 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       wire::wr16_le(reply.data() + 8, num_devices);
       std::memcpy(reply.data() + 32, payload.data(), payload.size());
 
+      // Full hex dump to stderr for debugging
+      {
+        fprintf(stderr, "[XIQueryDevice] FULL REPLY (%zu bytes):\n", reply.size());
+        for (size_t i = 0; i < reply.size(); i += 16) {
+          fprintf(stderr, "  %04zX: ", i);
+          for (size_t j = i; j < i + 16 && j < reply.size(); j++)
+            fprintf(stderr, "%02X ", reply[j]);
+          fprintf(stderr, "\n");
+        }
+      }
+
       (void)ctx.reply().sendReplyRaw(reply.data(), reply.size());
       return;
     }
