@@ -1377,14 +1377,13 @@ final class WindowRegistry {
         win.level = .floating
         win.hasShadow = true
       } else {
-        // Main window or not-yet-titled window with custom chrome (Electron):
-        // borderless (no macOS title bar) but normal level, resizable.
-        // NOTE: Do NOT set isMovableByWindowBackground — it causes macOS to
-        // intercept ALL mouseDown events for window dragging, preventing clicks
-        // from reaching the X11 client (breaks Electron menus, buttons, etc.).
-        // Electron handles its own title-bar drag via _NET_WM_MOVERESIZE or
-        // manual XMoveWindow. We'll add a native macOS title bar later.
-        win.styleMask = [.borderless, .resizable]
+        // Main window with custom chrome (Electron/Vitis):
+        // Add a native macOS title bar for drag handle + traffic lights.
+        // The X11 content area sits below the title bar.  All sizing APIs
+        // (setContentSize, contentView.bounds, contentLayoutRect) already
+        // exclude the title bar, so ConfigureNotify reports the correct
+        // X11 size.  _NET_FRAME_EXTENTS reports top=28 for the decoration.
+        win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         win.level = .normal
         win.hasShadow = true
       }
