@@ -444,17 +444,22 @@ void XProtoDaemon::removeClient(int fd) {
   ClientSession& cs = it->second;
 
   {
-    char buf[160];
+    char buf[256];
     snprintf(buf, sizeof(buf),
-             "[X11] disconnect fd=%d remaining=%zu seq=%u\n",
+             "[X11] disconnect fd=%d remaining=%zu seq=%u total_reqs=%u "
+             "XI2[ver=%d dev=%d sel=%d list=%d]\n",
              fd, clients_.size() - 1,
-             (unsigned)cs.seq);
+             (unsigned)cs.seq, cs.total_requests,
+             cs.sent_xi_query_version, cs.sent_xi_query_device,
+             cs.sent_xi_select_events, cs.sent_list_input_devices);
     x11_ui_push_log(1, buf);
+    fprintf(stderr, "%s", buf);
   }
 
   // Dump last dispatched requests (ring buffer) for crash diagnosis
   {
-    x11_ui_push_log(1, "[X11] last dispatched requests (newest last):\n");
+    const char* hdr = "[X11] last dispatched requests (newest last):\n";
+    x11_ui_push_log(1, hdr); fprintf(stderr, "%s", hdr);
     const int total = std::min(cs.history_idx, ClientSession::kHistorySize);
     const int start = cs.history_idx - total;
     for (int i = start; i < cs.history_idx; i++) {
@@ -464,7 +469,7 @@ void XProtoDaemon::removeClient(int fd) {
                "  [%d] major=%u minor=%u seq=%u reply=%s\n",
                i - start, (unsigned)r.major, (unsigned)r.minor,
                (unsigned)r.seq, r.reply_sent ? "yes" : "no");
-      x11_ui_push_log(1, buf);
+      x11_ui_push_log(1, buf); fprintf(stderr, "%s", buf);
     }
   }
 
@@ -638,6 +643,14 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Record in ring buffer for crash diagnosis
   cs.recordDispatch(major, minor, cs.seq,
                     server_->ctx().transport().wasReplySent());
+
+  // Track XI2 requests for disconnect diagnostics
+  if (major == ext::kXInput2) {
+    if (minor == 47) cs.sent_xi_query_version = true;
+    if (minor == 48) cs.sent_xi_query_device  = true;
+    if (minor == 46) cs.sent_xi_select_events = true;
+    if (minor == 2)  cs.sent_list_input_devices = true;
+  }
 
   deactivateClient();
 

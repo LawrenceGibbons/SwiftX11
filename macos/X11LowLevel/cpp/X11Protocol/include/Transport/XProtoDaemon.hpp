@@ -61,10 +61,18 @@ struct ClientSession {
   DispatchRecord history[16]{};
   int history_idx = 0;          // next write position (wraps)
 
+  // XI2 diagnostic counters — track which XI2 requests this client sent.
+  uint32_t total_requests = 0;
+  bool sent_xi_query_version = false;   // minor 47
+  bool sent_xi_query_device  = false;   // minor 48
+  bool sent_xi_select_events = false;   // minor 46
+  bool sent_list_input_devices = false; // minor 2
+
   void recordDispatch(uint8_t maj, uint8_t min, uint16_t s, bool replied) {
     auto& r = history[history_idx % kHistorySize];
     r.major = maj; r.minor = min; r.seq = s; r.reply_sent = replied;
     history_idx++;
+    total_requests++;
   }
 };
 

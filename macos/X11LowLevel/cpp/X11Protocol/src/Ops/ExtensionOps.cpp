@@ -1038,12 +1038,77 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // ---- minor 2: ListInputDevices (XI1 — reply-bearing) ----
     case 2: {
-      // Return empty device list — XI2 clients use XIQueryDevice (minor 48) instead.
+      // Return the 4 virtual core devices matching XIQueryDevice (minor 48).
+      // Chromium calls both ListInputDevices AND XIQueryDevice in parallel.
+      // Wire format: 32-byte header + ndevices * xDeviceInfo(8B) +
+      //   InputClassInfo entries + name strings (STR: 1B len + chars) + pad4.
       br.skip(br.remaining());
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
-        rep[1] = 0;                             // ndevices = 0
-      });
+
+      // Device definitions
+      struct XI1Dev {
+        uint8_t id;
+        uint8_t use;       // 0=IsXPointer, 1=IsXKeyboard, 2=IsXExtensionDevice,
+                           // 3=IsXExtensionPointer, 4=IsXExtensionKeyboard
+        uint8_t attached;
+        const char* name;
+        uint8_t num_classes; // number of InputClassInfo entries
+      };
+      const XI1Dev devs[] = {
+        { 2, 0, 0, "Virtual core pointer",         2 },  // ButtonInfo + ValuatorInfo
+        { 3, 1, 0, "Virtual core keyboard",         1 },  // KeyInfo
+        { 4, 3, 2, "Virtual core XTEST pointer",   2 },  // ButtonInfo + ValuatorInfo
+        { 5, 4, 3, "Virtual core XTEST keyboard",  1 },  // KeyInfo
+      };
+      constexpr uint8_t ndevices = 4;
+
+      // Build payload: xDeviceInfo array, then InputClassInfo array, then name strings
+      std::vector<uint8_t> payload;
+      auto push8  = [&](uint8_t v) { payload.push_back(v); };
+      auto push16 = [&](uint16_t v) { uint8_t b[2]; wire::wr16_le(b, v); payload.insert(payload.end(), b, b+2); };
+      auto push32 = [&](uint32_t v) { uint8_t b[4]; wire::wr32_le(b, v); payload.insert(payload.end(), b, b+4); };
+
+      // Section 1: ndevices * xDeviceInfo (8 bytes each)
+      for (const auto& d : devs) {
+        push32(0);              // type atom (0 = None)
+        push8(d.id);           // device id
+        push8(d.num_classes);  // num_classes
+        push8(d.use);          // use
+        push8(d.attached);     // attached
+      }
+
+      // Section 2: InputClassInfo entries (in device order)
+      for (const auto& d : devs) {
+        if (d.use == 0 || d.use == 3) { // pointer devices
+          // xButtonInfo: class=1, length=4, num_buttons=5
+          push8(1); push8(4); push16(5);
+          // xValuatorInfo: class=2, length=8, num_axes=0, mode=0(Relative), motion_buffer_size=0
+          push8(2); push8(8); push8(0); push8(0); push32(0);
+        } else { // keyboard devices
+          // xKeyInfo: class=0, length=8, min_keycode=8, max_keycode=255, num_keys=248, pad=0
+          push8(0); push8(8); push8(8); push8(255); push16(248); push16(0);
+        }
+      }
+
+      // Section 3: name strings (STR format: 1-byte length + chars, no null terminator)
+      for (const auto& d : devs) {
+        uint8_t len = (uint8_t)std::strlen(d.name);
+        push8(len);
+        payload.insert(payload.end(), d.name, d.name + len);
+      }
+
+      // Pad to 4-byte alignment
+      while (payload.size() % 4u) payload.push_back(0);
+
+      // Build reply header + payload
+      const uint32_t payload_words = (uint32_t)(payload.size() / 4u);
+      std::vector<uint8_t> reply(32 + payload.size(), 0);
+      reply[0] = 1;  // Reply
+      reply[1] = 2;  // XI reply type = ListInputDevices
+      wire::wr16_le(reply.data() + 2, seq);
+      wire::wr32_le(reply.data() + 4, payload_words);
+      reply[8] = ndevices;
+      std::memcpy(reply.data() + 32, payload.data(), payload.size());
+      (void)ctx.reply().sendReplyRaw(reply.data(), reply.size());
       return;
     }
 

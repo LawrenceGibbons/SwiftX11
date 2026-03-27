@@ -900,6 +900,16 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 
 ---
 
+## Known Issues / Bugs
+
+### Docker dbus Fails on Second Container Launch (MEDIUM)
+If the user runs a Vivado/Vitis container, quits, and relaunches (new container) within the same SwiftX11 session, `dbus-launch` fails to start on the second launch. Likely stale dbus state (socket files, pid files) from the first container. Needs investigation of `docker-entrypoint.sh` dbus cleanup — possible fixes: kill stale dbus-daemon before launch, clean `/run/dbus/` at container start, or use `--exit-with-x11` flag.
+
+### Ctrl+Click Regression (MEDIUM)
+Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
+
+---
+
 ## Future Enhancements
 
 ### Native macOS Title Bar for Undecorated Windows
