@@ -1401,9 +1401,12 @@ final class WindowRegistry {
 
     switch typeAtom {
     case typeDialog:
-      // Dialog: titled, closable, non-resizable, floating if appropriate
+      // Dialog: titled, closable, non-resizable.
+      // Use .normal level so Stage Manager groups dialogs with their
+      // parent app window.  .floating causes dialogs to appear above
+      // ALL stages, breaking the spatial grouping.
       win.styleMask = [.titled, .closable]
-      win.level = .floating
+      win.level = .normal
 
 
     case typeToolbar, typeUtility:

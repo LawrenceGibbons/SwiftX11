@@ -556,9 +556,28 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
         // doing a local conversion.  Root (1) is never an Xt widget,
         // so this forces the server round-trip and lets our
         // ConvertSelection handler serve from the macOS clipboard.
+        uint32_t prevSelOwner = 0;
         {
           std::lock_guard<std::mutex> lk(sSelMtx);
+          auto it = sSelOwner.find(selAtom);
+          if (it != sSelOwner.end()) prevSelOwner = it->second;
           sSelOwner[selAtom] = 1; // root window
+        }
+
+        // Send SelectionClear to the previous owner so it knows it
+        // no longer holds the selection.  Java Swing caches ownership
+        // status internally and only rechecks when it receives
+        // SelectionClear (type 29).  Without this, Java uses its
+        // stale internal Transferable on paste instead of calling
+        // ConvertSelection, which bypasses our macOS clipboard bridge.
+        if (prevSelOwner > 1) {
+          uint8_t clrEv[32] = {0};
+          clrEv[0] = 29; // SelectionClear
+          wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
+          wire::wr32_le(clrEv + 4,  x11_now_ms_monotonic());
+          wire::wr32_le(clrEv + 8,  prevSelOwner);  // window
+          wire::wr32_le(clrEv + 12, selAtom);        // selection atom
+          (void)ctx.transport().sendEvent32(prevSelOwner, clrEv);
         }
 
 #ifndef NDEBUG
