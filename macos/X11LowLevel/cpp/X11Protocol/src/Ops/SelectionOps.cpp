@@ -574,7 +574,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
           uint8_t clrEv[32] = {0};
           clrEv[0] = 29; // SelectionClear
           wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
-          wire::wr32_le(clrEv + 4,  x11_now_ms_monotonic());
+          wire::wr32_le(clrEv + 4,  0); // CurrentTime
           wire::wr32_le(clrEv + 8,  prevSelOwner);  // window
           wire::wr32_le(clrEv + 12, selAtom);        // selection atom
           (void)ctx.transport().sendEvent32(prevSelOwner, clrEv);
