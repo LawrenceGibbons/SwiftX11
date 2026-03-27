@@ -1249,7 +1249,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (requested_device == 0 /* XIAllDevices */ ||
             requested_device == 1 /* XIAllMasterDevices (masters only) */ ||
             d.id == requested_device) {
-          if (requested_device == 1 && d.use > 2) continue; // skip slaves for AllMasters
+          if (d.use > 2) continue; // DEBUG: skip slaves to isolate XI2 disconnect
           devices.push_back(&d);
         }
       }
