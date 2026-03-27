@@ -6,7 +6,7 @@ SwiftX11 is a native macOS X11 protocol server built with Swift and C++. It impl
 
 macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fills this gap but uses XCB/Xlib internals originally designed for Unix. SwiftX11 takes a different approach — implementing the X11 protocol from scratch as a native macOS app, with Swift owning all UI surfaces and C++ handling protocol parsing and raster operations.
 
-**Primary use case**: Running [Xilinx Vivado](https://www.xilinx.com/products/design-tools/vivado.html) and [Vitis](https://www.xilinx.com/products/design-tools/vitis.html) from a Linux container on macOS, where XQuartz's SubstructureRedirect timing causes dialog sizing issues.
+SwiftX11 is meant solely to provide a useful rootless window support for unix tools that still use X11.  It does attempt at all to preserve the look of a traditional X11 server.  If that look is important to you, please look for an alternative implementation.
 
 ## Features
 
@@ -120,4 +120,4 @@ This project is licensed under the [GNU General Public License v3.0](LICENSE). A
 
 ## Acknowledgments
 
-Built with extensive assistance from [Claude](https://claude.ai) (Anthropic).
+Initiated with help from ChatGPT, and completed with extensive assistance from [Claude](https://claude.ai) (Anthropic).

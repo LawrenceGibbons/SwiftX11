@@ -481,6 +481,9 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   uint8_t ev[32] = {0};
 
   ev[0] = is_press ? 2 : 3; // KeyPress=2, KeyRelease=3
+  TS_FPRINTF("[KEY_SEND] fd=%d wid=0x%08X type=%d kc=%u seq=%u\n",
+          ctx.transport().clientFd(), wid, (int)ev[0], (unsigned)keycode,
+          (unsigned)ctx.transport().lastSeq());
   ev[1] = keycode;          // detail = keycode (bring-up)
   wire::wr16_le(ev + 2, ctx.transport().lastSeq());
   wire::wr32_le(ev + 4, x11_now_ms_monotonic()); // time (ms)

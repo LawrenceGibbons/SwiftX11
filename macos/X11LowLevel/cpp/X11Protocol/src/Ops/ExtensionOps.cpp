@@ -1215,6 +1215,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // Request: CARD16 deviceid (0=XIAllDevices, 1=XIAllMasterDevices, or specific)
       const uint16_t requested_device = br.remaining() >= 2 ? br.readU16() : 0;
       br.skip(br.remaining());
+      { char buf[128]; snprintf(buf, sizeof(buf),
+          "[XIQueryDevice] seq=%u requested_device=%u\n",
+          (unsigned)seq, (unsigned)requested_device);
+        x11_ui_push_log(1, buf); fprintf(stderr, "%s", buf); }
 
       // Build XIDeviceInfo entries for the 4 virtual core devices.
       // XIDeviceInfo wire format (per device):
