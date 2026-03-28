@@ -596,6 +596,18 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
     ctx.input().setFocusXid(0);
   }
 
+  // Clear WM_TAKE_FOCUS bounce tracking if this window was in the history.
+  // X11 window IDs get reused.  If a destroyed dialog's XID appears in the
+  // bounce history, a new dialog that reuses that XID would be falsely
+  // suppressed, preventing it from receiving focus (WM_TAKE_FOCUS not sent).
+  {
+    const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
+    const uint32_t check = host ? host : wid;
+    if (ctx.input().take_focus_prev_ == check) ctx.input().take_focus_prev_ = 0;
+    if (ctx.input().take_focus_last_ == check) ctx.input().take_focus_last_ = 0;
+    if (ctx.input().focus_host == check) ctx.input().focus_host = 0;
+  }
+
   // X11 spec: DestroyNotify sent to the window itself (StructureNotifyMask)
   // and to the parent (SubstructureNotifyMask)
   {

@@ -43,6 +43,12 @@ static std::unordered_map<uint32_t /*atom*/, uint32_t /*owner_wid*/> sSelOwner;
 // user Cmd+C in Safari) after an X11 app claimed the selection.
 static std::unordered_map<uint32_t /*atom*/, int64_t> sSelMacCC;
 
+// macOS changeCount AFTER our last proactive push of X11 content to macOS.
+// Used to detect if the user copied something on macOS between our pushes.
+// If currentCC > sSelPushedCC, the macOS clipboard has external content
+// that we must NOT overwrite with stale X11 data.
+static std::unordered_map<uint32_t /*atom*/, int64_t> sSelPushedCC;
+
 // Timestamp of last SetSelectionOwner per selection atom (ICCCM compliance).
 // Used to reject stale requests and return via TIMESTAMP target.
 static std::unordered_map<uint32_t /*atom*/, uint32_t /*time*/> sSelTime;
@@ -535,19 +541,38 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
       if (PropertyTable::instance().get(evRequestor, propAtom, p) &&
           p.format == 8 && !p.data.empty())
       {
-        x11_clipboard_set_text(reinterpret_cast<const char*>(p.data.data()),
-                               (uint32_t)p.data.size());
+        // Before pushing X11 content to macOS, check if the macOS clipboard
+        // was updated externally (user Cmd+C) since our last push.  If so,
+        // the macOS content is NEWER — don't overwrite it with stale X11 data.
+        bool shouldPush = true;
+        {
+          std::lock_guard<std::mutex> lk(sSelMtx);
+          auto it = sSelPushedCC.find(selAtom);
+          if (it != sSelPushedCC.end()) {
+            int64_t currentCC = x11_clipboard_get_change_count();
+            if (currentCC > it->second) {
+              // macOS clipboard was updated externally since our last push.
+              // The user's macOS content is newer — skip the push.
+              shouldPush = false;
+#ifndef NDEBUG
+              TS_FPRINTF("[CLIPBOARD] Skipping push — macOS clipboard updated externally "
+                      "(cc %lld > pushed %lld)\n",
+                      (long long)currentCC, (long long)it->second);
+#endif
+            }
+          }
+        }
 
-        // NOTE: Do NOT update sSelMacCC here.  sSelMacCC was set at
-        // SetSelectionOwner time (before the push).  Our push bumps the
-        // macOS changeCount past that stored value, which means
-        // ConvertSelection will always see currentCC > storedCC and
-        // serve from the macOS clipboard.  Since our push put the same
-        // text there, the result is identical.  But if the user later
-        // copies in macOS (Cmd+C), the CC goes up even further, and
-        // ConvertSelection correctly serves the newer macOS content.
-        // If we updated sSelMacCC here, a user Cmd+C that happened
-        // BEFORE our push would be invisible (storedCC == currentCC).
+        if (shouldPush) {
+          x11_clipboard_set_text(reinterpret_cast<const char*>(p.data.data()),
+                                 (uint32_t)p.data.size());
+          // Record the CC after our push so we can detect external changes
+          {
+            int64_t newCC = x11_clipboard_get_change_count();
+            std::lock_guard<std::mutex> lk(sSelMtx);
+            sSelPushedCC[selAtom] = newCC;
+          }
+        }
 
         // Take over selection ownership: set internal owner to root
         // window (XID 1).  Xt's XtGetSelectionValue calls
@@ -582,8 +607,10 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
 
 #ifndef NDEBUG
         int64_t cc = x11_clipboard_get_change_count();
-        TS_FPRINTF("[CLIPBOARD] Captured %zu bytes from X11 (sel=%u) -> macOS (cc=%lld), owner→root\n",
-                p.data.size(), (unsigned)selAtom, (long long)cc);
+        TS_FPRINTF("[CLIPBOARD] Proactive capture: %zu bytes, sel=%u, pushed=%s, cc=%lld, owner→root\n",
+                p.data.size(), (unsigned)selAtom,
+                shouldPush ? "yes" : "SKIPPED(macOS newer)",
+                (long long)cc);
 #endif
       }
     }
