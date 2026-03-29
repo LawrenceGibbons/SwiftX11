@@ -198,11 +198,27 @@ final class XServerController: ObservableObject {
     String(format: "%.6f", CACurrentMediaTime())
   }
   
+  private var pendingLogLines: [String] = []
+  private var logFlushScheduled = false
+
   @MainActor
   func append(_ line: String) {
     let s = "[\(tstamp())] \(line)"
-    logText += s + "\n"
-  }  
+    pendingLogLines.append(s)
+    // Coalesce rapid log updates to avoid overwhelming SwiftUI's
+    // AttributeGraph.  Flushing logText synchronously during window
+    // operations (create/map/title) can crash in propagate_dirty when
+    // the LogTextView binding triggers mid-transaction.
+    guard !logFlushScheduled else { return }
+    logFlushScheduled = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.logFlushScheduled = false
+      guard !self.pendingLogLines.isEmpty else { return }
+      self.logText += self.pendingLogLines.joined(separator: "\n") + "\n"
+      self.pendingLogLines.removeAll(keepingCapacity: true)
+    }
+  }
   
   @MainActor
   func newWindow(title: String = "SwiftX11 Window", w: Int32 = 800, h: Int32 = 600) -> UInt32 {
