@@ -157,7 +157,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
   // X11 spec: generate PropertyNotify on every property change
   sendPropertyNotify(ctx, wid, atom, /*deleted*/false);
 
-#ifndef NDEBUG
+#if X11_TRACE_LIFECYCLE_ENABLED
   {
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
@@ -176,15 +176,15 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
     std::string title(reinterpret_cast<const char*>(data), dataBytes);
-    {
+    // Only log title changes for top-level host windows (skip child windows)
+    if (host == wid) {
       char buf[200];
       snprintf(buf, sizeof(buf),
-               "[TITLE] wid=0x%08X host=0x%08X atom=%u \"%.*s\"%s\n",
-               (unsigned)wid, (unsigned)host,
+               "[TITLE] wid=0x%08X atom=%u \"%.*s\"\n",
+               (unsigned)wid,
                (unsigned)atom,
                (int)(dataBytes > 80 ? 80 : dataBytes),
-               reinterpret_cast<const char*>(data),
-               (host != wid) ? " (child — skipped)" : "");
+               reinterpret_cast<const char*>(data));
       x11_ui_push_log(1, buf);
     }
     if (host == wid) {

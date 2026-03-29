@@ -264,6 +264,7 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
     // Extension diagnostic: log when no reply was sent for extension opcodes.
     // Many extension minors are void (no reply), so we don't auto-send an error,
     // but the log helps diagnose sequence desyncs caused by missing replies.
+#ifdef X11_TRACE_VERBOSE
     if (ctx_.hasClient() && major >= 128 && !ctx_.transport().wasReplySent()) {
       char buf[128];
       snprintf(buf, sizeof(buf),
@@ -271,6 +272,7 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                (unsigned)major, (unsigned)minor, (unsigned)seq);
       x11_ui_push_log(2, buf);
     }
+#endif
 
     return 1;
   } catch (const std::exception& ex) {

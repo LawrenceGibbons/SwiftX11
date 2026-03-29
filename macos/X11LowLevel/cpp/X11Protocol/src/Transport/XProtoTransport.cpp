@@ -641,6 +641,7 @@ void XProtoTransport::flushNotifyQueue() {
 
   if (n == 0) return;
 
+#ifdef X11_TRACE_VERBOSE
   {
     char buf[128];
     snprintf(buf, sizeof(buf),
@@ -648,6 +649,7 @@ void XProtoTransport::flushNotifyQueue() {
              client_fd_, (unsigned)seq0, n);
     x11_ui_push_log(1, buf);
   }
+#endif
 
 #ifndef NDEBUG
   for (size_t i=0;i<n;i++){

@@ -485,7 +485,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   // geometry (via ConfigureNotify) and prevent it from sending its own
   // ConfigureWindow with the real size.
   const int owner_fd = ctx.transport().clientFd();
-#ifndef NDEBUG
+#if X11_TRACE_LIFECYCLE_ENABLED
   if (parent == x11::kRootXid) {
     TS_FPRINTF("[CREATE_TOPLEVEL] wid=0x%08X requested=%ux%u pos=(%d,%d) bw=%u\n",
             (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (int)x, (int)y, (unsigned)borderWidth);
@@ -846,7 +846,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
     }
 #endif
 
-#ifndef NDEBUG
+#if X11_TRACE_LIFECYCLE_ENABLED
     if (host != wid) {
       WindowView mv_dbg{};
       ctx.windows().snapshot(wid, mv_dbg);
@@ -902,7 +902,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
         }
 
         if (is_tiny) {
-#ifndef NDEBUG
+#if X11_TRACE_LIFECYCLE_ENABLED
           TS_FPRINTF("[MAP_DEFER] wid=0x%08X geom=%ux%u — deferring map (tiny root child)\n",
                   (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h);
 #endif
@@ -985,7 +985,7 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader
   }
 #endif
 
-#ifndef NDEBUG
+#if X11_TRACE_LIFECYCLE_ENABLED
   // Detailed hierarchy dump for windows with many children (like xcalc's Form).
   // Shows stacking order, which helps identify misplaced/overlapping children.
   if (desc.size() >= 10) {
