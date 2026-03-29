@@ -574,35 +574,32 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
           }
         }
 
-        // Take over selection ownership: set internal owner to root
-        // window (XID 1).  Xt's XtGetSelectionValue calls
-        // XGetSelectionOwner first; if the returned XID isn't an Xt
-        // widget, Xt sends ConvertSelection to the server instead of
-        // doing a local conversion.  Root (1) is never an Xt widget,
-        // so this forces the server round-trip and lets our
-        // ConvertSelection handler serve from the macOS clipboard.
-        uint32_t prevSelOwner = 0;
-        {
-          std::lock_guard<std::mutex> lk(sSelMtx);
-          auto it = sSelOwner.find(selAtom);
-          if (it != sSelOwner.end()) prevSelOwner = it->second;
-          sSelOwner[selAtom] = 1; // root window
-        }
+        // For CLIPBOARD only: take over ownership and send SelectionClear.
+        // This forces Java to re-query via ConvertSelection on paste,
+        // which lets our bridge serve newer macOS content.
+        //
+        // Do NOT do this for PRIMARY — PRIMARY represents the live text
+        // selection.  Sending SelectionClear for PRIMARY tells Java it
+        // lost the selection, causing the visual highlight to break and
+        // Java to think nothing is selected.
+        if (selAtom == atom::kCLIPBOARD) {
+          uint32_t prevSelOwner = 0;
+          {
+            std::lock_guard<std::mutex> lk(sSelMtx);
+            auto it = sSelOwner.find(selAtom);
+            if (it != sSelOwner.end()) prevSelOwner = it->second;
+            sSelOwner[selAtom] = 1; // root window
+          }
 
-        // Send SelectionClear to the previous owner so it knows it
-        // no longer holds the selection.  Java Swing caches ownership
-        // status internally and only rechecks when it receives
-        // SelectionClear (type 29).  Without this, Java uses its
-        // stale internal Transferable on paste instead of calling
-        // ConvertSelection, which bypasses our macOS clipboard bridge.
-        if (prevSelOwner > 1) {
-          uint8_t clrEv[32] = {0};
-          clrEv[0] = 29; // SelectionClear
-          wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
-          wire::wr32_le(clrEv + 4,  0); // CurrentTime
-          wire::wr32_le(clrEv + 8,  prevSelOwner);  // window
-          wire::wr32_le(clrEv + 12, selAtom);        // selection atom
-          (void)ctx.transport().sendEvent32(prevSelOwner, clrEv);
+          if (prevSelOwner > 1) {
+            uint8_t clrEv[32] = {0};
+            clrEv[0] = 29; // SelectionClear
+            wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
+            wire::wr32_le(clrEv + 4,  0); // CurrentTime
+            wire::wr32_le(clrEv + 8,  prevSelOwner);  // window
+            wire::wr32_le(clrEv + 12, selAtom);        // selection atom
+            (void)ctx.transport().sendEvent32(prevSelOwner, clrEv);
+          }
         }
 
 #ifndef NDEBUG
