@@ -206,11 +206,10 @@ bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]
   ClientSession* cs = findClient(wv->owner_fd);
   if (!cs || !cs->client) return false;
 
-  // Temporarily activate the target client so transport sends on the right fd
-  activateClient(*cs);
-  bool ok = server_->ctx().transport().sendAll(ev, 32);
-  deactivateClient();
-  return ok;
+  // Send directly on the target client's transport WITHOUT activating it.
+  // activateClient/deactivateClient would clobber the currently-active
+  // client context, causing a null transport crash when the caller resumes.
+  return cs->client->transport().sendAll(ev, 32);
 }
 
 bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
@@ -221,10 +220,7 @@ bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_
   ClientSession* cs = findClient(wv->owner_fd);
   if (!cs || !cs->client) return false;
 
-  activateClient(*cs);
-  bool ok = server_->ctx().transport().sendAll(ev, len);
-  deactivateClient();
-  return ok;
+  return cs->client->transport().sendAll(ev, len);
 }
 
 
