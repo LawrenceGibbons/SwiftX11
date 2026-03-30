@@ -64,6 +64,11 @@ extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void)
   return g_daemon_ptr ? g_daemon_ptr->server() : nullptr;
 }
 
+extern "C" x11::XProtoDaemon* x11_proto_bridge_get_daemon(void)
+{
+  return g_daemon_ptr;
+}
+
 extern "C" void x11_proto_bridge_begin_session(int client_fd,
                                                uint32_t rid_base,
                                                uint32_t rid_mask)

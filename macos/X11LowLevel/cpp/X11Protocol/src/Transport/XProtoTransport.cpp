@@ -15,6 +15,7 @@
 
 #include "Core/XProtoNotifyQueue.hpp"
 #include "Transport/XProtoTransport.hpp"
+#include "Transport/XProtoDaemon.hpp"
 #include "Core/XProtoPendingNotify.hpp"
 #include "Ops/EventOps.hpp"
 #include "Core/XProtoContext.hpp"
@@ -25,6 +26,11 @@
 
 extern "C" void x11_ui_push_log(int level, const char* message);
 extern "C" int x11_get_wire_trace(void);
+
+// Global daemon pointer for cross-client event routing.
+// Defined in XProtoServerBridge.cpp.
+extern "C" x11::XProtoDaemon* x11_proto_bridge_get_daemon(void);
+
 
 // Stub: the old C-level xproto thread check was in the deleted x11_xproto.c.
 // XProtoTransport::sendAll() has its own thread check (xproto_thread_valid_),
@@ -629,12 +635,13 @@ bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
   }
 
   if (wv->owner_fd <= 0 || wv->owner_fd != client_fd_) {
-#ifndef NDEBUG
-    TS_FPRINTF("[EVENT_DROP] sendEvent32 owner mismatch wid=0x%08X type=%u owner_fd=%d client_fd=%d\n",
-            (unsigned)targetWid, (unsigned)ev[0], wv->owner_fd, client_fd_);
-#endif
-    ctx_.tracef("[XProtoTransport] sendEvent32 DROP owner mismatch wid=0x%08X owner_fd=%d client_fd=%d\n",
-                (unsigned)targetWid, wv->owner_fd, client_fd_);
+    // Cross-client delivery: route to the owning client's transport.
+    // This is needed for multi-process apps (Vitis: Electron + xdg-desktop-portal-gtk)
+    // where events like FocusIn, SelectionNotify, ClientMessage cross connections.
+    auto* daemon = x11_proto_bridge_get_daemon();
+    if (daemon) {
+      return daemon->sendEventCrossClient(targetWid, ev);
+    }
     return false;
   }
 
@@ -650,7 +657,13 @@ bool XProtoTransport::sendEventVariable(uint32_t targetWid, const uint8_t* ev, s
 
   const WindowView* wv = ctx_.window(targetWid);
   if (!wv) return false;
-  if (wv->owner_fd <= 0 || wv->owner_fd != client_fd_) return false;
+  if (wv->owner_fd <= 0 || wv->owner_fd != client_fd_) {
+    auto* daemon = x11_proto_bridge_get_daemon();
+    if (daemon) {
+      return daemon->sendEventCrossClientVariable(targetWid, ev, len);
+    }
+    return false;
+  }
 
   return sendAll(ev, len);
 }

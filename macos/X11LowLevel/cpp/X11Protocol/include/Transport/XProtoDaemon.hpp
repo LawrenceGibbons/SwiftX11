@@ -93,6 +93,14 @@ public:
   // Find a client session by fd (used by host command routing).
   ClientSession* findClient(int fd);
 
+  // Send a 32-byte event to a window, routing to the owning client's
+  // transport regardless of which client is currently active.
+  // Used for cross-client event delivery (focus, selection, crossing).
+  bool sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]);
+
+  // Variable-length version (for XI2 GenericEvent).
+  bool sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len);
+
 private:
   void runListener(int display, bool enableTCP, bool enableUnix,
                    const char* tcpBindAddr);

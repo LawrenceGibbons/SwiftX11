@@ -198,6 +198,35 @@ ClientSession* XProtoDaemon::findClient(int fd) {
   return (it != clients_.end()) ? &it->second : nullptr;
 }
 
+bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]) {
+  if (!server_ || !ev) return false;
+  const x11::WindowView* wv = server_->ctx().window(targetWid);
+  if (!wv || wv->owner_fd <= 0) return false;
+
+  ClientSession* cs = findClient(wv->owner_fd);
+  if (!cs || !cs->client) return false;
+
+  // Temporarily activate the target client so transport sends on the right fd
+  activateClient(*cs);
+  bool ok = server_->ctx().transport().sendAll(ev, 32);
+  deactivateClient();
+  return ok;
+}
+
+bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
+  if (!server_ || !ev || len < 32) return false;
+  const x11::WindowView* wv = server_->ctx().window(targetWid);
+  if (!wv || wv->owner_fd <= 0) return false;
+
+  ClientSession* cs = findClient(wv->owner_fd);
+  if (!cs || !cs->client) return false;
+
+  activateClient(*cs);
+  bool ok = server_->ctx().transport().sendAll(ev, len);
+  deactivateClient();
+  return ok;
+}
+
 
 // ---------- poll loop ----------
 
