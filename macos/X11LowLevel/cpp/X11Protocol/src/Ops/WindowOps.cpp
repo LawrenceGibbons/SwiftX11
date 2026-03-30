@@ -802,15 +802,33 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
   }
 
   // _NET_FRAME_EXTENTS: WM frame decoration sizes.
-  // Report (0,0,0,0) for all windows.  SwiftX11 is a non-reparenting WM:
-  // the window's X11 position already represents the content origin, not
-  // the frame origin.  The macOS title bar (added for MOTIF decor=0
-  // windows) is invisible to X11.  Previously we reported top=28, but
-  // Chromium/Electron subtracted frame extents from the window position
-  // to compute the frame origin, then positioned OR popup menus relative
-  // to that — resulting in popups landing 28px too high.
+  // For MOTIF decor=0 windows (Electron/Vitis with custom chrome), report
+  // (0,0,0,0) — SwiftX11 is a non-reparenting WM and X11 positions
+  // represent the content origin.  Chromium subtracts frame extents from
+  // the window position for popup placement; reporting top=28 caused
+  // dropdowns to land 28px too high.
+  // For other titled windows (Vivado/Java Swing), report top=28 as before.
   {
-    uint8_t extents[16] = {0};  // all zeros: left=0, right=0, top=0, bottom=0
+    uint8_t extents[16] = {0};
+    if (!vw.override_redirect) {
+      // Check MOTIF hints: if decor=0, report (0,0,0,0)
+      bool motifDecorZero = false;
+      PropertyTable::Prop motifProp;
+      if (PropertyTable::instance().get(wid, x11::atom::k_MOTIF_WM_HINTS, motifProp)
+          && motifProp.format == 32 && motifProp.data.size() >= 12) {
+        const uint32_t* d32 = reinterpret_cast<const uint32_t*>(motifProp.data.data());
+        constexpr uint32_t MWM_HINTS_DECORATIONS = (1u << 1);
+        if ((d32[0] & MWM_HINTS_DECORATIONS) && d32[2] == 0) {
+          motifDecorZero = true;
+        }
+      }
+      if (!motifDecorZero) {
+        x11::wire::wr32_le(extents + 0, 0);   // left
+        x11::wire::wr32_le(extents + 4, 0);   // right
+        x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
+        x11::wire::wr32_le(extents + 12, 0);  // bottom
+      }
+    }
     PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                          x11::atom::kATOM /*CARDINAL*/, 32,
                                          extents, 16);
