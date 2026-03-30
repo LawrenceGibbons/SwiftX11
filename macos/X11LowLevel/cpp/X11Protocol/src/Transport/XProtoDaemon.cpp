@@ -209,7 +209,18 @@ bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]
   // Send directly on the target client's transport WITHOUT activating it.
   // activateClient/deactivateClient would clobber the currently-active
   // client context, causing a null transport crash when the caller resumes.
-  return cs->client->transport().sendAll(ev, 32);
+  //
+  // CRITICAL: restamp bytes[2:3] (sequence) with the TARGET transport's
+  // lastSeq().  The event was built with the SOURCE client's sequence,
+  // but the target client's max_wire_seq_ monotonic floor would be
+  // poisoned by a foreign (much larger/smaller) sequence number,
+  // corrupting all subsequent replies and causing XCB desync crashes.
+  uint8_t fixed[32];
+  std::memcpy(fixed, ev, 32);
+  uint16_t targetSeq = cs->client->transport().lastSeq();
+  fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
+  fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+  return cs->client->transport().sendAll(fixed, 32);
 }
 
 bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
@@ -220,7 +231,12 @@ bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_
   ClientSession* cs = findClient(wv->owner_fd);
   if (!cs || !cs->client) return false;
 
-  return cs->client->transport().sendAll(ev, len);
+  // Restamp sequence for target transport (same rationale as above).
+  std::vector<uint8_t> fixed(ev, ev + len);
+  uint16_t targetSeq = cs->client->transport().lastSeq();
+  fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
+  fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+  return cs->client->transport().sendAll(fixed.data(), fixed.size());
 }
 
 
