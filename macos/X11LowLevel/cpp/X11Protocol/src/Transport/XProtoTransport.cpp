@@ -220,11 +220,47 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     const uint8_t b0 = bp[0];
     uint16_t pkt_seq = uint16_t(bp[2] | (uint16_t(bp[3]) << 8));
 
-    // Apply monotonic floor
+    // Apply monotonic floor — but handle 16-bit sequence wrap-around.
+    //
+    // X11 sequence numbers are 16-bit (0-65535) and wrap.  After a long
+    // idle period, the client may have processed >32768 requests, wrapping
+    // the 16-bit counter past our high water mark.  The signed delta test
+    // (int16_t)(pkt_seq - max_wire_seq_) misinterprets this as regression
+    // when the real forward distance exceeds 32768.
+    //
+    // Detection: compare lastSeq() (the most recent client request seq)
+    // against max_wire_seq_.  If lastSeq() has also wrapped past
+    // max_wire_seq_, the client has moved on and our floor is stale.
+    // Reset the floor to allow forward progress.
     if (max_wire_seq_ != 0) {
       int16_t delta = (int16_t)(pkt_seq - max_wire_seq_);
       if (delta < 0) {
-        // Sequence would regress — bump to monotonic floor
+        // Check if the client's request sequence has also moved past the
+        // floor (indicating a legitimate wrap, not a regression).
+        // If lastSeq() is in the same "wrapped" region as pkt_seq,
+        // the floor is stale — reset it.
+        uint16_t clientSeq = last_request_seq_;
+        int16_t clientDelta = (int16_t)(clientSeq - max_wire_seq_);
+        if (clientDelta < 0) {
+          // Client request seq is also "behind" the floor — this is a
+          // 16-bit wrap.  Reset the floor to the current packet seq.
+#ifndef NDEBUG
+          {
+            char lbuf[160];
+            snprintf(lbuf, sizeof(lbuf),
+                     "[SEQ_WRAP] 16-bit wrap detected: pkt=%u floor=%u clientSeq=%u — resetting floor (fd=%d)\n",
+                     (unsigned)pkt_seq, (unsigned)max_wire_seq_,
+                     (unsigned)clientSeq, client_fd_);
+            x11_ui_push_log(1, lbuf);
+          }
+#endif
+          max_wire_seq_ = pkt_seq;
+          delta = 0; // no correction needed
+        }
+      }
+      if (delta < 0) {
+        // Genuine regression (not a wrap) — bump to monotonic floor
+#ifdef X11_TRACE_VERBOSE
         {
           char lbuf[128];
           snprintf(lbuf, sizeof(lbuf),
@@ -233,6 +269,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
                    (unsigned)bp[0], client_fd_);
           x11_ui_push_log(1, lbuf);
         }
+#endif
         std::memcpy(fixedPkt, bp, 32);
         wire::wr16_le(fixedPkt + 2, max_wire_seq_);
         pkt_seq = max_wire_seq_;
