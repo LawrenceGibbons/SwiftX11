@@ -452,15 +452,9 @@ void XProtoServer::flushPendingMaps() {
       x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
     }
 
-    // _NET_FRAME_EXTENTS
+    // _NET_FRAME_EXTENTS — all zeros (see pushMapExtras comment for rationale)
     {
       uint8_t extents[16] = {0};
-      if (!vw.override_redirect) {
-        x11::wire::wr32_le(extents + 0, 0);   // left
-        x11::wire::wr32_le(extents + 4, 0);   // right
-        x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
-        x11::wire::wr32_le(extents + 12, 0);  // bottom
-      }
       PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                            x11::atom::kATOM, 32, extents, 16);
     }

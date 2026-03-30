@@ -211,13 +211,14 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Building**: User builds from Xcode (Cmd+B). Avoid `xcodebuild` from CLI as it can interfere with Xcode.app.
 - **Docker image rebuilds**: The `x64-linux-dbus` Docker image bakes in `docker-entrypoint.sh`. After editing the entrypoint, rebuild: `cd /Users/lkg/Documents/Vivado/vivado2023 && docker build --platform linux/amd64 -t x64-linux-dbus -f Dockerfile .`
 
-### Vitis (Electron) Support (v1.19.35.23)
+### Vitis (Electron) Support (v1.19.35.24)
 - **Vitis main window works**: Native macOS title bar (traffic lights + drag handle) above Electron content. Active links within the IDE launch actions. Menu items highlight on hover.
 - **XInputExtension hidden** from Chromium/Electron: `present=0` in QueryExtension. Electron's XIQueryDevice causes disconnect. Workaround in place; root cause under investigation (see TODO.md 8.11).
 - **`_MOTIF_WM_HINTS decor=0`**: Electron sets this for custom chrome. Non-popup windows get `[.titled, .closable, .miniaturizable, .resizable]` (native macOS title bar). Popup-pattern windows (JidePopup, single-space titles) stay `[.borderless]` at `.floating` level.
+- **`_NET_FRAME_EXTENTS`** (v1.19.35.24): Always (0,0,0,0). SwiftX11 is a non-reparenting WM — X11 positions represent the content origin, not the frame origin. The macOS title bar is invisible to X11. Previously top=28 caused Chromium to subtract frame extents from window position for popup placement, resulting in 28px offset.
 - **Cross-client event routing** (v1.19.35.23): Multi-process apps (Vitis: Electron fd + xdg-desktop-portal-gtk fd) exchange events across connections. `sendEvent32`/`sendEventVariable` fall back to `XProtoDaemon::sendEventCrossClient()` on owner fd mismatch.
 - **`--disable-gpu`** flag required for Electron in Docker/Rosetta. Injected via entrypoint patching of Vitis wrapper.
-- **Known issues**: Menu dropdowns don't appear (Y-offset from title bar); portal-GTK dialogs render with inverted colors (missing Composite extension); portal-GTK tooltips appear behind dialogs.
+- **Known issues**: Portal-GTK dialogs render with inverted colors (missing Composite extension); portal-GTK tooltips appear behind dialogs.
 
 ### Current State (v1.19.35)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
@@ -315,7 +316,7 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 - **Window menu + WM_NAME title sync** (v1.11.1): macOS Window menu via `NSApp.windowsMenu` in AppDelegate — AppKit auto-lists all X11 NSWindows and brings selected window to front. WM_NAME (atom 39) and `_NET_WM_NAME` (atom 79) property changes in PropOps trigger `x11_ui_push_title()` → NSWindow title update. Child window titles route through `topLevelAncestorOf()`. `_NET_WM_NAME` pre-registered as atom 79 in AtomTable.
 
-- **ICCCM/WM compliance** (v1.12.0): Full ICCCM WM_NORMAL_HINTS parser (PSize/PMinSize/PMaxSize/PResizeInc/PBaseSize → NSWindow contentMinSize/contentMaxSize/contentResizeIncrements). WM_HINTS (InputHint → wants_input, StateHint → miniaturize on map). WM_TAKE_FOCUS protocol (ClientMessage before FocusIn, `wants_take_focus` cached in WindowView). EWMH: `_NET_WM_WINDOW_TYPE` → NSWindow style (DIALOG/TOOLBAR/UTILITY/MENU/TOOLTIP/SPLASH/NORMAL). `_NET_WM_STATE` MODAL/FULLSCREEN. `_NET_FRAME_EXTENTS` set proactively on MapWindow. WM minimum size floor: top-level windows below 200×100 enlarged in C++ CreateWindow. Pre-registered atoms 78-92.
+- **ICCCM/WM compliance** (v1.12.0): Full ICCCM WM_NORMAL_HINTS parser (PSize/PMinSize/PMaxSize/PResizeInc/PBaseSize → NSWindow contentMinSize/contentMaxSize/contentResizeIncrements). WM_HINTS (InputHint → wants_input, StateHint → miniaturize on map). WM_TAKE_FOCUS protocol (ClientMessage before FocusIn, `wants_take_focus` cached in WindowView). EWMH: `_NET_WM_WINDOW_TYPE` → NSWindow style (DIALOG/TOOLBAR/UTILITY/MENU/TOOLTIP/SPLASH/NORMAL). `_NET_WM_STATE` MODAL/FULLSCREEN. `_NET_FRAME_EXTENTS` set proactively on MapWindow (all zeros — non-reparenting WM, X11 positions are content-relative). WM minimum size floor: top-level windows below 200×100 enlarged in C++ CreateWindow. Pre-registered atoms 78-92.
 
 - **Vivado banner + menu fixes** (v1.12.2): Deferred show for floor-sized windows (`pendingNonORShow` — show triggered by applyX11Resize, first present, or 500ms timeout). ConfigureNotify on user window drag (`WindowMoved` HostCmdType → fixes Java/Swing stale root coordinates after cross-monitor window move). mapWindow geometry sync (query X11 geometry before makeKeyAndOrderFront). **Vivado confirmed working** — full GUI with menus, dialogs, banner on multi-monitor setup.
 
@@ -376,8 +377,8 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 **Workaround**: Report XTEST v2.0 — client never calls GrabControl, no crash.
 
-### Known Issues (v1.19.35.23)
-- **Vitis menu popup offset**: HTML menus highlight but dropdowns don't appear — 28px Y-offset from native macOS title bar. (HIGH)
+### Known Issues (v1.19.35.24)
+- **Vitis menu popup offset**: ✅ FIX APPLIED (v1.19.35.24, needs testing) — `_NET_FRAME_EXTENTS` set to (0,0,0,0). Previously top=28 caused Chromium to double-count the title bar offset.
 - **Portal-GTK dialog rendering**: xdg-desktop-portal-gtk dialogs render with inverted colors. Missing Composite/DAMAGE extensions. (HIGH)
 - **Portal-GTK dialog interaction**: Can't select items in "Set Workspace" dialog. (HIGH)
 - **Ctrl+click regression**: Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19. (MEDIUM)
@@ -388,7 +389,6 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 ### Next Major Tasks
 See `docs/TODO.md` and `docs/HANDOFF.md` for the comprehensive roadmap. Priority order:
-1. **Vitis menu popup coordinate offset** — investigate `_NET_FRAME_EXTENTS` vs OR window positioning
-2. **Portal-GTK dialog** — Composite extension stub or GTK3-compatible rendering fix
-3. **XI2 XIQueryDevice Chromium disconnect** — read Chromium source for post-query validation
-4. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it
+1. **Portal-GTK dialog** — Composite extension stub or GTK3-compatible rendering fix
+2. **XI2 XIQueryDevice Chromium disconnect** — read Chromium source for post-query validation
+3. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it

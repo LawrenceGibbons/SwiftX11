@@ -902,8 +902,8 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 
 ## Known Issues / Bugs
 
-### Vitis Menu Popup Coordinate Offset (HIGH — blocks Vitis menus)
-Electron's HTML menus highlight correctly on hover but dropdown popup windows don't appear. The native macOS title bar (28px) shifts the X11 content down, but the client positions OR popup windows relative to the window frame origin (not the content origin). Popups land ~28px too high. Need to either adjust OR window positions by the parent's `_NET_FRAME_EXTENTS` top offset, or verify that Electron reads frame extents and accounts for them.
+### Vitis Menu Popup Coordinate Offset — FIX APPLIED (v1.19.35.24, needs testing)
+Electron's HTML menus highlight correctly on hover but dropdown popup windows appeared ~28px too high. Root cause: `_NET_FRAME_EXTENTS` reported top=28, but our non-reparenting WM's X11 positions already represent the content origin. Chromium subtracted frame extents from the window position for popup placement, double-counting the offset. **Fix**: Set `_NET_FRAME_EXTENTS` to (0,0,0,0) for all windows.
 
 ### Portal-GTK Dialog Rendering (HIGH — blocks Vitis "Set Workspace")
 xdg-desktop-portal-gtk dialogs (fd=19) render with inverted colors and are non-interactive. Likely root cause: missing **Composite** and **DAMAGE** extensions (both `present=0`). GTK3 relies on Composite for proper widget compositing — without it, the rendering fallback produces inverted alpha. Also: tooltip OR popups from portal-gtk appear behind the dialog (stacking order). Cross-client event routing is now functional (v1.19.35.23).

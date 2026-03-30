@@ -1,10 +1,10 @@
-# SwiftX11 — Phase 9/10 Handoff (v1.19.35.23-dbg)
+# SwiftX11 — Phase 9/10 Handoff (v1.19.35.24-dbg)
 
 ## Context
 
 SwiftX11 is a native macOS X11 protocol server (Swift + C++). It implements 101 core X11 opcodes and 10 extensions. It successfully runs xterm, xeyes, xcalc, xclock, xfd, Xilinx Vivado 2025.1.1 (Java Swing), and Xilinx Vitis 2025.1.1 (Electron/Theia) from an AlmaLinux 9 Docker container.
 
-**Vitis status**: Main window renders with native macOS title bar. Electron HTML menus highlight on hover but dropdowns don't appear (coordinate offset from title bar). Portal-GTK dialogs ("Set Workspace") render with inverted colors and are non-interactive (missing Composite extension). Cross-client event routing is now functional.
+**Vitis status**: Main window renders with native macOS title bar. `_NET_FRAME_EXTENTS` fixed to (0,0,0,0) — should fix Electron popup positioning (needs testing). Portal-GTK dialogs ("Set Workspace") render with inverted colors and are non-interactive (missing Composite extension). Cross-client event routing is now functional.
 
 ## Development Conventions
 
@@ -25,16 +25,15 @@ SwiftX11 is a native macOS X11 protocol server (Swift + C++). It implements 101 
 
 ## Priority Issues for Next Session
 
-### 1. Vitis Menu Popup Coordinate Offset (HIGH)
+### 1. Vitis Menu Popup Coordinate Offset — FIX APPLIED, NEEDS TESTING (v1.19.35.24)
 
-Electron's HTML menu bar highlights items correctly on hover, but dropdown popup windows don't appear at the right position. Root cause: we added a native macOS title bar (~28px) above the X11 content for MOTIF `decor=0` windows. The X11 client thinks its content starts at the window origin, but it's actually offset down by the title bar height. Override-redirect popup windows positioned relative to the Vitis content land 28px too high.
+**Fix**: Set `_NET_FRAME_EXTENTS` to (0,0,0,0) for all windows. Root cause analysis: SwiftX11 is a non-reparenting WM — the window's X11 position already represents the content origin, not the frame origin. Previously we reported top=28, but Chromium/Electron subtracted frame extents from the window position to compute the frame origin for popup placement, resulting in popups 28px too high. With frame extents = (0,0,0,0), the client uses the X11 position as-is, which is correct.
 
-**Key files**:
-- `WindowRegistry.swift` `applyWindowType()` — where MOTIF decor=0 gets `.titled` style
-- `XProtoServerBridge.cpp` button/motion handlers — coordinate translation
-- `_NET_FRAME_EXTENTS` in `XProtoServer.cpp` — reports top=28, verify client reads it
+**Changed files**: `WindowOps.cpp` (pushMapExtras), `XProtoServer.cpp` (flushPendingMaps)
 
-**Approach**: The client should account for `_NET_FRAME_EXTENTS` when positioning popups. If it doesn't, the server may need to adjust OR window positions by the parent's frame extent offset. Check whether Electron reads `_NET_FRAME_EXTENTS` or positions popups relative to the window frame vs content origin.
+**Test**: Launch Vitis, hover over File/Edit/View menus — dropdown popups should appear at the correct position aligned with the menu items.
+
+**If fix doesn't work**: The issue might be that Electron positions popups using TranslateCoordinates or root coordinates from motion events rather than frame extents. In that case, investigate the exact Chromium popup placement code in `ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc`.
 
 ### 2. Portal-GTK Dialog Rendering & Interaction (HIGH)
 
@@ -58,7 +57,7 @@ Chromium/Electron disconnects after receiving XIQueryDevice reply. Wire format v
 
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
 
-## What Was Fixed This Session (v1.19.35.13 → v1.19.35.23)
+## What Was Fixed This Session (v1.19.35.13 → v1.19.35.24)
 
 | # | Fix | Description |
 |---|-----|-------------|
@@ -73,6 +72,7 @@ Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Reg
 | 9 | Cross-client events | `sendEvent32`/`sendEventVariable` route to owning client's transport on fd mismatch |
 | 10 | Cross-client crash | Send directly on target's `transport().sendAll()` — don't use `activateClient/deactivateClient` |
 | 11 | libxkbfile | Added to Docker image for Vitis keyboard layout support |
+| 12 | Frame extents fix | `_NET_FRAME_EXTENTS` set to (0,0,0,0) — fixes Chromium/Electron popup 28px offset (needs testing) |
 
 ## Resolved Issues from Previous Sessions
 
@@ -112,7 +112,7 @@ TCP send buffer 4MB for Docker bridge.
 
 ## Version
 
-Current: **v1.19.35.23-dbg** (debug build counter at 23). Set `SWIFTX11_DEBUG_BUILD` to 0 for release.
+Current: **v1.19.35.24-dbg** (debug build counter at 23). Set `SWIFTX11_DEBUG_BUILD` to 0 for release.
 
 ## Build
 

@@ -802,14 +802,15 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
   }
 
   // _NET_FRAME_EXTENTS: WM frame decoration sizes.
+  // Report (0,0,0,0) for all windows.  SwiftX11 is a non-reparenting WM:
+  // the window's X11 position already represents the content origin, not
+  // the frame origin.  The macOS title bar (added for MOTIF decor=0
+  // windows) is invisible to X11.  Previously we reported top=28, but
+  // Chromium/Electron subtracted frame extents from the window position
+  // to compute the frame origin, then positioned OR popup menus relative
+  // to that — resulting in popups landing 28px too high.
   {
-    uint8_t extents[16] = {0};
-    if (!vw.override_redirect) {
-      x11::wire::wr32_le(extents + 0, 0);   // left
-      x11::wire::wr32_le(extents + 4, 0);   // right
-      x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
-      x11::wire::wr32_le(extents + 12, 0);  // bottom
-    }
+    uint8_t extents[16] = {0};  // all zeros: left=0, right=0, top=0, bottom=0
     PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                          x11::atom::kATOM /*CARDINAL*/, 32,
                                          extents, 16);
