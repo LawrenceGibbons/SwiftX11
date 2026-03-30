@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-27 (v1.19.35 — Phase 8 hardening, Vitis/Electron support, MOTIF_WM_HINTS, WM_TRANSIENT_FOR, acceptsFirstMouse, wide/dashed lines, cursor font, stale event fix)
+Last updated: 2026-03-30 (v1.19.35.23-dbg — native macOS title bar, cross-client event routing, clipboard bridge, sequence wrap fix, SwiftUI crash fix, log noise reduction)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -902,6 +902,12 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 
 ## Known Issues / Bugs
 
+### Vitis Menu Popup Coordinate Offset (HIGH — blocks Vitis menus)
+Electron's HTML menus highlight correctly on hover but dropdown popup windows don't appear. The native macOS title bar (28px) shifts the X11 content down, but the client positions OR popup windows relative to the window frame origin (not the content origin). Popups land ~28px too high. Need to either adjust OR window positions by the parent's `_NET_FRAME_EXTENTS` top offset, or verify that Electron reads frame extents and accounts for them.
+
+### Portal-GTK Dialog Rendering (HIGH — blocks Vitis "Set Workspace")
+xdg-desktop-portal-gtk dialogs (fd=19) render with inverted colors and are non-interactive. Likely root cause: missing **Composite** and **DAMAGE** extensions (both `present=0`). GTK3 relies on Composite for proper widget compositing — without it, the rendering fallback produces inverted alpha. Also: tooltip OR popups from portal-gtk appear behind the dialog (stacking order). Cross-client event routing is now functional (v1.19.35.23).
+
 ### Docker dbus Fails on Second Container Launch (MEDIUM)
 If the user runs a Vivado/Vitis container, quits, and relaunches (new container) within the same SwiftX11 session, `dbus-launch` fails to start on the second launch. Likely stale dbus state (socket files, pid files) from the first container. Needs investigation of `docker-entrypoint.sh` dbus cleanup — possible fixes: kill stale dbus-daemon before launch, clean `/run/dbus/` at container start, or use `--exit-with-x11` flag.
 
@@ -910,16 +916,33 @@ Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Reg
 
 ---
 
+## Completed Enhancements
+
+### Native macOS Title Bar for Undecorated Windows — ✅ DONE (v1.19.35.15)
+Windows with `_MOTIF_WM_HINTS decor=0` (Electron/Vitis) now get a native macOS title bar with traffic light buttons (close/minimize/zoom) and drag handle. The X11 content renders below the title bar. `_NET_FRAME_EXTENTS` reports `top=28`. All sizing APIs (`setContentSize`, `contentView.bounds`, `contentLayoutRect`) already excluded the title bar, so ConfigureNotify reports the correct X11 size.
+
+Popup-pattern windows (JidePopup, single-space titles) remain borderless + floating.
+
+### Cross-Client Event Routing — ✅ DONE (v1.19.35.23)
+Multi-process apps (Vitis: Electron fd=5 + xdg-desktop-portal-gtk fd=19) now exchange events across X11 connections. `sendEvent32`/`sendEventVariable` fall back to `XProtoDaemon::sendEventCrossClient()` on owner fd mismatch, sending directly on the target client's transport without clobbering the active context.
+
+### macOS↔X11 Clipboard Bridge Fixes — ✅ DONE (v1.19.35.17-20)
+- Proactive capture tracks `sSelPushedCC` to prevent overwriting newer macOS content
+- PRIMARY selection preserved — no ownership takeover or SelectionClear
+- Same-client deadlock prevention for ConvertSelection
+
+### 16-bit Sequence Wrap-Around — ✅ DONE (v1.19.35.21)
+Detects legitimate 16-bit sequence wrap (>32768 requests during idle) and resets the monotonic floor. Previously froze Vivado after hours of idle.
+
+### SwiftUI AttributeGraph Crash — ✅ DONE (v1.19.35.18)
+Coalesced `@Published logText` updates to prevent graph corruption during rapid window operations.
+
+### Dialog Focus (XID Reuse) — ✅ DONE (v1.19.35.17)
+Clear WM_TAKE_FOCUS bounce tracking on DestroyWindow to prevent false suppression when a new dialog reuses a destroyed window's XID.
+
+---
+
 ## Future Enhancements
-
-### Native macOS Title Bar for Undecorated Windows
-Windows that set `_MOTIF_WM_HINTS decor=0` (Electron/Vitis, custom-chrome apps) currently use `.borderless` with `isMovableByWindowBackground`. This works but loses native traffic light buttons, Stage Manager title, and resize handles.
-
-**Enhancement**: Add an optional native macOS title bar above the X11 content area. The NSWindow frame grows by ~28px, the X11View is offset downward, and `_NET_FRAME_EXTENTS` reports the decoration size. This is how real X11 WMs work — decorations wrap the client window. Requires changes to:
-- `X11WindowController`: conditional title bar based on window type
-- Resize/coordinate handling: frame vs content offset
-- `_NET_FRAME_EXTENTS` property: report actual decoration extents
-- ConfigureNotify: content position, not frame position
 
 ### Testing Strategy
 For each audit category, use a combination of:

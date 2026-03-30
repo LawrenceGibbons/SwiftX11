@@ -211,11 +211,13 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Building**: User builds from Xcode (Cmd+B). Avoid `xcodebuild` from CLI as it can interfere with Xcode.app.
 - **Docker image rebuilds**: The `x64-linux-dbus` Docker image bakes in `docker-entrypoint.sh`. After editing the entrypoint, rebuild: `cd /Users/lkg/Documents/Vivado/vivado2023 && docker build --platform linux/amd64 -t x64-linux-dbus -f Dockerfile .`
 
-### Vitis (Electron) Support — Known Issues (v1.19.35)
-- **XInputExtension must be hidden** from Chromium/Electron: `present=0` in QueryExtension. Without this, Electron's XI2 initialization (XIQueryDevice) causes immediate disconnect. Workaround in place; root cause under investigation (see TODO.md 8.11).
-- **`_MOTIF_WM_HINTS decor=0`**: Electron sets this for custom chrome. Our handler makes the window borderless + `isMovableByWindowBackground=true` at `.normal` level (not `.floating`).
-- **`--disable-gpu`** flag required for Electron in Docker/Rosetta. Injected via entrypoint patching of the Vitis wrapper script (`sed` on line 567 of `/Xilinx/2025.1.1/Vitis/bin/vitis`).
-- **Vitis works perfectly under xpra** with full XI2 — this confirms the issue is specific to our XI2 implementation, not the Docker/Rosetta environment.
+### Vitis (Electron) Support (v1.19.35.23)
+- **Vitis main window works**: Native macOS title bar (traffic lights + drag handle) above Electron content. Active links within the IDE launch actions. Menu items highlight on hover.
+- **XInputExtension hidden** from Chromium/Electron: `present=0` in QueryExtension. Electron's XIQueryDevice causes disconnect. Workaround in place; root cause under investigation (see TODO.md 8.11).
+- **`_MOTIF_WM_HINTS decor=0`**: Electron sets this for custom chrome. Non-popup windows get `[.titled, .closable, .miniaturizable, .resizable]` (native macOS title bar). Popup-pattern windows (JidePopup, single-space titles) stay `[.borderless]` at `.floating` level.
+- **Cross-client event routing** (v1.19.35.23): Multi-process apps (Vitis: Electron fd + xdg-desktop-portal-gtk fd) exchange events across connections. `sendEvent32`/`sendEventVariable` fall back to `XProtoDaemon::sendEventCrossClient()` on owner fd mismatch.
+- **`--disable-gpu`** flag required for Electron in Docker/Rosetta. Injected via entrypoint patching of Vitis wrapper.
+- **Known issues**: Menu dropdowns don't appear (Y-offset from title bar); portal-GTK dialogs render with inverted colors (missing Composite extension); portal-GTK tooltips appear behind dialogs.
 
 ### Current State (v1.19.35)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
@@ -374,17 +376,19 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 **Workaround**: Report XTEST v2.0 — client never calls GrabControl, no crash.
 
-### Known Issues (v1.19.14)
-- **JidePopup decorated windows**: JidePopup windows appear as full decorated NSWindows with title bars instead of borderless popups. Need to honor `_NET_WM_WINDOW_TYPE` / `_MOTIF_WM_HINTS` for undecorated windows. (HIGH priority)
-- **Ctrl+click regression**: Ctrl+click no longer triggers context menus (button 3) in Vivado. Two-finger trackpad click works. Regression in v1.17→v1.19 range. (MEDIUM)
-- **Pointer offset after left-edge resize**: Menu selections offset horizontally after resizing window by dragging left edge. Likely stale origin in coordinate transform. (MEDIUM)
+### Known Issues (v1.19.35.23)
+- **Vitis menu popup offset**: HTML menus highlight but dropdowns don't appear — 28px Y-offset from native macOS title bar. (HIGH)
+- **Portal-GTK dialog rendering**: xdg-desktop-portal-gtk dialogs render with inverted colors. Missing Composite/DAMAGE extensions. (HIGH)
+- **Portal-GTK dialog interaction**: Can't select items in "Set Workspace" dialog. (HIGH)
+- **Ctrl+click regression**: Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19. (MEDIUM)
+- **JidePopup decorated windows**: ✅ FIXED (v1.19.35) — `_MOTIF_WM_HINTS` now parsed; popups are borderless+floating.
+- **Pointer offset after left-edge resize**: ✅ FIXED (v1.19.25) — position synced in `windowDidResize`.
 - **xcalc -rpn extra button labels**: Client-side issue, same on XQuartz.
 - **xclock/xcalc FontSet warnings**: Xlib XCreateFontSet() charset coverage issue.
-- **Vivado menu highlighting**: Sluggish; needs xscope comparison with XQuartz.
 
 ### Next Major Tasks
-See `docs/TODO.md` for the comprehensive roadmap. Priority order:
-1. **GrabControl crash root cause** — Investigate what GrabControl does in Xorg/XQuartz
-2. **JidePopup windows** — Honor window type hints for borderless popups
-3. **Ctrl+click regression** — Identify which change broke it
-4. **Vitis testing** — Eclipse SWT/GTK from ALMA 9 container
+See `docs/TODO.md` and `docs/HANDOFF.md` for the comprehensive roadmap. Priority order:
+1. **Vitis menu popup coordinate offset** — investigate `_NET_FRAME_EXTENTS` vs OR window positioning
+2. **Portal-GTK dialog** — Composite extension stub or GTK3-compatible rendering fix
+3. **XI2 XIQueryDevice Chromium disconnect** — read Chromium source for post-query validation
+4. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it

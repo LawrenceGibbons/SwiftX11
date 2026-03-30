@@ -1,15 +1,18 @@
-# SwiftX11 — Phase 8/9 Handoff (v1.19.35)
+# SwiftX11 — Phase 9/10 Handoff (v1.19.35.23-dbg)
 
 ## Context
 
 SwiftX11 is a native macOS X11 protocol server (Swift + C++). It implements 101 core X11 opcodes and 10 extensions. It successfully runs xterm, xeyes, xcalc, xclock, xfd, Xilinx Vivado 2025.1.1 (Java Swing), and Xilinx Vitis 2025.1.1 (Electron/Theia) from an AlmaLinux 9 Docker container.
 
+**Vitis status**: Main window renders with native macOS title bar. Electron HTML menus highlight on hover but dropdowns don't appear (coordinate offset from title bar). Portal-GTK dialogs ("Set Workspace") render with inverted colors and are non-interactive (missing Composite extension). Cross-client event routing is now functional.
+
 ## Development Conventions
 
 ### Building & Testing
 - **Build**: User builds from Xcode (Cmd+B on `SwiftX11` target). Do NOT use `xcodebuild` from CLI — it interferes with Xcode.app.
-- **Git workflow**: Claude Code works in a worktree (`.claude/worktrees/<name>/`). Commit there, then merge to `develop` for the user to test: `cd /Users/lkg/Documents/Vivado/SwiftX11/macos && git merge <branch> --no-edit`
-- **Always merge to develop** before asking the user to test. Tell them explicitly about the merge step.
+- **Git workflow**: Claude Code works in a worktree (`.claude/worktrees/<name>/`). Edit files there, commit, then merge to `develop`: `cd /Users/lkg/Documents/Vivado/SwiftX11/macos && git merge <branch> --no-edit`
+- **CRITICAL**: Do NOT edit files directly in the main repo — Xcode has the project open and will crash if source files change under it. Always edit in the worktree.
+- **Always merge to develop** before asking the user to test. Leave `main` alone until release.
 - **Version bumps**: Edit `X11LowLevel/include/SwiftX11Version.h`. For debug iterations, increment `SWIFTX11_DEBUG_BUILD`. For releases, bump `SWIFTX11_VERSION_BASE` and set debug to 0.
 - **Docker image**: `x64-linux-dbus` image bakes in `docker-entrypoint.sh`. After entrypoint changes: `cd /Users/lkg/Documents/Vivado/vivado2023 && docker build --platform linux/amd64 -t x64-linux-dbus -f Dockerfile .`
 
@@ -20,109 +23,86 @@ SwiftX11 is a native macOS X11 protocol server (Swift + C++). It implements 101 
 - Vivado: `./launch_vivado_sx11.sh` — Java Swing, dialogs, JidePopup, IP generation
 - Vitis: `./launch_vitis_sx11.sh` — Electron/Theia IDE
 
-## Primary Issue: XI2 XIQueryDevice Disconnect (HIGH)
+## Priority Issues for Next Session
 
-### The Problem
+### 1. Vitis Menu Popup Coordinate Offset (HIGH)
 
-Chromium/Electron (Vitis 2025.1.1) disconnects immediately after receiving our XIQueryDevice (XI2 minor 48) reply. The disconnect blocks Vitis from working with XInputExtension enabled.
+Electron's HTML menu bar highlights items correctly on hover, but dropdown popup windows don't appear at the right position. Root cause: we added a native macOS title bar (~28px) above the X11 content for MOTIF `decor=0` windows. The X11 client thinks its content starts at the window origin, but it's actually offset down by the title bar height. Override-redirect popup windows positioned relative to the Vitis content land 28px too high.
 
-### Current Workaround
+**Key files**:
+- `WindowRegistry.swift` `applyWindowType()` — where MOTIF decor=0 gets `.titled` style
+- `XProtoServerBridge.cpp` button/motion handlers — coordinate translation
+- `_NET_FRAME_EXTENTS` in `XProtoServer.cpp` — reports top=28, verify client reads it
 
-XInputExtension is hidden from Chromium (`present=0` in QueryExtension reply). Vitis works perfectly without XI2 — Electron falls back to core X11 input. This workaround is in `ExtensionOps.cpp` in the XInput2 handler for QueryExtension.
+**Approach**: The client should account for `_NET_FRAME_EXTENTS` when positioning popups. If it doesn't, the server may need to adjust OR window positions by the parent's frame extent offset. Check whether Electron reads `_NET_FRAME_EXTENTS` or positions popups relative to the window frame vs content origin.
 
-**Important**: Vitis works without issue under our xpra implementation with full XI2 support. This confirms the problem is specific to SwiftX11's XI2 implementation, not the Docker/Rosetta/Electron environment.
+### 2. Portal-GTK Dialog Rendering & Interaction (HIGH)
 
-### What Has Been Exhaustively Verified
+The xdg-desktop-portal-gtk process (fd=19) creates the "Set Workspace" / "Open Folder" dialogs. These render with inverted colors (black where white should be) and are non-interactive (clicks don't register on buttons/lists).
 
-| Test | Result |
-|------|--------|
-| Full hex dump of reply vs XI2proto.h structs | Byte-perfect match |
-| Zero devices | Still disconnects |
-| Masters only (2 devices) | Still disconnects |
-| Pointer only (1 device) | Still disconnects |
-| XI version 2.0 vs 2.2 | Both disconnect |
-| ValuatorClass Relative vs Absolute mode | Both disconnect |
-| Added ScrollClass entries | Still disconnects |
-| Dynamic screen dimensions in valuators | Still disconnects |
-| Fixed master keyboard attachment (4→2) | Still disconnects |
-| `sendReplyRaw` combined send (header+payload) | Verified single sendAll() call |
+**Root causes to investigate**:
+- **Composite extension** (`present=0`) — GTK3 relies on Composite for widget compositing. Without it, GTK3 may use a broken fallback rendering path.
+- **DAMAGE extension** (`present=0`) — often paired with Composite.
+- **ARGB32 visual handling** — GTK3 creates ARGB32 windows for transparency. Verify our CreateWindow handles depth-32 correctly and that alpha isn't inverted.
+- **Input routing** — cross-client button events now route correctly (v1.19.35.23), but verify the portal-gtk dialog's child windows receive ButtonPress events with correct coordinates.
 
-### Key Finding
+**Tooltips**: OR popup windows from portal-gtk appear behind the dialog. Check stacking order — OR windows should be at `.floating` level.
 
-The `readAndDispatch error` is an **EOF** — the client intentionally closes the connection after receiving our complete, well-formed reply. This is NOT a protocol error on our side. The client parses the reply successfully (the wire format is correct) but then decides to disconnect.
+### 3. XI2 XIQueryDevice Chromium Disconnect (HIGH — blocks Vitis with XI2)
 
-### Likely Root Causes to Investigate
+Chromium/Electron disconnects after receiving XIQueryDevice reply. Wire format verified byte-perfect. Current workaround: hide XInputExtension (`present=0`). Vitis works without XI2.
 
-1. **Chromium's post-XIQueryDevice validation**: Read `ui/events/devices/x11/device_data_manager_x11.cc` in Chromium source. It may check for specific conditions after XIQueryDevice (e.g., specific device properties, event mask capabilities, or XI2 event registration requirements) and abort if they're not met.
+**Next step**: Read Chromium's `ui/events/devices/x11/device_data_manager_x11.cc` to understand what post-XIQueryDevice validation causes the disconnect.
 
-2. **Multi-process Chromium architecture**: Chromium spawns multiple X11 connections (browser, GPU, renderer). The connection that calls XIQueryDevice may be a helper process (GPU process or utility) that tries XI2, fails an internal check, and exits. The main Vitis window process connects separately and would work fine — which is exactly what we see when XI2 is hidden.
+### 4. Ctrl+Click Regression (MEDIUM)
 
-3. **Missing XI2 event registration infrastructure**: After XIQueryDevice, Chromium may try to register for XI2 events (XISelectEvents, XISetClientPointer, etc.) and if those fail or produce unexpected results, it disconnects.
-
-4. **Sequence number interaction**: The `sendAll()` monotonic sequence floor logic in `XProtoTransport.cpp` may be modifying the reply header in edge cases. Check if `max_wire_seq_` is being bumped by interleaved events between the XISelectEvents reply and the XIQueryDevice reply.
-
-### Key Files
-
-- **XI2 handlers**: `ExtensionOps.cpp` lines 1019-1400 (search for `kXInput2`)
-- **XIQueryDevice**: `ExtensionOps.cpp` case 48 — builds device list with ButtonClass, ValuatorClass, ScrollClass, KeyClass
-- **XInput2Ops.cpp**: Legacy stub dispatcher — currently just logs and skips. Should be removed or merged into ExtensionOps.
-- **Transport layer**: `XProtoTransport.cpp` `sendAll()` — monotonic sequence floor, payload tracking
-- **Client read loop**: `XProtoDaemon.cpp` `readAndDispatch()` — returns Error on EOF
-
-### Debug Diagnostics Still in Place
-
-- `[XIQueryDevice] seq=N requested_device=N` log line
-- Full hex dump of XIQueryDevice reply to stderr
-- `SWIFTX11_DEBUG_BUILD` counter for tracking iterations
-
-## Resolved Issues from This Session
-
-### XTEST GrabControl Crash (RESOLVED)
-Root cause: `LD_PRELOAD` of `libgdk-x11-2.0.so.0` (GTK2) conflicted with GTK3 loaded by AT-SPI. Removing the GTK2 preload from `start_vivado_sx11.sh` fixed the crash. XTEST v2.2 is now safely enabled.
-
-### JidePopup Decorated Windows (RESOLVED)
-Implemented `_MOTIF_WM_HINTS` parsing in `PropOps.cpp`. When `flags & MWM_HINTS_DECORATIONS` and `decorations == 0`, window becomes borderless + floating. JidePopup windows now appear correctly.
-
-### Dialog Window Management (RESOLVED)
-- `WM_TRANSIENT_FOR` property parsed and stored
-- Transient dialogs shown via `NSApp.activate` + `makeKeyAndOrderFront` (decorated) or `orderFront` (borderless popups)
-- `addChildWindow` approach abandoned (caused grey persistent windows)
-- `acceptsFirstMouse` on both X11View and X11MTKView for click-through
-
-### Stale Event Delivery on fd Reuse (RESOLVED)
-When client 1 disconnects and client 2 reuses the same fd, queued host commands (Key, Button, etc.) were delivered to the wrong client. Fix: input events are now skipped when the owning client isn't found, rather than falling back to an arbitrary client.
-
-### Wide Lines + Dashed Lines (RESOLVED)
-`drawLine()` in ShapeOps.cpp now supports `line_width > 1` (perpendicular stroke expansion) and `line_style` (OnOffDash, DoubleDash). `CapNotLast` implemented.
-
-### Cursor Font (RESOLVED)
-`OpenFont("cursor")` loads `cursor.pcf.gz` from `/opt/X11/share/fonts/misc/`. QueryFont includes `FONT` property.
-
-### Auto-Ungrab on Window Destroy (RESOLVED)
-`DestroyWindow` and `DestroySubwindows` now call `removeForWindows()` to clear grabs.
-
-### SO_SNDBUF Increase (RESOLVED)
-Server-side TCP send buffer increased to 4MB to reduce backpressure on Docker bridge.
-
-## Other Items for Future Sessions
-
-### Native macOS Title Bar for Undecorated Windows
-Windows with `_MOTIF_WM_HINTS decor=0` (Electron/Vitis) currently use `.borderless` + `isMovableByWindowBackground`. Enhancement: add optional native macOS title bar above X11 content. See TODO.md "Future Enhancements" section.
-
-### Ctrl+Click Regression (MEDIUM)
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
 
-### Phase 8.5 Graphics — Remaining Items
-- FillPoly fill rule (WindingRule not implemented)
-- PolyLine join behavior (square joins only)
-- CapRound / CapProjecting for wide lines
+## What Was Fixed This Session (v1.19.35.13 → v1.19.35.23)
 
-### BadGC / BadCursor Strict Validation
-Reverted to lenient mode — Java AWT calls RecolorCursor/ChangeGC on resources not in our tables. Full resource tracking needed before re-enabling strict checks.
+| # | Fix | Description |
+|---|-----|-------------|
+| 1 | Native macOS title bar | MOTIF `decor=0` windows get `.titled` style — drag via title bar, traffic lights work |
+| 2 | Click passthrough | Removed `isMovableByWindowBackground` which stole all mouseDown events |
+| 3 | macOS→X11 clipboard | Track `sSelPushedCC` to prevent proactive capture from overwriting newer macOS content |
+| 4 | Dialog focus | Clear WM_TAKE_FOCUS bounce tracking on DestroyWindow (XID reuse caused false suppression) |
+| 5 | SwiftUI crash | Coalesce `@Published logText` updates via `DispatchQueue.main.async` batch |
+| 6 | Log noise | Gate `[FLUSH]`, `[DISPATCH]`, `[PROP_TOPLEVEL]`, `[CREATE_TOPLEVEL]`, `[LABEL]`, `[HIERARCHY]` behind trace flags |
+| 7 | PRIMARY selection | Don't steal ownership or send SelectionClear for PRIMARY — preserves text highlight in Vivado |
+| 8 | Sequence wrap | Detect 16-bit wrap-around (>32768 requests during idle) and reset `max_wire_seq_` floor |
+| 9 | Cross-client events | `sendEvent32`/`sendEventVariable` route to owning client's transport on fd mismatch |
+| 10 | Cross-client crash | Send directly on target's `transport().sendAll()` — don't use `activateClient/deactivateClient` |
+| 11 | libxkbfile | Added to Docker image for Vitis keyboard layout support |
+
+## Resolved Issues from Previous Sessions
+
+### XTEST GrabControl Crash (RESOLVED)
+Root cause: `LD_PRELOAD` of `libgdk-x11-2.0.so.0` (GTK2) conflicted with GTK3 loaded by AT-SPI.
+
+### JidePopup Decorated Windows (RESOLVED)
+`_MOTIF_WM_HINTS` parsing. `decor=0` → borderless + floating for popups, titled for main windows.
+
+### Dialog Window Management (RESOLVED)
+`WM_TRANSIENT_FOR` parsed, transient dialogs shown via `makeKeyAndOrderFront`, `addChildWindow` abandoned.
+
+### Stale Event Delivery on fd Reuse (RESOLVED)
+Input events skipped when owning client isn't found.
+
+### Wide Lines + Dashed Lines (RESOLVED)
+`line_width > 1` and `line_style` (OnOffDash, DoubleDash). `CapNotLast` implemented.
+
+### Cursor Font (RESOLVED)
+`OpenFont("cursor")` loads `cursor.pcf.gz`.
+
+### Auto-Ungrab on Window Destroy (RESOLVED)
+`DestroyWindow`/`DestroySubwindows` call `removeForWindows()`.
+
+### SO_SNDBUF Increase (RESOLVED)
+TCP send buffer 4MB for Docker bridge.
 
 ## Docker Container Setup
 
-- **Image**: `x64-linux-dbus` (AlmaLinux 9 + dbus)
+- **Image**: `x64-linux-dbus` (AlmaLinux 9 + dbus + libxkbfile)
 - **DISPLAY**: `host.docker.internal:1` (SwiftX11 on TCP port 6001)
 - **dbus**: `dbus-launch --sh-syntax` in startup script, DISPLAY must be set BEFORE dbus-launch
 - **No GTK2 preload**: Removed `libgdk-x11-2.0.so.0` from LD_PRELOAD (caused GTK2/3 conflict)
@@ -132,7 +112,7 @@ Reverted to lenient mode — Java AWT calls RecolorCursor/ChangeGC on resources 
 
 ## Version
 
-Current: **v1.19.35** (debug build counter at 12). Set `SWIFTX11_DEBUG_BUILD` to 0 for release.
+Current: **v1.19.35.23-dbg** (debug build counter at 23). Set `SWIFTX11_DEBUG_BUILD` to 0 for release.
 
 ## Build
 
