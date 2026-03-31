@@ -535,6 +535,13 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   if (override_redirect) createFlags |= X11_UI_FLAG_OVERRIDE_REDIRECT;
   ctx.ui().pushCreate(wid, parent, title, (int32_t)x, (int32_t)y, (int32_t)wpx, (int32_t)hpx, createFlags);
 
+  // Trace OR window creation for popup diagnosis
+  if (override_redirect) {
+    TS_FPRINTF("[CREATE_OR] wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u fd=%d\n",
+            (unsigned)wid, (unsigned)parent, (int)x, (int)y,
+            (unsigned)wpx, (unsigned)hpx, ctx.transport().clientFd());
+  }
+
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
 
@@ -802,32 +809,13 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
   }
 
   // _NET_FRAME_EXTENTS: WM frame decoration sizes.
-  // For MOTIF decor=0 windows (Electron/Vitis with custom chrome), report
-  // (0,0,0,0) — SwiftX11 is a non-reparenting WM and X11 positions
-  // represent the content origin.  Chromium subtracts frame extents from
-  // the window position for popup placement; reporting top=28 caused
-  // dropdowns to land 28px too high.
-  // For other titled windows (Vivado/Java Swing), report top=28 as before.
   {
     uint8_t extents[16] = {0};
     if (!vw.override_redirect) {
-      // Check MOTIF hints: if decor=0, report (0,0,0,0)
-      bool motifDecorZero = false;
-      PropertyTable::Prop motifProp;
-      if (PropertyTable::instance().get(wid, x11::atom::k_MOTIF_WM_HINTS, motifProp)
-          && motifProp.format == 32 && motifProp.data.size() >= 12) {
-        const uint32_t* d32 = reinterpret_cast<const uint32_t*>(motifProp.data.data());
-        constexpr uint32_t MWM_HINTS_DECORATIONS = (1u << 1);
-        if ((d32[0] & MWM_HINTS_DECORATIONS) && d32[2] == 0) {
-          motifDecorZero = true;
-        }
-      }
-      if (!motifDecorZero) {
-        x11::wire::wr32_le(extents + 0, 0);   // left
-        x11::wire::wr32_le(extents + 4, 0);   // right
-        x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
-        x11::wire::wr32_le(extents + 12, 0);  // bottom
-      }
+      x11::wire::wr32_le(extents + 0, 0);   // left
+      x11::wire::wr32_le(extents + 4, 0);   // right
+      x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
+      x11::wire::wr32_le(extents + 12, 0);  // bottom
     }
     PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                          x11::atom::kATOM /*CARDINAL*/, 32,

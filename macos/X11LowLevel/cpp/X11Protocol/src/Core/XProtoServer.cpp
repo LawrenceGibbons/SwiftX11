@@ -452,23 +452,14 @@ void XProtoServer::flushPendingMaps() {
       x11_ui_push_move(wid, (int32_t)vw.x, (int32_t)vw.y);
     }
 
-    // _NET_FRAME_EXTENTS — (0,0,0,0) for MOTIF decor=0, (0,0,28,0) otherwise
+    // _NET_FRAME_EXTENTS
     {
       uint8_t extents[16] = {0};
       if (!vw.override_redirect) {
-        bool motifDecorZero = false;
-        PropertyTable::Prop motifProp;
-        if (PropertyTable::instance().get(wid, x11::atom::k_MOTIF_WM_HINTS, motifProp)
-            && motifProp.format == 32 && motifProp.data.size() >= 12) {
-          const uint32_t* d32 = reinterpret_cast<const uint32_t*>(motifProp.data.data());
-          constexpr uint32_t MWM_HINTS_DECORATIONS = (1u << 1);
-          if ((d32[0] & MWM_HINTS_DECORATIONS) && d32[2] == 0) {
-            motifDecorZero = true;
-          }
-        }
-        if (!motifDecorZero) {
-          x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
-        }
+        x11::wire::wr32_le(extents + 0, 0);   // left
+        x11::wire::wr32_le(extents + 4, 0);   // right
+        x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
+        x11::wire::wr32_le(extents + 12, 0);  // bottom
       }
       PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                            x11::atom::kATOM, 32, extents, 16);

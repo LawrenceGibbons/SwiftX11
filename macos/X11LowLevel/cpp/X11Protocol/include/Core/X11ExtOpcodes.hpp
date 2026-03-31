@@ -22,6 +22,8 @@ static constexpr uint8_t kRENDER    = 139;  // reserved for RENDER
 static constexpr uint8_t kXCMisc   = 140;  // XC-MISC (XID range recycling)
 static constexpr uint8_t kXInput2  = 141;  // XInput2 (XI2)
 static constexpr uint8_t kXTEST    = 142;  // XTEST
+static constexpr uint8_t kCOMPOSITE = 143; // Composite
+static constexpr uint8_t kDAMAGE    = 144; // DAMAGE
 
 // Extension first_event values
 static constexpr uint8_t kXFIXES_FirstEvent   = 87;
@@ -33,10 +35,16 @@ static constexpr uint8_t kGE_FirstEvent       = 35;  // GenericEvent
 // Range 93-109, safely above RANDR (89-90)
 static constexpr uint8_t kXInput_FirstEvent  = 93;
 
+// Composite has no events; DAMAGE has DamageNotify
+static constexpr uint8_t kCOMPOSITE_FirstEvent = 0;
+static constexpr uint8_t kDAMAGE_FirstEvent    = 110;  // above XInput range (93-109)
+
 // Extension first_error values (0 = none)
 static constexpr uint8_t kSHAPE_FirstError    = 0;
 static constexpr uint8_t kRANDR_FirstError    = 0;
 static constexpr uint8_t kRENDER_FirstError   = 0;
+static constexpr uint8_t kCOMPOSITE_FirstError = 0;
+static constexpr uint8_t kDAMAGE_FirstError    = 0;
 
 } // namespace ext
 } // namespace x11

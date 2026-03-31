@@ -624,6 +624,11 @@ namespace x11 {
       first_event = ext::kXInput_FirstEvent;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
+    } else if (name == "Composite") {
+      present = 1; major = ext::kCOMPOSITE;
+    } else if (name == "DAMAGE") {
+      present = 1; major = ext::kDAMAGE;
+      first_event = ext::kDAMAGE_FirstEvent;
     }
 
 #ifndef NDEBUG
@@ -661,8 +666,10 @@ namespace x11 {
       "XC-MISC",
       "XInputExtension",
       "XTEST",
+      "Composite",
+      "DAMAGE",
     };
-    static constexpr uint8_t nExt = 10;
+    static constexpr uint8_t nExt = 12;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;

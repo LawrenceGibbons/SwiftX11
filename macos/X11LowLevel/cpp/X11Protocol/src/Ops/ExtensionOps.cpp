@@ -52,6 +52,8 @@ ExtensionOps::ExtensionOps(XProtoRegistrar& reg) {
   reg.registerMajor(ext::kXCMisc,    &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kXInput2,   &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kXTEST,     &ExtensionOps::onMajor, this);
+  reg.registerMajor(ext::kCOMPOSITE, &ExtensionOps::onMajor, this);
+  reg.registerMajor(ext::kDAMAGE,    &ExtensionOps::onMajor, this);
 }
 
 void ExtensionOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -1643,6 +1645,98 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
     // Unhandled XTEST minor — send BadRequest
     { char buf[128]; snprintf(buf, sizeof(buf), "[XTEST] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // Composite — major opcode 143
+  // GTK3 relies on Composite for proper widget compositing.  Without it,
+  // portal-GTK dialogs render with inverted colors (broken fallback path).
+  // Stub: advertise version 0.4, silently consume all sub-opcodes.
+  // -------------------------------------------------------------------
+  if (major == ext::kCOMPOSITE) {
+    switch (minor) {
+
+    // ---- minor 0: CompositeQueryVersion (reply-bearing) ----
+    case 0: {
+      // Request: CARD32 client_major, CARD32 client_minor
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 8, 0);   // major version = 0
+        wire::wr32_le(rep.data() + 12, 4);  // minor version = 4
+      });
+      return;
+    }
+
+    // ---- minor 1: CompositeRedirectWindow (void) ----
+    // ---- minor 2: CompositeRedirectSubwindows (void) ----
+    // ---- minor 3: CompositeUnredirectWindow (void) ----
+    // ---- minor 4: CompositeUnredirectSubwindows (void) ----
+    // ---- minor 5: CompositeCreateRegionFromBorderClip (void) ----
+    // ---- minor 6: CompositeNameWindowPixmap (void) ----
+    case 1: case 2: case 3: case 4: case 5: case 6:
+      br.skip(br.remaining());
+      return;
+
+    // ---- minor 7: CompositeGetOverlayWindow (reply-bearing) ----
+    case 7: {
+      // Request: CARD32 window
+      // Reply: CARD32 overlay_window
+      // Return the root window as the overlay — matches typical WM behavior
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 8, 1);  // overlay_win = root (XID 1)
+      });
+      return;
+    }
+
+    // ---- minor 8: CompositeReleaseOverlayWindow (void) ----
+    case 8:
+      br.skip(br.remaining());
+      return;
+
+    default:
+      break;
+    }
+    // Unhandled Composite minor
+    br.skip(br.remaining());
+    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // DAMAGE — major opcode 144
+  // Often paired with Composite.  Tracks drawable content changes.
+  // Stub: advertise version 1.1, silently consume all sub-opcodes.
+  // -------------------------------------------------------------------
+  if (major == ext::kDAMAGE) {
+    switch (minor) {
+
+    // ---- minor 0: DamageQueryVersion (reply-bearing) ----
+    case 0: {
+      // Request: CARD32 client_major, CARD32 client_minor
+      br.skip(br.remaining());
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 8, 1);   // major version = 1
+        wire::wr32_le(rep.data() + 12, 1);  // minor version = 1
+      });
+      return;
+    }
+
+    // ---- minor 1: DamageCreate (void) ----
+    // ---- minor 2: DamageDestroy (void) ----
+    // ---- minor 3: DamageSubtract (void) ----
+    // ---- minor 4: DamageAdd (void) ----
+    case 1: case 2: case 3: case 4:
+      br.skip(br.remaining());
+      return;
+
+    default:
+      break;
+    }
+    // Unhandled DAMAGE minor
     br.skip(br.remaining());
     ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     return;
