@@ -620,13 +620,8 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      // HIDDEN: XI2 events (GenericEvent type 35) sent alongside core events
-      // confuse Electron/Chromium's input handling, breaking menu dropdowns.
-      // Electron registers for XI2 ButtonPress/Release/Motion via XISelectEvents
-      // and its XI2 handler interferes with the core event path that triggers
-      // HTML menu click actions.  Hide the extension so clients never register.
-      // TODO: re-enable with per-client XI2 negotiation guard.
-      present = 0;
+      present = 1; major = ext::kXInput2;
+      first_event = ext::kXInput_FirstEvent;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     } else if (name == "Composite") {
@@ -660,8 +655,6 @@ namespace x11 {
     br.skip(br.remaining()); // request has no extra fields we care about
 
     // List extensions that are fully (or minimally) functional.
-    // XInputExtension omitted: XI2 events confuse Electron/Chromium menu clicks.
-    // See QueryExtension handler comment for details.
     static const char* extensions[] = {
       "BIG-REQUESTS",
       "RENDER",
@@ -671,11 +664,12 @@ namespace x11 {
       "Generic Event Extension",
       "SHAPE",
       "XC-MISC",
+      "XInputExtension",
       "XTEST",
       "Composite",
       "DAMAGE",
     };
-    static constexpr uint8_t nExt = 11;
+    static constexpr uint8_t nExt = 12;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;

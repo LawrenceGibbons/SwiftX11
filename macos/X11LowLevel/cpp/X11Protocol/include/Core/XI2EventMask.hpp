@@ -47,8 +47,10 @@ constexpr uint32_t kRawButtonReleaseMask = (1u << 16);
 constexpr uint32_t kRawMotionMask        = (1u << 17);
 
 // --- Virtual core device IDs (matching XIQueryDevice) ---
-constexpr uint16_t kVirtualCorePointer  = 2;
-constexpr uint16_t kVirtualCoreKeyboard = 3;
+constexpr uint16_t kVirtualCorePointer  = 2;  // master pointer
+constexpr uint16_t kVirtualCoreKeyboard = 3;  // master keyboard
+constexpr uint16_t kXTESTPointer        = 4;  // slave pointer (sourceid for pointer events)
+constexpr uint16_t kXTESTKeyboard       = 5;  // slave keyboard (sourceid for keyboard events)
 
 // --- Wire format sizes ---
 // xXIDeviceEvent with buttons_len=1, valuators_len=0: 84 bytes
