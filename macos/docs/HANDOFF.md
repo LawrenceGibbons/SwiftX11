@@ -1,10 +1,10 @@
-# SwiftX11 — Phase 9/10 Handoff (v1.19.35.24-dbg)
+# SwiftX11 — Phase 10 Handoff (v1.19.35.26-dbg)
 
 ## Context
 
-SwiftX11 is a native macOS X11 protocol server (Swift + C++). It implements 101 core X11 opcodes and 10 extensions. It successfully runs xterm, xeyes, xcalc, xclock, xfd, Xilinx Vivado 2025.1.1 (Java Swing), and Xilinx Vitis 2025.1.1 (Electron/Theia) from an AlmaLinux 9 Docker container.
+SwiftX11 is a native macOS X11 protocol server (Swift + C++). It implements 101 core X11 opcodes and 12 extensions. It successfully runs xterm, xeyes, xcalc, xclock, xfd, Xilinx Vivado 2025.1.1 (Java Swing), and Xilinx Vitis 2025.1.1 (Electron/Theia) from an AlmaLinux 9 Docker container.
 
-**Vitis status**: Main window renders with native macOS title bar. `_NET_FRAME_EXTENTS` fixed to (0,0,0,0) — should fix Electron popup positioning (needs testing). Portal-GTK dialogs ("Set Workspace") render with inverted colors and are non-interactive (missing Composite extension). Cross-client event routing is now functional.
+**Vitis status**: Main window renders with native macOS title bar. HTML menus highlight on hover but dropdowns don't fire (Electron-internal JS/CSS issue — menus are NOT X11 popup windows). Portal-GTK dialogs ("Open Folder") now render with mostly correct colors (Composite/DAMAGE stubs added) but remain non-interactive. Cross-client event routing functional with sequence restamping.
 
 ## Development Conventions
 
@@ -25,56 +25,56 @@ SwiftX11 is a native macOS X11 protocol server (Swift + C++). It implements 101 
 
 ## Priority Issues for Next Session
 
-### 1. Vitis Menu Popup Coordinate Offset — FIX APPLIED, NEEDS TESTING (v1.19.35.24)
+### 1. Vitis Menu Dropdowns Don't Fire (HIGH — was working in earlier server version)
 
-**Fix**: Set `_NET_FRAME_EXTENTS` to (0,0,0,0) for all windows. Root cause analysis: SwiftX11 is a non-reparenting WM — the window's X11 position already represents the content origin, not the frame origin. Previously we reported top=28, but Chromium/Electron subtracted frame extents from the window position to compute the frame origin for popup placement, resulting in popups 28px too high. With frame extents = (0,0,0,0), the client uses the X11 position as-is, which is correct.
+Electron's HTML menu bar highlights items on hover, but clicking does NOT trigger the dropdown. **Key finding (v1.19.35.25)**: `[CREATE_OR]` tracing confirmed Electron creates ZERO override-redirect popup windows for menus. The menus are rendered entirely inline via HTML/CSS/JS within the main Electron window. The dropdown failure is an Electron-internal issue triggered by something in SwiftX11's input event handling.
 
-**Changed files**: `WindowOps.cpp` (pushMapExtras), `XProtoServer.cpp` (flushPendingMaps)
+**The user reports this was working in a previous server version** (quite a ways back). This means a change in input event delivery, focus management, or grab behavior broke the click handler that triggers dropdowns.
 
-**Test**: Launch Vitis, hover over File/Edit/View menus — dropdown popups should appear at the correct position aligned with the menu items.
+**Investigation approach**:
+- Enable wire trace (`x11_set_wire_trace`) and click a Vitis menu item. Compare the ButtonPress/ButtonRelease/MotionNotify events delivered to Electron vs what works on XQuartz.
+- Check if a grab (GrabPointer/GrabKeyboard) is active that's eating the button event before Electron's JS sees it.
+- Check if FocusOut events are being sent that cause Electron to dismiss the menu before it opens.
+- Check if ButtonRelease is missing or has wrong coordinates (Electron might need Press+Release in same window to register a click).
+- Look at the event_mask on the Vitis main window and its child windows — if ButtonPressMask isn't set, events won't be delivered.
 
-**If fix doesn't work**: The issue might be that Electron positions popups using TranslateCoordinates or root coordinates from motion events rather than frame extents. In that case, investigate the exact Chromium popup placement code in `ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc`.
+**Key files**: `XProtoServerBridge.cpp` (button handler), `GrabOps.cpp`, `InputRouting.cpp`, `EventOps.cpp`
 
-### 2. Portal-GTK Dialog Rendering & Interaction (HIGH)
+**Diagnostic**: `[CREATE_OR]` trace is already in place — if a fix causes Electron to start creating popup windows, we'll see them in stderr.
 
-The xdg-desktop-portal-gtk process (fd=19) creates the "Set Workspace" / "Open Folder" dialogs. These render with inverted colors (black where white should be) and are non-interactive (clicks don't register on buttons/lists).
+### 2. Portal-GTK Dialog Rendering & Interaction (MEDIUM)
 
-**Root causes to investigate**:
-- **Composite extension** (`present=0`) — GTK3 relies on Composite for widget compositing. Without it, GTK3 may use a broken fallback rendering path.
-- **DAMAGE extension** (`present=0`) — often paired with Composite.
-- **ARGB32 visual handling** — GTK3 creates ARGB32 windows for transparency. Verify our CreateWindow handles depth-32 correctly and that alpha isn't inverted.
-- **Input routing** — cross-client button events now route correctly (v1.19.35.23), but verify the portal-gtk dialog's child windows receive ButtonPress events with correct coordinates.
+The xdg-desktop-portal-gtk process creates "Set Workspace" / "Open Folder" dialogs. With Composite/DAMAGE stubs (v1.19.35.25), dialogs now render with mostly correct layout and readable text (sidebar, file list, buttons all visible). Screenshot shows significant improvement over fully-inverted rendering.
 
-**Tooltips**: OR popup windows from portal-gtk appear behind the dialog. Check stacking order — OR windows should be at `.floating` level.
+**Remaining issues**:
+- **Some color oddities**: Widgets not fully correct — possibly ARGB32 alpha channel handling. GTK3 creates depth-32 windows for transparency; verify `CreateWindow` handles depth-32 and alpha isn't inverted in the rendering pipeline.
+- **Non-interactive**: Clicks don't register on sidebar items, file list, or Cancel/Open buttons. Verify portal-gtk child windows receive ButtonPress events with correct coordinates. Cross-client event routing works (v1.19.35.23), but portal-gtk creates many small child windows that need precise coordinate hit-testing.
+- **Tooltip stacking**: OR popup windows from portal-gtk appear behind the dialog. Check that OR windows from portal-gtk get `.floating` level above the dialog's `.normal` level.
 
-### 3. XI2 XIQueryDevice Chromium Disconnect (HIGH — blocks Vitis with XI2)
-
-Chromium/Electron disconnects after receiving XIQueryDevice reply. Wire format verified byte-perfect. Current workaround: hide XInputExtension (`present=0`). Vitis works without XI2.
-
-**Next step**: Read Chromium's `ui/events/devices/x11/device_data_manager_x11.cc` to understand what post-XIQueryDevice validation causes the disconnect.
-
-### 4. Ctrl+Click Regression (MEDIUM)
+### 3. Ctrl+Click Regression (MEDIUM)
 
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
 
-## What Was Fixed This Session (v1.19.35.13 → v1.19.35.24)
+### 4. XI2 XIQueryDevice Chromium Disconnect (LOW — workaround in place)
+
+Chromium/Electron disconnects after receiving XIQueryDevice reply. Workaround: hide XInputExtension (`present=0` in QueryExtension). Vitis works without XI2.
+
+## What Was Fixed This Session (v1.19.35.23 → v1.19.35.25)
 
 | # | Fix | Description |
 |---|-----|-------------|
-| 1 | Native macOS title bar | MOTIF `decor=0` windows get `.titled` style — drag via title bar, traffic lights work |
-| 2 | Click passthrough | Removed `isMovableByWindowBackground` which stole all mouseDown events |
-| 3 | macOS→X11 clipboard | Track `sSelPushedCC` to prevent proactive capture from overwriting newer macOS content |
-| 4 | Dialog focus | Clear WM_TAKE_FOCUS bounce tracking on DestroyWindow (XID reuse caused false suppression) |
-| 5 | SwiftUI crash | Coalesce `@Published logText` updates via `DispatchQueue.main.async` batch |
-| 6 | Log noise | Gate `[FLUSH]`, `[DISPATCH]`, `[PROP_TOPLEVEL]`, `[CREATE_TOPLEVEL]`, `[LABEL]`, `[HIERARCHY]` behind trace flags |
-| 7 | PRIMARY selection | Don't steal ownership or send SelectionClear for PRIMARY — preserves text highlight in Vivado |
-| 8 | Sequence wrap | Detect 16-bit wrap-around (>32768 requests during idle) and reset `max_wire_seq_` floor |
-| 9 | Cross-client events | `sendEvent32`/`sendEventVariable` route to owning client's transport on fd mismatch |
-| 10 | Cross-client crash | Send directly on target's `transport().sendAll()` — don't use `activateClient/deactivateClient` |
-| 11 | libxkbfile | Added to Docker image for Vitis keyboard layout support |
-| 12 | Frame extents fix | `_NET_FRAME_EXTENTS` set to (0,0,0,0) — fixes Chromium/Electron popup 28px offset (needs testing) |
+| 1 | Cross-client seq fix | `sendEventCrossClient` restamps event seq with target transport's `lastSeq()` — fixes XCB "Unknown sequence number" crash |
+| 2 | Composite extension | v0.4 stub (major 143) — portal-GTK dialogs render with mostly correct colors |
+| 3 | DAMAGE extension | v1.1 stub (major 144) — paired with Composite for GTK3 compositor awareness |
+| 4 | OR popup tracing | `[CREATE_OR]` logs every override-redirect window creation with XID, position, size, fd |
+| 5 | Vitis menu diagnosis | Confirmed menus are inline HTML (not OR popups) — dropdown failure is Electron-internal |
+
+**What was investigated but NOT the cause**: `_NET_FRAME_EXTENTS` (0,0,0,0) — tried for MOTIF decor=0 windows, didn't fix menus (because menus aren't X11 popups), reverted to top=28.
 
 ## Resolved Issues from Previous Sessions
+
+### Cross-Client Event Seq Poisoning (RESOLVED v1.19.35.24)
+`sendEventCrossClient()` sent events with source client's sequence, poisoning target's `max_wire_seq_`. Diagnosed from wire ring: fd=7 entry had seq=181 (fd=12's sequence). Fix: restamp bytes[2:3] with target's `lastSeq()`.
 
 ### XTEST GrabControl Crash (RESOLVED)
 Root cause: `LD_PRELOAD` of `libgdk-x11-2.0.so.0` (GTK2) conflicted with GTK3 loaded by AT-SPI.
@@ -87,15 +87,6 @@ Root cause: `LD_PRELOAD` of `libgdk-x11-2.0.so.0` (GTK2) conflicted with GTK3 lo
 
 ### Stale Event Delivery on fd Reuse (RESOLVED)
 Input events skipped when owning client isn't found.
-
-### Wide Lines + Dashed Lines (RESOLVED)
-`line_width > 1` and `line_style` (OnOffDash, DoubleDash). `CapNotLast` implemented.
-
-### Cursor Font (RESOLVED)
-`OpenFont("cursor")` loads `cursor.pcf.gz`.
-
-### Auto-Ungrab on Window Destroy (RESOLVED)
-`DestroyWindow`/`DestroySubwindows` call `removeForWindows()`.
 
 ### SO_SNDBUF Increase (RESOLVED)
 TCP send buffer 4MB for Docker bridge.
@@ -112,7 +103,7 @@ TCP send buffer 4MB for Docker bridge.
 
 ## Version
 
-Current: **v1.19.35.24-dbg** (debug build counter at 23). Set `SWIFTX11_DEBUG_BUILD` to 0 for release.
+Current: **v1.19.35.26-dbg** (debug build counter at 26). Set `SWIFTX11_DEBUG_BUILD` to 0 for release.
 
 ## Build
 

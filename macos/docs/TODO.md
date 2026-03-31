@@ -902,11 +902,11 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 
 ## Known Issues / Bugs
 
-### Vitis Menu Popup Coordinate Offset — FIX APPLIED (v1.19.35.24, needs testing)
-Electron's HTML menus highlight correctly on hover but dropdown popup windows appeared ~28px too high. Root cause: `_NET_FRAME_EXTENTS` reported top=28, but our non-reparenting WM's X11 positions already represent the content origin. Chromium subtracted frame extents from the window position for popup placement, double-counting the offset. **Fix**: Set `_NET_FRAME_EXTENTS` to (0,0,0,0) for all windows.
+### Vitis Menu Dropdowns Don't Fire (HIGH — was working in earlier server version)
+Electron's HTML menus highlight on hover but clicking doesn't trigger the dropdown. `[CREATE_OR]` tracing (v1.19.35.25) confirmed Electron creates ZERO override-redirect popup windows — menus are rendered inline via HTML/CSS/JS. The dropdown failure is an Electron-internal issue caused by something in SwiftX11's input event handling (was working in a previous server version). `_NET_FRAME_EXTENTS` investigation (tried 0,0,0,0 for MOTIF decor=0) did NOT fix this — reverted. Next: compare input event delivery (ButtonPress/Release) with XQuartz using wire trace.
 
-### Portal-GTK Dialog Rendering (HIGH — blocks Vitis "Set Workspace")
-xdg-desktop-portal-gtk dialogs (fd=19) render with inverted colors and are non-interactive. Likely root cause: missing **Composite** and **DAMAGE** extensions (both `present=0`). GTK3 relies on Composite for proper widget compositing — without it, the rendering fallback produces inverted alpha. Also: tooltip OR popups from portal-gtk appear behind the dialog (stacking order). Cross-client event routing is now functional (v1.19.35.23).
+### Portal-GTK Dialog Rendering & Interaction (MEDIUM)
+xdg-desktop-portal-gtk dialogs now render with mostly correct colors after Composite (v0.4) and DAMAGE (v1.1) stubs were added (v1.19.35.25). Remaining issues: some color oddities (ARGB32 alpha handling), dialog buttons/list items non-interactive (clicks don't register on child windows), tooltip OR popups appear behind dialog (stacking order).
 
 ### Docker dbus Fails on Second Container Launch (MEDIUM)
 If the user runs a Vivado/Vitis container, quits, and relaunches (new container) within the same SwiftX11 session, `dbus-launch` fails to start on the second launch. Likely stale dbus state (socket files, pid files) from the first container. Needs investigation of `docker-entrypoint.sh` dbus cleanup — possible fixes: kill stale dbus-daemon before launch, clean `/run/dbus/` at container start, or use `--exit-with-x11` flag.
@@ -925,6 +925,12 @@ Popup-pattern windows (JidePopup, single-space titles) remain borderless + float
 
 ### Cross-Client Event Routing — ✅ DONE (v1.19.35.23)
 Multi-process apps (Vitis: Electron fd=5 + xdg-desktop-portal-gtk fd=19) now exchange events across X11 connections. `sendEvent32`/`sendEventVariable` fall back to `XProtoDaemon::sendEventCrossClient()` on owner fd mismatch, sending directly on the target client's transport without clobbering the active context.
+
+### Cross-Client Event Seq Fix — ✅ DONE (v1.19.35.24)
+`sendEventCrossClient()` now restamps bytes[2:3] with the target transport's `lastSeq()`. Previously, events carried the source client's sequence which poisoned `max_wire_seq_` on the target transport, causing XCB "Unknown sequence number" crashes. Diagnosed from wire ring: fd=7 entry[31] had type=8 seq=181 (fd=12's sequence, not fd=7's ~41000).
+
+### Composite + DAMAGE Extension Stubs — ✅ DONE (v1.19.35.25)
+Composite v0.4 (major 143): QueryVersion, RedirectWindow/Subwindows, UnredirectWindow/Subwindows, CreateRegionFromBorderClip, NameWindowPixmap, GetOverlayWindow, ReleaseOverlayWindow. DAMAGE v1.1 (major 144): QueryVersion, Create, Destroy, Subtract, Add. Portal-GTK dialogs now render with mostly correct colors instead of fully inverted. Total advertised extensions: 12.
 
 ### macOS↔X11 Clipboard Bridge Fixes — ✅ DONE (v1.19.35.17-20)
 - Proactive capture tracks `sSelPushedCC` to prevent overwriting newer macOS content
