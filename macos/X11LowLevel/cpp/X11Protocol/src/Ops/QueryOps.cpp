@@ -620,8 +620,13 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      present = 1; major = ext::kXInput2;
-      first_event = ext::kXInput_FirstEvent;
+      // HIDDEN: XI2 GenericEvent delivery causes wire protocol corruption
+      // (sequence regression) that crashes Electron/Chromium during startup.
+      // Event format fixes (sourceid, coordinates) are in place; the remaining
+      // issue is in the variable-length event delivery path or cross-client
+      // routing.  Needs live wire tracing with Vitis to diagnose.
+      // XI2 handlers remain active at opcode 141 for future re-enable.
+      present = 0;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     } else if (name == "Composite") {
@@ -655,6 +660,7 @@ namespace x11 {
     br.skip(br.remaining()); // request has no extra fields we care about
 
     // List extensions that are fully (or minimally) functional.
+    // XInputExtension omitted — see QueryExtension handler comment.
     static const char* extensions[] = {
       "BIG-REQUESTS",
       "RENDER",
@@ -664,12 +670,11 @@ namespace x11 {
       "Generic Event Extension",
       "SHAPE",
       "XC-MISC",
-      "XInputExtension",
       "XTEST",
       "Composite",
       "DAMAGE",
     };
-    static constexpr uint8_t nExt = 12;
+    static constexpr uint8_t nExt = 11;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
