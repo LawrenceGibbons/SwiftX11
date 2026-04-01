@@ -904,11 +904,11 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 
 ## Known Issues / Bugs
 
-### Vitis Menu Dropdowns Don't Fire (HIGH — was working in earlier server version)
-Electron's HTML menus highlight on hover but clicking doesn't trigger the dropdown. `[CREATE_OR]` tracing (v1.19.35.25) confirmed Electron creates ZERO override-redirect popup windows — menus are rendered inline via HTML/CSS/JS. The dropdown failure is an Electron-internal issue caused by something in SwiftX11's input event handling (was working in a previous server version). `_NET_FRAME_EXTENTS` investigation (tried 0,0,0,0 for MOTIF decor=0) did NOT fix this — reverted. **XI2 investigation** (v1.19.35.27-29): XI2 was found to be advertised (`present=1`) despite docs claiming workaround was in place. Hiding XI2 alone doesn't fix menu dropdowns (they were broken before XI2 was added). Next: compare input event delivery (ButtonPress/Release) with XQuartz using wire trace.
+### Vitis Menu Dropdowns — ✅ FIXED (v1.19.35.29, XI2 hidden)
+Root cause: XI2 wire corruption. When XInputExtension was advertised (`present=1`), Electron registered for XI2 events via XISelectEvents. The variable-length GenericEvent delivery caused wire protocol corruption (sequence regression), breaking Electron's internal input handling. Hiding XI2 (`present=0`) restores full menu functionality. Menus highlight on hover AND fire dropdowns correctly.
 
-### Portal-GTK Dialog Rendering & Interaction (MEDIUM)
-xdg-desktop-portal-gtk dialogs now render with mostly correct colors after Composite (v0.4) and DAMAGE (v1.1) stubs were added (v1.19.35.25). Remaining issues: some color oddities (ARGB32 alpha handling), dialog buttons/list items non-interactive (clicks don't register on child windows), tooltip OR popups appear behind dialog (stacking order).
+### Portal-GTK Dialog Interaction — ✅ FIXED (v1.19.35.29, XI2 hidden)
+Same root cause as Vitis menus: XI2 wire corruption. With XI2 hidden, portal-GTK file dialogs are fully interactive (sidebar, file list, Cancel/Open buttons all work). Rendering: mostly correct colors after Composite/DAMAGE stubs (v1.19.35.25). Some button rendering looks slightly inverted — may be an ARGB32 alpha channel issue or intended GTK3 theme appearance.
 
 ### Docker dbus Fails on Second Container Launch — ✅ FIXED (v1.19.35.29)
 Root cause: `dbus-launch` checks the X11 root window for a `_DBUS_SESSION_BUS_*` property. That property persists in SwiftX11's property table across container restarts, pointing to a dead socket from the first container. Fix: replaced `dbus-launch --sh-syntax` with `dbus-daemon --session --fork --print-address` in start scripts (no X11 autolaunch lookup). Also added system bus cleanup (`/run/dbus/pid`, stale dbus-daemon kill) to `docker-entrypoint.sh`.

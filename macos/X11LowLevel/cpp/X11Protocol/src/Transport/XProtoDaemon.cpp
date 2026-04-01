@@ -6,6 +6,7 @@
 //
 
 #include "Transport/XProtoDaemon.hpp"
+#include "Core/IncrTransfer.hpp"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -530,6 +531,9 @@ void XProtoDaemon::removeClient(int fd) {
 
   // Remove grabs for destroyed windows
   server_->ctx().grabs().removeForWindows(owned);
+
+  // Cancel any active INCR clipboard transfers for this client
+  x11::IncrTransfer::instance().cancelForFd(fd);
 
   // Clear input state references to destroyed windows
   auto& input = server_->ctx().input();

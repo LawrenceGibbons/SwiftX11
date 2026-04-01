@@ -11,6 +11,7 @@
 #include "Core/XProtoServer.hpp"
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
+#include "Core/IncrTransfer.hpp"
 #include "Core/HostCommandQueue.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/ReplyWriter.hpp"
@@ -232,6 +233,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
       atom::kSTRING,
       atom::kTEXT,
       atom::kTIMESTAMP,
+      atom::kINCR,
     };
     const uint32_t nTargets = sizeof(targets) / sizeof(targets[0]);
 
@@ -298,9 +300,10 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
       target == atom::kSTRING ||
       target == atom::kTEXT)
   {
-    // Read macOS clipboard
-    char buf[65536];
-    uint32_t len = x11_clipboard_get_text(buf, sizeof(buf));
+    // Read macOS clipboard into dynamic buffer (up to 4MB)
+    static constexpr uint32_t kMaxClipRead = 4u * 1024 * 1024;
+    std::vector<char> clipBuf(kMaxClipRead);
+    uint32_t len = x11_clipboard_get_text(clipBuf.data(), kMaxClipRead);
 
     if (len == 0) {
       // Clipboard empty or no bridge — send SelectionNotify with property=None
@@ -316,15 +319,37 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
       return true;
     }
 
-    // Write text to requestor's property
-    PropertyTable::instance().setReplace(
-      requestor, property,
-      target, // type = same as requested target
-      8,      // format = 8 (byte string)
-      reinterpret_cast<const uint8_t*>(buf), len
-    );
+    // Determine requestor's owner_fd for INCR cleanup on disconnect
+    int reqFd = -1;
+    {
+      const WindowView* rv = ctx.window(requestor);
+      if (rv) reqFd = rv->owner_fd;
+    }
 
-    // Send SelectionNotify with property set
+    if (len > IncrTransfer::kChunkSize) {
+      // Large data: use INCR protocol (chunked transfer)
+      std::vector<uint8_t> data(reinterpret_cast<const uint8_t*>(clipBuf.data()),
+                                reinterpret_cast<const uint8_t*>(clipBuf.data()) + len);
+      uint32_t totalSize = IncrTransfer::instance().startTransfer(
+        requestor, property, target, reqFd, std::move(data));
+
+      TS_FPRINTF("[CLIPBOARD] INCR started: %u bytes to 0x%08X (chunks of %zu)\n",
+              totalSize, (unsigned)requestor, IncrTransfer::kChunkSize);
+    } else {
+      // Small data: direct property write (existing fast path)
+      PropertyTable::instance().setReplace(
+        requestor, property,
+        target, 8,
+        reinterpret_cast<const uint8_t*>(clipBuf.data()), len
+      );
+
+#ifndef NDEBUG
+      TS_FPRINTF("[CLIPBOARD] Served %u bytes from macOS pasteboard to 0x%08X\n",
+              len, (unsigned)requestor);
+#endif
+    }
+
+    // Send SelectionNotify with property set (for both INCR and direct)
     uint8_t ev[32] = {0};
     ev[0] = 31; // SelectionNotify
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
@@ -334,11 +359,6 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     wire::wr32_le(ev + 16, target);
     wire::wr32_le(ev + 20, property);
     (void)ctx.transport().sendEvent32(requestor, ev);
-
-#ifndef NDEBUG
-    TS_FPRINTF("[CLIPBOARD] Served %u bytes from macOS pasteboard to 0x%08X\n",
-            len, (unsigned)requestor);
-#endif
     return true;
   }
 

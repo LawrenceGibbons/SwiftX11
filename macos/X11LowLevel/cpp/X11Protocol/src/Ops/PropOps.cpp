@@ -8,6 +8,7 @@
 
 #include "Ops/PropOps.hpp"
 #include "Core/PropertyTable.hpp"
+#include "Core/IncrTransfer.hpp"
 
 #include <array>
 #include <cstddef>
@@ -453,6 +454,15 @@ void PropOps::handleDeleteProperty(XProtoContext& ctx, uint16_t seq, ByteReader&
   // X11 spec: DeleteProperty generates PropertyNotify with state=Deleted
   sendPropertyNotify(ctx, wid, atom, /*deleted*/true);
 
+  // INCR protocol: if the requestor deleted the property, write the next chunk.
+  // The server (as selection owner) reacts to deletion by advancing the transfer.
+  if (x11::IncrTransfer::instance().hasTransfer(wid, atom)) {
+    if (x11::IncrTransfer::instance().writeNextChunk(wid, atom)) {
+      // Notify requestor that new data is available (PropertyNotify NewValue)
+      sendPropertyNotify(ctx, wid, atom, /*deleted*/false);
+    }
+  }
+
   ctx.tracef("[PropOps] DeleteProperty wid=0x%08X atom=%u\n", (unsigned)wid, (unsigned)atom);
 }
 
@@ -584,6 +594,13 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
     PropertyTable::instance().erase(wid, atom);
     // X11 spec: generate PropertyNotify with state=Deleted after deletion
     sendPropertyNotify(ctx, wid, atom, /*deleted*/true);
+
+    // INCR protocol: advance transfer on property deletion
+    if (x11::IncrTransfer::instance().hasTransfer(wid, atom)) {
+      if (x11::IncrTransfer::instance().writeNextChunk(wid, atom)) {
+        sendPropertyNotify(ctx, wid, atom, /*deleted*/false);
+      }
+    }
   }
 }
   

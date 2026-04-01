@@ -107,7 +107,7 @@ private:
   }
 
   static void cap_(std::vector<uint8_t>& v) {
-    constexpr std::size_t kMax = (1u << 20);
+    constexpr std::size_t kMax = (1u << 24); // 16 MB safety valve
     if (v.size() > kMax) v.resize(kMax);
   }
 
