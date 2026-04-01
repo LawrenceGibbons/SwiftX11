@@ -1,6 +1,6 @@
 # SwiftX11 TODO
 
-Last updated: 2026-03-30 (v1.19.35.23-dbg — native macOS title bar, cross-client event routing, clipboard bridge, sequence wrap fix, SwiftUI crash fix, log noise reduction)
+Last updated: 2026-04-01 (v1.19.35.29-dbg — XI2 event fixes, XI2 hidden for Electron, Vitis+Vivado working)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -895,15 +895,17 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 - [x] **SHAPE InputShape** (pre-existing): ShapeRectangles/ShapeOffset/ShapeQueryExtents all handle kind=2 (Input). Input routing respects shape regions.
 - [x] **RANDR reply sizes** (pre-existing): All v1.3 replies (GetScreenResources, GetOutputInfo, GetCrtcInfo, etc.) have correct variable-length padding. 36-byte RRGetOutputInfo reply verified.
 - [ ] **XFIXES region ops**: Mostly stubs — QueryVersion + cursor image stubs only. Region operations (Create/Destroy/Union/Intersect/etc.) consume silently. LOW — no known client depends on XFIXES regions for our use case.
-- [ ] **XInput2 XIQueryDevice — Chromium disconnect** (HIGH — blocks Vitis/Electron with XI2): Chromium/Electron disconnects immediately after receiving XIQueryDevice reply. Exhaustive analysis (v1.19.35.12-dbg): wire format is byte-perfect (full hex dump verified against XI2proto.h structs), all device structures correct (ButtonClass, ValuatorClass, ScrollClass, KeyClass). Tried: zero devices, masters-only, pointer-only, XI 2.0→2.2, Absolute mode, ScrollClass — ALL disconnect. The client receives the complete reply and intentionally closes the connection (EOF on read). **Workaround**: hiding XInputExtension (`present=0` in QueryExtension) makes Vitis work perfectly — Electron falls back to core X11 input. Vitis also works under xpra with full XI2. **Next steps**: read Chromium's `device_data_manager_x11.cc` source to understand what validation it does post-XIQueryDevice. The issue may be something subtle (missing XI2 event registration, or the Chromium GPU process dying and cascading).
-- [ ] **XInput2 event delivery**: Verify XI2 events have correct fields (deviceid, sourceid, time, valuators, modifiers, group). Currently XI2 events work for Java Swing (Vivado) but Electron/Chromium's expectations are stricter.
+- [ ] **XInput2 wire corruption with Electron** (LOW — workaround in place): Enabling XI2 causes Vitis/Electron to crash during startup. Wire ring buffer shows sequence regression (seq=16 after seq=187) indicating protocol corruption in variable-length GenericEvent delivery path or cross-client routing. **Workaround**: XInputExtension hidden (`present=0`, 11 extensions). Vitis works perfectly without XI2.
+  - **Event format fixed** (v1.19.35.28): sourceid corrected to slave device IDs (kXTESTPointer=4, kXTESTKeyboard=5 instead of master 2/3). event_x/event_y now use `computeEventXYFromHostLocal`/`computeEventXYFromRoot` hierarchy walk (was broken `root_x - wv->x` for child windows). Keyboard XI2 events no longer include button mask. Fixes retained but dormant since XI2 is hidden.
+  - **Global xi2_root_mask issue**: `InputState.xi2_root_mask` is global across all clients. If client A calls XISelectEvents on root, ALL clients receive XI2 events (even non-XI2 clients). Should be per-client. This may be the root cause of the wire corruption.
+  - **Next steps**: Add per-client XI2 root mask tracking. Enable wire trace (`x11_set_wire_trace`) during Vitis startup to capture exact corrupt packet. Read Chromium's `device_data_manager_x11.cc` for post-XIQueryDevice validation.
 
 ---
 
 ## Known Issues / Bugs
 
 ### Vitis Menu Dropdowns Don't Fire (HIGH — was working in earlier server version)
-Electron's HTML menus highlight on hover but clicking doesn't trigger the dropdown. `[CREATE_OR]` tracing (v1.19.35.25) confirmed Electron creates ZERO override-redirect popup windows — menus are rendered inline via HTML/CSS/JS. The dropdown failure is an Electron-internal issue caused by something in SwiftX11's input event handling (was working in a previous server version). `_NET_FRAME_EXTENTS` investigation (tried 0,0,0,0 for MOTIF decor=0) did NOT fix this — reverted. Next: compare input event delivery (ButtonPress/Release) with XQuartz using wire trace.
+Electron's HTML menus highlight on hover but clicking doesn't trigger the dropdown. `[CREATE_OR]` tracing (v1.19.35.25) confirmed Electron creates ZERO override-redirect popup windows — menus are rendered inline via HTML/CSS/JS. The dropdown failure is an Electron-internal issue caused by something in SwiftX11's input event handling (was working in a previous server version). `_NET_FRAME_EXTENTS` investigation (tried 0,0,0,0 for MOTIF decor=0) did NOT fix this — reverted. **XI2 investigation** (v1.19.35.27-29): XI2 was found to be advertised (`present=1`) despite docs claiming workaround was in place. Hiding XI2 alone doesn't fix menu dropdowns (they were broken before XI2 was added). Next: compare input event delivery (ButtonPress/Release) with XQuartz using wire trace.
 
 ### Portal-GTK Dialog Rendering & Interaction (MEDIUM)
 xdg-desktop-portal-gtk dialogs now render with mostly correct colors after Composite (v0.4) and DAMAGE (v1.1) stubs were added (v1.19.35.25). Remaining issues: some color oddities (ARGB32 alpha handling), dialog buttons/list items non-interactive (clicks don't register on child windows), tooltip OR popups appear behind dialog (stacking order).
