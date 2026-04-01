@@ -145,11 +145,16 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     (void)ctx.transport().sendEvent32(prevOwner, ev);
   }
 
-  // Track macOS changeCount so ConvertSelection can detect external macOS changes
+  // Track macOS changeCount so ConvertSelection can detect external macOS changes.
+  // Also reset sSelPushedCC so the proactive capture push isn't blocked by
+  // external macOS clipboard changes that happened before this ownership claim.
+  // Without this reset, any macOS Cmd+C after our last push permanently blocks
+  // all subsequent X11→macOS clipboard captures.
   {
     int64_t cc = x11_clipboard_get_change_count();
     std::lock_guard<std::mutex> lk(sSelMtx);
     sSelMacCC[selection] = cc;
+    sSelPushedCC[selection] = cc;
   }
 
   // Proactive clipboard capture: send SelectionRequest from root (XID 1)
