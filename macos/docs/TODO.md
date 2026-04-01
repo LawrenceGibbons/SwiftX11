@@ -910,8 +910,8 @@ Electron's HTML menus highlight on hover but clicking doesn't trigger the dropdo
 ### Portal-GTK Dialog Rendering & Interaction (MEDIUM)
 xdg-desktop-portal-gtk dialogs now render with mostly correct colors after Composite (v0.4) and DAMAGE (v1.1) stubs were added (v1.19.35.25). Remaining issues: some color oddities (ARGB32 alpha handling), dialog buttons/list items non-interactive (clicks don't register on child windows), tooltip OR popups appear behind dialog (stacking order).
 
-### Docker dbus Fails on Second Container Launch (MEDIUM)
-If the user runs a Vivado/Vitis container, quits, and relaunches (new container) within the same SwiftX11 session, `dbus-launch` fails to start on the second launch. Likely stale dbus state (socket files, pid files) from the first container. Needs investigation of `docker-entrypoint.sh` dbus cleanup — possible fixes: kill stale dbus-daemon before launch, clean `/run/dbus/` at container start, or use `--exit-with-x11` flag.
+### Docker dbus Fails on Second Container Launch — ✅ FIXED (v1.19.35.29)
+Root cause: `dbus-launch` checks the X11 root window for a `_DBUS_SESSION_BUS_*` property. That property persists in SwiftX11's property table across container restarts, pointing to a dead socket from the first container. Fix: replaced `dbus-launch --sh-syntax` with `dbus-daemon --session --fork --print-address` in start scripts (no X11 autolaunch lookup). Also added system bus cleanup (`/run/dbus/pid`, stale dbus-daemon kill) to `docker-entrypoint.sh`.
 
 ### Ctrl+Click Regression (MEDIUM)
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
