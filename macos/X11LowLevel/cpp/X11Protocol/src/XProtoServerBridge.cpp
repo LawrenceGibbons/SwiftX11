@@ -791,12 +791,41 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 
           // If nobody wants it, drop.
-          if (!wantsBtn(deliver)) break;
+          if (!wantsBtn(deliver)) {
+            // Diagnostic: log why the click was dropped
+            const x11::WindowView* dbgUnder = ctx.window(under);
+            const x11::WindowView* dbgHost  = ctx.window(effectiveHost);
+            TS_FPRINTF("[BTN_DROP] host=0x%08X under=0x%08X "
+                       "host_mask=0x%08X host_fd=%d "
+                       "under_mask=0x%08X under_fd=%d "
+                       "pos=(%d,%d) btn=%d %s\n",
+                       (unsigned)effectiveHost, (unsigned)under,
+                       dbgHost ? dbgHost->event_mask : 0u,
+                       dbgHost ? dbgHost->owner_fd : -1,
+                       dbgUnder ? dbgUnder->event_mask : 0u,
+                       dbgUnder ? dbgUnder->owner_fd : -1,
+                       (int)effectiveWinX, (int)effectiveWinY,
+                       (int)c.button, c.isDown ? "DOWN" : "UP");
+            break;
+          }
 
           // child field: if delivering to ancestor, child is the subwindow under pointer
           const uint32_t child = (deliver != under) ? under : 0;
 
 
+          {
+            const x11::WindowView* dbgDel = ctx.window(deliver);
+            TS_FPRINTF("[BTN_SEND] host=0x%08X under=0x%08X deliver=0x%08X "
+                       "del_fd=%d del_mask=0x%08X child=0x%08X "
+                       "pos=(%d,%d) btn=%d %s\n",
+                       (unsigned)effectiveHost, (unsigned)under,
+                       (unsigned)deliver,
+                       dbgDel ? dbgDel->owner_fd : -1,
+                       dbgDel ? dbgDel->event_mask : 0u,
+                       (unsigned)child,
+                       (int)effectiveWinX, (int)effectiveWinY,
+                       (int)c.button, c.isDown ? "DOWN" : "UP");
+          }
           srv->eventOps().sendButtonEvent(ctx, deliver,
                                           c.isDown != 0, c.button,
                                           ctx.input().root_x_u, ctx.input().root_y_u,
