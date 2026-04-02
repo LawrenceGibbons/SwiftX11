@@ -633,7 +633,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // If so, claim PRIMARY+CLIPBOARD so the next paste serves macOS
             // content (prevents Xlib from short-circuiting ConvertSelection
             // when the requestor is also the selection owner).
-            SelectionOps::claimSelectionsIfMacOSChanged(ctx);
+            x11::SelectionOps::claimSelectionsIfMacOSChanged(ctx);
 
           } else {
             // Losing focus on this host — only act if this host actually
