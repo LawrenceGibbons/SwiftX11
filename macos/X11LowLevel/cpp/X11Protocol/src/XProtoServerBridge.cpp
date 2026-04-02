@@ -27,6 +27,7 @@
 #include "Transport/XProtoDaemon.hpp"
 #include "Core/WindowView.hpp"
 #include "Ops/EventOps.hpp"
+#include "Ops/SelectionOps.hpp"
 #include "XProtoNotifyBridge.hpp"
 #include "Core/XEventMask.hpp"
 #include "Utils/BackgroundFill.hpp"
@@ -627,6 +628,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // on FocusIn regardless of WM_TAKE_FOCUS.
             srv->eventOps().sendFocusEventDirect(ctx, host, /*is_in=*/true);
             srv->eventOps().sendXI2FocusEvent(ctx, host, /*is_in=*/true);
+
+            // Check if macOS clipboard changed while we were in another app.
+            // If so, claim PRIMARY+CLIPBOARD so the next paste serves macOS
+            // content (prevents Xlib from short-circuiting ConvertSelection
+            // when the requestor is also the selection owner).
+            SelectionOps::claimSelectionsIfMacOSChanged(ctx);
 
           } else {
             // Losing focus on this host — only act if this host actually

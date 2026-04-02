@@ -56,6 +56,54 @@ static std::unordered_map<uint32_t /*atom*/, uint32_t /*time*/> sSelTime;
 
 
 // ---------------------------------------------------------------------------
+// FocusIn hook: claim PRIMARY + CLIPBOARD when macOS clipboard changed.
+// Called from XProtoServerBridge Focus handler when a window gains focus.
+// If the user Cmd+C'd on macOS while in another app, the macOS clipboard
+// is newer than any X11 selection.  By claiming ownership to root (XID 1),
+// the next ConvertSelection goes through the server and serves macOS content.
+// Without this, Xlib short-circuits ConvertSelection when the requestor
+// is also the owner (e.g., xterm owns PRIMARY from a previous select).
+// ---------------------------------------------------------------------------
+void SelectionOps::claimSelectionsIfMacOSChanged(XProtoContext& ctx) {
+  int64_t currentCC = x11_clipboard_get_change_count();
+  if (currentCC <= 0) return;
+
+  std::lock_guard<std::mutex> lk(sSelMtx);
+
+  const uint32_t sels[] = { atom::kPRIMARY, atom::kCLIPBOARD };
+  for (uint32_t sel : sels) {
+    auto ccIt = sSelMacCC.find(sel);
+    int64_t lastKnownCC = (ccIt != sSelMacCC.end()) ? ccIt->second : -1;
+
+    if (currentCC > lastKnownCC) {
+      // macOS clipboard is newer — claim this selection to root proxy
+      auto ownerIt = sSelOwner.find(sel);
+      uint32_t prevOwner = (ownerIt != sSelOwner.end()) ? ownerIt->second : 0;
+
+      if (prevOwner > 1) {
+        // Send SelectionClear to the previous X11 owner
+        uint8_t ev[32] = {0};
+        ev[0] = 29; // SelectionClear
+        wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+        wire::wr32_le(ev + 4,  0); // CurrentTime
+        wire::wr32_le(ev + 8,  prevOwner);
+        wire::wr32_le(ev + 12, sel);
+        (void)ctx.transport().sendEvent32(prevOwner, ev);
+
+        TS_FPRINTF("[CLIPBOARD] Focus claim: sel=%u prev=0x%08X→root "
+                "(macOS cc %lld > %lld)\n",
+                (unsigned)sel, (unsigned)prevOwner,
+                (long long)currentCC, (long long)lastKnownCC);
+      }
+
+      sSelOwner[sel] = 1; // root proxy
+      sSelMacCC[sel] = currentCC;
+      sSelPushedCC[sel] = currentCC;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Construction — register opcodes 22-25
 // ---------------------------------------------------------------------------
 SelectionOps::SelectionOps(XProtoRegistrar& reg) {

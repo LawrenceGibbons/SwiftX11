@@ -20,6 +20,10 @@ private:
   static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
+  /// Called on FocusIn: if macOS clipboard changed since last check,
+  /// claim PRIMARY+CLIPBOARD so the next paste serves macOS content.
+  static void claimSelectionsIfMacOSChanged(XProtoContext& ctx);
+
   void handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // 22
   void handleGetSelectionOwner(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // 23 (reply)
   void handleConvertSelection(XProtoContext& ctx, uint16_t seq, ByteReader& br);   // 24
