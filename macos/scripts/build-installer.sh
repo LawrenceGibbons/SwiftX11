@@ -16,7 +16,8 @@ BUILD_DIR="$PROJECT_DIR/build"
 INSTALLER_DIR="$SCRIPT_DIR/installer"
 
 # Read version from SwiftX11Version.h
-VERSION=$(grep '#define SWIFTX11_VERSION' "$PROJECT_DIR/X11LowLevel/include/SwiftX11Version.h" \
+# SWIFTX11_VERSION_BASE always has the quoted base version string.
+VERSION=$(grep '#define SWIFTX11_VERSION_BASE' "$PROJECT_DIR/X11LowLevel/include/SwiftX11Version.h" \
     | sed 's/.*"\(.*\)"/\1/')
 
 if [ -z "$VERSION" ]; then
