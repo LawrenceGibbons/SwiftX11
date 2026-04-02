@@ -310,6 +310,9 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     std::vector<char> clipBuf(kMaxClipRead);
     uint32_t len = x11_clipboard_get_text(clipBuf.data(), kMaxClipRead);
 
+    TS_FPRINTF("[CLIPBOARD] serveMacOS: read %u bytes for target=%u req=0x%08X\n",
+            len, (unsigned)target, (unsigned)requestor);
+
     if (len == 0) {
       // Clipboard empty or no bridge — send SelectionNotify with property=None
       uint8_t ev[32] = {0};
@@ -396,8 +399,8 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
 
   br.skip(br.remaining());
 
-  TS_FPRINTF("[SEL] ConvertSelection sel=%u target=%u req=0x%08X prop=%u\n",
-          (unsigned)selection, (unsigned)target, (unsigned)requestor, (unsigned)property);
+  TS_FPRINTF("[SEL] ConvertSelection sel=%u target=%u req=0x%08X prop=%u time=%u\n",
+          (unsigned)selection, (unsigned)target, (unsigned)requestor, (unsigned)property, (unsigned)time);
 
   // Per ICCCM: if property is None, use target as property
   if (property == 0) property = target;
@@ -458,6 +461,9 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
       bool reqOk   = ctx.windows().snapshot(requestor, reqWv);
       if (ownerOk && reqOk && ownerWv.owner_fd == reqWv.owner_fd) {
         // Same client — can't do round-trip, refuse the conversion
+        TS_FPRINTF("[CLIPBOARD] REFUSED: same-client deadlock prevention "
+                "(owner=0x%08X req=0x%08X fd=%d)\n",
+                (unsigned)owner, (unsigned)requestor, ownerWv.owner_fd);
         uint8_t nev[32] = {0};
         nev[0] = 31; // SelectionNotify
         wire::wr16_le(nev + 2, ctx.transport().lastSeq());
@@ -472,6 +478,8 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     }
 
     // Different client owns the selection — forward SelectionRequest
+    TS_FPRINTF("[CLIPBOARD] Forwarding SelectionRequest to X11 owner 0x%08X (fd=%d)\n",
+            (unsigned)owner, ctx.transport().clientFd());
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
