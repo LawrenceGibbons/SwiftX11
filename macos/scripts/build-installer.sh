@@ -53,9 +53,11 @@ echo ""
 
 echo "── Step 2: Staging payloads..."
 
-# App payload
+# App payload (strip resource forks and quarantine to avoid Gatekeeper issues)
 mkdir -p "$BUILD_DIR/app-payload"
 cp -R "$APP_PATH" "$BUILD_DIR/app-payload/"
+xattr -cr "$BUILD_DIR/app-payload/SwiftX11.app"
+dot_clean -m "$BUILD_DIR/app-payload"
 echo "   App payload: $(du -sh "$BUILD_DIR/app-payload" | cut -f1)"
 
 # Font payload
