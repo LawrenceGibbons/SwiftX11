@@ -257,24 +257,27 @@ final class XServerController: ObservableObject {
   }
   
   private var pendingLogLines: [String] = []
-  private var logFlushScheduled = false
+  private var logFlushTimer: Timer?
 
   @MainActor
   func append(_ line: String) {
     let s = "[\(tstamp())] \(line)"
     pendingLogLines.append(s)
     // Coalesce rapid log updates to avoid overwhelming SwiftUI's
-    // AttributeGraph.  Flushing logText synchronously during window
-    // operations (create/map/title) can crash in propagate_dirty when
-    // the LogTextView binding triggers mid-transaction.
-    guard !logFlushScheduled else { return }
-    logFlushScheduled = true
-    DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-      self.logFlushScheduled = false
-      guard !self.pendingLogLines.isEmpty else { return }
-      self.logText += self.pendingLogLines.joined(separator: "\n") + "\n"
-      self.pendingLogLines.removeAll(keepingCapacity: true)
+    // AttributeGraph.  DispatchQueue.main.async can fire during SwiftUI's
+    // layout pass, crashing in propagate_dirty.  A timer with a minimum
+    // 200ms interval ensures the @Published update happens in a clean
+    // runloop cycle, well after any in-flight SwiftUI transactions.
+    if logFlushTimer == nil {
+      logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          guard let self else { return }
+          self.logFlushTimer = nil
+          guard !self.pendingLogLines.isEmpty else { return }
+          self.logText += self.pendingLogLines.joined(separator: "\n") + "\n"
+          self.pendingLogLines.removeAll(keepingCapacity: true)
+        }
+      }
     }
   }
   
