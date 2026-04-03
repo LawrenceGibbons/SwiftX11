@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import Metal
 import X11LowLevel
 import QuartzCore
 
@@ -52,10 +53,28 @@ final class XServerController: ObservableObject {
   static let buildVersion = String(cString: swiftx11_version())
   static let buildDate = String(cString: swiftx11_build_date())
 
-  /// Check for X11 PCF fonts at startup. If missing, show a dialog.
-  /// The server can run without them (CoreText fallback for basic fonts),
-  /// but legacy X11 apps like xterm will have missing/broken text.
+  /// Pre-flight checks before starting the server.
   private func checkFontsAndStart() {
+    // ── Metal check ──────────────────────────────────────────────────
+    if MTLCreateSystemDefaultDevice() == nil {
+      let alert = NSAlert()
+      alert.messageText = "Metal GPU Not Available"
+      alert.informativeText = """
+        SwiftX11 requires a Metal-capable GPU for rendering. \
+        This Mac does not appear to have Metal support.
+
+        Metal is available on all Macs from 2012 or later. \
+        If you are running in a virtual machine, ensure GPU \
+        passthrough is enabled.
+        """
+      alert.alertStyle = .critical
+      alert.addButton(withTitle: "OK")
+      alert.runModal()
+      NSApp.terminate(nil)
+      return
+    }
+
+    // ── Font check ───────────────────────────────────────────────────
     let fontDir = "/opt/X11/share/fonts/misc/fonts.dir"
     if FileManager.default.fileExists(atPath: fontDir) {
       start()
