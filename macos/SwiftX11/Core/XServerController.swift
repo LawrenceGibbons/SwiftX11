@@ -37,10 +37,10 @@ final class XServerController: ObservableObject {
       object: nil
     )
 
-    start()
+    checkFontsAndStart()
   }
-  
-  
+
+
   @objc private func _handleStartRequested(_ note: Notification) {
     start()
   }
@@ -51,6 +51,45 @@ final class XServerController: ObservableObject {
   
   static let buildVersion = String(cString: swiftx11_version())
   static let buildDate = String(cString: swiftx11_build_date())
+
+  /// Check for X11 PCF fonts at startup. If missing, show a dialog.
+  /// The server can run without them (CoreText fallback for basic fonts),
+  /// but legacy X11 apps like xterm will have missing/broken text.
+  private func checkFontsAndStart() {
+    let fontDir = "/opt/X11/share/fonts/misc/fonts.dir"
+    if FileManager.default.fileExists(atPath: fontDir) {
+      start()
+      return
+    }
+
+    // Fonts not found — show dialog on main thread
+    let alert = NSAlert()
+    alert.messageText = "X11 Fonts Not Found"
+    alert.informativeText = """
+      SwiftX11 could not find X11 bitmap fonts at:
+      /opt/X11/share/fonts/
+
+      Without these fonts, legacy X11 applications (xterm, xcalc, xclock) \
+      will not render text correctly.
+
+      You can install fonts from the SwiftX11 disk image \
+      (see the "X11 Fonts" folder and its INSTALL.txt), \
+      or by installing XQuartz (xquartz.org).
+      """
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "Continue Without Fonts")
+    alert.addButton(withTitle: "Quit")
+
+    let response = alert.runModal()
+    if response == .alertSecondButtonReturn {
+      NSApp.terminate(nil)
+      return
+    }
+
+    // User chose to continue without fonts
+    append("WARNING: X11 fonts not found at /opt/X11/share/fonts/ — text rendering may be broken")
+    start()
+  }
 
   func start() {
     guard !isRunning else { return }
