@@ -816,8 +816,22 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             break;
           }
 
-          // child field: if delivering to ancestor, child is the subwindow under pointer
-          const uint32_t child = (deliver != under) ? under : 0;
+          // child field: per X11 spec, "child is set to the child of the
+          // event window that is the ancestor of (or is) the source window."
+          // This means the IMMEDIATE child of deliver, not the deepest descendant.
+          uint32_t child = 0;
+          if (deliver != under) {
+            // Walk from 'under' up toward 'deliver' to find the immediate child
+            uint32_t cur = under;
+            int csafety = 0;
+            while (cur && cur != deliver && ++csafety < 64) {
+              x11::WindowView cwv{};
+              if (!ctx.windows().snapshot(cur, cwv)) break;
+              if (cwv.parent_xid == deliver) { child = cur; break; }
+              cur = cwv.parent_xid;
+            }
+            if (child == 0) child = under; // fallback if walk fails
+          }
 
 
           {
