@@ -74,9 +74,20 @@ final class XServerController: ObservableObject {
       return
     }
 
+    // ── Register bundle resource path for font scanning ────────────
+    if let resourcePath = Bundle.main.resourcePath {
+      x11_set_bundle_resource_path(resourcePath)
+    }
+
     // ── Font check ───────────────────────────────────────────────────
-    let fontDir = "/opt/X11/share/fonts/misc/fonts.dir"
-    if FileManager.default.fileExists(atPath: fontDir) {
+    // Check for fonts in bundle first, then system /opt/X11
+    let fm = FileManager.default
+    let bundleFontsDir = Bundle.main.resourcePath.map { $0 + "/fonts/misc/fonts.dir" }
+    let systemFontsDir = "/opt/X11/share/fonts/misc/fonts.dir"
+    let hasBundleFonts = bundleFontsDir.map { fm.fileExists(atPath: $0) } ?? false
+    let hasSystemFonts = fm.fileExists(atPath: systemFontsDir)
+
+    if hasBundleFonts || hasSystemFonts {
       start()
       return
     }
@@ -85,15 +96,15 @@ final class XServerController: ObservableObject {
     let alert = NSAlert()
     alert.messageText = "X11 Fonts Not Found"
     alert.informativeText = """
-      SwiftX11 could not find X11 bitmap fonts at:
+      SwiftX11 could not find X11 bitmap fonts. Checked:
+      \(Bundle.main.resourcePath ?? "<bundle>")/fonts/
       /opt/X11/share/fonts/
 
       Without these fonts, legacy X11 applications (xterm, xcalc, xclock) \
       will not render text correctly.
 
-      You can install fonts from the SwiftX11 disk image \
-      (see the "X11 Fonts" folder and its INSTALL.txt), \
-      or by installing XQuartz (xquartz.org).
+      Try reinstalling SwiftX11 from the .dmg (fonts are bundled inside \
+      the app), or install XQuartz (xquartz.org) which provides system fonts.
       """
     alert.alertStyle = .warning
     alert.addButton(withTitle: "Continue Without Fonts")

@@ -237,16 +237,25 @@ bool FontTable::loadBuiltins(std::string* err) {
   (void)loadBdf("9x18B",   "9x18B");
   (void)loadBdf("fixed",   "fixed");
 
-  // Scan system font directories (fonts.dir) for PCF font names
+  // Scan font directories (fonts.dir) for PCF font names.
   // This only registers XLFD names → file paths; actual fonts are loaded lazily.
-  const char* fontDirs[] = {
-    "/opt/X11/share/fonts/misc",
-    "/opt/X11/share/fonts/75dpi",
-    "/opt/X11/share/fonts/100dpi",
-  };
+  // Search order: app bundle fonts first, then system /opt/X11 fonts.
+  extern const std::string& x11_get_bundle_resource_path();
+  const std::string& bundlePath = x11_get_bundle_resource_path();
 
-  for (const char* dir : fontDirs) {
-    std::string dirPath(dir);
+  std::vector<std::string> fontDirList;
+  // App bundle fonts (self-contained, no XQuartz needed)
+  if (!bundlePath.empty()) {
+    fontDirList.push_back(bundlePath + "/fonts/misc");
+    fontDirList.push_back(bundlePath + "/fonts/75dpi");
+    fontDirList.push_back(bundlePath + "/fonts/100dpi");
+  }
+  // System fonts (XQuartz installation)
+  fontDirList.push_back("/opt/X11/share/fonts/misc");
+  fontDirList.push_back("/opt/X11/share/fonts/75dpi");
+  fontDirList.push_back("/opt/X11/share/fonts/100dpi");
+
+  for (const auto& dirPath : fontDirList) {
     std::string fontsDir = dirPath + "/fonts.dir";
     std::ifstream dirFile(fontsDir);
     if (!dirFile.is_open()) {
@@ -310,14 +319,21 @@ bool FontTable::loadBuiltins(std::string* err) {
 
 
 void FontTable::loadAliases() {
-  // Standard alias directories from XQuartz installation
-  const char* aliasDirs[] = {
-    "/opt/X11/share/fonts/misc/fonts.alias",
-    "/opt/X11/share/fonts/75dpi/fonts.alias",
-    "/opt/X11/share/fonts/100dpi/fonts.alias",
-  };
+  // Alias files from bundle and system font directories
+  extern const std::string& x11_get_bundle_resource_path();
+  const std::string& bp = x11_get_bundle_resource_path();
 
-  for (const char* path : aliasDirs) {
+  std::vector<std::string> aliasPaths;
+  if (!bp.empty()) {
+    aliasPaths.push_back(bp + "/fonts/misc/fonts.alias");
+    aliasPaths.push_back(bp + "/fonts/75dpi/fonts.alias");
+    aliasPaths.push_back(bp + "/fonts/100dpi/fonts.alias");
+  }
+  aliasPaths.push_back("/opt/X11/share/fonts/misc/fonts.alias");
+  aliasPaths.push_back("/opt/X11/share/fonts/75dpi/fonts.alias");
+  aliasPaths.push_back("/opt/X11/share/fonts/100dpi/fonts.alias");
+
+  for (const auto& path : aliasPaths) {
     std::ifstream file(path);
     if (!file.is_open()) continue;
 
@@ -435,12 +451,14 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
       dbgFontResolve(name, "cursor(pcf-cached)", it->second.get());
       return it->second.get();
     }
-    static const char* cursorPaths[] = {
-      "/opt/X11/share/fonts/misc/cursor.pcf.gz",
-      "/usr/share/fonts/X11/misc/cursor.pcf.gz",
-      "/usr/share/fonts/misc/cursor.pcf.gz",
-    };
-    for (const char* path : cursorPaths) {
+    extern const std::string& x11_get_bundle_resource_path();
+    const std::string& cbp = x11_get_bundle_resource_path();
+    std::vector<std::string> cursorPaths;
+    if (!cbp.empty()) cursorPaths.push_back(cbp + "/fonts/misc/cursor.pcf.gz");
+    cursorPaths.push_back("/opt/X11/share/fonts/misc/cursor.pcf.gz");
+    cursorPaths.push_back("/usr/share/fonts/X11/misc/cursor.pcf.gz");
+    cursorPaths.push_back("/usr/share/fonts/misc/cursor.pcf.gz");
+    for (const auto& path : cursorPaths) {
       auto font = std::make_unique<x11::font::BdfFont>();
       auto res = x11::font::loadPcfGz(path, *font);
       if (res.ok) {

@@ -12,7 +12,7 @@ SwiftX11 is meant solely to provide a useful rootless window support for unix to
 
 - **Native Metal rendering** — GPU-accelerated compositing, partial texture uploads, shaped window transparency
 - **Full X11 core protocol** — 100+ opcodes: window management, drawing operations, events, properties, selections, atoms, fonts, cursors, colormaps
-- **10 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XInputExtension (XI2), XTEST
+- **11 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XTEST, Composite, DAMAGE
 - **ICCCM/EWMH compliance** — WM_NORMAL_HINTS, WM_HINTS, WM_TAKE_FOCUS, WM_DELETE_WINDOW, _NET_WM_WINDOW_TYPE, _NET_WM_STATE, _NET_FRAME_EXTENTS
 - **Font support** — PCF/BDF bitmap fonts, CoreText bridge for system fonts with antialiasing toggle
 - **Multi-monitor** — Dynamic RANDR/Xinerama with real display data, per-monitor DPI, hot-plug support
@@ -26,12 +26,13 @@ SwiftX11 is meant solely to provide a useful rootless window support for unix to
 - macOS 14+ (Sonoma or later)
 - Metal-capable GPU (all Macs since 2012)
 - X11 client libraries installed (via [XQuartz](https://www.xquartz.org) or [Homebrew](https://brew.sh): `brew install libx11`)
+- X11 bitmap fonts are **bundled inside the app** — no separate font installation needed
 
 ## Installation
 
-### From .pkg Installer
+### From .dmg
 
-Download the latest `.pkg` from [Releases](https://github.com/LawrenceGibbons/SwiftX11/releases) and double-click to install. The installer places `SwiftX11.app` in `/Applications` and optionally installs X11 bitmap fonts to `/opt/X11/share/fonts/`.
+Download the latest `.dmg` from [Releases](https://github.com/LawrenceGibbons/SwiftX11/releases), open it, and drag `SwiftX11.app` to Applications. X11 fonts are bundled inside the app — no separate installation required.
 
 > **Note**: The app is unsigned — right-click → Open to bypass Gatekeeper on first launch.
 
@@ -71,13 +72,13 @@ For native macOS X11 clients, Unix socket also works:
 export DISPLAY=:1
 ```
 
-## Building the Installer
+## Building the DMG
 
 ```bash
-bash macos/scripts/build-installer.sh
+bash macos/scripts/build-dmg.sh
 ```
 
-This builds a Release configuration, packages the app and optionally X11 fonts (from `/opt/X11/share/fonts/`) into a `.pkg` installer.
+This builds a Release configuration, bundles X11 fonts from `/opt/X11/share/fonts/` inside the app, and creates a distributable `.dmg`.
 
 ## Architecture
 
@@ -108,7 +109,7 @@ See [CLAUDE.md](macos/CLAUDE.md) for detailed architecture documentation.
 | xcalc | ✅ Working | Including RPN mode |
 | xclock | ✅ Working | Analog and digital |
 | Vivado | ✅ Working | Full GUI, menus, dialogs, banner, clipboard |
-| Vitis | 🔄 In progress | Extension stubs in place, needs testing |
+| Vitis | ✅ Working | Electron/Theia IDE, menus, file dialogs |
 
 ## Display Number
 

@@ -397,6 +397,20 @@ extern "C" int x11_get_font_antialiased(void)
 }
 
 // -------------------------------------------------------------------------------------
+// Bundle resource path for fonts
+// -------------------------------------------------------------------------------------
+static std::string g_bundle_resource_path;
+
+extern "C" void x11_set_bundle_resource_path(const char* path)
+{
+  g_bundle_resource_path = path ? path : "";
+}
+
+const std::string& x11_get_bundle_resource_path() {
+  return g_bundle_resource_path;
+}
+
+// -------------------------------------------------------------------------------------
 // SHAPE extension bridge
 // -------------------------------------------------------------------------------------
 extern "C" bool x11_shape_is_shaped(uint32_t xid) {

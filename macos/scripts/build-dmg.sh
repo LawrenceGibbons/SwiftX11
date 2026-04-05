@@ -69,32 +69,20 @@ echo "   SwiftX11.app: $(du -sh "$DMG_DIR/SwiftX11.app" | cut -f1)"
 # Applications symlink for drag-install
 ln -s /Applications "$DMG_DIR/Applications"
 
-# Bundle X11 fonts if available
+# Bundle X11 fonts INSIDE the app (self-contained, no separate install needed)
 FONT_SRC="/opt/X11/share/fonts"
+FONT_DEST="$DMG_DIR/SwiftX11.app/Contents/Resources/fonts"
 if [ -d "$FONT_SRC/misc" ]; then
-    mkdir -p "$DMG_DIR/X11 Fonts"
+    mkdir -p "$FONT_DEST"
     for dir in misc 75dpi 100dpi; do
         if [ -d "$FONT_SRC/$dir" ]; then
-            cp -R "$FONT_SRC/$dir" "$DMG_DIR/X11 Fonts/"
+            cp -R "$FONT_SRC/$dir" "$FONT_DEST/"
         fi
     done
-    dot_clean -m "$DMG_DIR/X11 Fonts" 2>/dev/null || true
-    echo "   X11 Fonts: $(du -sh "$DMG_DIR/X11 Fonts" | cut -f1)"
-
-    # Font install instructions
-    cat > "$DMG_DIR/X11 Fonts/INSTALL.txt" << 'FONTEOF'
-X11 Fonts — Installation Instructions
-
-These PCF bitmap fonts are needed by legacy X11 apps (xterm, xcalc, xclock).
-If you already have XQuartz installed, you don't need these.
-
-To install, run in Terminal:
-
-    sudo mkdir -p /opt/X11/share/fonts
-    sudo cp -R misc 75dpi 100dpi /opt/X11/share/fonts/
-
-Then restart SwiftX11.
-FONTEOF
+    dot_clean -m "$FONT_DEST" 2>/dev/null || true
+    echo "   Bundled fonts: $(du -sh "$FONT_DEST" | cut -f1)"
+else
+    echo "WARNING: X11 fonts not found at $FONT_SRC — app will lack PCF fonts"
 fi
 
 # README
@@ -114,10 +102,7 @@ QUICK START
   3. Run X11 apps:  xterm -sb -rightbar -bc
   4. Docker:  DISPLAY=host.docker.internal:1
 
-X11 FONTS
-  If xterm shows blank/missing text, install the fonts from the
-  "X11 Fonts" folder (see INSTALL.txt inside). Not needed if
-  XQuartz is installed.
+X11 fonts are bundled inside the app — no separate installation needed.
 
 For full documentation: Help → SwiftX11 Help (in the app).
 READMEEOF

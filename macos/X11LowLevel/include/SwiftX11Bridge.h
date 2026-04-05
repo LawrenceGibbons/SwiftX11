@@ -290,6 +290,10 @@ int  x11_get_wire_trace(void);
 void x11_set_font_antialiased(int enabled);
 int  x11_get_font_antialiased(void);
 
+// Set the app bundle resource path so the font scanner can find bundled PCF fonts
+// at <path>/fonts/{misc,75dpi,100dpi}/. Called once at startup before x11_start_server.
+void x11_set_bundle_resource_path(const char* path);
+
 // -------------------------------------------------------------------------------------
 // Version
 // -------------------------------------------------------------------------------------
