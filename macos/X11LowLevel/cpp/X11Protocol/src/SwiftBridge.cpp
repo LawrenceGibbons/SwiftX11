@@ -406,9 +406,11 @@ extern "C" void x11_set_bundle_resource_path(const char* path)
   g_bundle_resource_path = path ? path : "";
 }
 
+namespace x11 {
 const std::string& x11_get_bundle_resource_path() {
   return g_bundle_resource_path;
 }
+} // namespace x11
 
 // -------------------------------------------------------------------------------------
 // SHAPE extension bridge

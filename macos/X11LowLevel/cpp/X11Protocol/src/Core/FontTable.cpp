@@ -240,7 +240,7 @@ bool FontTable::loadBuiltins(std::string* err) {
   // Scan font directories (fonts.dir) for PCF font names.
   // This only registers XLFD names → file paths; actual fonts are loaded lazily.
   // Search order: app bundle fonts first, then system /opt/X11 fonts.
-  extern const std::string& x11_get_bundle_resource_path();
+  extern const std::string& x11_get_bundle_resource_path(); // defined in SwiftBridge.cpp (x11 namespace)
   const std::string& bundlePath = x11_get_bundle_resource_path();
 
   std::vector<std::string> fontDirList;
@@ -320,7 +320,7 @@ bool FontTable::loadBuiltins(std::string* err) {
 
 void FontTable::loadAliases() {
   // Alias files from bundle and system font directories
-  extern const std::string& x11_get_bundle_resource_path();
+  extern const std::string& x11_get_bundle_resource_path(); // defined in SwiftBridge.cpp (x11 namespace)
   const std::string& bp = x11_get_bundle_resource_path();
 
   std::vector<std::string> aliasPaths;
@@ -451,7 +451,7 @@ const x11::font::BdfFont* FontTable::findByName(const std::string& name) const {
       dbgFontResolve(name, "cursor(pcf-cached)", it->second.get());
       return it->second.get();
     }
-    extern const std::string& x11_get_bundle_resource_path();
+    extern const std::string& x11_get_bundle_resource_path(); // defined in SwiftBridge.cpp (x11 namespace)
     const std::string& cbp = x11_get_bundle_resource_path();
     std::vector<std::string> cursorPaths;
     if (!cbp.empty()) cursorPaths.push_back(cbp + "/fonts/misc/cursor.pcf.gz");
