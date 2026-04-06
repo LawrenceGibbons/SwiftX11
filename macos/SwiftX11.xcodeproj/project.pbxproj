@@ -47,6 +47,9 @@
 		52814ACA2F43662D003CF94A /* fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fonts; path = X11LowLevel/Resources/fonts; sourceTree = "<group>"; };
 		529033922F74196500A5D596 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
 		529033932F74196500A5D596 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		52C1A2002F7F036600AEBB44 /* Distribution.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Distribution.xml; sourceTree = "<group>"; };
+		52C1A2012F7F036600AEBB44 /* welcome.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = welcome.html; sourceTree = "<group>"; };
+		52C1A2032F7F036600AEBB44 /* build-installer.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "build-installer.sh"; sourceTree = "<group>"; };
 		52CF44292F59DFFB00EC62ED /* CoreText.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreText.framework; path = System/Library/Frameworks/CoreText.framework; sourceTree = SDKROOT; };
 		52CF442B2F59E00E00EC62ED /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -192,6 +195,7 @@
 		5225BD6E2F0489A9009E510B = {
 			isa = PBXGroup;
 			children = (
+				52C1A2042F7F036600AEBB44 /* scripts */,
 				52814ACA2F43662D003CF94A /* fonts */,
 				52814A6D2F40D674003CF94A /* Ignore documents */,
 				5227CE892F53446A005C83EB /* docs */,
@@ -221,6 +225,24 @@
 				529033932F74196500A5D596 /* README.md */,
 			);
 			path = docs;
+			sourceTree = "<group>";
+		};
+		52C1A2022F7F036600AEBB44 /* installer */ = {
+			isa = PBXGroup;
+			children = (
+				52C1A2002F7F036600AEBB44 /* Distribution.xml */,
+				52C1A2012F7F036600AEBB44 /* welcome.html */,
+			);
+			path = installer;
+			sourceTree = "<group>";
+		};
+		52C1A2042F7F036600AEBB44 /* scripts */ = {
+			isa = PBXGroup;
+			children = (
+				52C1A2022F7F036600AEBB44 /* installer */,
+				52C1A2032F7F036600AEBB44 /* build-installer.sh */,
+			);
+			path = scripts;
 			sourceTree = "<group>";
 		};
 		52CF44282F59DFFB00EC62ED /* Frameworks */ = {
