@@ -892,16 +892,17 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
     if (wasMapped) goto post_map;
 
     // 2) Swift-side map + authoritative resize only for the host (UI command queue)
-    if (host == wid) {
+    {
+      bool deferred = false;
+      if (host == wid) {
 
-      // ── SubstructureRedirect emulation: defer map for tiny windows ────
-      // Clients like Java AWT create windows at 1×1, then configure them to
-      // the real size.  Without SubstructureRedirect, MapWindow fires before
-      // ConfigureWindow arrives.  Deferring the map until all buffered client
-      // data is drained allows ConfigureWindow + WM_NORMAL_HINTS to land
-      // first.  The daemon's poll loop calls flushPendingMaps() after
-      // readAndDispatch returns NeedMore (all buffered data consumed).
-      {
+        // ── SubstructureRedirect emulation: defer map for tiny windows ────
+        // Clients like Java AWT create windows at 1×1, then configure them to
+        // the real size.  Without SubstructureRedirect, MapWindow fires before
+        // ConfigureWindow arrives.  Deferring the map until all buffered client
+        // data is drained allows ConfigureWindow + WM_NORMAL_HINTS to land
+        // first.  The daemon's poll loop calls flushPendingMaps() after
+        // readAndDispatch returns NeedMore (all buffered data consumed).
         WindowView pre_map_vw{};
         bool is_tiny = false;
         if (ctx.windows().snapshot(wid, pre_map_vw)) {
@@ -914,11 +915,20 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
                   (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h);
 #endif
           ctx.addPendingMap(wid);
+          deferred = true;
         } else {
           x11_ui_push_map(wid);
           pushMapExtras(ctx, wid);
         }
       }
+
+      // For deferred maps, skip the post_map block.  Sending Expose and
+      // queueing notify at the TINY pre-flush size would cause the client to
+      // draw at 1×1 before the window is resized to its real dimensions.
+      // flushPendingMaps() will resize the window and push the map to Swift;
+      // SetPresentable (after surface registration at real size) will fill
+      // the background and call sendExposeSubtree at the correct geometry.
+      if (deferred) return;
     }
 
     post_map:
