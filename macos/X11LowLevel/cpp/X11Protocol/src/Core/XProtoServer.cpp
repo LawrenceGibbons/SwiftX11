@@ -408,13 +408,12 @@ void XProtoServer::flushPendingMaps() {
         }
       }
 
-      // Last-resort fallback: apply the WM floor (200×100) rather than
-      // mapping a genuinely tiny window that's unusable.  This prevents
-      // the "title bar only" appearance when a client creates a window at
-      // 1×1 and never provides any size via ConfigureWindow or WM_NORMAL_HINTS.
-      if (desired_w < 50 || desired_h < 50) {
-        desired_w = 400;
-        desired_h = 300;
+      // Last-resort fallback: apply a reasonable size rather than mapping
+      // a 1×1 window that's unusable.  Only trigger for truly unusable
+      // sizes (<10px) — windows like 25×17 may be intentional indicators.
+      if (vw.w < 10 || vw.h < 10) {
+        if (desired_w < 50) desired_w = 400;
+        if (desired_h < 50) desired_h = 300;
 #ifndef NDEBUG
         TS_FPRINTF("[FLUSH_MAP_FALLBACK] wid=0x%08X: geom %ux%u → fallback %dx%d\n",
                 (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
