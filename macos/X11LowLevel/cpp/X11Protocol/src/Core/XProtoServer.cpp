@@ -479,17 +479,12 @@ void XProtoServer::flushPendingMaps() {
                                            x11::atom::kATOM, 32, extents, 16);
     }
 
-    // Queue ConfigureNotify + Expose at the corrected (real) size.
-    // The deferred path in handleMapWindow skipped this to avoid sending
-    // a stale 1×1 Expose before the resize.  SetPresentable (triggered by
-    // Swift's surface registration) will also send Expose via
-    // sendExposeSubtree, so this is redundant safety but cheap.
-    bool wantCfg = false;
-    if (const x11::WindowView* pvw = ctx_.window(wid)) {
-      wantCfg = ((pvw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
-    }
-    ctx_.transport().queueExposeRect(wid, 0, 0, vw.w, vw.h, 0);
-    ctx_.transport().queueNotify(wid, /*wantConfigure=*/wantCfg, /*wantExpose=*/true);
+    // Note: ConfigureNotify + Expose are NOT queued here — the caller
+    // (XProtoDaemon) processes flushPendingMaps between client dispatches
+    // when no client transport is active.  SetPresentable (triggered by
+    // Swift's surface registration at the corrected size) will call
+    // sendExposeSubtree under the right client context, delivering a
+    // full-window Expose at the real geometry.
   }
   pending_maps_.clear();
 }
