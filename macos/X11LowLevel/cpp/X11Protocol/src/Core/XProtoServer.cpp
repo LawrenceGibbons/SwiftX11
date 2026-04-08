@@ -16,7 +16,6 @@
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/ScreenLayout.hpp"
-#include "Core/XEventMask.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
 #include "Core/timestamp.hpp"
@@ -487,7 +486,7 @@ void XProtoServer::flushPendingMaps() {
     // sendExposeSubtree, so this is redundant safety but cheap.
     bool wantCfg = false;
     if (const x11::WindowView* pvw = ctx_.window(wid)) {
-      wantCfg = ((pvw->event_mask & x11::mask::StructureNotify) != 0);
+      wantCfg = ((pvw->event_mask & (1u << 17)) != 0); // StructureNotifyMask
     }
     ctx_.transport().queueExposeRect(wid, 0, 0, vw.w, vw.h, 0);
     ctx_.transport().queueNotify(wid, /*wantConfigure=*/wantCfg, /*wantExpose=*/true);
