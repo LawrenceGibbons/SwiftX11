@@ -16,6 +16,7 @@
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/ScreenLayout.hpp"
+#include "Core/XEventMask.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
 #include "Core/timestamp.hpp"
@@ -408,6 +409,20 @@ void XProtoServer::flushPendingMaps() {
         }
       }
 
+      // Last-resort fallback: apply the WM floor (200×100) rather than
+      // mapping a genuinely tiny window that's unusable.  This prevents
+      // the "title bar only" appearance when a client creates a window at
+      // 1×1 and never provides any size via ConfigureWindow or WM_NORMAL_HINTS.
+      if (desired_w < 50 || desired_h < 50) {
+        desired_w = 400;
+        desired_h = 300;
+#ifndef NDEBUG
+        TS_FPRINTF("[FLUSH_MAP_FALLBACK] wid=0x%08X: geom %ux%u → fallback %dx%d\n",
+                (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
+                (int)desired_w, (int)desired_h);
+#endif
+      }
+
       if (desired_w >= 50 && desired_h >= 50 &&
           ((int32_t)vw.w != desired_w || (int32_t)vw.h != desired_h)) {
         uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
@@ -464,6 +479,18 @@ void XProtoServer::flushPendingMaps() {
       PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                            x11::atom::kATOM, 32, extents, 16);
     }
+
+    // Queue ConfigureNotify + Expose at the corrected (real) size.
+    // The deferred path in handleMapWindow skipped this to avoid sending
+    // a stale 1×1 Expose before the resize.  SetPresentable (triggered by
+    // Swift's surface registration) will also send Expose via
+    // sendExposeSubtree, so this is redundant safety but cheap.
+    bool wantCfg = false;
+    if (const x11::WindowView* pvw = ctx_.window(wid)) {
+      wantCfg = ((pvw->event_mask & x11::mask::StructureNotify) != 0);
+    }
+    ctx_.transport().queueExposeRect(wid, 0, 0, vw.w, vw.h, 0);
+    ctx_.transport().queueNotify(wid, /*wantConfigure=*/wantCfg, /*wantExpose=*/true);
   }
   pending_maps_.clear();
 }
