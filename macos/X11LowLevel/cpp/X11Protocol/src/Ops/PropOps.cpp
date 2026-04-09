@@ -186,7 +186,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
                (unsigned)atom,
                (int)(dataBytes > 80 ? 80 : dataBytes),
                reinterpret_cast<const char*>(data));
-      x11_ui_push_log(1, buf);
+      x11_ui_push_log(2, buf); // Verbose — too noisy for Info level
     }
     if (host == wid) {
       x11_ui_push_title(host, title.c_str());
