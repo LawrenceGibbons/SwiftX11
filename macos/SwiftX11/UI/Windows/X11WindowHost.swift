@@ -1340,10 +1340,15 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   }
   
   func draw(in view: MTKView) {
+    // Skip drawing when app is backgrounded or window not visible —
+    // CAMetalLayer.nextDrawable can crash (stack buffer overflow in
+    // CAMetalLayerPrivateNextDrawableLocked) when the app is inactive.
+    guard let window = view.window, window.isVisible,
+          window.occlusionState.contains(.visible) else { return }
     let ds = view.drawableSize
     guard ds.width >= 1, ds.height >= 1 else { return }
     guard view.currentDrawable != nil else { return }
-    guard owner?.hasMetalTexture == true else { return } // <- prevents clear-color overwrite
+    guard owner?.hasMetalTexture == true else { return }
     owner?.metalDraw(in: view)
   }
   
