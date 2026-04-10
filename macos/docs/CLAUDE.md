@@ -211,16 +211,15 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Building**: User builds from Xcode (Cmd+B). Avoid `xcodebuild` from CLI as it can interfere with Xcode.app.
 - **Docker image rebuilds**: The `x64-linux-dbus` Docker image bakes in `docker-entrypoint.sh`. After editing the entrypoint, rebuild: `cd /Users/lkg/Documents/Vivado/vivado2023 && docker build --platform linux/amd64 -t x64-linux-dbus -f Dockerfile .`
 
-### Vitis (Electron) Support (v1.19.35.25)
-- **Vitis main window works**: Native macOS title bar (traffic lights + drag handle) above Electron content. Active links within the IDE launch actions. Menu items highlight on hover.
-- **Menu dropdowns don't fire** (v1.19.35.25): `[CREATE_OR]` tracing confirmed Electron creates ZERO OR popup windows for menus — they're inline HTML/CSS/JS. The dropdown failure is Electron-internal, caused by something in SwiftX11's input event handling. Was working in a previous server version. Highest priority for next session.
-- **XInputExtension hidden** from Chromium/Electron: `present=0` in QueryExtension. Electron's XIQueryDevice causes disconnect. Workaround in place.
-- **`_MOTIF_WM_HINTS decor=0`**: Electron sets this for custom chrome. Non-popup windows get `[.titled, .closable, .miniaturizable, .resizable]` (native macOS title bar). Popup-pattern windows (JidePopup, single-space titles) stay `[.borderless]` at `.floating` level.
-- **`_NET_FRAME_EXTENTS`**: Reports top=28 for all titled windows. Tried (0,0,0,0) for MOTIF decor=0 — didn't fix menus, reverted.
-- **Cross-client event routing** (v1.19.35.23-24): Multi-process apps exchange events across connections via `sendEventCrossClient()`. Seq restamped with target's `lastSeq()` to prevent `max_wire_seq_` poisoning (v1.19.35.24).
-- **Composite/DAMAGE stubs** (v1.19.35.25): Portal-GTK dialogs now render with mostly correct colors (were fully inverted). Remaining: some ARGB32 color oddities, non-interactive buttons/lists.
-- **`--disable-gpu`** flag required for Electron in Docker/Rosetta. Injected via entrypoint patching of Vitis wrapper.
-- **12 extensions advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XInputExtension, XTEST, Composite, DAMAGE.
+### Vitis (Electron) Support (v1.19.35)
+- **Vitis fully working**: Native macOS title bar, menus, file dialogs, portal-GTK dialogs all functional.
+- **Menu dropdowns fixed** (v1.19.35.29): Root cause was XI2 — hiding XInputExtension restores full menu functionality. Menus are inline HTML/CSS/JS (not X11 popups), and XI2 GenericEvents interfered with Electron's input handling.
+- **Portal-GTK dialogs fixed** (v1.19.35.29): Same root cause (XI2). File dialogs are now fully interactive.
+- **XInputExtension hidden**: `present=0` in QueryExtension. XI2 causes wire protocol corruption (sequence regression) that crashes Electron on startup. XI2 event format fixes (sourceid, coordinates) are in place but dormant. Global `xi2_root_mask` needs per-client tracking before re-enabling.
+- **Cross-client event routing** (v1.19.35.23-24): Multi-process apps exchange events across connections via `sendEventCrossClient()`. Seq restamped with target's `lastSeq()`.
+- **Composite/DAMAGE stubs** (v1.19.35.25): Portal-GTK dialogs render with mostly correct colors.
+- **`--disable-gpu`** flag required for Electron in Docker/Rosetta.
+- **11 extensions advertised**: BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XTEST, Composite, DAMAGE.
 
 ### Current State (v1.19.35)
 - **C layer eliminated** (v1.0.0): All C source files (x11_shim.c, x11_backend.c, x11_requests.c, x11_xproto.c) and their headers removed (~2,600 lines). Architecture is now Swift ↔ C++ (extern "C" via SwiftBridge.cpp) — no intermediate C layer
@@ -379,16 +378,28 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 
 **Workaround**: Report XTEST v2.0 — client never calls GrabControl, no crash.
 
-### Known Issues (v1.19.35.25)
-- **Vitis menu dropdowns**: HTML menus highlight on hover but clicking doesn't trigger dropdown. Confirmed (v1.19.35.25): Electron creates ZERO OR popup windows — menus are inline HTML/CSS/JS. Dropdown failure is Electron-internal, caused by SwiftX11 input event handling. Was working in a previous server version. (HIGH)
-- **Portal-GTK dialog rendering**: Composite/DAMAGE stubs added (v1.19.35.25) — dialogs render with mostly correct colors. Remaining: some ARGB32 color oddities, non-interactive buttons/lists, tooltip stacking. (MEDIUM)
+### Clipboard Bridge (v1.19.35)
+- **INCR protocol** for large clipboard transfers (>64KB, up to 4MB)
+- **X11→macOS fix**: `sSelPushedCC` reset on SetSelectionOwner prevents permanent push block after macOS Cmd+C
+- **macOS→X11 fix**: Focus-based claim — returning to X11 window after macOS Cmd+C displaces stale PRIMARY/CLIPBOARD ownership so Xlib doesn't short-circuit ConvertSelection
+- **Dynamic buffer**: 4MB clipboard read (was 65KB stack buffer)
+- **PropertyTable cap**: 16MB (was 1MB)
+
+### Deferred Map Race Fix (v1.19.35.37)
+- **Blank dialog fix**: Deferred map (tiny windows awaiting flushPendingMaps) no longer sends stale tiny Expose before resize. `post_map` block skipped for deferred maps; SetPresentable sends Expose at real geometry.
+- **Fallback floor**: Windows under 10px at map time with no hints/peak get 400×300 fallback instead of unusable 1×1.
+
+### Self-Contained App
+- **Bundled fonts**: PCF fonts from `/opt/X11/share/fonts/` embedded in `SwiftX11.app/Contents/Resources/fonts/`. No XQuartz needed.
+- **Font scanner**: Searches bundle fonts first, system `/opt/X11/` second. Bridge function `x11_set_bundle_resource_path()`.
+- **Startup dialogs**: Metal GPU check (critical, exits) + missing fonts check (warning, continue or quit).
+
+### Known Issues (v1.19.35)
 - **Ctrl+click regression**: Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19. (MEDIUM)
-- **Cross-client seq poisoning**: ✅ FIXED (v1.19.35.24) — restamps event seq with target transport's `lastSeq()`.
-- **JidePopup decorated windows**: ✅ FIXED (v1.19.35) — `_MOTIF_WM_HINTS` now parsed; popups are borderless+floating.
-- **Pointer offset after left-edge resize**: ✅ FIXED (v1.19.25) — position synced in `windowDidResize`.
+- **XI2 wire corruption**: Enabling XI2 crashes Electron. Event format fixed but delivery path has sequence regression. Global xi2_root_mask needs per-client tracking. (LOW — workaround in place)
+- **Docker dbus**: ✅ FIXED — `dbus-daemon --session` bypasses stale X11 root window property.
 
 ### Next Major Tasks
-See `docs/TODO.md` and `docs/HANDOFF.md` for the comprehensive roadmap. Priority order:
-1. **Vitis menu dropdowns** — compare input events with XQuartz, find what broke the click handler
-2. **Portal-GTK dialog interaction** — ARGB32 alpha handling, child window input routing
-3. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it
+See `docs/TODO.md` for the comprehensive roadmap. Remaining priorities:
+1. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it
+2. **XI2 proper fix** — per-client root mask, wire trace diagnosis (LOW)
