@@ -518,6 +518,12 @@ void XProtoServer::flushPendingMaps() {
         }
         // Re-snapshot after resize
         windows_.snapshot(wid, vw);
+
+        // We just overrode the client's last ConfigureWindow.  The client
+        // still thinks the window is at the old size and will draw at that
+        // size unless we tell it otherwise.  Flag for SetPresentable (which
+        // runs with a valid client transport) to emit ConfigureNotify.
+        markNeedsPostMapConfigureNotify(wid);
       }
     }
 
@@ -571,6 +577,17 @@ void XProtoServer::peakSizeTrampoline(uint32_t wid, uint16_t w, uint16_t h, void
 bool XProtoServer::getPeakSizeTrampoline(uint32_t wid, uint16_t* outW, uint16_t* outH, void* user) {
   if (!user || !outW || !outH) return false;
   return static_cast<XProtoServer*>(user)->getPeakSize(wid, *outW, *outH);
+}
+
+void XProtoServer::markNeedsPostMapConfigureNotify(uint32_t wid) {
+  needs_post_map_configure_notify_.insert(wid);
+}
+
+bool XProtoServer::takeNeedsPostMapConfigureNotify(uint32_t wid) {
+  auto it = needs_post_map_configure_notify_.find(wid);
+  if (it == needs_post_map_configure_notify_.end()) return false;
+  needs_post_map_configure_notify_.erase(it);
+  return true;
 }
 
 void XProtoServer::notePeakSize(uint32_t wid, uint16_t w, uint16_t h) {
