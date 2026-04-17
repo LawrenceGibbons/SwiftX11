@@ -908,16 +908,39 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
         // data is drained allows ConfigureWindow + WM_NORMAL_HINTS to land
         // first.  The daemon's poll loop calls flushPendingMaps() after
         // readAndDispatch returns NeedMore (all buffered data consumed).
+        //
+        // Also defer when the client has shrunk the window below its own
+        // earlier peak ConfigureWindow size (Vivado/AWT race: a stale
+        // ConfigureWindow arrives AFTER WM_NORMAL_HINTS committed the real
+        // size, walking the window back to its initial skeleton dimensions).
         WindowView pre_map_vw{};
         bool is_tiny = false;
+        bool shrunk_below_peak = false;
         if (ctx.windows().snapshot(wid, pre_map_vw)) {
           is_tiny = (pre_map_vw.w < 50 || pre_map_vw.h < 50);
+          if (!is_tiny) {
+            uint16_t pw = 0, ph = 0;
+            if (ctx.getPeakSize(wid, pw, ph)) {
+              const uint32_t cur_area  = (uint32_t)pre_map_vw.w * pre_map_vw.h;
+              const uint32_t peak_area = (uint32_t)pw * ph;
+              // Peak is more than 2× current area: client shrank its own win.
+              if (peak_area > cur_area * 2) {
+                shrunk_below_peak = true;
+#ifndef NDEBUG
+                TS_FPRINTF("[GEOM] wid=0x%08X source=MAP_SHRUNK_BELOW_PEAK cur=%ux%u peak=%ux%u — deferring\n",
+                        (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h,
+                        (unsigned)pw, (unsigned)ph);
+#endif
+              }
+            }
+          }
         }
 
-        if (is_tiny) {
+        if (is_tiny || shrunk_below_peak) {
 #if X11_TRACE_LIFECYCLE_ENABLED
-          TS_FPRINTF("[MAP_DEFER] wid=0x%08X geom=%ux%u — deferring map (tiny root child)\n",
-                  (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h);
+          TS_FPRINTF("[MAP_DEFER] wid=0x%08X geom=%ux%u — deferring map (reason=%s)\n",
+                  (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h,
+                  is_tiny ? "tiny" : "shrunk_below_peak");
 #endif
           ctx.addPendingMap(wid);
           deferred = true;
