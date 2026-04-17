@@ -96,6 +96,7 @@ private:
   bool lookupWindow(uint32_t xid, WindowView* out);
   static void pendingMapTrampoline(uint32_t wid, void* user);
   static void peakSizeTrampoline(uint32_t wid, uint16_t w, uint16_t h, void* user);
+  static bool getPeakSizeTrampoline(uint32_t wid, uint16_t* outW, uint16_t* outH, void* user);
 
 private:
   // Server-wide state (persists across client sessions)

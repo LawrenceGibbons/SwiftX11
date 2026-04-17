@@ -134,6 +134,20 @@ public:
     if (peak_size_fn_) peak_size_fn_(wid, w, h, peak_size_user_);
   }
 
+  // Peak pre-map size query.  Returns true if a peak size was recorded for
+  // this window.  Used at MapWindow time to detect clients that shrank their
+  // own window below an earlier peak (Vivado/AWT race: walk-back
+  // ConfigureWindow after WM_NORMAL_HINTS committed the real size).
+  using GetPeakSizeFn = bool (*)(uint32_t wid, uint16_t* outW, uint16_t* outH, void* user);
+  void setGetPeakSizeCallback(GetPeakSizeFn fn, void* user) {
+    get_peak_size_fn_ = fn;
+    get_peak_size_user_ = user;
+  }
+  bool getPeakSize(uint32_t wid, uint16_t& outW, uint16_t& outH) const {
+    if (!get_peak_size_fn_) return false;
+    return get_peak_size_fn_(wid, &outW, &outH, get_peak_size_user_);
+  }
+
 private:
   // Per-client (set via setClient/clearClient)
   XClient* client_ = nullptr;
@@ -177,6 +191,10 @@ private:
   // Peak pre-map size callback
   PeakSizeFn peak_size_fn_ = nullptr;
   void* peak_size_user_ = nullptr;
+
+  // Peak pre-map size query
+  GetPeakSizeFn get_peak_size_fn_ = nullptr;
+  void* get_peak_size_user_ = nullptr;
 
 };
 

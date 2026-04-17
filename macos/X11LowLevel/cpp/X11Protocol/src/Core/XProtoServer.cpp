@@ -58,6 +58,9 @@ XProtoServer::XProtoServer()
   // Wire peak-size callback so ConfigureWindow can track pre-map sizes.
   ctx_.setPeakSizeCallback(&XProtoServer::peakSizeTrampoline, this);
 
+  // Peak-size query (for MapWindow "client shrank below its own peak" detection).
+  ctx_.setGetPeakSizeCallback(&XProtoServer::getPeakSizeTrampoline, this);
+
   // Load built-in fonts.
   std::string err;
   if (!fonts_.loadBuiltins(&err)) {
@@ -402,18 +405,45 @@ void XProtoServer::flushPendingMaps() {
     // ── SubstructureRedirect emulation: authoritative size override ─────
     // After draining all buffered client data, the window's geometry may
     // STILL be tiny (e.g., Java AWT undoes its own ConfigureWindow AND
-    // WM_NORMAL_HINTS before MapWindow).
+    // WM_NORMAL_HINTS before MapWindow).  Also catches the "shrunk below
+    // peak" case where the client walked its size back below an earlier
+    // ConfigureWindow (Vivado/AWT race: stale Configure arrives after
+    // WM_NORMAL_HINTS committed the real size).
     //
     // Resolution order:
-    //   1. WM_NORMAL_HINTS (ICCCM authoritative — real WMs read at MapRequest)
-    //   2. Peak pre-map size (largest ConfigureWindow seen before map)
-    //   3. Give up: map at current tiny size
-    if (vw.w < 50 || vw.h < 50) {
+    //   1. Peak pre-map size (if we saw the window larger earlier — trust it)
+    //   2. WM_NORMAL_HINTS (ICCCM authoritative — real WMs read at MapRequest)
+    //   3. Give up: map at current (possibly tiny) size
+    const bool is_tiny = (vw.w < 50 || vw.h < 50);
+    uint16_t peek_pw = 0, peek_ph = 0;
+    const bool have_peak = getPeakSize(wid, peek_pw, peek_ph) && peek_pw > 0 && peek_ph > 0;
+    bool shrunk_below_peak = false;
+    if (!is_tiny && have_peak) {
+      const uint32_t cur_area  = (uint32_t)vw.w * vw.h;
+      const uint32_t peak_area = (uint32_t)peek_pw * peek_ph;
+      if (peak_area > cur_area * 2) shrunk_below_peak = true;
+    }
+
+    if (is_tiny || shrunk_below_peak) {
       int32_t desired_w = 0, desired_h = 0;
 
-      // Try WM_NORMAL_HINTS first
+      // Shrunk-below-peak: trust peak unconditionally. The client has
+      // contradicted its own earlier configure, so its current WM_NORMAL_HINTS
+      // is likely the post-shrink lie rather than the real desired size.
+      if (shrunk_below_peak && have_peak) {
+        desired_w = (int32_t)peek_pw;
+        desired_h = (int32_t)peek_ph;
+#ifndef NDEBUG
+        TS_FPRINTF("[FLUSH_MAP_PEAK] wid=0x%08X: geom %ux%u → peak %ux%u (shrunk-below-peak)\n",
+                (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
+                (unsigned)peek_pw, (unsigned)peek_ph);
+#endif
+      }
+
+      // Try WM_NORMAL_HINTS first for the tiny-window case.
       x11::PropertyTable::Prop hints_prop;
-      if (x11::PropertyTable::instance().get(wid, x11::atom::kWM_NORMAL_HINTS, hints_prop) &&
+      if (!shrunk_below_peak &&
+          x11::PropertyTable::instance().get(wid, x11::atom::kWM_NORMAL_HINTS, hints_prop) &&
           hints_prop.format == 32 && hints_prop.data.size() >= 5 * 4) {
         const uint32_t* d32 = reinterpret_cast<const uint32_t*>(hints_prop.data.data());
         const uint32_t flags = d32[0];
@@ -536,6 +566,11 @@ void XProtoServer::pendingMapTrampoline(uint32_t wid, void* user) {
 
 void XProtoServer::peakSizeTrampoline(uint32_t wid, uint16_t w, uint16_t h, void* user) {
   if (user) static_cast<XProtoServer*>(user)->notePeakSize(wid, w, h);
+}
+
+bool XProtoServer::getPeakSizeTrampoline(uint32_t wid, uint16_t* outW, uint16_t* outH, void* user) {
+  if (!user || !outW || !outH) return false;
+  return static_cast<XProtoServer*>(user)->getPeakSize(wid, *outW, *outH);
 }
 
 void XProtoServer::notePeakSize(uint32_t wid, uint16_t w, uint16_t h) {
