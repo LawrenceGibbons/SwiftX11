@@ -138,6 +138,15 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     let sizePixels = CGSize(width: sizePoints.width * scale,
                             height: sizePoints.height * scale)
 
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=windowDidResize pts=%.0fx%.0f px=%.0fx%.0f scale=%.2f minSize=%.0fx%.0f maxSize=%.0fx%.0f live=%d\n",
+                 xid, sizePoints.width, sizePoints.height,
+                 sizePixels.width, sizePixels.height, scale,
+                 win.contentMinSize.width, win.contentMinSize.height,
+                 win.contentMaxSize.width, win.contentMaxSize.height,
+                 win.inLiveResize ? 1 : 0), stderr)
+    #endif
+
     WindowRegistry.shared.windowResized(
       xid: xid,
       sizePoints: sizePoints,

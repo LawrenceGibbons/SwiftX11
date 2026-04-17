@@ -492,6 +492,11 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
 #endif
   ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
+#ifndef NDEBUG
+  TS_FPRINTF("[GEOM] wid=0x%08X source=CREATE old=0x0 new=%ux%u xy=(%d,%d) parent=0x%08X or=%d\n",
+          (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (int)x, (int)y,
+          (unsigned)parent, override_redirect ? 1 : 0);
+#endif
   if (borderWidth > 0) {
     ctx.windows().setBorderWidth(wid, borderWidth);
   }
@@ -1359,6 +1364,11 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
   // 1) Update authoritative geometry in C++.
   // (Swift owns the backing surface; no C FB resize needed.)
   ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
+#ifndef NDEBUG
+  TS_FPRINTF("[GEOM] wid=0x%08X source=COCOA_RESIZE old=%ux%u new=%ux%u\n",
+          (unsigned)wid, (unsigned)old_w, (unsigned)old_h,
+          (unsigned)new_w, (unsigned)new_h);
+#endif
   
   // 2) Deliver ConfigureNotify + Expose to the *host* after a host-driven resize,
   // so clients like xterm recompute their grid and resize subwindows.

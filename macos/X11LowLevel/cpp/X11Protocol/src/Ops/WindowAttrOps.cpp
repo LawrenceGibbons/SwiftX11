@@ -439,6 +439,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // NOTE: For host windows, we apply rootless clamp policy (descendants clamped)
     // via setGeometryRootlessHost(). For children, we apply the geometry directly.
     //
+#ifndef NDEBUG
+    uint16_t old_w_geom = 0, old_h_geom = 0;
+    int16_t  old_x_geom = 0, old_y_geom = 0;
+    if (const WindowView* pv = ctx.window(wid)) {
+      old_w_geom = pv->w; old_h_geom = pv->h;
+      old_x_geom = pv->x; old_y_geom = pv->y;
+    }
+#endif
     if (host != 0 && host == wid) {
       // Host geometry update should clamp descendants (bring-up behavior).
       ctx.windows().setGeometryRootlessHost(wid, x, y, w, h);
@@ -449,6 +457,14 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // If your WindowTable doesn't expose setGeometryDbg, replace this with setGeometry().
       ctx.windows().setGeometryDbg(wid, x, y, w, h, "ConfigureWindow", __FILE__, __LINE__);
     }
+#ifndef NDEBUG
+    TS_FPRINTF("[GEOM] wid=0x%08X source=CONFIG vmask=0x%04X old=%ux%u@(%d,%d) new=%ux%u@(%d,%d) mapped=%d host=%d\n",
+            (unsigned)wid, (unsigned)vmask,
+            (unsigned)old_w_geom, (unsigned)old_h_geom, (int)old_x_geom, (int)old_y_geom,
+            (unsigned)w, (unsigned)h, (int)x, (int)y,
+            ctx.windows().isMapped(wid) ? 1 : 0,
+            (host == wid) ? 1 : 0);
+#endif
 
     // ------------------------------------------------------------------
     // 1.5) Peak pre-map size tracking (SubstructureRedirect emulation)
