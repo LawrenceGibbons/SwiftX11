@@ -347,6 +347,12 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
             toRemove.push_back(cfd);
             break;
           }
+          if (dr == DispatchResult::Eof) {
+            // Clean client-side close — not an error.
+            cs->clean_disconnect = true;
+            toRemove.push_back(cfd);
+            break;
+          }
           if (dr == DispatchResult::NeedMore) {
             break; // no more complete requests — done draining
           }
@@ -485,21 +491,26 @@ void XProtoDaemon::removeClient(int fd) {
 
   ClientSession& cs = it->second;
 
+  // Clean disconnects log at verbose level and skip the ring-buffer dumps.
+  // Error disconnects log at info level with full diagnostic dumps.
+  const int log_level = cs.clean_disconnect ? 2 : 1;
+
   {
     char buf[256];
     snprintf(buf, sizeof(buf),
-             "[X11] disconnect fd=%d remaining=%zu seq=%u total_reqs=%u "
+             "[X11] %s fd=%d remaining=%zu seq=%u total_reqs=%u "
              "XI2[ver=%d dev=%d sel=%d list=%d]\n",
+             cs.clean_disconnect ? "client closed" : "disconnect",
              fd, clients_.size() - 1,
              (unsigned)cs.seq, cs.total_requests,
              cs.sent_xi_query_version, cs.sent_xi_query_device,
              cs.sent_xi_select_events, cs.sent_list_input_devices);
-    x11_ui_push_log(1, buf);
+    x11_ui_push_log(log_level, buf);
     fprintf(stderr, "%s", buf);
   }
 
-  // Dump last dispatched requests (ring buffer) for crash diagnosis
-  {
+  // Dump ring buffers only for error disconnects (not clean closes).
+  if (!cs.clean_disconnect) {
     const char* hdr = "[X11] last dispatched requests (newest last):\n";
     x11_ui_push_log(1, hdr); fprintf(stderr, "%s", hdr);
     const int total = std::min(cs.history_idx, ClientSession::kHistorySize);
@@ -513,12 +524,12 @@ void XProtoDaemon::removeClient(int fd) {
                (unsigned)r.seq, r.reply_sent ? "yes" : "no");
       x11_ui_push_log(1, buf); fprintf(stderr, "%s", buf);
     }
-  }
 
-  // Dump last outgoing wire packets for crash diagnosis
-  activateClient(cs);
-  server_->ctx().transport().dumpWireHistory();
-  deactivateClient();
+    // Dump last outgoing wire packets for crash diagnosis
+    activateClient(cs);
+    server_->ctx().transport().dumpWireHistory();
+    deactivateClient();
+  }
 
   // Activate this client for teardown
   activateClient(cs);
@@ -579,7 +590,7 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Phase 0: read 4-byte request header
   if (cs.hdr_have < 4 && !cs.reading_ext_len) {
     ssize_t r = ::recv(fd, cs.hdr + cs.hdr_have, 4 - cs.hdr_have, 0);
-    if (r == 0) return DispatchResult::Error; // EOF
+    if (r == 0) return DispatchResult::Eof; // clean EOF — client closed socket
     if (r < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
       return DispatchResult::Error;
@@ -618,7 +629,7 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Phase 0.5: read 4-byte extended length (BIG-REQUESTS)
   if (cs.reading_ext_len && cs.ext_len_have < 4) {
     ssize_t r = ::recv(fd, cs.ext_len + cs.ext_len_have, 4 - cs.ext_len_have, 0);
-    if (r == 0) return DispatchResult::Error;
+    if (r == 0) return DispatchResult::Eof;
     if (r < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
       return DispatchResult::Error;
@@ -651,7 +662,7 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   if (cs.buf_need > 0 && cs.buf_have < cs.buf_need) {
     ssize_t r = ::recv(fd, cs.buf.data() + cs.buf_have,
                        cs.buf_need - cs.buf_have, 0);
-    if (r == 0) return DispatchResult::Error;
+    if (r == 0) return DispatchResult::Eof;
     if (r < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
       return DispatchResult::Error;
