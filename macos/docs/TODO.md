@@ -916,6 +916,9 @@ Root cause: `dbus-launch` checks the X11 root window for a `_DBUS_SESSION_BUS_*`
 ### Ctrl+Click Regression (MEDIUM)
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
 
+### SwiftUI "Publishing changes from within view updates" Warning (LOW)
+Startup logs show: `Publishing changes from within view updates is not allowed, this will cause undefined behavior.` A SwiftUI view body (or a closure run during a view update) is synchronously mutating an `@Published` / `@State` / `@ObservedObject` property. Unrelated to Vivado popup sizing — longstanding, benign in practice but flagged by SwiftUI as undefined behavior. To locate, add a symbolic breakpoint on `_printChanges` or Combine's `sink` warning path, or audit recent `@Published` writes inside view bodies / `onAppear` / `onChange` closures. Fix: wrap the offending mutation in `DispatchQueue.main.async { ... }` or `Task { @MainActor in ... }`.
+
 ---
 
 ## Completed Enhancements
