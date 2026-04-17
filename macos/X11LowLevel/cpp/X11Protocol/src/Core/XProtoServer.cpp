@@ -360,6 +360,45 @@ void XProtoServer::flushPendingMaps() {
     WindowView vw{};
     if (!windows_.snapshot(wid, vw)) continue;
 
+#ifndef NDEBUG
+    // Dump raw WM_NORMAL_HINTS + peak-size state at flush time so we can
+    // debug why popups come up at the wrong size.
+    {
+      x11::PropertyTable::Prop dp;
+      const bool has_hints = x11::PropertyTable::instance().get(wid, x11::atom::kWM_NORMAL_HINTS, dp);
+      if (!has_hints) {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=WM_HINTS_DUMP state=absent\n", (unsigned)wid);
+      } else if (dp.format != 32 || dp.data.size() < 5 * 4) {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=WM_HINTS_DUMP state=malformed fmt=%u bytes=%zu\n",
+                (unsigned)wid, (unsigned)dp.format, dp.data.size());
+      } else {
+        const uint32_t* d = reinterpret_cast<const uint32_t*>(dp.data.data());
+        const uint32_t flags = d[0];
+        const size_t cnt = dp.data.size() / 4;
+        int32_t ps_w = 0, ps_h = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0, base_w = 0, base_h = 0;
+        int32_t inc_w = 0, inc_h = 0;
+        if ((flags & 0x08) && cnt >= 5)  { ps_w = (int32_t)d[3]; ps_h = (int32_t)d[4]; }
+        if ((flags & 0x10) && cnt >= 7)  { min_w = (int32_t)d[5]; min_h = (int32_t)d[6]; }
+        if ((flags & 0x20) && cnt >= 9)  { max_w = (int32_t)d[7]; max_h = (int32_t)d[8]; }
+        if ((flags & 0x40) && cnt >= 11) { inc_w = (int32_t)d[9]; inc_h = (int32_t)d[10]; }
+        if ((flags & 0x100) && cnt >= 17){ base_w = (int32_t)d[15]; base_h = (int32_t)d[16]; }
+        TS_FPRINTF("[GEOM] wid=0x%08X source=WM_HINTS_DUMP flags=0x%X bytes=%zu "
+                "PSize=%dx%d PMin=%dx%d PMax=%dx%d PInc=%dx%d PBase=%dx%d\n",
+                (unsigned)wid, (unsigned)flags, dp.data.size(),
+                ps_w, ps_h, min_w, min_h, max_w, max_h, inc_w, inc_h, base_w, base_h);
+      }
+      uint16_t pk_w = 0, pk_h = 0;
+      if (getPeakSize(wid, pk_w, pk_h)) {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=PEAK_DUMP peak=%ux%u\n",
+                (unsigned)wid, (unsigned)pk_w, (unsigned)pk_h);
+      } else {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=PEAK_DUMP state=absent\n", (unsigned)wid);
+      }
+      TS_FPRINTF("[GEOM] wid=0x%08X source=FLUSH_MAP_ENTER geom=%ux%u\n",
+              (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h);
+    }
+#endif
+
     // ── SubstructureRedirect emulation: authoritative size override ─────
     // After draining all buffered client data, the window's geometry may
     // STILL be tiny (e.g., Java AWT undoes its own ConfigureWindow AND
@@ -458,6 +497,9 @@ void XProtoServer::flushPendingMaps() {
 #ifndef NDEBUG
     TS_FPRINTF("[FLUSH_MAP] wid=0x%08X geom=%ux%u — pushing deferred map\n",
             (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h);
+    TS_FPRINTF("[GEOM] wid=0x%08X source=FLUSH_MAP final=%ux%u@(%d,%d) or=%d\n",
+            (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
+            (int)vw.x, (int)vw.y, vw.override_redirect ? 1 : 0);
 #endif
     x11_ui_push_map(wid);
     x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);

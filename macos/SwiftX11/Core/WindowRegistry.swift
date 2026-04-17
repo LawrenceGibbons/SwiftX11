@@ -1322,7 +1322,12 @@ final class WindowRegistry {
   @MainActor
   func applySizeHints(xid: UInt32, minW: Int, minH: Int, maxW: Int, maxH: Int, incW: Int, incH: Int) {
     let host = topLevelAncestor(of: xid)
-    guard let controller = windows[host], let win = controller.window else { return }
+    guard let controller = windows[host], let win = controller.window else {
+      #if DEBUG
+      fputs("[GEOM_NS] wid=0x\(String(xid, radix: 16)) source=SIZE_HINTS host=0x\(String(host, radix: 16)) no_window\n", stderr)
+      #endif
+      return
+    }
 
     // Apply minimum size (use server floor as absolute minimum)
     if minW > 0 || minH > 0 {
@@ -1341,6 +1346,14 @@ final class WindowRegistry {
       win.contentResizeIncrements = NSSize(width: CGFloat(incW), height: CGFloat(incH))
     }
 
+    #if DEBUG
+    let cs = win.contentView?.frame.size ?? .zero
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=SIZE_HINTS_APPLIED contentSize=%.0fx%.0f minSize=%.0fx%.0f maxSize=%.0fx%.0f inc=%.0fx%.0f\n",
+                 xid, cs.width, cs.height,
+                 win.contentMinSize.width, win.contentMinSize.height,
+                 win.contentMaxSize.width, win.contentMaxSize.height,
+                 win.contentResizeIncrements.width, win.contentResizeIncrements.height), stderr)
+    #endif
   }
 
   /// _NET_WM_WINDOW_TYPE: adjust NSWindow style based on EWMH window type.

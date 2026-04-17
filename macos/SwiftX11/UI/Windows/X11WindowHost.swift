@@ -1363,9 +1363,14 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
     let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
 
-    // Gated: fires on every resize step; too noisy for normal debug.
-    // print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X drawableSize=%dx%d",
-    //       xid, wPx, hPx))
+    #if DEBUG
+    let inLive = owner?.window?.inLiveResize ?? false
+    let wMin = owner?.window?.contentMinSize.width ?? 0
+    let hMin = owner?.window?.contentMinSize.height ?? 0
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=handleDrawableSize drawablePx=%dx%d lastPx=%dx%d minSize=%.0fx%.0f live=%d\n",
+                 xid, wPx, hPx, lastDrawablePt.w, lastDrawablePt.h,
+                 wMin, hMin, inLive ? 1 : 0), stderr)
+    #endif
 
     // ---- HARD GATES ----
     guard wPx >= 16, hPx >= 16 else { return }
