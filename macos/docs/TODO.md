@@ -920,9 +920,28 @@ Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Reg
 Startup logs show: `Publishing changes from within view updates is not allowed, this will cause undefined behavior.` A SwiftUI view body (or a closure run during a view update) is synchronously mutating an `@Published` / `@State` / `@ObservedObject` property. Unrelated to Vivado popup sizing — longstanding, benign in practice but flagged by SwiftUI as undefined behavior. To locate, add a symbolic breakpoint on `_printChanges` or Combine's `sink` warning path, or audit recent `@Published` writes inside view bodies / `onAppear` / `onChange` closures. Fix: wrap the offending mutation in `DispatchQueue.main.async { ... }` or `Task { @MainActor in ... }`.
 
 ### Vivado Popup Size Race — Unified Deferred-Map Path (MEDIUM, long-term)
-**Short-term mitigation (v1.19.35.40-dbg):** `handleMapWindow` + `flushPendingMaps` now defer the map and apply peak-size resolution when the client has shrunk its own window below an earlier ConfigureWindow peak (`peak_area > 2 × current_area`), not just when the window is `<50px`. Catches the Vivado/AWT race where a stale ConfigureWindow arrives after WM_NORMAL_HINTS committed the real size and walks the popup back to its 150×150 skeleton.
+**Short-term mitigation (v1.19.36):** `handleMapWindow` + `flushPendingMaps` defer the map and apply peak-size resolution when the client has shrunk its own window below an earlier ConfigureWindow peak (`peak_area > 2 × current_area`), not just when the window is `<50px`. Catches the Vivado/AWT race where a stale ConfigureWindow arrives after WM_NORMAL_HINTS committed the real size and walks the popup back to its 150×150 skeleton. Verified firing cleanly in v1.19.35.40-dbg traces.
 
-**Long-term fix:** Route `MapWindow` for ANY root child through the deferred path — not just tiny/shrunk-below-peak cases. The current design leaks the poll-drain race: if every client request for this window happens to land in the same drain cycle BEFORE MapWindow, we map at the right size; if a trailing ConfigureWindow arrives in a later drain cycle, we've already mapped. Deferring every root-child map until the drain completes guarantees all buffered requests land first, eliminating the race entirely (real Linux WMs do this via SubstructureRedirect's MapRequest interception). Cost: one poll-drain delay per map, usually sub-millisecond. Also reconsider whether `flushPendingMaps` should run once per drain or once per root-child — batching all maps in one pass may aggravate cross-popup ordering.
+**Long-term fix — unified deferred-map path:**
+
+*Design:* Route MapWindow for every root-child, non-OR, not-already-mapped host through `addPendingMap` — not just tiny/shrunk-below-peak edge cases. `flushPendingMaps` becomes the sole resolver, runs after `readAndDispatch` drains all buffered data (matches real WM behavior reading WM_NORMAL_HINTS at `MapRequest` time). OR windows keep the immediate path.
+
+*Resolution order in flushPendingMaps:*
+- `peak_area > 1.2 × current_area` → trust peak
+- `WM_NORMAL_HINTS.PSize / PMinSize / PBaseSize ≥ 50` and larger than current → use hints
+- Else current geometry
+- `<10×10` with no better signal → 400×300 fallback (unchanged)
+- Position: honor most recent explicit ConfigureWindow; only center if (0,0) or off-screen
+
+*Latency cost:* 0ms best case (all setup in one buffer), ~1ms worst case (one extra poll cycle) — well within XCB's MapNotify tolerance.
+
+*Invariants to preserve:* ConfigureNotify queued with correct geometry before MapNotify; MapSubwindows child-map path unchanged; MAP_SHOW → Expose ordering.
+
+*Risk:* Xt/Xlib clients that call `XSync` immediately after `XMapWindow` must see the map before the reply. Should work because XSync (GetInputFocus) is drained in the same poll cycle.
+
+*Rollout:* ship behind compile flag `SWIFTX11_UNIFIED_DEFERRED_MAPS` first, collect traces from Vivado/Vitis/xterm for 1–2 weeks, then flip default-on. Current peak-area shim stays as a safety net.
+
+*Testing matrix:* Vivado (Close Project race + synthesis/implementation dialogs), Vitis menus + file dialogs, xterm/xeyes sanity, multi-client stress.
 
 ---
 
