@@ -916,6 +916,52 @@ Root cause: `dbus-launch` checks the X11 root window for a `_DBUS_SESSION_BUS_*`
 ### Ctrl+Click Regression (MEDIUM)
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
 
+### hw_ila_x Drag-and-Drop Doesn't Fire (MEDIUM)
+In Vivado's `hw_ila_x` waveform/debug window, click-and-drag of a debug item to add it to the trigger setup doesn't work. Button press + release land correctly (confirmed via `[BTN_SEND]` trace), but the drag gesture never triggers.
+
+**Hypotheses (ordered by likelihood):**
+1. **Motion delivery rate too low during drag.** MotionNotify coalescing in HostCommandQueue (v1.15.15) may be dropping too aggressively for Java AWT's drag recognizer (needs minimum sample count + threshold distance).
+2. **drag_xid capture scope.** `InputState::button` sets `drag_xid` to the deepest mapped window under the pointer — typically a JTree cell. During the drag, motion routes to the cell, but the enclosing drag handler lives on the parent viewport. Real X11 with `XGrabPointer(owner_events=False)` would route motion to the grab window regardless.
+3. **Missing PointerMotionHintMask (bit 8) support.** Java/Swing sometimes selects hint mode — client waits for a hint event then calls QueryPointer. If we don't emit hint events, drag never starts.
+4. **Explicit GrabPointer on press.** AWT may call `XGrabPointer` at button-down; check the grab is active and motion routes to the grab window.
+
+**Request for user (next repro):**
+1. Enable `X11_TRACE_VERBOSE` (or add a new `[DRAG]` trace category): button-down, running motion counter, button-up, grab/ungrab events.
+2. Repro the drag in hw_ila_x once — just enough to see button-down → a few motion events → button-up without the drag firing.
+3. Capture stderr from app start through the failed drag. We want to see:
+   - Was `[GrabPointer]` logged at button-down?
+   - How many motion events fire during the button-held window? To which `wid` do they go (tree cell vs parent)?
+   - Is `PointerMotionHintMask` in the target's `del_mask`?
+
+**Next dbg build for this (future):** add a `[DRAG]` trace category — button-down starts a counter, each motion during drag increments, button-up emits a one-line summary (`[DRAG] host=0x... drag_xid=0x... motions=N duration=Xms`). Makes the diagnostic much easier to read than grepping raw motion logs.
+
+### Vivado Crashes After Laptop Sleep (MEDIUM)
+After leaving SwiftX11 + Vivado running overnight and sleeping the laptop (several hours), clicking into the Vivado window on wake causes Vivado to crash. SwiftX11 log signature:
+
+```
+[95591.780730] [SEQ_WRAP] 16-bit wrap detected: pkt=13514 floor=30457 clientSeq=13514 — resetting floor
+[95594.201...] ... normal dialog creation ...
+<~8.5 min gap — laptop asleep>
+[96043.487214] [X11] readAndDispatch error fd=6 seq=24691
+[96043.487236] [X11] disconnect fd=6 remaining=0 seq=24691 total_reqs=1335411
+```
+
+The disconnect is Vivado side (Vivado crashed → process termination → TCP close). Last dispatched requests are normal PolyFillRectangle (72) / ChangeWindowAttributes (2); last outgoing events are normal Expose/Motion/Enter/Leave.
+
+**Suspected root causes:**
+1. **TCP socket stale after sleep.** macOS keeps the socket nominally alive during sleep, but Vivado's Xlib may see stale state on wake. The first input event delivered post-wake trips an AWT/Xlib assertion.
+2. **Event flood on wake.** AppKit queues events during sleep and delivers them rapidly after wake; if motion/button events arrive faster than AWT's Dispatch thread can process, Java's event queue overflows or reorders.
+3. **Very long session.** `total_reqs=1335411` — sequence number has wrapped multiple times. A wrap during sleep, or mismatched wire-seq floor recovery on wake, could corrupt Vivado's next-expected-sequence state.
+4. **Metal command queue lost during sleep.** If our next draw errors and we retry in a way that stalls input delivery, it could compound the timing issue on wake.
+
+**Mitigations to consider:**
+1. **Sleep/wake awareness.** Subscribe to `NSWorkspace.willSleepNotification` — pause input event delivery, flush any pending host commands. On `didWakeNotification`, resume. Prevents the post-wake event flood.
+2. **Idle keepalive.** Periodically (every 60s) emit a `NoOperation` to each client. Detects wedged sockets; if the send blocks/fails, drop the connection cleanly rather than delivering stale input to a doomed client.
+3. **Extreme timestamp gap detection.** If `currentTime - lastEventTime > 60s`, drop queued input events and send a single synthetic crossing event to resync pointer state.
+4. **Server-side session limit warning.** At `total_reqs > 500K` or known sequence-wrap count > N, log a warning that a long session is heading toward stress territory.
+
+**Next dbg trace to capture if it recurs:** wire-level byte dump of the last 256 bytes sent/received before the readAndDispatch error, plus timestamp of the last successful round-trip vs. the error time. That would pin down whether it's a socket issue or a protocol issue.
+
 ### SwiftUI "Publishing changes from within view updates" Warning (LOW)
 Startup logs show: `Publishing changes from within view updates is not allowed, this will cause undefined behavior.` A SwiftUI view body (or a closure run during a view update) is synchronously mutating an `@Published` / `@State` / `@ObservedObject` property. Unrelated to Vivado popup sizing — longstanding, benign in practice but flagged by SwiftUI as undefined behavior. To locate, add a symbolic breakpoint on `_printChanges` or Combine's `sink` warning path, or audit recent `@Published` writes inside view bodies / `onAppear` / `onChange` closures. Fix: wrap the offending mutation in `DispatchQueue.main.async { ... }` or `Task { @MainActor in ... }`.
 
