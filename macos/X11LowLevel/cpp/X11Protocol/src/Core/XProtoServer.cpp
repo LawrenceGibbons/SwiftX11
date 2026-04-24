@@ -480,8 +480,11 @@ void XProtoServer::flushPendingMaps() {
       // Last-resort fallback: apply a reasonable size rather than mapping
       // a 1×1 window that's unusable.  Only trigger for truly unusable
       // sizes (<10px) — windows like 25×17 may be intentional indicators.
+      // Size chosen to be big enough for typical Vivado dialogs to show
+      // OK/Cancel buttons and a line of text even when the real size
+      // couldn't be resolved from hints or peak (stuck-at-intermediate race).
       if (vw.w < 10 || vw.h < 10) {
-        if (desired_w < 50) desired_w = 400;
+        if (desired_w < 50) desired_w = 500;
         if (desired_h < 50) desired_h = 300;
 #ifndef NDEBUG
         TS_FPRINTF("[FLUSH_MAP_FALLBACK] wid=0x%08X: geom %ux%u → fallback %dx%d\n",
