@@ -1336,9 +1336,18 @@ final class WindowRegistry {
       win.contentMinSize = NSSize(width: effMinW, height: effMinH)
     }
 
-    // Apply maximum size
-    if maxW > 0 && maxH > 0 {
+    // Apply maximum size — but treat PMinSize == PMaxSize as advisory.
+    // Vivado/Xt/Motif dialogs commonly set min == max as a packing hint
+    // ("initial size is N×M") rather than a hard resize ban.  Honoring
+    // it strictly locks the NSWindow so the macOS resize cursor shows
+    // but dragging does nothing — surprising behavior on macOS.  If the
+    // client really wants a range, min < max, and we still clamp to it.
+    if maxW > 0 && maxH > 0 && (maxW > minW || maxH > minH) {
       win.contentMaxSize = NSSize(width: CGFloat(maxW), height: CGFloat(maxH))
+    } else {
+      // Clear any previously-set max so user can resize freely.
+      win.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                   height: CGFloat.greatestFiniteMagnitude)
     }
 
     // Apply resize increment (e.g., xterm character cell size)
