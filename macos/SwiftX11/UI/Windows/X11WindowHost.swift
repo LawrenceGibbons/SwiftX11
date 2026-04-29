@@ -283,7 +283,13 @@ final class X11View: NSView {
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
   }
-  
+
+  deinit {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11View.deinit\n", xid), stderr)
+    #endif
+  }
+
   private var applyingDrawableSize = false
   
   private func scheduleDrawableSizeUpdate(_ size: CGSize) {
@@ -1299,6 +1305,12 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   init(owner: X11View) {
     self.owner = owner
     super.init()
+  }
+
+  deinit {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11Renderer.deinit\n", xid), stderr)
+    #endif
   }
 
   func setXid(_ xid: UInt32) {

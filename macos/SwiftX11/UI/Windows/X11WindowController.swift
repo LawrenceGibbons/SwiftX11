@@ -271,6 +271,12 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   @objc
   func windowWillClose(_ notification: Notification) {
     assert(Thread.isMainThread)
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=windowWillClose nsWindow=%p contentView=%p\n",
+                 xid,
+                 (notification.object as AnyObject?).map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0,
+                 self.window?.contentView.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
+    #endif
     // make state look clean before arrival of the close event
     x11_post_focus_event(xid, false)
     postSyntheticLeaveForCurrentMouseLocation()
@@ -279,7 +285,13 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
     // This replaces the old x11_post_window_destroy which only hid the NSWindow
     // but left the X11 client process running.
     x11_post_window_close(xid)
-  }  
+  }
+
+  deinit {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11WindowController.deinit\n", xid), stderr)
+    #endif
+  }
   
   func windowDidMiniaturize(_ notification: Notification) {
     assert(Thread.isMainThread)

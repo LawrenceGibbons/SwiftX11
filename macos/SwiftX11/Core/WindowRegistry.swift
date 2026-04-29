@@ -559,11 +559,20 @@ final class WindowRegistry {
 
     pendingORShow.remove(host)
     suppressNextUnmapFromCocoa.insert(host)
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=unmapWindow orderOut nsWindow=%p\n",
+                 host,
+                 controller.window.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
+    #endif
     controller.window?.orderOut(nil)
   }
   
   @MainActor
   func noteX11WindowDestroyed(xid: UInt32) {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=noteX11WindowDestroyed topLevel=%d\n",
+                 xid, isTopLevelX11Window(xid) ? 1 : 0), stderr)
+    #endif
     // 0) Cancel any scheduled present/snapshot bookkeeping for this xid as either host or source.
     pendingPresentByXid.remove(xid)
     pendingPresentByHost.remove(xid)
@@ -703,7 +712,11 @@ final class WindowRegistry {
   
   
   func closeWindow(xid: UInt32) {
-    
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow ENTER topLevel=%d\n",
+                 xid, isTopLevelX11Window(xid) ? 1 : 0), stderr)
+    #endif
+
     // If a child is being destroyed, DO NOT close the Cocoa host window.
     guard isTopLevelX11Window(xid) else {
       // child teardown: remove bookkeeping only
@@ -735,8 +748,18 @@ final class WindowRegistry {
     closingXids.insert(host)
     defer { closingXids.remove(host) }
 
-    guard let controller = windows.removeValue(forKey: host) else { return }
+    guard let controller = windows.removeValue(forKey: host) else {
+      #if DEBUG
+      fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow no_controller\n", host), stderr)
+      #endif
+      return
+    }
     X11View.logIfInLayout("destroy: controller.close xid=0x\(String(host, radix: 16))", view: controller.x11View)
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow controller_close nsWindow=%p\n",
+                 host,
+                 controller.window.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
+    #endif
     controller.close()
   }
   
