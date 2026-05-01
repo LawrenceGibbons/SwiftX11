@@ -284,6 +284,38 @@ final class X11View: NSView {
     fatalError("init(coder:) has not been implemented")
   }
 
+  /// Eager teardown — call from X11WindowController.tearDown() before close().
+  /// Breaks the MTKView ↔ delegate strong-ref chain so the view tree dealloc
+  /// completes synchronously instead of being held alive by a pending display
+  /// link callback or AppKit layout-server registration.  AppKit can still
+  /// queue one more layout pass on a closing window; if that fires after our
+  /// X11View was supposed to be gone but is still in memory, dispatching to
+  /// its (freed) layer/delegate fields is the source of the wild-PC crashes.
+  @MainActor
+  func tearDown() {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11View.tearDown\n", xid), stderr)
+    #endif
+    // 1) Pause the MTKView display link so no more draw(in:) callbacks fire.
+    if let mtk = mtkView {
+      mtk.isPaused = true
+      mtk.delegate = nil      // releases the X11Renderer
+      mtk.releaseDrawables()  // discards any in-flight CAMetalDrawable
+      mtk.removeFromSuperview()
+    }
+    mtkView = nil
+    mtkDelegate = nil
+    renderer = nil
+    // 2) Drop CPU-side surface buffers.
+    hostSurface = nil
+    displayFrame = nil
+    // 3) Remove tracking area so no more mouseEntered/Exited fire.
+    if let ta = trackingArea {
+      removeTrackingArea(ta)
+      trackingArea = nil
+    }
+  }
+
   deinit {
     #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11View.deinit\n", xid), stderr)

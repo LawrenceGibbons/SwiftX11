@@ -246,6 +246,21 @@ final class WindowRegistry {
   private var suppressNextMapFromCocoa: Set<UInt32> = []
   private var suppressNextUnmapFromCocoa: Set<UInt32> = []
   private var closingXids = Set<UInt32>()
+  /// Public read-only check used by LayoutRecursionGuard to skip layout
+  /// passes on views whose top-level NSWindow is being torn down.
+  @MainActor
+  func isClosing(xid: UInt32) -> Bool {
+    closingXids.contains(xid) || closingXids.contains(topLevelAncestor(of: xid))
+  }
+
+  /// Called from X11WindowController.deinit — the last point at which a stale
+  /// AppKit layout pass could still reach the destroyed view tree.  Clears
+  /// the closing flag so future windows reusing the same XID aren't blocked.
+  nonisolated func markClosed(xid: UInt32) {
+    Task { @MainActor in
+      self.closingXids.remove(xid)
+    }
+  }
   private var mappedXids = Set<UInt32>()
   // Override-redirect windows whose mapWindow() deferred orderFront
   // because the geometry wasn't available yet. moveWindow() will show them.
@@ -745,8 +760,10 @@ final class WindowRegistry {
     latestHostSizePtByXid.removeValue(forKey: host)
     lastRepaintTimeByXid.removeValue(forKey: host)
 
+    // Keep host in closingXids until X11WindowController actually deinits
+    // (LayoutRecursionGuard checks this to skip stale layout passes).  Removed
+    // in markClosed() called from X11WindowController.deinit.
     closingXids.insert(host)
-    defer { closingXids.remove(host) }
 
     guard let controller = windows.removeValue(forKey: host) else {
       #if DEBUG
@@ -760,6 +777,12 @@ final class WindowRegistry {
                  host,
                  controller.window.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
     #endif
+    // Eager teardown: tears down Metal renderer, MTKView delegate, surface
+    // buffers, and disconnects view from NSWindow.  Forces synchronous dealloc
+    // of X11View / X11Renderer instead of letting them linger in memory while
+    // AppKit's display cycle still has them queued for layout — which is the
+    // source of the wild-PC crashes during NSDisplayCycleFlush.
+    controller.tearDown()
     controller.close()
   }
   

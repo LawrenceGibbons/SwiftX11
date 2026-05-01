@@ -287,10 +287,29 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
     x11_post_window_close(xid)
   }
 
+  /// Eager teardown — call from WindowRegistry.closeWindow before close().
+  /// Tears down the X11View (Metal renderer, delegate, surface buffers) and
+  /// disconnects it from the NSWindow so the view tree can dealloc in this
+  /// runloop tick.  Without this, AppKit can queue one more display-cycle
+  /// layout pass on the half-released view, dereferencing freed fields.
+  @MainActor
+  func tearDown() {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11WindowController.tearDown\n", xid), stderr)
+    #endif
+    self.x11View?.tearDown()
+    self.window?.contentView = nil
+    self.x11View = nil
+    self.window?.delegate = nil
+  }
+
   deinit {
     #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11WindowController.deinit\n", xid), stderr)
     #endif
+    // Clear closingXids flag so the LayoutRecursionGuard stops blocking
+    // future layout passes for any window that ends up reusing this xid.
+    WindowRegistry.shared.markClosed(xid: xid)
   }
   
   func windowDidMiniaturize(_ notification: Notification) {
