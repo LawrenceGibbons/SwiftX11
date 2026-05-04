@@ -15,28 +15,39 @@
 //    3. Swift main thread READS pixels for Metal upload (per present tick).
 //
 //  Plus, *exclusive* writers when the surface is allocated, reallocated,
-//  or freed.  Old design: a plain std::mutex protected only the map
-//  structure; the buffers themselves were owned by Swift's
-//  Foundation.Data with no cross-thread guarantee (ARC could free a
-//  buffer mid-write).  ASan caught that race in v1.19.35.45-dbg
-//  (heap-use-after-free in fillWindowBackgroundIfReady during live
-//  resize).
+//  or freed.
 //
-//  New design: std::shared_mutex.  Multiple readers proceed in parallel;
-//  reallocation takes the exclusive lock briefly.  Read access is
-//  exposed via a move-only RAII handle (ReadHandle) that keeps the
-//  shared lock held for the duration of the caller's draw op.
-//  Subsequent commits (C2, C3) will move buffer ownership from Swift to
-//  C++ (HostSurface), embed ReadHandle inside DrawableRW, and route
-//  reallocation through a host command queue — see docs/TODO.md for the
-//  full plan.
+//  Synchronization
+//  ---------------
+//  std::shared_mutex.  Multiple readers proceed in parallel; reallocation
+//  takes the exclusive lock briefly.  Read access is exposed via a
+//  move-only RAII handle (ReadHandle) that keeps the shared lock held
+//  for the duration of the caller's draw op.  ReadHandle is embedded
+//  inside DrawableRW (C2), so every draw op naturally holds the lock.
+//
+//  Buffer ownership (C3, v1.19.35.48-dbg)
+//  --------------------------------------
+//  The registry now OWNS its host-pixel buffers via std::unique_ptr<HostSurface>.
+//  C++ allocates and frees them; Swift never holds a reference.  This
+//  closes the ARC-vs-mutex side-channel race that earlier versions had,
+//  where Swift's Foundation.Data could be freed by ARC at any moment
+//  regardless of what locks the registry held.  Now the only thread that
+//  can free a buffer is whichever currently holds the exclusive lock at
+//  ensure()/clear() time, after all readers have released.
+//
+//  Legacy `set(SurfaceDesc)` API: kept transitionally, copies bytes from
+//  the externally-provided ptr into a freshly-allocated owned HostSurface.
+//  C3.2 will switch Swift to call ensure() directly and the legacy API
+//  will be deprecated.
 //
 
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <shared_mutex>
 #include "Core/SurfaceDesc.hpp"
+#include "Core/HostSurface.hpp"
 
 namespace x11 {
 
@@ -48,19 +59,41 @@ public:
   DrawableSurfaceRegistry(const DrawableSurfaceRegistry&) = delete;
   DrawableSurfaceRegistry& operator=(const DrawableSurfaceRegistry&) = delete;
 
-  // ── Existing (legacy) snapshot API ────────────────────────────────────
-  // These continue to work after C1; callers receive a value-copied
-  // SurfaceDesc.  The buffer pointer in the returned descriptor is valid
-  // only as long as no one reallocates (so on the xproto thread, between
-  // host commands, it's stable in practice — but C2 will switch the
-  // hot-path callers (resolveDrawableRW) to acquireRead() for explicit
-  // lifetime safety).
+  // ── New (C3) ownership API ────────────────────────────────────────────
+  // Allocate (or reallocate) the host buffer for `xid` to (w × h × bpr).
+  // C++ owns the buffer for its lifetime.  bpr should already include
+  // 64-byte stride alignment (caller's responsibility — typically rounded
+  // up by the surface bridge from `w*4`).
+  //
+  // Behaviour:
+  //   - If the existing entry already has identical (w, h, bytesPerRow),
+  //     this is a no-op and returns the existing generation.
+  //   - Otherwise allocates a new HostSurface with posix_memalign(64,...),
+  //     drops any previous entry (its dtor frees the old buffer), inserts
+  //     the new one, and returns the new generation.
+  //   - Returns 0 on allocation failure.
+  //
+  // Takes the exclusive lock for the duration of the call.  Blocks until
+  // any in-flight ReadHandle releases.  After return, the registry's
+  // entry is the new HostSurface and any prior buffer has been freed.
+  uint32_t ensure(uint32_t xid, uint16_t w, uint16_t h, uint32_t bytesPerRow);
+
+  // ── Legacy (transitional) snapshot API ────────────────────────────────
+  // set() now allocates an owned HostSurface internally and copies bytes
+  // from `s.ptr` into the new buffer.  The externally-provided pointer is
+  // not retained — it can be freed immediately after set() returns.
+  // C3.2 will replace callers with direct ensure() calls.
   void set(uint32_t xid, const SurfaceDesc& s);
+
+  // Free the buffer for `xid`.  Takes exclusive lock; blocks until any
+  // ReadHandle releases.
   void clear(uint32_t xid);
+
+  // Snapshot accessors (read into caller-provided value).
   bool get(uint32_t xid, SurfaceDesc& out) const;
   bool has(uint32_t xid) const;
 
-  // ── New (C1) RAII read API ────────────────────────────────────────────
+  // ── RAII read API ─────────────────────────────────────────────────────
   // ReadHandle holds the registry's shared lock for its lifetime.
   // Callers who need to access the buffer should:
   //
@@ -70,9 +103,9 @@ public:
   //     // h goes out of scope -> shared lock released
   //
   // While any ReadHandle is alive, the registry's shared_mutex is
-  // read-locked; reallocation/clear blocks until all read handles drop.
-  // Designed to be embedded inside DrawableRW in commit C2 so every
-  // draw op naturally holds the lock for its duration.
+  // read-locked; ensure()/clear() blocks until all read handles drop.
+  // ReadHandle is embedded inside DrawableRW so every draw op naturally
+  // holds the lock.
   class ReadHandle {
    public:
     ReadHandle() = default;
@@ -98,14 +131,15 @@ public:
     SurfaceDesc desc_ {};
   };
 
-  // Acquire a read handle for `xid`.  If no surface is registered (or
-  // the entry has a null pointer), returns an invalid handle (valid() ==
-  // false) with no lock held.
   ReadHandle acquireRead(uint32_t xid) const;
 
 private:
+  // Build a SurfaceDesc snapshot pointing at the underlying HostSurface
+  // buffer.  Caller must hold either lock when calling.
+  static SurfaceDesc snapshotFromSurface(const HostSurface& s);
+
   mutable std::shared_mutex mu_;
-  std::unordered_map<uint32_t, SurfaceDesc> map_;
+  std::unordered_map<uint32_t, std::unique_ptr<HostSurface>> map_;
 };
 
 } // namespace x11
