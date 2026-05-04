@@ -492,7 +492,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
 #endif
   ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
-#ifndef NDEBUG
+#if X11_TRACE_GEOM_ENABLED
   TS_FPRINTF("[GEOM] wid=0x%08X source=CREATE old=0x0 new=%ux%u xy=(%d,%d) parent=0x%08X or=%d\n",
           (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (int)x, (int)y,
           (unsigned)parent, override_redirect ? 1 : 0);
@@ -926,7 +926,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
               // Peak is more than 2× current area: client shrank its own win.
               if (peak_area > cur_area * 2) {
                 shrunk_below_peak = true;
-#ifndef NDEBUG
+#if X11_TRACE_GEOM_ENABLED
                 TS_FPRINTF("[GEOM] wid=0x%08X source=MAP_SHRUNK_BELOW_PEAK cur=%ux%u peak=%ux%u — deferring\n",
                         (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h,
                         (unsigned)pw, (unsigned)ph);
@@ -1387,7 +1387,7 @@ void applyRootlessResize(XProtoContext& ctx, uint32_t wid, int32_t w_px, int32_t
   // 1) Update authoritative geometry in C++.
   // (Swift owns the backing surface; no C FB resize needed.)
   ctx.windows().setGeometryRootlessHost(wid, vw0->x, vw0->y, new_w, new_h);
-#ifndef NDEBUG
+#if X11_TRACE_GEOM_ENABLED
   TS_FPRINTF("[GEOM] wid=0x%08X source=COCOA_RESIZE old=%ux%u new=%ux%u\n",
           (unsigned)wid, (unsigned)old_w, (unsigned)old_h,
           (unsigned)new_w, (unsigned)new_h);

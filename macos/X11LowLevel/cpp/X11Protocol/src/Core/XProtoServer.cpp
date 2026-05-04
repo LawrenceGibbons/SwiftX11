@@ -24,6 +24,7 @@
 extern "C" {
 #include "SwiftX11Bridge.h"
 #include "Utils/MachTime.hpp"
+#include "Utils/TraceDefs.hpp"
 }
 
 namespace x11 {
@@ -363,7 +364,7 @@ void XProtoServer::flushPendingMaps() {
     WindowView vw{};
     if (!windows_.snapshot(wid, vw)) continue;
 
-#ifndef NDEBUG
+#if X11_TRACE_GEOM_ENABLED
     // Dump raw WM_NORMAL_HINTS + peak-size state at flush time so we can
     // debug why popups come up at the wrong size.
     {
@@ -536,6 +537,8 @@ void XProtoServer::flushPendingMaps() {
 #ifndef NDEBUG
     TS_FPRINTF("[FLUSH_MAP] wid=0x%08X geom=%ux%u — pushing deferred map\n",
             (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h);
+#endif
+#if X11_TRACE_GEOM_ENABLED
     TS_FPRINTF("[GEOM] wid=0x%08X source=FLUSH_MAP final=%ux%u@(%d,%d) or=%d\n",
             (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
             (int)vw.x, (int)vw.y, vw.override_redirect ? 1 : 0);

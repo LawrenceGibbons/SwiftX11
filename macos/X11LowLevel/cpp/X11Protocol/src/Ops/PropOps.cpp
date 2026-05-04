@@ -27,6 +27,7 @@
 #include "Core/ScreenLayout.hpp"
 #include "Core/timestamp.hpp"
 #include "Utils/MachTime.hpp"
+#include "Utils/TraceDefs.hpp"
 
 extern "C" void x11_ui_push_log(int level, const char* message);
 
@@ -205,7 +206,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
   if (atom == x11::atom::kWM_NORMAL_HINTS && fmt == 32 && dataBytes >= 5 * 4) {
     const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
     const uint32_t flags = d32[0];
-#ifndef NDEBUG
+#if X11_TRACE_GEOM_ENABLED
     {
       uint32_t dbg_host = ctx.windows().topLevelAncestorOf(wid);
       if (dbg_host == 0) dbg_host = wid;
@@ -320,7 +321,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
 
     // Push size constraints to Swift for NSWindow contentMinSize/contentMaxSize/resizeIncrements
     x11_ui_push_size_hints(host, min_w, min_h, max_w, max_h, inc_w, inc_h);
-#ifndef NDEBUG
+#if X11_TRACE_GEOM_ENABLED
     TS_FPRINTF("[GEOM] wid=0x%08X source=WM_HINTS min=%dx%d max=%dx%d inc=%dx%d desired=%dx%d did_resize=%d\n",
             (unsigned)host, min_w, min_h, max_w, max_h, inc_w, inc_h,
             desired_w, desired_h, did_resize ? 1 : 0);
