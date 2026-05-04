@@ -228,13 +228,19 @@ void x11_surface_update(uint32_t host_xid,
 // Swift never holds a reference and never frees.  bytes_per_row is computed
 // internally as (w_px*4) rounded up to 64-byte alignment.
 //
+// fill_byte: byte splatted across all pixels of a freshly-allocated
+// buffer.  Use 0xFF for opaque white (BGRA), 0x00 for transparent black
+// (shaped windows).  No-op (same shape) calls do NOT refill — caller's
+// pixels are preserved.
+//
 // Returns the new generation on success (>0), or 0 on allocation failure.
 // If the registry already has a surface of the requested shape, returns
 // the existing generation and is a no-op.  Triggers a SurfaceResized
 // host command for downstream re-expose if the dimensions changed.
 uint32_t x11_surface_ensure(uint32_t host_xid,
                             int32_t  w_px,
-                            int32_t  h_px);
+                            int32_t  h_px,
+                            uint8_t  fill_byte);
 
 void x11_surface_clear(uint32_t host_xid);
 

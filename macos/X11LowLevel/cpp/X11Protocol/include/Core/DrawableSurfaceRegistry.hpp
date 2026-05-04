@@ -67,16 +67,20 @@ public:
   //
   // Behaviour:
   //   - If the existing entry already has identical (w, h, bytesPerRow),
-  //     this is a no-op and returns the existing generation.
+  //     this is a no-op and returns the existing generation.  Pixel
+  //     contents are NOT touched in the no-op case.
   //   - Otherwise allocates a new HostSurface with posix_memalign(64,...),
-  //     drops any previous entry (its dtor frees the old buffer), inserts
-  //     the new one, and returns the new generation.
+  //     fills the new buffer with `fillByte` (0xFF for white, 0x00 for
+  //     transparent — caller's choice), drops any previous entry (its
+  //     dtor frees the old buffer), inserts the new one, and returns
+  //     the new generation.
   //   - Returns 0 on allocation failure.
   //
   // Takes the exclusive lock for the duration of the call.  Blocks until
   // any in-flight ReadHandle releases.  After return, the registry's
   // entry is the new HostSurface and any prior buffer has been freed.
-  uint32_t ensure(uint32_t xid, uint16_t w, uint16_t h, uint32_t bytesPerRow);
+  uint32_t ensure(uint32_t xid, uint16_t w, uint16_t h,
+                  uint32_t bytesPerRow, uint8_t fillByte);
 
   // ── Legacy (transitional) snapshot API ────────────────────────────────
   // set() now allocates an owned HostSurface internally and copies bytes

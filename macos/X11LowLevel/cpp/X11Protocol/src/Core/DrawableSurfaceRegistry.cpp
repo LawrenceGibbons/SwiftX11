@@ -30,7 +30,8 @@ SurfaceDesc DrawableSurfaceRegistry::snapshotFromSurface(const HostSurface& s) {
 uint32_t DrawableSurfaceRegistry::ensure(uint32_t xid,
                                          uint16_t w,
                                          uint16_t h,
-                                         uint32_t bytesPerRow)
+                                         uint32_t bytesPerRow,
+                                         uint8_t  fillByte)
 {
   if (xid == 0 || w == 0 || h == 0 || bytesPerRow == 0) return 0;
 
@@ -43,7 +44,9 @@ uint32_t DrawableSurfaceRegistry::ensure(uint32_t xid,
 
   std::unique_lock<std::shared_mutex> lock(mu_);
 
-  // No-op if same shape already there.
+  // No-op if same shape already there.  We deliberately do NOT touch
+  // pixel contents in the no-op case — caller may have meaningful pixels
+  // that should survive a redundant ensure() call (e.g., backing store).
   auto it = map_.find(xid);
   if (it != map_.end() && it->second &&
       it->second->w == w && it->second->h == h &&
@@ -60,10 +63,9 @@ uint32_t DrawableSurfaceRegistry::ensure(uint32_t xid,
     return 0;
   }
 
-  // Initialize to zero — matches the original Foundation.Data(count:) ctor
-  // behaviour and avoids ASan complaints about uninitialized reads in
-  // pixel ops that may sample beyond the painted region.
-  std::memset(mem, 0, needBytes);
+  // Fill the freshly-allocated buffer.  Caller passes the byte to splat
+  // across all pixels: 0xFF for white BGRA, 0x00 for transparent.
+  std::memset(mem, fillByte, needBytes);
 
   auto surf = std::make_unique<HostSurface>();
   surf->ptr           = mem;
@@ -92,8 +94,9 @@ void DrawableSurfaceRegistry::set(uint32_t xid, const SurfaceDesc& s) {
   // to publish ptr" call pattern transitionally — but C++ now owns its
   // own copy so Swift can free its Foundation.Data immediately after set()
   // returns.  C3.2 will switch Swift to call ensure() directly and skip
-  // this memcpy.
-  const uint32_t gen = ensure(xid, s.w, s.h, s.bytesPerRow);
+  // this memcpy.  Fill byte is irrelevant since we'll overwrite with the
+  // memcpy below; pass 0 to keep behaviour deterministic.
+  const uint32_t gen = ensure(xid, s.w, s.h, s.bytesPerRow, /*fillByte=*/0);
   if (gen == 0) return;
 
   std::unique_lock<std::shared_mutex> lock(mu_);
