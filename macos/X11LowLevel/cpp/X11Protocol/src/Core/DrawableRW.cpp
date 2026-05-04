@@ -85,11 +85,16 @@ bool resolveDrawableRW(XProtoContext& ctx,
       return false;
     }
 
-    // Resolve via Swift-owned surface registry (published per host).
-    x11::SurfaceDesc s{};
-    if (!ctx.surfaces().get(key, s) ||
-        s.ptr == nullptr || s.bytesPerRow == 0 ||
-        s.w == 0 || s.h == 0)
+    // Resolve via the surface registry (published per host).  Acquire a
+    // shared read lock that we'll later move into out.readLock on success.
+    // The lock prevents the registry entry from being mutated while we
+    // compute offsets/clipping and while the eventual draw-op writes
+    // pixels.  (C3 will move buffer ownership to C++; until then the lock
+    // protects only the registry entry, not the underlying buffer.)
+    auto handle = ctx.surfaces().acquireRead(key);
+    if (!handle.valid() ||
+        handle.bytesPerRow() == 0 ||
+        handle.w() == 0 || handle.h() == 0)
     {
 #ifdef X11_TRACE_VERBOSE
       fprintf(stderr,
@@ -98,6 +103,8 @@ bool resolveDrawableRW(XProtoContext& ctx,
 #endif
       return false;
     }
+    // Use the handle's snapshot below; minimizes diff from the previous code.
+    const x11::SurfaceDesc& s = handle.desc();
 
     if ((s.bytesPerRow & 3u) != 0) {
 #ifdef X11_TRACE_VERBOSE
@@ -342,6 +349,11 @@ bool resolveDrawableRW(XProtoContext& ctx,
             (unsigned)s.w, (unsigned)s.h);
 #endif
 
+    // Move the read lock into the output.  The shared lock is now held
+    // for the lifetime of `out`.  Any subsequent reallocation (writer
+    // lock) blocks until the caller's draw op completes and `out` goes
+    // out of scope.
+    out.readLock = std::move(handle);
     return true;
   }
 
