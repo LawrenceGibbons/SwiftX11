@@ -965,8 +965,22 @@ The disconnect is Vivado side (Vivado crashed → process termination → TCP cl
 ### SwiftUI "Publishing changes from within view updates" Warning (LOW)
 Startup logs show: `Publishing changes from within view updates is not allowed, this will cause undefined behavior.` A SwiftUI view body (or a closure run during a view update) is synchronously mutating an `@Published` / `@State` / `@ObservedObject` property. Unrelated to Vivado popup sizing — longstanding, benign in practice but flagged by SwiftUI as undefined behavior. To locate, add a symbolic breakpoint on `_printChanges` or Combine's `sink` warning path, or audit recent `@Published` writes inside view bodies / `onAppear` / `onChange` closures. Fix: wrap the offending mutation in `DispatchQueue.main.async { ... }` or `Task { @MainActor in ... }`.
 
+### Host Surface Buffer UAF — ✅ FIXED (v1.19.35.49)
+Multi-iteration ASan-driven cleanup that closed a recurring heap-use-after-free in the host pixel buffer during live resize. Foundation.__DataStorage was being freed by Swift main thread's ARC while the xproto thread was mid-write through a registered raw pointer. Fixed by moving buffer ownership entirely to C++:
+
+- **v1.19.35.46 (C1)**: `DrawableSurfaceRegistry` upgraded to `std::shared_mutex`; new move-only RAII `ReadHandle` returned from `acquireRead(xid)`. Multiple readers run concurrently; writers (`set`/`clear`/`ensure`) take the exclusive lock briefly. Pure infrastructure addition.
+- **v1.19.35.47 (C2)**: `DrawableRW` embeds the `ReadHandle`; `resolveDrawableRW` calls `acquireRead()` and stashes the handle in `out.readLock`. Shared lock now held for the entire draw op. Made `DrawableRW` move-only.
+- **v1.19.35.48 (C3.1)**: New `HostSurface` struct (posix_memalign-allocated, freed by dtor). `DrawableSurfaceRegistry` stores `unique_ptr<HostSurface>`. New `ensure(xid, w, h, bpr, fillByte)` allocates atomically under exclusive lock. Legacy `set(SurfaceDesc)` retained transitionally.
+- **v1.19.35.49 (C3.2)**: `X11View.hostSurface: Data?` deleted. `ensureHostSurface` calls `x11_surface_ensure(xid, w, h, fillByte)`; `displayFrame` snapshot via `x11_server_copy_window_bgra`. Swift no longer holds any reference to the live buffer; the registry's exclusive lock IS the buffer's lifetime guard.
+
+**Cleanup TODO**: legacy `DrawableSurfaceRegistry::set(SurfaceDesc)` and the corresponding `x11_surface_update` bridge function are unused after C3.2 — they can be deleted in a follow-up commit. The current `srv->updateSurface(xid, SurfaceDesc)` accessor would also go.
+
+**Trade-off accepted in C3.2**: programmatic resizes (non-live) no longer preserve overlap content — there's a one-frame white-fill before the X11 client repaints. Live resize is unaffected because `displayFrame` masks the gap. If visible flash on programmatic resizes becomes a problem, re-add overlap-copy via a new `x11_surface_blit_in` bridge that takes the exclusive lock and writes pixels into the owned HostSurface.
+
+---
+
 ### Vivado Popup Size Race — Unified Deferred-Map Path (MEDIUM, long-term)
-**Short-term mitigation (v1.19.36):** `handleMapWindow` + `flushPendingMaps` defer the map and apply peak-size resolution when the client has shrunk its own window below an earlier ConfigureWindow peak (`peak_area > 2 × current_area`), not just when the window is `<50px`. Catches the Vivado/AWT race where a stale ConfigureWindow arrives after WM_NORMAL_HINTS committed the real size and walks the popup back to its 150×150 skeleton. Verified firing cleanly in v1.19.35.40-dbg traces.
+**Short-term mitigation (v1.19.35.40 / planned v1.19.36):** `handleMapWindow` + `flushPendingMaps` defer the map and apply peak-size resolution when the client has shrunk its own window below an earlier ConfigureWindow peak (`peak_area > 2 × current_area`), not just when the window is `<50px`. Catches the Vivado/AWT race where a stale ConfigureWindow arrives after WM_NORMAL_HINTS committed the real size and walks the popup back to its 150×150 skeleton. Verified firing cleanly in v1.19.35.40-dbg traces.
 
 **Long-term fix — unified deferred-map path:**
 
