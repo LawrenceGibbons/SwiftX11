@@ -574,7 +574,7 @@ final class WindowRegistry {
 
     pendingORShow.remove(host)
     suppressNextUnmapFromCocoa.insert(host)
-    #if DEBUG
+    #if SWIFTX11_TRACE_GEOM
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=unmapWindow orderOut nsWindow=%p\n",
                  host,
                  controller.window.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
@@ -584,7 +584,7 @@ final class WindowRegistry {
   
   @MainActor
   func noteX11WindowDestroyed(xid: UInt32) {
-    #if DEBUG
+    #if SWIFTX11_TRACE_GEOM
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=noteX11WindowDestroyed topLevel=%d\n",
                  xid, isTopLevelX11Window(xid) ? 1 : 0), stderr)
     #endif
@@ -727,7 +727,7 @@ final class WindowRegistry {
   
   
   func closeWindow(xid: UInt32) {
-    #if DEBUG
+    #if SWIFTX11_TRACE_GEOM
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow ENTER topLevel=%d\n",
                  xid, isTopLevelX11Window(xid) ? 1 : 0), stderr)
     #endif
@@ -766,13 +766,13 @@ final class WindowRegistry {
     closingXids.insert(host)
 
     guard let controller = windows.removeValue(forKey: host) else {
-      #if DEBUG
+      #if SWIFTX11_TRACE_GEOM
       fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow no_controller\n", host), stderr)
       #endif
       return
     }
     X11View.logIfInLayout("destroy: controller.close xid=0x\(String(host, radix: 16))", view: controller.x11View)
-    #if DEBUG
+    #if SWIFTX11_TRACE_GEOM
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow controller_close nsWindow=%p\n",
                  host,
                  controller.window.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
@@ -1369,7 +1369,7 @@ final class WindowRegistry {
   func applySizeHints(xid: UInt32, minW: Int, minH: Int, maxW: Int, maxH: Int, incW: Int, incH: Int) {
     let host = topLevelAncestor(of: xid)
     guard let controller = windows[host], let win = controller.window else {
-      #if DEBUG
+      #if SWIFTX11_TRACE_GEOM
       fputs("[GEOM_NS] wid=0x\(String(xid, radix: 16)) source=SIZE_HINTS host=0x\(String(host, radix: 16)) no_window\n", stderr)
       #endif
       return
@@ -1401,7 +1401,7 @@ final class WindowRegistry {
       win.contentResizeIncrements = NSSize(width: CGFloat(incW), height: CGFloat(incH))
     }
 
-    #if DEBUG
+    #if SWIFTX11_TRACE_GEOM
     let cs = win.contentView?.frame.size ?? .zero
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=SIZE_HINTS_APPLIED contentSize=%.0fx%.0f minSize=%.0fx%.0f maxSize=%.0fx%.0f inc=%.0fx%.0f\n",
                  xid, cs.width, cs.height,

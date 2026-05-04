@@ -403,7 +403,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 pv.x, pv.y, pv.w, pv.h,
                 pv.border_width, pv.override_redirect);
               (void)ctx.transport().sendEvent32(c.xid, ev.data());
-#ifndef NDEBUG
+#if X11_TRACE_GEOM_ENABLED
               TS_FPRINTF("[GEOM] wid=0x%08X source=POST_MAP_CONFIGNOTIFY size=%ux%u@(%d,%d)\n",
                       (unsigned)c.xid, (unsigned)pv.w, (unsigned)pv.h,
                       (int)pv.x, (int)pv.y);
