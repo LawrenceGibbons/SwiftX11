@@ -78,7 +78,8 @@ extern "C" void x11_surface_update(uint32_t host_xid,
 
 extern "C" uint32_t x11_surface_ensure(uint32_t host_xid,
                                        int32_t  w_px,
-                                       int32_t  h_px)
+                                       int32_t  h_px,
+                                       uint8_t  fill_byte)
 {
   if (host_xid == 0 || w_px < 1 || h_px < 1) return 0;
   if (w_px > 65535 || h_px > 65535) return 0;
@@ -97,7 +98,7 @@ extern "C" uint32_t x11_surface_ensure(uint32_t host_xid,
   const bool hadPrev = srv->ctx().surfaces().get(host_xid, prev);
   const bool sizeChanged = hadPrev && (prev.w != w || prev.h != h);
 
-  const uint32_t gen = srv->ctx().surfaces().ensure(host_xid, w, h, bpr);
+  const uint32_t gen = srv->ctx().surfaces().ensure(host_xid, w, h, bpr, fill_byte);
   if (gen == 0) {
 #if X11_TRACE_RESIZE_ENABLED
     TS_FPRINTF("[SURFACE_ENSURE] xid=0x%08X wh=%ux%u FAILED to allocate\n",
