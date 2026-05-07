@@ -231,7 +231,7 @@ final class X11View: NSView {
   /// its (freed) layer/delegate fields is the source of the wild-PC crashes.
   @MainActor
   func tearDown() {
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11View.tearDown\n", xid), stderr)
     #endif
     // 1) Pause the MTKView display link so no more draw(in:) callbacks fire.
@@ -258,7 +258,7 @@ final class X11View: NSView {
   }
 
   deinit {
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11View.deinit\n", xid), stderr)
     #endif
   }
@@ -1281,7 +1281,7 @@ final class X11Renderer: NSObject, MTKViewDelegate {
   }
 
   deinit {
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11Renderer.deinit\n", xid), stderr)
     #endif
   }
@@ -1348,7 +1348,7 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
     let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
 
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     let inLive = owner?.window?.inLiveResize ?? false
     let wMin = owner?.window?.contentMinSize.width ?? 0
     let hMin = owner?.window?.contentMinSize.height ?? 0

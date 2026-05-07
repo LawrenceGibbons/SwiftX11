@@ -79,18 +79,3 @@
 #else
   #define X11_TRACE_WIRE_ENABLED 0
 #endif
-
-// Geometry tracing (window create/configure/resize/map/teardown):
-// [GEOM] from CreateWindow, ConfigureWindow, applyRootlessResize,
-// WM_HINTS_SET, WM_HINTS, FLUSH_MAP*, MAP_SHRUNK_BELOW_PEAK,
-// POST_MAP_CONFIGNOTIFY, etc.  Added during the v1.19.35.40-49 popup
-// size race + surface UAF investigation; extremely noisy during live
-// resize (every windowDidResize tick fires multiple lines per host).
-// Off by default in debug builds for normal client responsiveness.
-// Enable with -DX11_TRACE_GEOM in OTHER_CPLUSPLUSFLAGS to diagnose
-// further popup-size or surface-lifecycle issues.
-#if defined(X11_TRACE_GEOM) || defined(X11_TRACE_VERBOSE)
-  #define X11_TRACE_GEOM_ENABLED 1
-#else
-  #define X11_TRACE_GEOM_ENABLED 0
-#endif
