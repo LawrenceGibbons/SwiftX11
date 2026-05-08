@@ -138,7 +138,7 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     let sizePixels = CGSize(width: sizePoints.width * scale,
                             height: sizePoints.height * scale)
 
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=windowDidResize pts=%.0fx%.0f px=%.0fx%.0f scale=%.2f minSize=%.0fx%.0f maxSize=%.0fx%.0f live=%d\n",
                  xid, sizePoints.width, sizePoints.height,
                  sizePixels.width, sizePixels.height, scale,
@@ -271,7 +271,7 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   @objc
   func windowWillClose(_ notification: Notification) {
     assert(Thread.isMainThread)
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=windowWillClose nsWindow=%p contentView=%p\n",
                  xid,
                  (notification.object as AnyObject?).map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0,
@@ -294,7 +294,7 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   /// layout pass on the half-released view, dereferencing freed fields.
   @MainActor
   func tearDown() {
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11WindowController.tearDown\n", xid), stderr)
     #endif
     self.x11View?.tearDown()
@@ -304,7 +304,7 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   }
 
   deinit {
-    #if SWIFTX11_TRACE_GEOM
+    #if DEBUG
     fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11WindowController.deinit\n", xid), stderr)
     #endif
     // Clear closingXids flag so the LayoutRecursionGuard stops blocking

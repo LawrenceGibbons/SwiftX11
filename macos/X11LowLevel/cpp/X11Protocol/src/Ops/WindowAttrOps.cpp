@@ -32,7 +32,6 @@ extern "C" {
 // util
 #include "Damage.hpp"
 #include "Utils/MachTime.hpp"
-#include "Utils/TraceDefs.hpp"
 
 
 
@@ -440,7 +439,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // NOTE: For host windows, we apply rootless clamp policy (descendants clamped)
     // via setGeometryRootlessHost(). For children, we apply the geometry directly.
     //
-#if X11_TRACE_GEOM_ENABLED
+#ifndef NDEBUG
     uint16_t old_w_geom = 0, old_h_geom = 0;
     int16_t  old_x_geom = 0, old_y_geom = 0;
     if (const WindowView* pv = ctx.window(wid)) {
@@ -458,7 +457,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // If your WindowTable doesn't expose setGeometryDbg, replace this with setGeometry().
       ctx.windows().setGeometryDbg(wid, x, y, w, h, "ConfigureWindow", __FILE__, __LINE__);
     }
-#if X11_TRACE_GEOM_ENABLED
+#ifndef NDEBUG
     TS_FPRINTF("[GEOM] wid=0x%08X source=CONFIG vmask=0x%04X old=%ux%u@(%d,%d) new=%ux%u@(%d,%d) mapped=%d host=%d\n",
             (unsigned)wid, (unsigned)vmask,
             (unsigned)old_w_geom, (unsigned)old_h_geom, (int)old_x_geom, (int)old_y_geom,
