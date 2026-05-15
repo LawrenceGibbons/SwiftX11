@@ -1233,12 +1233,28 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
           if (bpp == 32) {
             // ARGB32/RGB24: 4 bytes per pixel, rows naturally 4-byte aligned.
-            // Extract alpha channel for compositing (loses subpixel coverage
-            // for LCD/component-alpha, but correctly consumes wire bytes).
+            //
+            // Stage 1 (v1.19.35.53): use max(R, G, B) as single-channel
+            // coverage instead of the alpha byte.  Many clients (Java AWT,
+            // Cairo with subpixel-AA enabled) emit component-alpha glyphs
+            // where A is set to ~0xFF over the whole bounding box and the
+            // real per-channel coverage lives in R, G, B.  Extracting A
+            // alone collapsed every glyph to a solid filled rectangle
+            // (Vivado License Manager 2024.1 text → black blocks).
+            //
+            // max(R,G,B) is a luminance approximation:
+            //   - Pure premultiplied grayscale glyphs (R=G=B=A): equals A,
+            //     so no behavioral change.
+            //   - Component-alpha glyphs: collapses LCD-subpixel coverage to
+            //     a grayscale AA approximation — text is readable, just not
+            //     subpixel-accurate.  See Stage 2 for the proper fix.
             for (uint32_t row = 0; row < info.h; row++) {
               for (uint32_t col = 0; col < info.w && br.remaining() >= 4; col++) {
                 const uint32_t pixel = br.readU32();
-                rg.alpha[row * info.w + col] = (uint8_t)((pixel >> 24) & 0xFF);
+                const uint8_t r = (uint8_t)((pixel >> 16) & 0xFF);
+                const uint8_t g = (uint8_t)((pixel >>  8) & 0xFF);
+                const uint8_t b = (uint8_t)((pixel >>  0) & 0xFF);
+                rg.alpha[row * info.w + col] = std::max({r, g, b});
               }
             }
           } else if (bpp == 8) {
