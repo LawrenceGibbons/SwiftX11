@@ -192,7 +192,16 @@ struct RenderGlyph {
   int16_t  y      = 0;   // origin y offset (pixels above baseline)
   int16_t  xOff   = 0;   // advance to next glyph origin x
   int16_t  yOff   = 0;   // advance to next glyph origin y
-  std::vector<uint8_t> alpha; // A8 format: width*height bytes
+  std::vector<uint8_t>  alpha; // single-channel coverage: width*height bytes.
+                               // For A8/A4/A1 this is the wire data.
+                               // For ARGB32 this is max(R,G,B) (Stage 1
+                               // grayscale fallback for non-Over operators
+                               // and damage tracking).
+  std::vector<uint32_t> argb;  // Populated ONLY when the glyphset's format
+                               // is ARGB32.  Raw premultiplied ARGB pixels
+                               // as received on the wire, used for true
+                               // component-alpha compositing in
+                               // CompositeGlyphs (Stage 2).
 };
 
 struct GlyphSetState {
@@ -311,6 +320,95 @@ static inline uint32_t applyOp(uint8_t op, uint32_t dst, uint32_t src) {
 static inline uint32_t renderColorToARGB(uint16_t r, uint16_t g, uint16_t b, uint16_t a) {
   return ((uint32_t)(a >> 8) << 24) | ((uint32_t)(r >> 8) << 16)
        | ((uint32_t)(g >> 8) << 8)  |  (uint32_t)(b >> 8);
+}
+
+// ----------------------------------------------------------------------------
+// Component-alpha compositing for ARGB32 glyph masks (Stage 2)
+//
+// X RENDER component-alpha semantics: when the "mask" (here, the glyph
+// itself) is an ARGB32 picture with maskFormat=None, the mask's R, G, B
+// channels gate the source's per-channel contribution independently.  This
+// is what FreeType's LCD subpixel rasterizer produces and what enables
+// proper subpixel-AA text on RGB-stripe displays.
+//
+// Glyph pixel (gA, gR, gG, gB) is treated as a per-channel coverage mask.
+// For a solid premultiplied source `src = (sA, sR, sG, sB)` and destination
+// `dst = (dA, dR, dG, dB)`, the Porter-Duff Over equation per-channel is:
+//
+//   out_X = sX * gX / 255 + dX * (1 - sA * gX / 255)
+//
+// where X ∈ {R, G, B} and each channel uses its own coverage byte.  The
+// result alpha uses max(gR, gG, gB) as overall coverage so opaque-on-XRGB
+// surfaces still get a sensible alpha (forced to 0xFF later anyway).
+//
+// Other operators are uncommon from glyph clients.  We implement Over /
+// Src / Add explicitly and fall back to the scalar `applyOp` (using
+// max(gR,gG,gB) as coverage) for anything else — same behaviour as the
+// Stage 1 path, so component-alpha glyphs never render worse than they
+// did before this change.
+// ----------------------------------------------------------------------------
+static inline uint32_t applyOpComponent(uint8_t op, uint32_t dst, uint32_t src,
+                                        uint8_t gA, uint8_t gR, uint8_t gG, uint8_t gB)
+{
+  const uint32_t sA = (src >> 24) & 0xFF;
+  const uint32_t sR = (src >> 16) & 0xFF;
+  const uint32_t sG = (src >>  8) & 0xFF;
+  const uint32_t sB = (src >>  0) & 0xFF;
+
+  const uint32_t dA = (dst >> 24) & 0xFF;
+  const uint32_t dR = (dst >> 16) & 0xFF;
+  const uint32_t dG = (dst >>  8) & 0xFF;
+  const uint32_t dB = (dst >>  0) & 0xFF;
+
+  // Per-channel source contribution: src colour gated by glyph coverage.
+  // (gA is preserved as a hint but isn't used in the Over/Src equations —
+  // the per-channel R/G/B coverage already captures everything we need.)
+  (void)gA;
+  const uint32_t srR = (sR * gR + 127) / 255;
+  const uint32_t srG = (sG * gG + 127) / 255;
+  const uint32_t srB = (sB * gB + 127) / 255;
+
+  switch (op) {
+    case PictOpSrc: {
+      // Pure replacement gated by per-channel coverage.
+      const uint32_t a = std::max({gR, gG, gB}) * sA / 255;
+      return (a << 24) | (srR << 16) | (srG << 8) | srB;
+    }
+    case PictOpOver: {
+      // out_X = srX + dX * (1 - sA * gX / 255)
+      const uint32_t keepR = 255 - (sA * gR + 127) / 255;
+      const uint32_t keepG = 255 - (sA * gG + 127) / 255;
+      const uint32_t keepB = 255 - (sA * gB + 127) / 255;
+      const uint32_t rR = srR + (dR * keepR + 127) / 255;
+      const uint32_t rG = srG + (dG * keepG + 127) / 255;
+      const uint32_t rB = srB + (dB * keepB + 127) / 255;
+      // Composite alpha using max-channel coverage as overall mask.
+      const uint32_t gMax = std::max({gR, gG, gB});
+      const uint32_t srA  = (sA * gMax + 127) / 255;
+      const uint32_t rA   = srA + (dA * (255 - srA) + 127) / 255;
+      return (std::min(rA, 255u) << 24) |
+             (std::min(rR, 255u) << 16) |
+             (std::min(rG, 255u) <<  8) |
+              std::min(rB, 255u);
+    }
+    case PictOpAdd: {
+      auto add = [](uint32_t a, uint32_t b) { return std::min(a + b, 255u); };
+      const uint32_t gMax = std::max({gR, gG, gB});
+      const uint32_t srA  = (sA * gMax + 127) / 255;
+      return (add(dA, srA) << 24) |
+             (add(dR, srR) << 16) |
+             (add(dG, srG) <<  8) |
+              add(dB, srB);
+    }
+    default: {
+      // Fallback: collapse to scalar coverage = max(gR, gG, gB) and reuse
+      // the standard applyOp.  Matches Stage 1 behaviour for rare ops.
+      const uint8_t cov = std::max({gR, gG, gB});
+      if (cov == 0) return dst;
+      const uint32_t sc = modulateAlpha(src, cov);
+      return applyOp(op, dst, sc);
+    }
+  }
 }
 
 
@@ -1234,27 +1332,29 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           if (bpp == 32) {
             // ARGB32/RGB24: 4 bytes per pixel, rows naturally 4-byte aligned.
             //
-            // Stage 1 (v1.19.35.53): use max(R, G, B) as single-channel
-            // coverage instead of the alpha byte.  Many clients (Java AWT,
-            // Cairo with subpixel-AA enabled) emit component-alpha glyphs
-            // where A is set to ~0xFF over the whole bounding box and the
-            // real per-channel coverage lives in R, G, B.  Extracting A
-            // alone collapsed every glyph to a solid filled rectangle
-            // (Vivado License Manager 2024.1 text → black blocks).
+            // Stage 2 (v1.19.35.54): keep the full 32-bit pixel in rg.argb
+            // for proper component-alpha compositing in CompositeGlyphs.
+            // Also keep rg.alpha = max(R,G,B) as a Stage-1 grayscale
+            // fallback for ops the component-alpha path doesn't handle and
+            // for damage bounding-box accumulation.
             //
-            // max(R,G,B) is a luminance approximation:
-            //   - Pure premultiplied grayscale glyphs (R=G=B=A): equals A,
-            //     so no behavioral change.
-            //   - Component-alpha glyphs: collapses LCD-subpixel coverage to
-            //     a grayscale AA approximation — text is readable, just not
-            //     subpixel-accurate.  See Stage 2 for the proper fix.
+            // Component-alpha encoding (Cairo subpixel-AA, Java AWT LCD):
+            //   A ≈ 0xFF over the whole glyph bounding box (or = max(R,G,B))
+            //   R, G, B = per-channel coverage from FreeType's LCD rasterizer
+            //
+            // Standard premultiplied grayscale glyphs (R = G = B = A) also
+            // pass through this path correctly — component-alpha math
+            // degenerates to the scalar coverage case when channels match.
+            rg.argb.resize(npixels);
             for (uint32_t row = 0; row < info.h; row++) {
               for (uint32_t col = 0; col < info.w && br.remaining() >= 4; col++) {
                 const uint32_t pixel = br.readU32();
                 const uint8_t r = (uint8_t)((pixel >> 16) & 0xFF);
                 const uint8_t g = (uint8_t)((pixel >>  8) & 0xFF);
                 const uint8_t b = (uint8_t)((pixel >>  0) & 0xFF);
-                rg.alpha[row * info.w + col] = std::max({r, g, b});
+                const size_t idx = (size_t)row * info.w + col;
+                rg.alpha[idx] = std::max({r, g, b});
+                rg.argb [idx] = pixel;
               }
             }
           } else if (bpp == 8) {
@@ -1634,7 +1734,15 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       dmgX1 = std::min(bx1, (int32_t)dst.w);
       dmgY1 = std::min(by1, (int32_t)dst.h);
     } else {
-      // Direct rendering: composite each glyph individually
+      // Direct rendering: composite each glyph individually.
+      //
+      // Stage 2 (v1.19.35.54): when the glyphset format is ARGB32 and the
+      // glyph carries an `argb` pixel array, use per-channel (component-
+      // alpha) compositing via applyOpComponent.  Otherwise fall back to
+      // the scalar `alpha` coverage path (unchanged from Stage 1).  The
+      // format is looked up once per command — even when `len==255`
+      // continuations switch glyphsets mid-stream, each GlyphCmd already
+      // carries its resolved `gsid`.
       const bool forceOpaque2 = dst.isWindow;
       std::lock_guard<std::mutex> lk(sGlyphMtx);
       for (auto& cmd : cmds) {
@@ -1646,6 +1754,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         const int32_t gx = cmd.penX - rg.x;
         const int32_t gy = cmd.penY - rg.y;
 
+        const bool isCompAlpha =
+            (gsIt->second.format == kFmtARGB32) && !rg.argb.empty();
+
         for (int32_t row = 0; row < (int32_t)rg.height; row++) {
           const int32_t dy = gy + row;
           if (dy < 0 || dy >= (int32_t)dst.h) continue;
@@ -1653,12 +1764,28 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           for (int32_t col = 0; col < (int32_t)rg.width; col++) {
             const int32_t dx = gx + col;
             if (dx < 0 || dx >= (int32_t)dst.w) continue;
-            const uint8_t a = rg.alpha[row * rg.width + col];
-            if (a == 0) continue;
-            const uint32_t sc = modulateAlpha(srcColor, a);
-            uint32_t px = applyOp(op, drow[(size_t)dx], sc);
-            if (forceOpaque2) px |= 0xFF000000u;
-            drow[(size_t)dx] = px;
+            const size_t pi = (size_t)row * rg.width + (size_t)col;
+
+            if (isCompAlpha) {
+              const uint32_t gp = rg.argb[pi];
+              const uint8_t gA = (uint8_t)((gp >> 24) & 0xFF);
+              const uint8_t gR = (uint8_t)((gp >> 16) & 0xFF);
+              const uint8_t gG = (uint8_t)((gp >>  8) & 0xFF);
+              const uint8_t gB = (uint8_t)((gp >>  0) & 0xFF);
+              // Fast skip when glyph contributes nothing on any channel.
+              if ((gR | gG | gB) == 0) continue;
+              uint32_t px = applyOpComponent(op, drow[(size_t)dx], srcColor,
+                                             gA, gR, gG, gB);
+              if (forceOpaque2) px |= 0xFF000000u;
+              drow[(size_t)dx] = px;
+            } else {
+              const uint8_t a = rg.alpha[pi];
+              if (a == 0) continue;
+              const uint32_t sc = modulateAlpha(srcColor, a);
+              uint32_t px = applyOp(op, drow[(size_t)dx], sc);
+              if (forceOpaque2) px |= 0xFF000000u;
+              drow[(size_t)dx] = px;
+            }
           }
         }
 
