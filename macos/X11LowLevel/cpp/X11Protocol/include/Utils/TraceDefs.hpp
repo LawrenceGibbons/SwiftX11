@@ -15,6 +15,14 @@
 
 #pragma once
 
+// ---- Temporary opt-in for live diagnostics ----
+// Vivado License Manager 2024.1 renders text as solid black rectangles
+// (font path bug, see TODO.md).  These two categories are enabled
+// here so we can capture an [Font] / [RENDER] trace without changing
+// Xcode build settings.  Remove these two lines once the bug is fixed.
+#define X11_TRACE_FONT
+#define X11_TRACE_RENDER
+
 // ---- Category defines ----
 
 // Resize flow: SURFACE_UPDATE, SURFACE_RESIZED, applyRootlessResize,
