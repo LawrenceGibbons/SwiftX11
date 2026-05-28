@@ -53,18 +53,31 @@ inline void begin(uint32_t host, uint32_t drag_xid, uint32_t button) {
 #endif
 }
 
-inline void motion(uint32_t target) {
+inline void motion(uint32_t target,
+                   int32_t root_x, int32_t root_y,
+                   uint32_t buttons, uint32_t mods) {
 #if X11_TRACE_DRAG_ENABLED
   if (!g_active.load(std::memory_order_acquire)) return;
   const uint32_t n = g_motions.fetch_add(1, std::memory_order_relaxed) + 1;
   // Log first 3 motions verbatim then sample every 10th to keep the log
   // legible during a several-hundred-event drag.
+  //
+  // `buttons` / `mods` are the INTERNAL state bits (button 1 = bit 0;
+  // mod bits Shift=0, Ctrl=1, Alt=2, Cmd=3).  These are what the call
+  // site holds before x11::input::toX11State() maps them to the X11
+  // wire layout (button 1 = bit 8 in the MotionNotify `state` field).
+  // For the hw_ila drag bug we mostly want to know whether buttons==1
+  // (i.e. button-1 still held) — AWT only treats motion as drag-
+  // eligible when Button1Mask is in `state`.
   if (n <= 3 || (n % 10) == 0) {
-    TS_FPRINTF("[DRAG] motion #%u target=0x%08X\n",
-               (unsigned)n, (unsigned)target);
+    TS_FPRINTF("[DRAG] motion #%u target=0x%08X root=(%d,%d) "
+               "buttons=0x%02X mods=0x%02X\n",
+               (unsigned)n, (unsigned)target,
+               (int)root_x, (int)root_y,
+               (unsigned)(buttons & 0xFFu), (unsigned)(mods & 0xFFu));
   }
 #else
-  (void)target;
+  (void)target; (void)root_x; (void)root_y; (void)buttons; (void)mods;
 #endif
 }
 
