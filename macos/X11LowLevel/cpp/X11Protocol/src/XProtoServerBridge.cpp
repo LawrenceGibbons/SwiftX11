@@ -41,6 +41,7 @@
 #include "Core/DrawableRW.hpp"
 #include "Damage.hpp"
 #include "Core/HostCommandQueue.hpp"
+#include "Utils/DragTrace.hpp"
 #include "Core/XClient.hpp"
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/XConstants.hpp"
@@ -786,6 +787,19 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // Now drag_xid will be set to 'under' (the child/grab window),
           // not the host. Subsequent button/motion events will route here.
           ctx.input().button(under, c.isDown != 0, c.button, c.buttonsMask);
+
+          // [DRAG] session bracketing.  begin() captures host/drag_xid the
+          // moment the 0→nonzero transition lands (so InputState::button
+          // has already populated drag_xid).  end() emits the counter +
+          // duration on the matching release.  No effect when the trace
+          // category is disabled (compiles to nothing).
+          if (c.isDown) {
+            x11::drag_trace::begin(effectiveHost,
+                                   ctx.input().drag_xid,
+                                   c.button);
+          } else {
+            x11::drag_trace::end(c.button);
+          }
 
           // NOTE: No click-to-focus here. Focus is handled by the
           // HostCmdType::Focus handler (Cocoa becomeKey/resignKey) which

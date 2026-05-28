@@ -23,6 +23,12 @@
 #define X11_TRACE_FONT
 #define X11_TRACE_RENDER
 
+// hw_ila_x drag-and-drop diagnostics (v1.19.35.55+): each button press /
+// release pair emits [DRAG] BEGIN / motion / END lines so we can see
+// whether motion events fire during a drag and where they route.
+// Remove this line once the hw_ila bug is closed (see TODO.md).
+#define X11_TRACE_DRAG
+
 // ---- Category defines ----
 
 // Resize flow: SURFACE_UPDATE, SURFACE_RESIZED, applyRootlessResize,
@@ -86,4 +92,13 @@
   #define X11_TRACE_WIRE_ENABLED 1
 #else
   #define X11_TRACE_WIRE_ENABLED 0
+#endif
+
+// Drag tracing: button-down begins a [DRAG] session, each motion
+// during the drag bumps a counter, button-up emits a summary line.
+// Used to diagnose Java AWT / Vivado hw_ila_x drag-and-drop failures.
+#if defined(X11_TRACE_DRAG) || defined(X11_TRACE_VERBOSE)
+  #define X11_TRACE_DRAG_ENABLED 1
+#else
+  #define X11_TRACE_DRAG_ENABLED 0
 #endif
