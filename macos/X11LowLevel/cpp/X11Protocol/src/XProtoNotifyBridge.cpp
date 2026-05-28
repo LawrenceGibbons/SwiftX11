@@ -231,10 +231,16 @@ void postMotion(uint32_t host_xid,
 
   // Drag diagnostic — ticks each motion event delivered during an
   // active button-down → button-up bracket.  No-op when X11_TRACE_DRAG
-  // is disabled.  Recorded with the actual delivery target so we can
-  // see whether motion is routing to a JTree cell vs. its viewport,
-  // which is hypothesis #2 for the hw_ila_x bug.
-  x11::drag_trace::motion(target);
+  // is disabled.  We record:
+  //   - the actual delivery target (vs. just drag_xid)
+  //   - the root_x/root_y the wire event will carry
+  //   - the buttons + mods we're about to feed sendMotionNotify
+  // so we can verify the motion event's `state` field will include
+  // Button1Mask (X11 wire bit 8) once toX11State() runs inside
+  // sendMotionNotify.  AWT only treats motion as drag-eligible when
+  // Button1Mask is set; the hw_ila drag fails despite plenty of
+  // motion events arriving, so this is the next thing to verify.
+  x11::drag_trace::motion(target, root_x, root_y, buttons, mods);
 
   // Send MotionNotify with ROOT coords (root_x/root_y)
   ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
