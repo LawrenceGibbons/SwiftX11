@@ -14,6 +14,7 @@
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
 #include "Core/XEventMask.hpp"
+#include "Utils/DragTrace.hpp"
 
 #include <atomic>
 
@@ -228,10 +229,17 @@ void postMotion(uint32_t host_xid,
   const uint32_t cursorTarget = ctx->input().routePointer(target); // respects drag_xid/pointer_xid/focus_xid
   maybeApplyCursor(*ctx, host, cursorTarget);
 
+  // Drag diagnostic — ticks each motion event delivered during an
+  // active button-down → button-up bracket.  No-op when X11_TRACE_DRAG
+  // is disabled.  Recorded with the actual delivery target so we can
+  // see whether motion is routing to a JTree cell vs. its viewport,
+  // which is hypothesis #2 for the hw_ila_x bug.
+  x11::drag_trace::motion(target);
+
   // Send MotionNotify with ROOT coords (root_x/root_y)
   ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
   ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods);
-}  
+}
   
 void postButtonLegacy(uint32_t xid, int is_press, int32_t x_px, int32_t y_px, uint32_t buttons, uint32_t mods)
 {
