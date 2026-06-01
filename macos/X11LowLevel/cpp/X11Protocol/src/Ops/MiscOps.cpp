@@ -18,6 +18,8 @@ extern "C" {
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/XClient.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -57,7 +59,7 @@ void MiscOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case x11::opcode::ChangeHosts           : handleChangeHosts(ctx, dc.seq, dc.br);           return;
     case x11::opcode::ListHosts             : handleListHosts(ctx, dc.seq, dc.br);             return;
     case x11::opcode::SetAccessControl      : handleSetAccessControl(ctx, dc.seq, dc.br);      return;
-    case x11::opcode::SetCloseDownMode      : handleSetCloseDownMode(ctx, dc.seq, dc.br);      return;
+    case x11::opcode::SetCloseDownMode      : handleSetCloseDownMode(ctx, dc.seq, dc.minor, dc.br); return;
     case x11::opcode::KillClient            : handleKillClient(ctx, dc.seq, dc.br);            return;
     case x11::opcode::ForceScreenSaver      : handleForceScreenSaver(ctx, dc.seq, dc.br);      return;
     case x11::opcode::NoOperation           : handleNoOperation(ctx, dc.seq, dc.br);           return;
@@ -230,13 +232,36 @@ void MiscOps::handleSetAccessControl(XProtoContext& ctx, uint16_t /*seq*/, ByteR
 }
 
 // =============================================================================
-// SetCloseDownMode (112) — void stub
+// SetCloseDownMode (112) — store the requested mode on the active client.
 // =============================================================================
-void MiscOps::handleSetCloseDownMode(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-#ifdef X11_TRACE_VERBOSE
-  x11_ui_push_log(1, "[MiscOps] SetCloseDownMode (112) stub\n");
-#endif
+// X11 protocol wire layout for SetCloseDownMode:
+//   1     112          opcode
+//   1                  mode    (0 = DestroyAll, 1 = RetainPermanent,
+//                                2 = RetainTemporary)
+//   2     1            request length
+//
+// The mode byte rides in the second header byte, which the dispatcher
+// hands us as `dc.minor`.  When RetainPermanent / RetainTemporary is
+// set, XProtoDaemon::removeClient must preserve the client's resources
+// after disconnect (see fix in v1.19.35.58).  Without honouring this,
+// Java AWT's XDND helper connection sets RetainPermanent, creates a
+// proxy window for the drag, then closes — and our prior stub destroyed
+// the proxy immediately, breaking every Vivado drag-and-drop operation.
+//
+void MiscOps::handleSetCloseDownMode(XProtoContext& ctx, uint16_t /*seq*/,
+                                     uint8_t mode, ByteReader& br) {
   br.skip(br.remaining());
+  if (mode > 2) mode = 0;          // unknown → fall back to DestroyAll
+  if (auto* c = ctx.client()) {
+    c->setCloseDownMode(mode);
+  }
+#ifndef NDEBUG
+  TS_FPRINTF("[MiscOps] SetCloseDownMode mode=%u (%s)\n",
+             (unsigned)mode,
+             mode == 0 ? "DestroyAll" :
+             mode == 1 ? "RetainPermanent" :
+             mode == 2 ? "RetainTemporary" : "?");
+#endif
 }
 
 // =============================================================================

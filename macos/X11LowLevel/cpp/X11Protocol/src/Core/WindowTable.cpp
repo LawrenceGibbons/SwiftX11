@@ -808,8 +808,23 @@ std::vector<uint32_t> WindowTable::childrenInStackOrder(uint32_t parent) const {
 
     return xids;
   }
-  
-  
+
+  std::vector<uint32_t> WindowTable::reassignOwner(int oldFd, int newFd)
+  {
+    std::vector<uint32_t> xids;
+    std::lock_guard<std::mutex> lock(mu_);
+    xids.reserve(8);
+    for (auto& kv : map_) {
+      WindowState& st = kv.second;
+      if (st.owner_fd == oldFd) {
+        st.owner_fd = newFd;
+        xids.push_back(kv.first);
+      }
+    }
+    return xids;
+  }
+
+
   void WindowTable::clampDescendantsToParent(uint32_t rootXid)
   {
     if (rootXid == 0) return;
