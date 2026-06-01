@@ -7,20 +7,28 @@ SwiftX11 is an X11 protocol server running natively on macOS, implementing the X
 ## Architecture
 
 ### Language Layers
-- **Swift** (`macos/SwiftX11/`): UI owner — AppKit windows, Metal/software rendering, surface allocation, damage scheduling, networking (accepts X11 connections)
-- **C++** (`macos/X11LowLevel/cpp/X11Protocol/`): Protocol core — request parsing, reply/event framing, raster drawing ops, resource tables (windows, pixmaps, GCs, fonts, atoms, colormaps), Swift bridge (`SwiftBridge.cpp` implements the `extern "C"` functions in `SwiftX11Bridge.h`)
+- **Swift** (`macos/SwiftX11/`): UI owner — AppKit windows, Metal/software rendering, damage scheduling, networking (accepts X11 connections). **Does NOT own pixel buffers** (since v1.19.35.49).
+- **C++** (`macos/X11LowLevel/cpp/X11Protocol/`): Protocol core — request parsing, reply/event framing, raster drawing ops, resource tables (windows, pixmaps, GCs, fonts, atoms, colormaps), Swift bridge (`SwiftBridge.cpp` implements the `extern "C"` functions in `SwiftX11Bridge.h`). **Owns all host pixel buffers** via `DrawableSurfaceRegistry` / `HostSurface`.
 
-### Key Design: Swift-Owned Surfaces
-Swift allocates all WINDOW backing stores (host-level CPU buffers). C++ draws into these via `DrawableSurfaceRegistry`:
+### Key Design: C++-Owned Surfaces (since v1.19.35.49)
+C++ allocates and frees all WINDOW backing stores (host-level CPU buffers). Swift requests sizes only:
 
 ```
 Swift: ensureHostSurface(wPx, hPx)
-  → x11_surface_update(xid, ptr, bytesPerRow, w, h, generation)
-    → DrawableSurfaceRegistry::set(hostXid, SurfaceDesc)
-      → C++ drawing ops resolve via resolveDrawableRW()
+  → x11_surface_ensure(xid, w_px, h_px, fillByte)
+    → DrawableSurfaceRegistry::ensure(xid, w, h, bpr, fillByte)
+      → posix_memalign(64, ...) + memset(fillByte, ...)
+      → unique_ptr<HostSurface> stored in registry
+        → C++ drawing ops resolve via resolveDrawableRW()
 ```
 
-**Critical**: `bytesPerRow` is 64-byte aligned, so `stridePixels = bytesPerRow/4` often differs from `width`. All pixel row indexing MUST use `dst.stridePixels`, never `dst.w`.
+The buffer's lifetime is gated by `std::shared_mutex` inside `DrawableSurfaceRegistry`:
+- **Readers** (xproto draw ops, Swift Metal upload via `x11_server_copy_window_bgra`) take a *shared lock* via `acquireRead()` → returns a `ReadHandle` whose lifetime spans the access.
+- **Writers** (`ensure()`, `clear()`) take an *exclusive lock*; block until all in-flight readers release; then allocate, free, or reallocate.
+
+`DrawableRW` (returned from `resolveDrawableRW`) embeds a `ReadHandle`, so every draw op naturally holds the shared lock for its duration. The shared_mutex IS the buffer's lifetime guard — Swift cannot free or replace a buffer behind C++'s back because Swift never has a reference to it.
+
+**Critical**: `bytesPerRow` is 64-byte aligned (computed as `(w*4 + 63) & ~63`), so `stridePixels = bytesPerRow/4` often differs from `width`. All pixel row indexing MUST use `dst.stridePixels`, never `dst.w`.
 
 ### Child Window → Host Surface Routing
 Child windows (e.g., xterm's scrollbar, VT widget) do NOT have their own surfaces. They draw into the host (top-level) window's surface at an offset:
@@ -28,11 +36,12 @@ Child windows (e.g., xterm's scrollbar, VT widget) do NOT have their own surface
 ```
 resolveDrawableRW(ctx, childXid, dst)
   → host = topLevelAncestorOf(childXid)
-  → surface = DrawableSurfaceRegistry::get(host)
-  → offset = computeOffsetInHost(host, childXid)  // walks parent chain
-  → dst.pixels32 = surface.ptr + oy*stride + ox   // shifted pointer
+  → handle = DrawableSurfaceRegistry::acquireRead(host)  // takes shared lock
+  → offset = computeOffsetInHost(host, childXid)         // walks parent chain
+  → dst.pixels32 = handle.ptr() + oy*stride + ox         // shifted pointer
   → dst.w = clipped child width, dst.h = clipped child height
   → dst.stridePixels = host surface stride
+  → dst.readLock = std::move(handle)                     // RAII; held until dst destroyed
 ```
 
 **Negative offsets**: X11 allows child windows at negative positions (e.g., xterm scrollbar at y=-1 to hide a border pixel). `resolveDrawableRW` clamps negative offsets to 0 and reduces the effective drawable dimensions by the clipped amount, shifting the child's drawing origin by at most a few pixels.
@@ -56,7 +65,10 @@ C++ draw op → damageOrDirty(ctx, drawable, x, y, w, h)
 ### Resize Flow
 ```
 Cocoa resize → X11WindowHost.handleDrawableSize()
-  → ensureHostSurface(wPx, hPx)  [reallocates + registers surface]
+  → ensureHostSurface(wPx, hPx)
+    → optional displayFrame snapshot via x11_server_copy_window_bgra
+    → x11_surface_ensure(xid, w, h, fillByte)
+      → DrawableSurfaceRegistry::ensure() (exclusive lock; reallocates if shape changed)
   → x11_post_window_resize()
   → server thread: applyRootlessResize()
     → geometry update, ConfigureNotify + Expose to client
@@ -70,13 +82,13 @@ CreateWindow → C++ WindowTable entry + pushCreate → Swift noteX11WindowCreat
 MapWindow → setMapped + fillWindowBackground + queue Expose
   (host: x11_ui_push_map + x11_ui_push_resize → Swift creates NSWindow)
   (NOTE: fillWindowBackground for children FAILS here — surface not registered yet)
-Swift main thread → ensureHostSurface → x11_surface_update → x11_post_window_presentable
+Swift main thread → ensureHostSurface → x11_surface_ensure → x11_post_window_presentable
 SetPresentable → setPresentable + fillWindowBackgroundIfReady + sendExposeSubtree
   (This is when backgrounds actually get painted and children get valid Expose)
 ```
 
 ### Surface Resize Re-expose
-When `x11_surface_update` detects a surface size change (e.g., initial 64×64 → real 819×484), it queues a `SurfaceResized` host command via `x11_proto_bridge_surface_resized(hostXid)`. The handler calls `sendExposeSubtree` + marks dirty + pushes damage, ensuring all mapped children get re-exposed at the correct geometry. This fixes a timing race where `setContentSize` is deferred via `DispatchQueue.main.async` but surface registration happens at the NSWindow's default (small) size.
+When `x11_surface_ensure` detects a surface size change (e.g., initial 64×64 → real 819×484), it queues a `SurfaceResized` host command via `x11_proto_bridge_surface_resized(hostXid)`. The handler calls `sendExposeSubtree` + marks dirty + pushes damage, ensuring all mapped children get re-exposed at the correct geometry. This fixes a timing race where `setContentSize` is deferred via `DispatchQueue.main.async` but surface registration happens at the NSWindow's default (small) size.
 
 ### Input Event Routing
 
@@ -106,8 +118,9 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 |------|------|
 | `SwiftX11/UI/Windows/X11WindowHost.swift` | Host window, surface allocation, Metal/software rendering, input events |
 | `SwiftX11/Core/WindowRegistry.swift` | Cocoa window management, noteX11WindowCreated, mapWindow |
-| `X11LowLevel/cpp/X11Protocol/include/Core/SurfaceDesc.hpp` | Surface descriptor struct |
-| `X11LowLevel/cpp/X11Protocol/include/Core/DrawableSurfaceRegistry.hpp` | Thread-safe XID→surface registry |
+| `X11LowLevel/cpp/X11Protocol/include/Core/SurfaceDesc.hpp` | Surface descriptor (snapshot) struct |
+| `X11LowLevel/cpp/X11Protocol/include/Core/HostSurface.hpp` | C++-owned host pixel buffer (posix_memalign + free in dtor; v1.19.35.48) |
+| `X11LowLevel/cpp/X11Protocol/include/Core/DrawableSurfaceRegistry.hpp` | XID→HostSurface registry; std::shared_mutex; RAII ReadHandle; `ensure()`/`acquireRead()` |
 | `X11LowLevel/cpp/X11Protocol/include/Core/DrawableRW.hpp` | Unified drawable abstraction (w, h, stridePixels, pixels32) |
 | `X11LowLevel/cpp/X11Protocol/src/Core/DrawableRW.cpp` | resolveDrawableRW: Swift surface only, child→host offset routing |
 | `X11LowLevel/cpp/X11Protocol/src/Ops/DrawOps.cpp` | PutImage, CopyArea, ClearArea, text ops |
@@ -186,11 +199,16 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - Requests that generate replies MUST call `ctx.reply().sendReply32(seq, ...)` — missing replies cause XCB sequence desync crashes
 - GrabPointer (opcode 26) and GrabKeyboard (opcode 31) replies both use `sendReply32(seq, ...)`
 
-### Surface Lifecycle
-- Surfaces are keyed by **host (top-level) window XID** in the registry
-- Child windows resolve to host surface + offset via `computeOffsetInHost`
-- `generation` counter tracks reallocations; C++ can detect stale pointers
-- On window destruction, `x11_surface_clear(xid)` removes the registry entry
+### Surface Lifecycle (post v1.19.35.49)
+- Buffers are owned by C++: `unique_ptr<HostSurface>` inside `DrawableSurfaceRegistry`. Allocated via `posix_memalign(64, ...)`, freed by `HostSurface::~HostSurface()`. Swift never holds a Foundation.Data reference to the live buffer.
+- Surfaces are keyed by **host (top-level) window XID** in the registry.
+- Child windows resolve to host surface + offset via `computeOffsetInHost`.
+- `generation` counter tracks reallocations; bumps on every successful realloc inside `ensure()`.
+- Allocation/free goes through `DrawableSurfaceRegistry::ensure()` and `clear()` — both take the **exclusive lock**. Callers reach this from Swift via `x11_surface_ensure(xid, w, h, fillByte)` and `x11_surface_clear(xid)`.
+- Reads (draw ops, Metal upload snapshot) take the **shared lock** via `acquireRead()` returning a `ReadHandle`. The handle is embedded inside `DrawableRW` so every draw op naturally holds the lock for its duration.
+- The shared_mutex IS the buffer's lifetime guard. Reallocation blocks on in-flight readers; readers see a stable pointer for the duration of their handle.
+- **Do NOT** introduce side-channels that free or reassign the buffer outside the registry. The whole point of v1.19.35.49 was eliminating Swift's Foundation.Data ownership because ARC could free the buffer independently of the registry's locks (caught repeatedly by ASan as `heap-use-after-free` in `fillWindowBackgroundIfReady` / `handleClearArea`).
+- Legacy `set(SurfaceDesc)` API still exists transitionally: it allocates via `ensure()` and memcpys the externally-provided ptr into the owned buffer. The external ptr can be freed immediately after `set()` returns. Plan to delete this once no callers remain.
 
 ### Debugging
 - **Two trace tiers**:
@@ -389,17 +407,43 @@ When `x11_surface_update` detects a surface size change (e.g., initial 64×64 �
 - **Blank dialog fix**: Deferred map (tiny windows awaiting flushPendingMaps) no longer sends stale tiny Expose before resize. `post_map` block skipped for deferred maps; SetPresentable sends Expose at real geometry.
 - **Fallback floor**: Windows under 10px at map time with no hints/peak get 400×300 fallback instead of unusable 1×1.
 
+### Popup Size Race + Surface UAF Cleanup (v1.19.35.40–.49)
+A multi-commit campaign to fix two recurring crash classes that bit Vivado users repeatedly: (1) popups opening at the wrong size when a stale ConfigureWindow walked the size back below an earlier WM_NORMAL_HINTS commit, and (2) heap-use-after-free on the host pixel buffer during live resize.
+
+- **v1.19.35.40 — shrunk-below-peak detection**: `handleMapWindow` and `flushPendingMaps` defer the map and apply peak-size resolution when the client has shrunk its own window below an earlier ConfigureWindow peak (`peak_area > 2 × current_area`), not just when the window is `<50px`. Catches the Vivado/AWT race where a stale ConfigureWindow arrives after WM_NORMAL_HINTS committed the real size and walks the popup back to its 150×150 skeleton.
+- **v1.19.35.41 — post-map ConfigureNotify**: After a shrunk-below-peak rescue, `SetPresentable` sends a synthetic ConfigureNotify so the X11 client relayouts at the rescued size before painting. Previously the dialog window had the right NSWindow size but its content rendered at the pre-rescue tiny size.
+- **v1.19.35.42 — fallback bump**: Windows that fall through to fallback at <10px now get 500×300 instead of 400×300.
+- **v1.19.35.43 — `PMinSize == PMaxSize` advisory**: Vivado/Xt dialogs commonly set min == max == initial-size as a packing hint; honoring it strictly locked the NSWindow so the macOS resize cursor would show but dragging did nothing. Now `contentMaxSize` is only set when there's a genuine range (`maxW > minW || maxH > minH`); equal-bound hints clear `contentMaxSize` so the user can drag-resize.
+- **v1.19.35.44 — destruction tracing**: `[GEOM_NS]` traces at every NSWindow / X11View / X11Renderer teardown site to diagnose layout-pass-on-freed-view crashes.
+- **v1.19.35.45 — eager view teardown + closing-xid layout guard**: `WindowRegistry.closeWindow` synchronously tears down the X11View (pause MTKView, nil delegate, releaseDrawables, drop superview, nil contentView) before `controller.close()`. `LayoutRecursionGuard` skips layout passes for views in `closingXids`. `closingXids` now persists until `X11WindowController.deinit` (was: end of `closeWindow`). Closes the wild-PC layout-pass crash class.
+- **v1.19.35.46 — surface registry shared_mutex + ReadHandle (C1/3)**: Replaced `std::mutex` in `DrawableSurfaceRegistry` with `std::shared_mutex`. Added move-only RAII `ReadHandle` returned from `acquireRead(xid)`. Multiple readers run concurrently; writers (`set`/`clear`/`ensure`) block briefly. Pure infrastructure addition — no callsite changes.
+- **v1.19.35.47 — DrawableRW holds the surface read lock (C2/3)**: `DrawableRW` embeds the `ReadHandle`; `resolveDrawableRW` acquires it once and stashes it in `out.readLock`. The shared lock is now held for the entire draw op. Made `DrawableRW` move-only — transparent to callers since they all use stack value-init.
+- **v1.19.35.48 — C++ owns HostSurface buffers (C3.1/3)**: Added `HostSurface` (posix_memalign-allocated, freed by dtor). `DrawableSurfaceRegistry` stores `unique_ptr<HostSurface>`. New `ensure(xid, w, h, bpr, fillByte)` allocates atomically under the exclusive lock. Legacy `set(SurfaceDesc)` retained transitionally — allocates owned buffer + memcpys from external ptr.
+- **v1.19.35.49 — Swift drops Foundation.Data ownership (C3.2/3)**: `X11View.hostSurface: Data?` deleted. `ensureHostSurface` shrinks from ~110 lines to ~25: snapshot displayFrame via `x11_server_copy_window_bgra` on the first live-resize tick, then call `x11_surface_ensure(xid, w, h, fillByte)`. Eliminates the ARC-vs-shared_mutex side-channel that plagued every prior surface UAF — Swift no longer holds any reference to the live buffer; the registry's exclusive lock IS the buffer's lifetime guard. Verified by ASan during live xterm/Vivado resize.
+
+### Vivado License Manager + hw_ila Drag (v1.19.36)
+Two long-standing Vivado-only bugs closed in this release.
+
+- **v1.19.35.53 / .54 — ARGB32 component-alpha glyph rendering**: Vivado License Manager 2024.1 rendered every text glyph as a solid black rectangle. Root cause was the `AddGlyphs` ARGB32 branch extracting only the alpha channel from each pixel; Cairo / Java AWT's subpixel-AA encoding sets `A=0xFF` across the entire glyph bounding box and stores the real per-channel coverage in `R, G, B`.  Stage 1 (`.53`) switched the coverage byte to `max(R,G,B)` so text became legible at grayscale-AA quality. Stage 2 (`.54`) wired full per-channel modulation via a new `applyOpComponent()` for `PictOpOver`/`Src`/`Add`, restoring true LCD-subpixel quality matching XQuartz.
+- **v1.19.35.57 — SubstructureRedirect emulation skips override_redirect**: Java AWT's XDND helper connection creates a 1×1 off-screen `override_redirect=True` proxy window per drag. Our `SubstructureRedirect` emulation (`v1.17.0`) was rescuing it to a 500×300 fallback the moment it was mapped, breaking AWT's downstream `GetProperty(XdndAware)` with `BadWindow`. Real X11 servers never apply `SubstructureRedirect` to OR windows; the deferred-map branch in `handleMapWindow` now bails when `override_redirect=True`.
+- **v1.19.35.58 — `SetCloseDownMode(RetainPermanent)` honored**: AWT's XDND helper connection sets `RetainPermanent` then closes; the proxy window must outlive the helper connection. Our `SetCloseDownMode` was a no-op stub, so `removeClient` destroyed the proxy and AWT's next `GetProperty` returned `BadWindow`. `XClient` now stores the close-down mode; `removeClient` calls `WindowTable::reassignOwner(fd, -1)` instead of `eraseOwnedBy(fd)` when retention is requested.
+- **v1.19.35.62 — XDND grab motion routing**: The actual hw_ila drag failure. After XDND init AWT calls `XGrabPointer(grab_window=root, owner_events=False, mask=ButtonPress|ButtonRelease|ButtonMotion)`. Our `postMotion` routing only checked `PointerMotionMask` (bit 6) when consulting the grab eventMask — the spec says the server must accept any of `PointerMotionMask`, `ButtonMotionMask` (bit 13), or `Button1-5MotionMask` (bits 8-12) per held button.  New `grabWantsMotion(mask, heldButtons)` helper covers all three families. Also: when the grab window is root (no live client transport), motion target falls back to `drag_xid` so the actual grabbing client receives events. Out of scope but noted for later: add `PointerGrab::owner_fd` and route directly to the grabbing client.
+
 ### Self-Contained App
 - **Bundled fonts**: PCF fonts from `/opt/X11/share/fonts/` embedded in `SwiftX11.app/Contents/Resources/fonts/`. No XQuartz needed.
 - **Font scanner**: Searches bundle fonts first, system `/opt/X11/` second. Bridge function `x11_set_bundle_resource_path()`.
 - **Startup dialogs**: Metal GPU check (critical, exits) + missing fonts check (warning, continue or quit).
 
-### Known Issues (v1.19.35)
+### Known Issues (v1.19.36)
 - **Ctrl+click regression**: Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19. (MEDIUM)
 - **XI2 wire corruption**: Enabling XI2 crashes Electron. Event format fixed but delivery path has sequence regression. Global xi2_root_mask needs per-client tracking. (LOW — workaround in place)
+- **xterm `Ctrl+V` paste**: Not a SwiftX11 bug. xterm's `insert-selection` translation lives on the VT100 widget and only fires when X11 focus is on that widget; xterm doesn't call `XSetInputFocus` to put focus there. Workarounds: middle-click paste (Option+click on Magic Mouse), Shift+Insert, or add `XTerm*translations: #override Ctrl<Key>v: insert-selection(CLIPBOARD,PRIMARY)` to `~/.Xresources`.
+- **License Manager glyphs**: ✅ FIXED in v1.19.36 (ARGB32 component-alpha).
+- **hw_ila drag-and-drop**: ✅ FIXED in v1.19.36 (OR exemption + RetainPermanent + grab motion-mask).
 - **Docker dbus**: ✅ FIXED — `dbus-daemon --session` bypasses stale X11 root window property.
 
 ### Next Major Tasks
 See `docs/TODO.md` for the comprehensive roadmap. Remaining priorities:
 1. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it
-2. **XI2 proper fix** — per-client root mask, wire trace diagnosis (LOW)
+2. **`PointerGrab::owner_fd`** — track grabbing client fd so root-grab motion routes there directly instead of via the drag_xid fallback (v.62 quick fix)
+3. **XI2 proper fix** — per-client root mask, wire trace diagnosis (LOW)

@@ -114,15 +114,19 @@ final class X11View: NSView {
   private var suppressBudget: Int = 0
   
   // MARK: -- handling drawable surfaces
-  private var hostSurface: Data?
-  private var hostSurfaceW: Int32 = 0
-  private var hostSurfaceH: Int32 = 0
-  private var hostSurfaceBPR: Int32 = 0
-  private var hostSurfaceGen: UInt32 = 0
+  //
+  // C3 (v1.19.35.49-dbg): host pixel buffers are owned by C++
+  // (DrawableSurfaceRegistry / HostSurface).  Swift no longer holds
+  // Foundation.Data references to the live drawing surface; ensureHostSurface
+  // just requests a size and lets C++ allocate/reallocate atomically under
+  // the registry's exclusive lock.  This eliminates the ARC-vs-shared_mutex
+  // side-channel race that ASan caught repeatedly through v1.19.35.47-dbg
+  // (Foundation.__DataStorage freed mid-write by the xproto thread).
 
-  // Retained display buffer: during resize, holds the previous complete frame.
-  // Present reads from this instead of the active drawing surface (which may
-  // have white strips from ensureHostSurface reallocation).
+  // Retained display buffer: during resize, holds a pre-resize snapshot so
+  // present can show the previous complete frame instead of the
+  // partially-cleared mid-resize buffer.  Captured via a memcpy from the
+  // C++-owned surface BEFORE we request the new size.
   private var displayFrame: Data?
   private var displayFrameW: Int32 = 0
   private var displayFrameH: Int32 = 0
@@ -131,121 +135,54 @@ final class X11View: NSView {
   fileprivate func ensureHostSurface(wPx: Int32, hPx: Int32) {
     guard xid != 0, wPx >= 1, hPx >= 1 else { return }
 
-    let bpr = wPx * 4                  // tight rows for bring-up stability
-    let needBytes = Int(bpr * hPx)
-
-    // Gated: fires on every resize step; too noisy for normal debug.
-    // print(String(format: "[ENSURE_SURFACE] xid=0x%08X wPx=%d hPx=%d bpr=%d",
-    //       self.xid, wPx, hPx, bpr))
-
-    let needsAlloc =
-      hostSurface == nil ||
-      hostSurfaceW != wPx || hostSurfaceH != hPx || hostSurfaceBPR != bpr ||
-      hostSurface!.count != needBytes
-
-    if needsAlloc {
-      #if DEBUG
-      // OR window = borderless style
-      if window?.styleMask == .borderless {
-      }
-      #endif
-      let old = hostSurface
-      let oldW = hostSurfaceW
-      let oldH = hostSurfaceH
-      let oldBPR = hostSurfaceBPR
-
-      // Allocate new (uninitialized contents are fine; we will paint deterministically)
-      var newSurface = Data(count: needBytes)
-
-      // During live resize, DON'T copy old content — displayFrame handles visual
-      // continuity while the client redraws.  Copying old pixels accumulates stale
-      // content (e.g., xeyes' eye outlines from previous sizes remain visible).
-      let inLiveResize = (self.window?.inLiveResize == true)
-      if !inLiveResize, let old, oldW > 0, oldH > 0, oldBPR > 0 {
-        // Copy overlap from old buffer (preserves last frame; avoids flash)
-        let copyW = Int(min(oldW, wPx))
-        let copyH = Int(min(oldH, hPx))
-        if copyW > 0 && copyH > 0 {
-          let rowBytes = min(copyW * 4, Int(oldBPR), Int(bpr))
-          if rowBytes > 0 {
-            old.withUnsafeBytes { srcRaw in
-              newSurface.withUnsafeMutableBytes { dstRaw in
-                guard let sp = srcRaw.baseAddress, let dp = dstRaw.baseAddress else { return }
-                for y in 0..<copyH {
-                  memcpy(dp.advanced(by: y * Int(bpr)),
-                         sp.advanced(by: y * Int(oldBPR)),
-                         rowBytes)
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Clear areas NOT covered by the overlap to white (BGRA = FF FF FF FF).
-      // During live resize (no copy), clear the entire surface.
-      newSurface.withUnsafeMutableBytes { raw in
-        guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-
-        // If no old surface or live resize (skipped copy), clear everything.
-        // Shaped windows: fill with transparent black (0x00) so uncovered pixels
-        // during resize don't flash white through the shape mask.
-        if inLiveResize || old == nil || oldW <= 0 || oldH <= 0 || oldBPR <= 0 {
-          memset(base, isShaped ? 0x00 : 0xFF, needBytes)
-          return
-        }
-
-        let copyW = Int(min(oldW, wPx))
-        let copyH = Int(min(oldH, hPx))
-
-        // 1) Clear the "right" strip for rows that existed before (y < copyH, x >= copyW)
-        if copyH > 0 && copyW < Int(wPx) {
-          let rightBytes = (Int(wPx) - copyW) * 4
-          for y in 0..<copyH {
-            let row = base.advanced(by: y * Int(bpr))
-            memset(row.advanced(by: copyW * 4), 0xFF, rightBytes)
-          }
-        }
-
-        // 2) Clear the "bottom" strip: rows y >= copyH
-        if copyH < Int(hPx) {
-          let start = copyH * Int(bpr)
-          let count = (Int(hPx) - copyH) * Int(bpr)
-          memset(base.advanced(by: start), 0xFF, count)
-        }
-      }
-
-      // Retain old surface as display frame (prevents white flash during resize).
-      // ONLY on the first allocation during live resize — subsequent steps would
-      // overwrite with partial (white-stripped) buffers from intermediate sizes.
-      // Keeping the initial pre-resize frame ensures a clean display throughout
-      // the entire resize.  Also skip for programmatic resizes (no live resize)
-      // since windowDidEndLiveResize won't fire to promote.
-      if displayFrame == nil,
-         self.window?.inLiveResize == true,
-         let old, oldW > 0, oldH > 0, oldBPR > 0 {
-        displayFrame = old
-        displayFrameW = oldW
-        displayFrameH = oldH
-        displayFrameBPR = oldBPR
-      }
-
-      // Commit
-      hostSurface = newSurface
-      hostSurfaceW = wPx
-      hostSurfaceH = hPx
-      hostSurfaceBPR = bpr
-      hostSurfaceGen &+= 1
+    // Resize-flicker mitigation: on the first live-resize tick, snapshot
+    // the current host buffer so present() can keep showing the pre-resize
+    // pixels until windowDidEndLiveResize promotes the live surface.  We
+    // copy bytes via x11_server_copy_window_bgra (which takes the surface
+    // registry's shared lock for its duration), so the snapshot is
+    // race-free with concurrent draws.
+    if displayFrame == nil, self.window?.inLiveResize == true {
+      captureDisplayFrameSnapshot()
     }
 
-    // Publish surface every time (so C++ sees latest ptr + generation)
-    hostSurface!.withUnsafeMutableBytes { raw in
-      guard let p = raw.baseAddress else { return }
-      x11_surface_update(xid, p, UInt32(bpr),
-                         UInt16(clamping: Int(wPx)),
-                         UInt16(clamping: Int(hPx)),
-                         hostSurfaceGen)
+    // Pixel fill on (re)allocation.  Shaped windows want transparent
+    // black so uncovered pixels don't flash white through the shape
+    // mask; everything else gets opaque white BGRA.
+    let fillByte: UInt8 = isShaped ? 0x00 : 0xFF
+
+    // Request that C++ allocate or reallocate the buffer.  This takes
+    // the registry's exclusive lock and blocks any in-flight draw ops
+    // until they release; the previous buffer (if any) is freed
+    // atomically inside the lock.  Returns 0 on allocation failure
+    // (silently ignored — next resize tick will retry).
+    _ = x11_surface_ensure(xid, wPx, hPx, fillByte)
+  }
+
+  /// Copy the live host surface bytes into a Swift-owned Data and store
+  /// as displayFrame.  Used to mask resize flicker.  Safe to call from
+  /// the main thread; the bridge takes the registry's shared lock for
+  /// the duration of the copy.
+  private func captureDisplayFrameSnapshot() {
+    var w: Int32 = 0
+    var h: Int32 = 0
+    var bpr: Int32 = 0
+    // Probe size first (nil dst, cap=0 → returns dimensions only).
+    guard x11_server_copy_window_bgra(xid, nil, 0, &w, &h, &bpr) != 0,
+          w > 0, h > 0, bpr > 0 else { return }
+    let count = Int(bpr) * Int(h)
+    guard count > 0 else { return }
+
+    var snap = Data(count: count)
+    let okCopy = snap.withUnsafeMutableBytes { raw -> Int32 in
+      guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+      return x11_server_copy_window_bgra(xid, base, Int32(count), &w, &h, &bpr)
     }
+    guard okCopy != 0 else { return }
+
+    displayFrame = snap
+    displayFrameW = w
+    displayFrameH = h
+    displayFrameBPR = bpr
   }
 
   /// Returns the retained display frame if one exists (during resize transitions).
@@ -266,8 +203,9 @@ final class X11View: NSView {
 
   private func clearHostSurface() {
     guard xid != 0 else { return }
+    // Releases the C++-owned HostSurface buffer under the registry's
+    // exclusive lock (waiting for any in-flight readers to finish).
     x11_surface_clear(xid)
-    hostSurface = nil
     promoteDisplaySurface()  // release retained display frame
   }
   
@@ -283,7 +221,48 @@ final class X11View: NSView {
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
   }
-  
+
+  /// Eager teardown — call from X11WindowController.tearDown() before close().
+  /// Breaks the MTKView ↔ delegate strong-ref chain so the view tree dealloc
+  /// completes synchronously instead of being held alive by a pending display
+  /// link callback or AppKit layout-server registration.  AppKit can still
+  /// queue one more layout pass on a closing window; if that fires after our
+  /// X11View was supposed to be gone but is still in memory, dispatching to
+  /// its (freed) layer/delegate fields is the source of the wild-PC crashes.
+  @MainActor
+  func tearDown() {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11View.tearDown\n", xid), stderr)
+    #endif
+    // 1) Pause the MTKView display link so no more draw(in:) callbacks fire.
+    if let mtk = mtkView {
+      mtk.isPaused = true
+      mtk.delegate = nil      // releases the X11Renderer
+      mtk.releaseDrawables()  // discards any in-flight CAMetalDrawable
+      mtk.removeFromSuperview()
+    }
+    mtkView = nil
+    mtkDelegate = nil
+    renderer = nil
+    // 2) Drop CPU-side surface buffers.
+    //    The live host surface is owned by C++ — clearHostSurface() (or
+    //    x11_surface_clear at higher level) frees it under the registry's
+    //    exclusive lock.  Here we just drop our Swift-side displayFrame
+    //    snapshot (used for resize flicker mitigation only).
+    displayFrame = nil
+    // 3) Remove tracking area so no more mouseEntered/Exited fire.
+    if let ta = trackingArea {
+      removeTrackingArea(ta)
+      trackingArea = nil
+    }
+  }
+
+  deinit {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11View.deinit\n", xid), stderr)
+    #endif
+  }
+
   private var applyingDrawableSize = false
   
   private func scheduleDrawableSizeUpdate(_ size: CGSize) {
@@ -1301,6 +1280,12 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     super.init()
   }
 
+  deinit {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11Renderer.deinit\n", xid), stderr)
+    #endif
+  }
+
   func setXid(_ xid: UInt32) {
     self.xid = xid
     self.lastDrawablePt = (0, 0)
@@ -1363,9 +1348,14 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     let wPx = Int32(size.width.rounded(.toNearestOrAwayFromZero))
     let hPx = Int32(size.height.rounded(.toNearestOrAwayFromZero))
 
-    // Gated: fires on every resize step; too noisy for normal debug.
-    // print(String(format: "[HANDLE_DRAWABLE_SIZE] xid=0x%08X drawableSize=%dx%d",
-    //       xid, wPx, hPx))
+    #if DEBUG
+    let inLive = owner?.window?.inLiveResize ?? false
+    let wMin = owner?.window?.contentMinSize.width ?? 0
+    let hMin = owner?.window?.contentMinSize.height ?? 0
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=handleDrawableSize drawablePx=%dx%d lastPx=%dx%d minSize=%.0fx%.0f live=%d\n",
+                 xid, wPx, hPx, lastDrawablePt.w, lastDrawablePt.h,
+                 wMin, hMin, inLive ? 1 : 0), stderr)
+    #endif
 
     // ---- HARD GATES ----
     guard wPx >= 16, hPx >= 16 else { return }

@@ -58,6 +58,9 @@ XProtoServer::XProtoServer()
   // Wire peak-size callback so ConfigureWindow can track pre-map sizes.
   ctx_.setPeakSizeCallback(&XProtoServer::peakSizeTrampoline, this);
 
+  // Peak-size query (for MapWindow "client shrank below its own peak" detection).
+  ctx_.setGetPeakSizeCallback(&XProtoServer::getPeakSizeTrampoline, this);
+
   // Load built-in fonts.
   std::string err;
   if (!fonts_.loadBuiltins(&err)) {
@@ -360,21 +363,87 @@ void XProtoServer::flushPendingMaps() {
     WindowView vw{};
     if (!windows_.snapshot(wid, vw)) continue;
 
+#ifndef NDEBUG
+    // Dump raw WM_NORMAL_HINTS + peak-size state at flush time so we can
+    // debug why popups come up at the wrong size.
+    {
+      x11::PropertyTable::Prop dp;
+      const bool has_hints = x11::PropertyTable::instance().get(wid, x11::atom::kWM_NORMAL_HINTS, dp);
+      if (!has_hints) {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=WM_HINTS_DUMP state=absent\n", (unsigned)wid);
+      } else if (dp.format != 32 || dp.data.size() < 5 * 4) {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=WM_HINTS_DUMP state=malformed fmt=%u bytes=%zu\n",
+                (unsigned)wid, (unsigned)dp.format, dp.data.size());
+      } else {
+        const uint32_t* d = reinterpret_cast<const uint32_t*>(dp.data.data());
+        const uint32_t flags = d[0];
+        const size_t cnt = dp.data.size() / 4;
+        int32_t ps_w = 0, ps_h = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0, base_w = 0, base_h = 0;
+        int32_t inc_w = 0, inc_h = 0;
+        if ((flags & 0x08) && cnt >= 5)  { ps_w = (int32_t)d[3]; ps_h = (int32_t)d[4]; }
+        if ((flags & 0x10) && cnt >= 7)  { min_w = (int32_t)d[5]; min_h = (int32_t)d[6]; }
+        if ((flags & 0x20) && cnt >= 9)  { max_w = (int32_t)d[7]; max_h = (int32_t)d[8]; }
+        if ((flags & 0x40) && cnt >= 11) { inc_w = (int32_t)d[9]; inc_h = (int32_t)d[10]; }
+        if ((flags & 0x100) && cnt >= 17){ base_w = (int32_t)d[15]; base_h = (int32_t)d[16]; }
+        TS_FPRINTF("[GEOM] wid=0x%08X source=WM_HINTS_DUMP flags=0x%X bytes=%zu "
+                "PSize=%dx%d PMin=%dx%d PMax=%dx%d PInc=%dx%d PBase=%dx%d\n",
+                (unsigned)wid, (unsigned)flags, dp.data.size(),
+                ps_w, ps_h, min_w, min_h, max_w, max_h, inc_w, inc_h, base_w, base_h);
+      }
+      uint16_t pk_w = 0, pk_h = 0;
+      if (getPeakSize(wid, pk_w, pk_h)) {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=PEAK_DUMP peak=%ux%u\n",
+                (unsigned)wid, (unsigned)pk_w, (unsigned)pk_h);
+      } else {
+        TS_FPRINTF("[GEOM] wid=0x%08X source=PEAK_DUMP state=absent\n", (unsigned)wid);
+      }
+      TS_FPRINTF("[GEOM] wid=0x%08X source=FLUSH_MAP_ENTER geom=%ux%u\n",
+              (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h);
+    }
+#endif
+
     // ── SubstructureRedirect emulation: authoritative size override ─────
     // After draining all buffered client data, the window's geometry may
     // STILL be tiny (e.g., Java AWT undoes its own ConfigureWindow AND
-    // WM_NORMAL_HINTS before MapWindow).
+    // WM_NORMAL_HINTS before MapWindow).  Also catches the "shrunk below
+    // peak" case where the client walked its size back below an earlier
+    // ConfigureWindow (Vivado/AWT race: stale Configure arrives after
+    // WM_NORMAL_HINTS committed the real size).
     //
     // Resolution order:
-    //   1. WM_NORMAL_HINTS (ICCCM authoritative — real WMs read at MapRequest)
-    //   2. Peak pre-map size (largest ConfigureWindow seen before map)
-    //   3. Give up: map at current tiny size
-    if (vw.w < 50 || vw.h < 50) {
+    //   1. Peak pre-map size (if we saw the window larger earlier — trust it)
+    //   2. WM_NORMAL_HINTS (ICCCM authoritative — real WMs read at MapRequest)
+    //   3. Give up: map at current (possibly tiny) size
+    const bool is_tiny = (vw.w < 50 || vw.h < 50);
+    uint16_t peek_pw = 0, peek_ph = 0;
+    const bool have_peak = getPeakSize(wid, peek_pw, peek_ph) && peek_pw > 0 && peek_ph > 0;
+    bool shrunk_below_peak = false;
+    if (!is_tiny && have_peak) {
+      const uint32_t cur_area  = (uint32_t)vw.w * vw.h;
+      const uint32_t peak_area = (uint32_t)peek_pw * peek_ph;
+      if (peak_area > cur_area * 2) shrunk_below_peak = true;
+    }
+
+    if (is_tiny || shrunk_below_peak) {
       int32_t desired_w = 0, desired_h = 0;
 
-      // Try WM_NORMAL_HINTS first
+      // Shrunk-below-peak: trust peak unconditionally. The client has
+      // contradicted its own earlier configure, so its current WM_NORMAL_HINTS
+      // is likely the post-shrink lie rather than the real desired size.
+      if (shrunk_below_peak && have_peak) {
+        desired_w = (int32_t)peek_pw;
+        desired_h = (int32_t)peek_ph;
+#ifndef NDEBUG
+        TS_FPRINTF("[FLUSH_MAP_PEAK] wid=0x%08X: geom %ux%u → peak %ux%u (shrunk-below-peak)\n",
+                (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
+                (unsigned)peek_pw, (unsigned)peek_ph);
+#endif
+      }
+
+      // Try WM_NORMAL_HINTS first for the tiny-window case.
       x11::PropertyTable::Prop hints_prop;
-      if (x11::PropertyTable::instance().get(wid, x11::atom::kWM_NORMAL_HINTS, hints_prop) &&
+      if (!shrunk_below_peak &&
+          x11::PropertyTable::instance().get(wid, x11::atom::kWM_NORMAL_HINTS, hints_prop) &&
           hints_prop.format == 32 && hints_prop.data.size() >= 5 * 4) {
         const uint32_t* d32 = reinterpret_cast<const uint32_t*>(hints_prop.data.data());
         const uint32_t flags = d32[0];
@@ -411,8 +480,11 @@ void XProtoServer::flushPendingMaps() {
       // Last-resort fallback: apply a reasonable size rather than mapping
       // a 1×1 window that's unusable.  Only trigger for truly unusable
       // sizes (<10px) — windows like 25×17 may be intentional indicators.
+      // Size chosen to be big enough for typical Vivado dialogs to show
+      // OK/Cancel buttons and a line of text even when the real size
+      // couldn't be resolved from hints or peak (stuck-at-intermediate race).
       if (vw.w < 10 || vw.h < 10) {
-        if (desired_w < 50) desired_w = 400;
+        if (desired_w < 50) desired_w = 500;
         if (desired_h < 50) desired_h = 300;
 #ifndef NDEBUG
         TS_FPRINTF("[FLUSH_MAP_FALLBACK] wid=0x%08X: geom %ux%u → fallback %dx%d\n",
@@ -449,6 +521,12 @@ void XProtoServer::flushPendingMaps() {
         }
         // Re-snapshot after resize
         windows_.snapshot(wid, vw);
+
+        // We just overrode the client's last ConfigureWindow.  The client
+        // still thinks the window is at the old size and will draw at that
+        // size unless we tell it otherwise.  Flag for SetPresentable (which
+        // runs with a valid client transport) to emit ConfigureNotify.
+        markNeedsPostMapConfigureNotify(wid);
       }
     }
 
@@ -458,6 +536,9 @@ void XProtoServer::flushPendingMaps() {
 #ifndef NDEBUG
     TS_FPRINTF("[FLUSH_MAP] wid=0x%08X geom=%ux%u — pushing deferred map\n",
             (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h);
+    TS_FPRINTF("[GEOM] wid=0x%08X source=FLUSH_MAP final=%ux%u@(%d,%d) or=%d\n",
+            (unsigned)wid, (unsigned)vw.w, (unsigned)vw.h,
+            (int)vw.x, (int)vw.y, vw.override_redirect ? 1 : 0);
 #endif
     x11_ui_push_map(wid);
     x11_ui_push_resize(wid, (int32_t)vw.w, (int32_t)vw.h);
@@ -494,6 +575,22 @@ void XProtoServer::pendingMapTrampoline(uint32_t wid, void* user) {
 
 void XProtoServer::peakSizeTrampoline(uint32_t wid, uint16_t w, uint16_t h, void* user) {
   if (user) static_cast<XProtoServer*>(user)->notePeakSize(wid, w, h);
+}
+
+bool XProtoServer::getPeakSizeTrampoline(uint32_t wid, uint16_t* outW, uint16_t* outH, void* user) {
+  if (!user || !outW || !outH) return false;
+  return static_cast<XProtoServer*>(user)->getPeakSize(wid, *outW, *outH);
+}
+
+void XProtoServer::markNeedsPostMapConfigureNotify(uint32_t wid) {
+  needs_post_map_configure_notify_.insert(wid);
+}
+
+bool XProtoServer::takeNeedsPostMapConfigureNotify(uint32_t wid) {
+  auto it = needs_post_map_configure_notify_.find(wid);
+  if (it == needs_post_map_configure_notify_.end()) return false;
+  needs_post_map_configure_notify_.erase(it);
+  return true;
 }
 
 void XProtoServer::notePeakSize(uint32_t wid, uint16_t w, uint16_t h) {

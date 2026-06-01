@@ -88,6 +88,13 @@ public:
   // Returns erased XIDs in child-first order (deepest children first).
   std::vector<uint32_t> eraseOwnedBy(int owner_fd);
 
+  // Reassign ownership of every window currently owned by `oldFd` to
+  // `newFd`.  Used by SetCloseDownMode RetainPermanent on client
+  // disconnect: instead of destroying the client's windows, they keep
+  // existing under a sentinel ownership (typically -1) so other clients
+  // can still reference them.  Returns the reassigned XIDs.
+  std::vector<uint32_t> reassignOwner(int oldFd, int newFd);
+
   // Debug snapshot directly from WindowState (no WindowView required)
   void debugState(uint32_t xid,
                   uint32_t* out_parent,

@@ -14,6 +14,9 @@
 #include <cstddef>
 #include <array>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <Core/XProtoContext.hpp>
 #include <Core/XProtoRegistrar.hpp>
@@ -87,6 +90,13 @@ public:
   bool getPeakSize(uint32_t wid, uint16_t& outW, uint16_t& outH) const;
   void clearPeakSize(uint32_t wid);
 
+  // Pending post-map ConfigureNotify: set by flushPendingMaps when it
+  // overrides the client's last ConfigureWindow (shrunk-below-peak rescue).
+  // SetPresentable handler drains this — it runs with a valid client
+  // transport and queues the ConfigureNotify so the client relayouts.
+  void markNeedsPostMapConfigureNotify(uint32_t wid);
+  bool takeNeedsPostMapConfigureNotify(uint32_t wid);
+
   // ---- Test support ----
   void setTestWindow(const WindowView& w);
   void clearTestWindows();
@@ -96,6 +106,7 @@ private:
   bool lookupWindow(uint32_t xid, WindowView* out);
   static void pendingMapTrampoline(uint32_t wid, void* user);
   static void peakSizeTrampoline(uint32_t wid, uint16_t w, uint16_t h, void* user);
+  static bool getPeakSizeTrampoline(uint32_t wid, uint16_t* outW, uint16_t* outH, void* user);
 
 private:
   // Server-wide state (persists across client sessions)
@@ -126,6 +137,10 @@ private:
   // Peak pre-map size: largest ConfigureWindow size seen per unmapped root child.
   struct PeakSize { uint16_t w = 0; uint16_t h = 0; };
   std::unordered_map<uint32_t, PeakSize> peak_sizes_;
+
+  // Windows whose size was rescued by flushPendingMaps (shrunk-below-peak).
+  // SetPresentable must emit a ConfigureNotify so the client relayouts.
+  std::unordered_set<uint32_t> needs_post_map_configure_notify_;
 
   // Optional injected production lookup.
   WindowLookupFn injected_lookup_ = nullptr;

@@ -41,6 +41,7 @@
 #include "Core/DrawableRW.hpp"
 #include "Damage.hpp"
 #include "Core/HostCommandQueue.hpp"
+#include "Utils/DragTrace.hpp"
 #include "Core/XClient.hpp"
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/XConstants.hpp"
@@ -387,6 +388,29 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             }
           }
           ctx.windows().markDirty(c.xid);
+
+          // If flushPendingMaps rescued this window's size (shrunk-below-peak),
+          // the client still thinks it's at the pre-rescue dimensions and will
+          // draw its layout at the smaller size.  Send ConfigureNotify now (we
+          // have a valid client transport here) so the client relayouts at
+          // the real size BEFORE we send Expose and it paints.
+          if (srv->takeNeedsPostMapConfigureNotify(c.xid)) {
+            x11::WindowView pv{};
+            if (ctx.windows().snapshot(c.xid, pv)) {
+              auto ev = x11::wireev::buildConfigureNotify(
+                ctx.transport().lastSeq(),
+                /*event*/ c.xid, /*window*/ c.xid,
+                /*aboveSibling*/ 0,
+                pv.x, pv.y, pv.w, pv.h,
+                pv.border_width, pv.override_redirect);
+              (void)ctx.transport().sendEvent32(c.xid, ev.data());
+#ifndef NDEBUG
+              TS_FPRINTF("[GEOM] wid=0x%08X source=POST_MAP_CONFIGNOTIFY size=%ux%u@(%d,%d)\n",
+                      (unsigned)c.xid, (unsigned)pv.w, (unsigned)pv.h,
+                      (int)pv.x, (int)pv.y);
+#endif
+            }
+          }
 
           // Re-expose the host and all mapped descendants so clients
           // redraw into the Swift surface now that it's presentable.
@@ -764,6 +788,19 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // not the host. Subsequent button/motion events will route here.
           ctx.input().button(under, c.isDown != 0, c.button, c.buttonsMask);
 
+          // [DRAG] session bracketing.  begin() captures host/drag_xid the
+          // moment the 0→nonzero transition lands (so InputState::button
+          // has already populated drag_xid).  end() emits the counter +
+          // duration on the matching release.  No effect when the trace
+          // category is disabled (compiles to nothing).
+          if (c.isDown) {
+            x11::drag_trace::begin(effectiveHost,
+                                   ctx.input().drag_xid,
+                                   c.button);
+          } else {
+            x11::drag_trace::end(c.button);
+          }
+
           // NOTE: No click-to-focus here. Focus is handled by the
           // HostCmdType::Focus handler (Cocoa becomeKey/resignKey) which
           // sends FocusIn to the HOST. The toolkit (Xt) then propagates
@@ -834,6 +871,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 
 
+#ifndef NDEBUG
           {
             const x11::WindowView* dbgDel = ctx.window(deliver);
             TS_FPRINTF("[BTN_SEND] host=0x%08X under=0x%08X deliver=0x%08X "
@@ -847,6 +885,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                        (int)effectiveWinX, (int)effectiveWinY,
                        (int)c.button, c.isDown ? "DOWN" : "UP");
           }
+#endif
           srv->eventOps().sendButtonEvent(ctx, deliver,
                                           c.isDown != 0, c.button,
                                           ctx.input().root_x_u, ctx.input().root_y_u,

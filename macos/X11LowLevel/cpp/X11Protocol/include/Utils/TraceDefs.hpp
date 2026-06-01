@@ -15,6 +15,20 @@
 
 #pragma once
 
+// ---- Opt-in categories (kept off by default in release builds) ----
+//
+// Historically v1.19.35.52-.61 enabled X11_TRACE_FONT / RENDER / DRAG
+// unconditionally here while chasing live bugs.  The bugs are fixed
+// (License Manager glyphs in v.53/.54, hw_ila drag in v.62), so these
+// are now back to opt-in via -DX11_TRACE_<CATEGORY> in
+// OTHER_CPLUSPLUSFLAGS, exactly like RESIZE / PRESENT / etc.  The
+// names below are kept as a reminder of the available knobs:
+//
+//   -DX11_TRACE_FONT      — Font / glyph diagnostics
+//   -DX11_TRACE_RENDER    — RENDER extension diagnostics
+//   -DX11_TRACE_DRAG      — Drag session bracketing + motion routing
+//   -DX11_TRACE_VERBOSE   — every category at once
+
 // ---- Category defines ----
 
 // Resize flow: SURFACE_UPDATE, SURFACE_RESIZED, applyRootlessResize,
@@ -78,4 +92,13 @@
   #define X11_TRACE_WIRE_ENABLED 1
 #else
   #define X11_TRACE_WIRE_ENABLED 0
+#endif
+
+// Drag tracing: button-down begins a [DRAG] session, each motion
+// during the drag bumps a counter, button-up emits a summary line.
+// Used to diagnose Java AWT / Vivado hw_ila_x drag-and-drop failures.
+#if defined(X11_TRACE_DRAG) || defined(X11_TRACE_VERBOSE)
+  #define X11_TRACE_DRAG_ENABLED 1
+#else
+  #define X11_TRACE_DRAG_ENABLED 0
 #endif

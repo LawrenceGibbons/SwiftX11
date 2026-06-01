@@ -9,7 +9,7 @@
 
 #pragma once
 
-#define SWIFTX11_VERSION_BASE "1.19.35"
+#define SWIFTX11_VERSION_BASE "1.19.36"
 
 // Bump this for each diagnostic/debug iteration within a version.
 // Set to 0 for release builds. Non-zero appends ".N-dbg" to version.

@@ -90,7 +90,7 @@ void SelectionOps::claimSelectionsIfMacOSChanged(XProtoContext& ctx) {
         wire::wr32_le(ev + 12, sel);
         (void)ctx.transport().sendEvent32(prevOwner, ev);
 
-        TS_FPRINTF("[CLIPBOARD] Focus claim: sel=%u prev=0x%08X→root "
+        TS_DBG("[CLIPBOARD] Focus claim: sel=%u prev=0x%08X→root "
                 "(macOS cc %lld > %lld)\n",
                 (unsigned)sel, (unsigned)prevOwner,
                 (long long)currentCC, (long long)lastKnownCC);
@@ -149,8 +149,10 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     return;
   }
 
-  TS_FPRINTF("[SEL] SetSelectionOwner sel=%u owner=0x%08X time=%u\n",
+#ifndef NDEBUG
+  TS_DBG("[SEL] SetSelectionOwner sel=%u owner=0x%08X time=%u\n",
           (unsigned)selection, (unsigned)owner, (unsigned)time);
+#endif
 
   uint32_t prevOwner = 0;
   {
@@ -164,7 +166,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
         // Compare as unsigned (X11 timestamps wrap at 2^32)
         int32_t diff = (int32_t)(time - tIt->second);
         if (diff < 0) {
-          TS_FPRINTF("[SEL] SetSelectionOwner REJECTED: time %u < last %u\n",
+          TS_DBG("[SEL] SetSelectionOwner REJECTED: time %u < last %u\n",
                   (unsigned)time, (unsigned)tIt->second);
           return;
         }
@@ -228,7 +230,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     (void)ctx.transport().sendEvent32(owner, ev);
 
 #ifndef NDEBUG
-    TS_FPRINTF("[CLIPBOARD] Sent proactive SelectionRequest(UTF8_STRING) to owner 0x%08X\n",
+    TS_DBG("[CLIPBOARD] Sent proactive SelectionRequest(UTF8_STRING) to owner 0x%08X\n",
             (unsigned)owner);
 #endif
   }
@@ -315,7 +317,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     (void)ctx.transport().sendEvent32(requestor, ev);
 
 #ifndef NDEBUG
-    TS_FPRINTF("[CLIPBOARD] Served TARGETS (%u atoms) to 0x%08X\n",
+    TS_DBG("[CLIPBOARD] Served TARGETS (%u atoms) to 0x%08X\n",
             nTargets, (unsigned)requestor);
 #endif
     return true;
@@ -358,7 +360,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
     std::vector<char> clipBuf(kMaxClipRead);
     uint32_t len = x11_clipboard_get_text(clipBuf.data(), kMaxClipRead);
 
-    TS_FPRINTF("[CLIPBOARD] serveMacOS: read %u bytes for target=%u req=0x%08X\n",
+    TS_DBG("[CLIPBOARD] serveMacOS: read %u bytes for target=%u req=0x%08X\n",
             len, (unsigned)target, (unsigned)requestor);
 
     if (len == 0) {
@@ -389,7 +391,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
       uint32_t totalSize = IncrTransfer::instance().startTransfer(
         requestor, property, target, reqFd, std::move(data));
 
-      TS_FPRINTF("[CLIPBOARD] INCR started: %u bytes to 0x%08X (chunks of %zu)\n",
+      TS_DBG("[CLIPBOARD] INCR started: %u bytes to 0x%08X (chunks of %zu)\n",
               totalSize, (unsigned)requestor, IncrTransfer::kChunkSize);
     } else {
       // Small data: direct property write (existing fast path)
@@ -400,7 +402,7 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
       );
 
 #ifndef NDEBUG
-      TS_FPRINTF("[CLIPBOARD] Served %u bytes from macOS pasteboard to 0x%08X\n",
+      TS_DBG("[CLIPBOARD] Served %u bytes from macOS pasteboard to 0x%08X\n",
               len, (unsigned)requestor);
 #endif
     }
@@ -447,8 +449,10 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
 
   br.skip(br.remaining());
 
-  TS_FPRINTF("[SEL] ConvertSelection sel=%u target=%u req=0x%08X prop=%u time=%u\n",
+#ifndef NDEBUG
+  TS_DBG("[SEL] ConvertSelection sel=%u target=%u req=0x%08X prop=%u time=%u\n",
           (unsigned)selection, (unsigned)target, (unsigned)requestor, (unsigned)property, (unsigned)time);
+#endif
 
   // Per ICCCM: if property is None, use target as property
   if (property == 0) property = target;
@@ -473,14 +477,14 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
       int64_t currentCC = x11_clipboard_get_change_count();
       if (currentCC > storedCC) {
 #ifndef NDEBUG
-        TS_FPRINTF("[CLIPBOARD] macOS clipboard newer (cc %lld > %lld) — serving from macOS\n",
+        TS_DBG("[CLIPBOARD] macOS clipboard newer (cc %lld > %lld) — serving from macOS\n",
                 (long long)currentCC, (long long)storedCC);
 #endif
         serveMacOSClipboard(ctx, requestor, selection, target, property, time);
         return;
       }
 #ifndef NDEBUG
-      TS_FPRINTF("[CLIPBOARD] macOS NOT newer (cc %lld <= %lld) — forwarding to X11 owner 0x%08X\n",
+      TS_DBG("[CLIPBOARD] macOS NOT newer (cc %lld <= %lld) — forwarding to X11 owner 0x%08X\n",
               (long long)currentCC, (long long)storedCC, (unsigned)owner);
 #endif
     }
@@ -489,7 +493,7 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     // Root has no client transport, so serve from macOS clipboard directly.
     if (owner == 1) {
 #ifndef NDEBUG
-      TS_FPRINTF("[CLIPBOARD] owner=root (proxy) — serving from macOS\n");
+      TS_DBG("[CLIPBOARD] owner=root (proxy) — serving from macOS\n");
 #endif
       if (selection == atom::kPRIMARY || selection == atom::kCLIPBOARD) {
         serveMacOSClipboard(ctx, requestor, selection, target, property, time);
@@ -509,7 +513,7 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
       bool reqOk   = ctx.windows().snapshot(requestor, reqWv);
       if (ownerOk && reqOk && ownerWv.owner_fd == reqWv.owner_fd) {
         // Same client — can't do round-trip, refuse the conversion
-        TS_FPRINTF("[CLIPBOARD] REFUSED: same-client deadlock prevention "
+        TS_DBG("[CLIPBOARD] REFUSED: same-client deadlock prevention "
                 "(owner=0x%08X req=0x%08X fd=%d)\n",
                 (unsigned)owner, (unsigned)requestor, ownerWv.owner_fd);
         uint8_t nev[32] = {0};
@@ -526,7 +530,7 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
     }
 
     // Different client owns the selection — forward SelectionRequest
-    TS_FPRINTF("[CLIPBOARD] Forwarding SelectionRequest to X11 owner 0x%08X (fd=%d)\n",
+    TS_DBG("[CLIPBOARD] Forwarding SelectionRequest to X11 owner 0x%08X (fd=%d)\n",
             (unsigned)owner, ctx.transport().clientFd());
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
@@ -636,7 +640,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
               // The user's macOS content is newer — skip the push.
               shouldPush = false;
 #ifndef NDEBUG
-              TS_FPRINTF("[CLIPBOARD] Skipping push — macOS clipboard updated externally "
+              TS_DBG("[CLIPBOARD] Skipping push — macOS clipboard updated externally "
                       "(cc %lld > pushed %lld)\n",
                       (long long)currentCC, (long long)it->second);
 #endif
@@ -685,7 +689,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
 
 #ifndef NDEBUG
         int64_t cc = x11_clipboard_get_change_count();
-        TS_FPRINTF("[CLIPBOARD] Proactive capture: %zu bytes, sel=%u, pushed=%s, cc=%lld, owner→root\n",
+        TS_DBG("[CLIPBOARD] Proactive capture: %zu bytes, sel=%u, pushed=%s, cc=%lld, owner→root\n",
                 p.data.size(), (unsigned)selAtom,
                 shouldPush ? "yes" : "SKIPPED(macOS newer)",
                 (long long)cc);

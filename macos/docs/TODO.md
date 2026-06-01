@@ -916,6 +916,83 @@ Root cause: `dbus-launch` checks the X11 root window for a `_DBUS_SESSION_BUS_*`
 ### Ctrl+Click Regression (MEDIUM)
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
 
+### hw_ila_x Drag-and-Drop — ✅ FIXED (v1.19.36)
+The bug had three layers, all closed in this release:
+
+1. **OR window SubstructureRedirect rescue** (`.57`) — AWT's XDND helper creates a 1×1 off-screen `override_redirect` proxy window per drag. Our v1.17.0 deferred-map machinery was rescuing it to a 500×300 fallback, causing AWT's subsequent `GetProperty(XdndAware)` to hit `BadWindow`. Fix: skip the deferred-map path entirely when `override_redirect=True`.
+2. **`SetCloseDownMode(RetainPermanent)` stubbed out** (`.58`) — AWT's helper connection sets `RetainPermanent` then closes; the proxy window must outlive the disconnect. Our handler was a no-op consumer. Fix: store the mode on `XClient`, call `WindowTable::reassignOwner(fd, -1)` in `removeClient` instead of `eraseOwnedBy(fd)` when retention is requested.
+3. **`postMotion` grab routing only honoured `PointerMotionMask`** (`.62`) — the actual smoking gun. AWT installs `XGrabPointer(grab_window=root, owner_events=False, mask=ButtonPress|ButtonRelease|ButtonMotion = 0x200C)`. Our routing only checked bit 6 (`PointerMotionMask`); the spec requires accepting any of `PointerMotionMask`, `ButtonMotionMask` (bit 13), or `Button1-5MotionMask` (bits 8-12) per held button. New `grabWantsMotion(mask, heldButtons)` helper covers all three families. Also added a root-grab → `drag_xid` target fallback because we don't yet track the grabbing client's fd on `PointerGrab`.
+
+Open follow-up: add `PointerGrab::owner_fd` so the root-grab case can route to the grabbing client directly instead of via `drag_xid`. Logged under "Next Major Tasks" in CLAUDE.md.
+
+### Vivado Crashes After Laptop Sleep (MEDIUM)
+After leaving SwiftX11 + Vivado running overnight and sleeping the laptop (several hours), clicking into the Vivado window on wake causes Vivado to crash. SwiftX11 log signature:
+
+```
+[95591.780730] [SEQ_WRAP] 16-bit wrap detected: pkt=13514 floor=30457 clientSeq=13514 — resetting floor
+[95594.201...] ... normal dialog creation ...
+<~8.5 min gap — laptop asleep>
+[96043.487214] [X11] readAndDispatch error fd=6 seq=24691
+[96043.487236] [X11] disconnect fd=6 remaining=0 seq=24691 total_reqs=1335411
+```
+
+The disconnect is Vivado side (Vivado crashed → process termination → TCP close). Last dispatched requests are normal PolyFillRectangle (72) / ChangeWindowAttributes (2); last outgoing events are normal Expose/Motion/Enter/Leave.
+
+**Suspected root causes:**
+1. **TCP socket stale after sleep.** macOS keeps the socket nominally alive during sleep, but Vivado's Xlib may see stale state on wake. The first input event delivered post-wake trips an AWT/Xlib assertion.
+2. **Event flood on wake.** AppKit queues events during sleep and delivers them rapidly after wake; if motion/button events arrive faster than AWT's Dispatch thread can process, Java's event queue overflows or reorders.
+3. **Very long session.** `total_reqs=1335411` — sequence number has wrapped multiple times. A wrap during sleep, or mismatched wire-seq floor recovery on wake, could corrupt Vivado's next-expected-sequence state.
+4. **Metal command queue lost during sleep.** If our next draw errors and we retry in a way that stalls input delivery, it could compound the timing issue on wake.
+
+**Mitigations to consider:**
+1. **Sleep/wake awareness.** Subscribe to `NSWorkspace.willSleepNotification` — pause input event delivery, flush any pending host commands. On `didWakeNotification`, resume. Prevents the post-wake event flood.
+2. **Idle keepalive.** Periodically (every 60s) emit a `NoOperation` to each client. Detects wedged sockets; if the send blocks/fails, drop the connection cleanly rather than delivering stale input to a doomed client.
+3. **Extreme timestamp gap detection.** If `currentTime - lastEventTime > 60s`, drop queued input events and send a single synthetic crossing event to resync pointer state.
+4. **Server-side session limit warning.** At `total_reqs > 500K` or known sequence-wrap count > N, log a warning that a long session is heading toward stress territory.
+
+**Next dbg trace to capture if it recurs:** wire-level byte dump of the last 256 bytes sent/received before the readAndDispatch error, plus timestamp of the last successful round-trip vs. the error time. That would pin down whether it's a socket issue or a protocol issue.
+
+### SwiftUI "Publishing changes from within view updates" Warning (LOW)
+Startup logs show: `Publishing changes from within view updates is not allowed, this will cause undefined behavior.` A SwiftUI view body (or a closure run during a view update) is synchronously mutating an `@Published` / `@State` / `@ObservedObject` property. Unrelated to Vivado popup sizing — longstanding, benign in practice but flagged by SwiftUI as undefined behavior. To locate, add a symbolic breakpoint on `_printChanges` or Combine's `sink` warning path, or audit recent `@Published` writes inside view bodies / `onAppear` / `onChange` closures. Fix: wrap the offending mutation in `DispatchQueue.main.async { ... }` or `Task { @MainActor in ... }`.
+
+### Host Surface Buffer UAF — ✅ FIXED (v1.19.35.49)
+Multi-iteration ASan-driven cleanup that closed a recurring heap-use-after-free in the host pixel buffer during live resize. Foundation.__DataStorage was being freed by Swift main thread's ARC while the xproto thread was mid-write through a registered raw pointer. Fixed by moving buffer ownership entirely to C++:
+
+- **v1.19.35.46 (C1)**: `DrawableSurfaceRegistry` upgraded to `std::shared_mutex`; new move-only RAII `ReadHandle` returned from `acquireRead(xid)`. Multiple readers run concurrently; writers (`set`/`clear`/`ensure`) take the exclusive lock briefly. Pure infrastructure addition.
+- **v1.19.35.47 (C2)**: `DrawableRW` embeds the `ReadHandle`; `resolveDrawableRW` calls `acquireRead()` and stashes the handle in `out.readLock`. Shared lock now held for the entire draw op. Made `DrawableRW` move-only.
+- **v1.19.35.48 (C3.1)**: New `HostSurface` struct (posix_memalign-allocated, freed by dtor). `DrawableSurfaceRegistry` stores `unique_ptr<HostSurface>`. New `ensure(xid, w, h, bpr, fillByte)` allocates atomically under exclusive lock. Legacy `set(SurfaceDesc)` retained transitionally.
+- **v1.19.35.49 (C3.2)**: `X11View.hostSurface: Data?` deleted. `ensureHostSurface` calls `x11_surface_ensure(xid, w, h, fillByte)`; `displayFrame` snapshot via `x11_server_copy_window_bgra`. Swift no longer holds any reference to the live buffer; the registry's exclusive lock IS the buffer's lifetime guard.
+
+**Cleanup TODO**: legacy `DrawableSurfaceRegistry::set(SurfaceDesc)` and the corresponding `x11_surface_update` bridge function are unused after C3.2 — they can be deleted in a follow-up commit. The current `srv->updateSurface(xid, SurfaceDesc)` accessor would also go.
+
+**Trade-off accepted in C3.2**: programmatic resizes (non-live) no longer preserve overlap content — there's a one-frame white-fill before the X11 client repaints. Live resize is unaffected because `displayFrame` masks the gap. If visible flash on programmatic resizes becomes a problem, re-add overlap-copy via a new `x11_surface_blit_in` bridge that takes the exclusive lock and writes pixels into the owned HostSurface.
+
+---
+
+### Vivado Popup Size Race — Unified Deferred-Map Path (MEDIUM, long-term)
+**Short-term mitigation (v1.19.35.40 / planned v1.19.36):** `handleMapWindow` + `flushPendingMaps` defer the map and apply peak-size resolution when the client has shrunk its own window below an earlier ConfigureWindow peak (`peak_area > 2 × current_area`), not just when the window is `<50px`. Catches the Vivado/AWT race where a stale ConfigureWindow arrives after WM_NORMAL_HINTS committed the real size and walks the popup back to its 150×150 skeleton. Verified firing cleanly in v1.19.35.40-dbg traces.
+
+**Long-term fix — unified deferred-map path:**
+
+*Design:* Route MapWindow for every root-child, non-OR, not-already-mapped host through `addPendingMap` — not just tiny/shrunk-below-peak edge cases. `flushPendingMaps` becomes the sole resolver, runs after `readAndDispatch` drains all buffered data (matches real WM behavior reading WM_NORMAL_HINTS at `MapRequest` time). OR windows keep the immediate path.
+
+*Resolution order in flushPendingMaps:*
+- `peak_area > 1.2 × current_area` → trust peak
+- `WM_NORMAL_HINTS.PSize / PMinSize / PBaseSize ≥ 50` and larger than current → use hints
+- Else current geometry
+- `<10×10` with no better signal → 400×300 fallback (unchanged)
+- Position: honor most recent explicit ConfigureWindow; only center if (0,0) or off-screen
+
+*Latency cost:* 0ms best case (all setup in one buffer), ~1ms worst case (one extra poll cycle) — well within XCB's MapNotify tolerance.
+
+*Invariants to preserve:* ConfigureNotify queued with correct geometry before MapNotify; MapSubwindows child-map path unchanged; MAP_SHOW → Expose ordering.
+
+*Risk:* Xt/Xlib clients that call `XSync` immediately after `XMapWindow` must see the map before the reply. Should work because XSync (GetInputFocus) is drained in the same poll cycle.
+
+*Rollout:* ship behind compile flag `SWIFTX11_UNIFIED_DEFERRED_MAPS` first, collect traces from Vivado/Vitis/xterm for 1–2 weeks, then flip default-on. Current peak-area shim stays as a safety net.
+
+*Testing matrix:* Vivado (Close Project race + synthesis/implementation dialogs), Vitis menus + file dialogs, xterm/xeyes sanity, multi-client stress.
+
 ---
 
 ## Completed Enhancements

@@ -41,6 +41,9 @@ extension NSView {
 
   /// Swizzled replacement for -[NSView layoutSubtreeIfNeeded].
   /// Adds a per-window re-entrancy guard to prevent _NSDetectedLayoutRecursion.
+  /// Also bails out if the view's window is being closed by SwiftX11 — AppKit's
+  /// display-cycle observer can fire one more layout pass on a half-torn-down
+  /// view tree, which is a known source of wild-PC crashes during CA commit.
   @objc private func _swiftx11_layoutSubtreeIfNeeded() {
     guard let w = self.window else {
       // No window — call original (safe, can't recurse on a window).
@@ -51,8 +54,15 @@ extension NSView {
       // Already inside this window's layout pass — skip to break the cycle.
       return
     }
+    // Bail if the window is being torn down.  WindowRegistry sets
+    // closingXids before calling controller.tearDown(); during that
+    // window AppKit may queue one more layout pass on stale subviews.
+    if let v = self as? X11View, v.xid != 0,
+       MainActor.assumeIsolated({ WindowRegistry.shared.isClosing(xid: v.xid) }) {
+      return
+    }
     w._swiftx11InLayout = true
+    defer { w._swiftx11InLayout = false }
     _swiftx11_layoutSubtreeIfNeeded()  // calls original (methods are swapped)
-    w._swiftx11InLayout = false
   }
 }

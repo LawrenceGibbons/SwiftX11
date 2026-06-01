@@ -14,6 +14,8 @@
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
 #include "Core/XEventMask.hpp"
+#include "Core/XConstants.hpp"
+#include "Utils/DragTrace.hpp"
 
 #include <atomic>
 
@@ -77,6 +79,14 @@ void postMotion(uint32_t host_xid,
                             root_x, root_y,
                             buttons, mods);
 
+  // Raw motion trace — counts EVERY motion that reaches postMotion, before
+  // any of the early returns or routing logic.  Comparing this against the
+  // `motions` count at DRAG END tells us whether motion events are being
+  // dropped between Cocoa and X11 delivery.  Also captures the CURRENT
+  // drag_xid so we can see whether it got silently cleared mid-drag.
+  x11::drag_trace::motionRaw(host_xid, root_x, root_y, deliver, buttons,
+                             ctx->input().drag_xid);
+
   // XI2 RawMotion is a root-level event — deliver on ANY pointer move,
   // even when deliver=0 (cursor outside X11 windows).  GlobalPointerTracker
   // fires with deliver=0 for global motion; xeyes relies on this for
@@ -91,8 +101,10 @@ void postMotion(uint32_t host_xid,
   // must not gate X11 grab-routed events.
   if (!deliver) {
     x11::PointerGrab earlyGrab{};
-    if (!(ctx->grabs().getPointerGrab(earlyGrab) && earlyGrab.active))
+    if (!(ctx->grabs().getPointerGrab(earlyGrab) && earlyGrab.active)) {
+      x11::drag_trace::dropped("no_deliver_no_grab");
       return;
+    }
   }
 
   // ---- macOS drag correction ----
@@ -116,6 +128,7 @@ void postMotion(uint32_t host_xid,
         host_xid = *it;
         win_x = root_x - vw.x;
         win_y = root_y - vw.y;
+        x11::drag_trace::hostCorr(originalHost, *it, vw.w, vw.h, vw.x, vw.y);
         break;
       }
     }
@@ -163,7 +176,34 @@ void postMotion(uint32_t host_xid,
   // drag_xid is our internal button-drag tracker; it must NOT override
   // an active grab (e.g., popup menu's GrabPointer with ownerEvents=True
   // needs to route to SimpleMenu child, not the original click target).
-  uint32_t target;
+  x11::drag_trace::route(ctx->input().drag_xid, haveGrab, hostCorrected,
+                         activeGrab.grabWindow, activeGrab.eventMask,
+                         activeGrab.ownerEvents);
+
+  // X11 motion-event delivery is gated by THREE families of mask bits:
+  //   bit 6  (0x0040) PointerMotionMask     — all motion
+  //   bit 13 (0x2000) ButtonMotionMask      — motion while ANY button held
+  //   bits 8-12      Button1-5MotionMask   — motion while a specific button held
+  //
+  // Before v1.19.35.62 we only honoured PointerMotionMask, so an active
+  // pointer grab installed by AWT's XDND code with mask
+  //   0x200C = ButtonPress | ButtonRelease | ButtonMotion
+  // dropped every drag motion event into the no-target sink and the
+  // hw_ila drag silently died.  Now we accept any motion bit relevant to
+  // the currently-held buttons.
+  auto grabWantsMotion = [&](uint16_t mask, uint32_t held) -> bool {
+    if (mask & (1u << 6))  return true;                    // PointerMotion
+    if (held == 0)         return false;                   // nothing else applies
+    if (mask & (1u << 13)) return true;                    // ButtonMotion (any)
+    // Per-button: held bit N → mask bit (8 + N)
+    for (int i = 0; i < 5; i++) {
+      if ((held & (1u << i)) && (mask & (1u << (8 + i)))) return true;
+    }
+    return false;
+  };
+  const uint32_t heldButtons = ctx->input().buttons;
+
+  uint32_t target = 0;  // EXPLICITLY initialise — must never be undefined
   if (haveGrab) {
     // Active pointer grab (GrabPointer / activated passive grab).
     //
@@ -195,15 +235,27 @@ void postMotion(uint32_t host_xid,
       }
       if (!target) {
         // Still nothing → fall back to grab window if it wants motion
-        if (activeGrab.eventMask & (1u << 6)) // PointerMotionMask
+        if (grabWantsMotion(activeGrab.eventMask, heldButtons))
           target = activeGrab.grabWindow;
       }
     } else {
       // owner_events=False: route directly to grab window
-      if (activeGrab.eventMask & (1u << 6)) // PointerMotionMask
+      if (grabWantsMotion(activeGrab.eventMask, heldButtons))
         target = activeGrab.grabWindow;
       else
         target = 0;
+    }
+    // Root-window grab delivery (XDND pattern): AWT's drag-and-drop code
+    // calls XGrabPointer(grab_window=root, owner_events=False, mask=
+    // ButtonPress|ButtonRelease|ButtonMotion).  In real X11 the events
+    // would be sent to the GRABBING CLIENT (AWT), filtered by mask, with
+    // coordinates relative to root.  We don't currently track which
+    // client installed the grab, so root-target events would deliver to
+    // nobody.  As a pragmatic fallback during an active drag, route to
+    // drag_xid (which is owned by the same client that installed the
+    // root grab — the click that started the drag also picked drag_xid).
+    if (target == x11::kRootXid && ctx->input().drag_xid != 0) {
+      target = ctx->input().drag_xid;
     }
   } else if (ctx->input().drag_xid && !hostCorrected) {
     // No active grab, but button drag in progress AND pointer is still
@@ -218,7 +270,10 @@ void postMotion(uint32_t host_xid,
   }
 
 
-  if (!target) return;
+  if (!target) {
+    x11::drag_trace::dropped("no_target");
+    return;
+  }
 
   // The cursor is applied to the *host* (Cocoa window), but chosen from the *effective target*.
   uint32_t host = host_xid;
@@ -228,10 +283,23 @@ void postMotion(uint32_t host_xid,
   const uint32_t cursorTarget = ctx->input().routePointer(target); // respects drag_xid/pointer_xid/focus_xid
   maybeApplyCursor(*ctx, host, cursorTarget);
 
+  // Drag diagnostic — ticks each motion event delivered during an
+  // active button-down → button-up bracket.  No-op when X11_TRACE_DRAG
+  // is disabled.  We record:
+  //   - the actual delivery target (vs. just drag_xid)
+  //   - the root_x/root_y the wire event will carry
+  //   - the buttons + mods we're about to feed sendMotionNotify
+  // so we can verify the motion event's `state` field will include
+  // Button1Mask (X11 wire bit 8) once toX11State() runs inside
+  // sendMotionNotify.  AWT only treats motion as drag-eligible when
+  // Button1Mask is set; the hw_ila drag fails despite plenty of
+  // motion events arriving, so this is the next thing to verify.
+  x11::drag_trace::motion(target, root_x, root_y, buttons, mods);
+
   // Send MotionNotify with ROOT coords (root_x/root_y)
   ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
   ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods);
-}  
+}
   
 void postButtonLegacy(uint32_t xid, int is_press, int32_t x_px, int32_t y_px, uint32_t buttons, uint32_t mods)
 {

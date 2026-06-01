@@ -138,6 +138,15 @@ final class X11WindowController: NSWindowController, NSWindowDelegate {
     let sizePixels = CGSize(width: sizePoints.width * scale,
                             height: sizePoints.height * scale)
 
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=windowDidResize pts=%.0fx%.0f px=%.0fx%.0f scale=%.2f minSize=%.0fx%.0f maxSize=%.0fx%.0f live=%d\n",
+                 xid, sizePoints.width, sizePoints.height,
+                 sizePixels.width, sizePixels.height, scale,
+                 win.contentMinSize.width, win.contentMinSize.height,
+                 win.contentMaxSize.width, win.contentMaxSize.height,
+                 win.inLiveResize ? 1 : 0), stderr)
+    #endif
+
     WindowRegistry.shared.windowResized(
       xid: xid,
       sizePoints: sizePoints,
@@ -262,6 +271,12 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
   @objc
   func windowWillClose(_ notification: Notification) {
     assert(Thread.isMainThread)
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=windowWillClose nsWindow=%p contentView=%p\n",
+                 xid,
+                 (notification.object as AnyObject?).map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0,
+                 self.window?.contentView.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
+    #endif
     // make state look clean before arrival of the close event
     x11_post_focus_event(xid, false)
     postSyntheticLeaveForCurrentMouseLocation()
@@ -270,7 +285,32 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
     // This replaces the old x11_post_window_destroy which only hid the NSWindow
     // but left the X11 client process running.
     x11_post_window_close(xid)
-  }  
+  }
+
+  /// Eager teardown — call from WindowRegistry.closeWindow before close().
+  /// Tears down the X11View (Metal renderer, delegate, surface buffers) and
+  /// disconnects it from the NSWindow so the view tree can dealloc in this
+  /// runloop tick.  Without this, AppKit can queue one more display-cycle
+  /// layout pass on the half-released view, dereferencing freed fields.
+  @MainActor
+  func tearDown() {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11WindowController.tearDown\n", xid), stderr)
+    #endif
+    self.x11View?.tearDown()
+    self.window?.contentView = nil
+    self.x11View = nil
+    self.window?.delegate = nil
+  }
+
+  deinit {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=X11WindowController.deinit\n", xid), stderr)
+    #endif
+    // Clear closingXids flag so the LayoutRecursionGuard stops blocking
+    // future layout passes for any window that ends up reusing this xid.
+    WindowRegistry.shared.markClosed(xid: xid)
+  }
   
   func windowDidMiniaturize(_ notification: Notification) {
     assert(Thread.isMainThread)

@@ -212,12 +212,35 @@ void x11_post_window_resize(uint32_t xid, int32_t w_u, int32_t h_u);
 // Call after live resize ends to recover child content lost during surface reallocation.
 void x11_post_expose_children(uint32_t xid);
 
+// Legacy: Swift allocates buffer + publishes ptr.  Now wraps ensure() +
+// memcpy internally; the externally-provided ptr is no longer retained.
+// C3.2 will remove the last Swift caller and this declaration can be
+// dropped at that point.
 void x11_surface_update(uint32_t host_xid,
                         void* ptr,
                         uint32_t bytes_per_row,
                         uint16_t w,
                         uint16_t h,
                         uint32_t generation);
+
+// New (C3): request that C++ allocate or reallocate the host surface buffer
+// for `host_xid` to (w_px × h_px).  C++ owns the buffer for its lifetime;
+// Swift never holds a reference and never frees.  bytes_per_row is computed
+// internally as (w_px*4) rounded up to 64-byte alignment.
+//
+// fill_byte: byte splatted across all pixels of a freshly-allocated
+// buffer.  Use 0xFF for opaque white (BGRA), 0x00 for transparent black
+// (shaped windows).  No-op (same shape) calls do NOT refill — caller's
+// pixels are preserved.
+//
+// Returns the new generation on success (>0), or 0 on allocation failure.
+// If the registry already has a surface of the requested shape, returns
+// the existing generation and is a no-op.  Triggers a SurfaceResized
+// host command for downstream re-expose if the dimensions changed.
+uint32_t x11_surface_ensure(uint32_t host_xid,
+                            int32_t  w_px,
+                            int32_t  h_px,
+                            uint8_t  fill_byte);
 
 void x11_surface_clear(uint32_t host_xid);
 

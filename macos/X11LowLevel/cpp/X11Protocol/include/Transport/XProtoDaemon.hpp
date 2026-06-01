@@ -24,7 +24,8 @@ class XClient;
 enum class DispatchResult {
   Dispatched,   // A complete request was dispatched
   NeedMore,     // Partial read or EAGAIN — no more data available now
-  Error         // Connection error or EOF — remove client
+  Eof,          // Clean EOF (recv returned 0) — remove client, not an error
+  Error         // Connection error or protocol error — remove client, log as error
 };
 
 /// Ring buffer entry for the last N dispatched requests (crash diagnosis).
@@ -67,6 +68,11 @@ struct ClientSession {
   bool sent_xi_query_device  = false;   // minor 48
   bool sent_xi_select_events = false;   // minor 46
   bool sent_list_input_devices = false; // minor 2
+
+  // Set to true when the client closes cleanly (recv returned 0).
+  // Controls log verbosity in removeClient() — clean disconnects skip the
+  // ring-buffer dumps since they're only useful for protocol error diagnosis.
+  bool clean_disconnect = false;
 
   void recordDispatch(uint8_t maj, uint8_t min, uint16_t s, bool replied) {
     auto& r = history[history_idx % kHistorySize];

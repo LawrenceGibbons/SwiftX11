@@ -246,6 +246,21 @@ final class WindowRegistry {
   private var suppressNextMapFromCocoa: Set<UInt32> = []
   private var suppressNextUnmapFromCocoa: Set<UInt32> = []
   private var closingXids = Set<UInt32>()
+  /// Public read-only check used by LayoutRecursionGuard to skip layout
+  /// passes on views whose top-level NSWindow is being torn down.
+  @MainActor
+  func isClosing(xid: UInt32) -> Bool {
+    closingXids.contains(xid) || closingXids.contains(topLevelAncestor(of: xid))
+  }
+
+  /// Called from X11WindowController.deinit — the last point at which a stale
+  /// AppKit layout pass could still reach the destroyed view tree.  Clears
+  /// the closing flag so future windows reusing the same XID aren't blocked.
+  nonisolated func markClosed(xid: UInt32) {
+    Task { @MainActor in
+      self.closingXids.remove(xid)
+    }
+  }
   private var mappedXids = Set<UInt32>()
   // Override-redirect windows whose mapWindow() deferred orderFront
   // because the geometry wasn't available yet. moveWindow() will show them.
@@ -559,11 +574,20 @@ final class WindowRegistry {
 
     pendingORShow.remove(host)
     suppressNextUnmapFromCocoa.insert(host)
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=unmapWindow orderOut nsWindow=%p\n",
+                 host,
+                 controller.window.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
+    #endif
     controller.window?.orderOut(nil)
   }
   
   @MainActor
   func noteX11WindowDestroyed(xid: UInt32) {
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=noteX11WindowDestroyed topLevel=%d\n",
+                 xid, isTopLevelX11Window(xid) ? 1 : 0), stderr)
+    #endif
     // 0) Cancel any scheduled present/snapshot bookkeeping for this xid as either host or source.
     pendingPresentByXid.remove(xid)
     pendingPresentByHost.remove(xid)
@@ -703,7 +727,11 @@ final class WindowRegistry {
   
   
   func closeWindow(xid: UInt32) {
-    
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow ENTER topLevel=%d\n",
+                 xid, isTopLevelX11Window(xid) ? 1 : 0), stderr)
+    #endif
+
     // If a child is being destroyed, DO NOT close the Cocoa host window.
     guard isTopLevelX11Window(xid) else {
       // child teardown: remove bookkeeping only
@@ -732,11 +760,29 @@ final class WindowRegistry {
     latestHostSizePtByXid.removeValue(forKey: host)
     lastRepaintTimeByXid.removeValue(forKey: host)
 
+    // Keep host in closingXids until X11WindowController actually deinits
+    // (LayoutRecursionGuard checks this to skip stale layout passes).  Removed
+    // in markClosed() called from X11WindowController.deinit.
     closingXids.insert(host)
-    defer { closingXids.remove(host) }
 
-    guard let controller = windows.removeValue(forKey: host) else { return }
+    guard let controller = windows.removeValue(forKey: host) else {
+      #if DEBUG
+      fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow no_controller\n", host), stderr)
+      #endif
+      return
+    }
     X11View.logIfInLayout("destroy: controller.close xid=0x\(String(host, radix: 16))", view: controller.x11View)
+    #if DEBUG
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=closeWindow controller_close nsWindow=%p\n",
+                 host,
+                 controller.window.map { Unmanaged.passUnretained($0).toOpaque() }.map { Int(bitPattern: $0) } ?? 0), stderr)
+    #endif
+    // Eager teardown: tears down Metal renderer, MTKView delegate, surface
+    // buffers, and disconnects view from NSWindow.  Forces synchronous dealloc
+    // of X11View / X11Renderer instead of letting them linger in memory while
+    // AppKit's display cycle still has them queued for layout — which is the
+    // source of the wild-PC crashes during NSDisplayCycleFlush.
+    controller.tearDown()
     controller.close()
   }
   
@@ -1322,7 +1368,12 @@ final class WindowRegistry {
   @MainActor
   func applySizeHints(xid: UInt32, minW: Int, minH: Int, maxW: Int, maxH: Int, incW: Int, incH: Int) {
     let host = topLevelAncestor(of: xid)
-    guard let controller = windows[host], let win = controller.window else { return }
+    guard let controller = windows[host], let win = controller.window else {
+      #if DEBUG
+      fputs("[GEOM_NS] wid=0x\(String(xid, radix: 16)) source=SIZE_HINTS host=0x\(String(host, radix: 16)) no_window\n", stderr)
+      #endif
+      return
+    }
 
     // Apply minimum size (use server floor as absolute minimum)
     if minW > 0 || minH > 0 {
@@ -1331,9 +1382,18 @@ final class WindowRegistry {
       win.contentMinSize = NSSize(width: effMinW, height: effMinH)
     }
 
-    // Apply maximum size
-    if maxW > 0 && maxH > 0 {
+    // Apply maximum size — but treat PMinSize == PMaxSize as advisory.
+    // Vivado/Xt/Motif dialogs commonly set min == max as a packing hint
+    // ("initial size is N×M") rather than a hard resize ban.  Honoring
+    // it strictly locks the NSWindow so the macOS resize cursor shows
+    // but dragging does nothing — surprising behavior on macOS.  If the
+    // client really wants a range, min < max, and we still clamp to it.
+    if maxW > 0 && maxH > 0 && (maxW > minW || maxH > minH) {
       win.contentMaxSize = NSSize(width: CGFloat(maxW), height: CGFloat(maxH))
+    } else {
+      // Clear any previously-set max so user can resize freely.
+      win.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                   height: CGFloat.greatestFiniteMagnitude)
     }
 
     // Apply resize increment (e.g., xterm character cell size)
@@ -1341,6 +1401,20 @@ final class WindowRegistry {
       win.contentResizeIncrements = NSSize(width: CGFloat(incW), height: CGFloat(incH))
     }
 
+    #if DEBUG
+    let cs = win.contentView?.frame.size ?? .zero
+    // contentMaxSize is set to CGFloat.greatestFiniteMagnitude (≈1.8e308) when
+    // there's no genuine upper bound; printing that as %.0f produces a
+    // 309-digit decimal monstrosity.  Render it as "MAX" instead.
+    let maxFmt: (CGFloat) -> String = { v in
+      v >= CGFloat.greatestFiniteMagnitude / 2 ? "MAX" : String(format: "%.0f", v)
+    }
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=SIZE_HINTS_APPLIED contentSize=%.0fx%.0f minSize=%.0fx%.0f maxSize=%@x%@ inc=%.0fx%.0f\n",
+                 xid, cs.width, cs.height,
+                 win.contentMinSize.width, win.contentMinSize.height,
+                 maxFmt(win.contentMaxSize.width), maxFmt(win.contentMaxSize.height),
+                 win.contentResizeIncrements.width, win.contentResizeIncrements.height), stderr)
+    #endif
   }
 
   /// _NET_WM_WINDOW_TYPE: adjust NSWindow style based on EWMH window type.

@@ -347,6 +347,12 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
             toRemove.push_back(cfd);
             break;
           }
+          if (dr == DispatchResult::Eof) {
+            // Clean client-side close — not an error.
+            cs->clean_disconnect = true;
+            toRemove.push_back(cfd);
+            break;
+          }
           if (dr == DispatchResult::NeedMore) {
             break; // no more complete requests — done draining
           }
@@ -485,21 +491,26 @@ void XProtoDaemon::removeClient(int fd) {
 
   ClientSession& cs = it->second;
 
+  // Clean disconnects log at verbose level and skip the ring-buffer dumps.
+  // Error disconnects log at info level with full diagnostic dumps.
+  const int log_level = cs.clean_disconnect ? 2 : 1;
+
   {
     char buf[256];
     snprintf(buf, sizeof(buf),
-             "[X11] disconnect fd=%d remaining=%zu seq=%u total_reqs=%u "
+             "[X11] %s fd=%d remaining=%zu seq=%u total_reqs=%u "
              "XI2[ver=%d dev=%d sel=%d list=%d]\n",
+             cs.clean_disconnect ? "client closed" : "disconnect",
              fd, clients_.size() - 1,
              (unsigned)cs.seq, cs.total_requests,
              cs.sent_xi_query_version, cs.sent_xi_query_device,
              cs.sent_xi_select_events, cs.sent_list_input_devices);
-    x11_ui_push_log(1, buf);
+    x11_ui_push_log(log_level, buf);
     fprintf(stderr, "%s", buf);
   }
 
-  // Dump last dispatched requests (ring buffer) for crash diagnosis
-  {
+  // Dump ring buffers only for error disconnects (not clean closes).
+  if (!cs.clean_disconnect) {
     const char* hdr = "[X11] last dispatched requests (newest last):\n";
     x11_ui_push_log(1, hdr); fprintf(stderr, "%s", hdr);
     const int total = std::min(cs.history_idx, ClientSession::kHistorySize);
@@ -513,24 +524,53 @@ void XProtoDaemon::removeClient(int fd) {
                (unsigned)r.seq, r.reply_sent ? "yes" : "no");
       x11_ui_push_log(1, buf); fprintf(stderr, "%s", buf);
     }
-  }
 
-  // Dump last outgoing wire packets for crash diagnosis
-  activateClient(cs);
-  server_->ctx().transport().dumpWireHistory();
-  deactivateClient();
+    // Dump last outgoing wire packets for crash diagnosis
+    activateClient(cs);
+    server_->ctx().transport().dumpWireHistory();
+    deactivateClient();
+  }
 
   // Activate this client for teardown
   activateClient(cs);
 
-  // Erase windows owned by this client
-  std::vector<uint32_t> owned = server_->ctx().windows().eraseOwnedBy(fd);
-  for (uint32_t wid : owned) {
-    x11_ui_push_destroy(wid);
-  }
+  // ── SetCloseDownMode honouring (v1.19.35.58) ──────────────────────
+  // If the client called SetCloseDownMode(RetainPermanent | RetainTemporary)
+  // before closing, its resources must persist past the disconnect.  Java
+  // AWT uses this for XDND drag-and-drop helper connections: a short-lived
+  // connection creates an off-screen proxy window and then closes; the
+  // main JVM connection refers to that window for the duration of the
+  // drag.  Without this honouring, every Vivado hw_ila drag fails because
+  // the proxy window dies the moment the helper connection closes.
+  const uint8_t closeDownMode =
+      cs.client ? cs.client->closeDownMode() : (uint8_t)0;
+  const bool retainResources = (closeDownMode != 0);
 
-  // Remove grabs for destroyed windows
-  server_->ctx().grabs().removeForWindows(owned);
+  std::vector<uint32_t> owned;
+  if (retainResources) {
+    // Reassign owner_fd → -1 so the windows survive but have no live
+    // transport to receive events on.  Cross-client property ops still
+    // work because they only need WindowTable lookup, not a live fd.
+    std::vector<uint32_t> retained =
+        server_->ctx().windows().reassignOwner(fd, -1);
+#ifndef NDEBUG
+    TS_FPRINTF("[X11] retaining %zu windows from fd=%d "
+               "(close_down_mode=%u)\n",
+               retained.size(), fd, (unsigned)closeDownMode);
+#endif
+    // `owned` left empty so we skip the destroy push + grab removal below.
+    // No matching x11_ui_push_destroy(): the NSWindow (if any) persists
+    // alongside the X11 window.
+  } else {
+    // Default DestroyAll behaviour: erase all windows and tear down their
+    // NSWindow counterparts.
+    owned = server_->ctx().windows().eraseOwnedBy(fd);
+    for (uint32_t wid : owned) {
+      x11_ui_push_destroy(wid);
+    }
+    // Remove grabs for destroyed windows
+    server_->ctx().grabs().removeForWindows(owned);
+  }
 
   // Cancel any active INCR clipboard transfers for this client
   x11::IncrTransfer::instance().cancelForFd(fd);
@@ -579,7 +619,7 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Phase 0: read 4-byte request header
   if (cs.hdr_have < 4 && !cs.reading_ext_len) {
     ssize_t r = ::recv(fd, cs.hdr + cs.hdr_have, 4 - cs.hdr_have, 0);
-    if (r == 0) return DispatchResult::Error; // EOF
+    if (r == 0) return DispatchResult::Eof; // clean EOF — client closed socket
     if (r < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
       return DispatchResult::Error;
@@ -618,7 +658,7 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Phase 0.5: read 4-byte extended length (BIG-REQUESTS)
   if (cs.reading_ext_len && cs.ext_len_have < 4) {
     ssize_t r = ::recv(fd, cs.ext_len + cs.ext_len_have, 4 - cs.ext_len_have, 0);
-    if (r == 0) return DispatchResult::Error;
+    if (r == 0) return DispatchResult::Eof;
     if (r < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
       return DispatchResult::Error;
@@ -651,7 +691,7 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   if (cs.buf_need > 0 && cs.buf_have < cs.buf_need) {
     ssize_t r = ::recv(fd, cs.buf.data() + cs.buf_have,
                        cs.buf_need - cs.buf_have, 0);
-    if (r == 0) return DispatchResult::Error;
+    if (r == 0) return DispatchResult::Eof;
     if (r < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return DispatchResult::NeedMore;
       return DispatchResult::Error;
