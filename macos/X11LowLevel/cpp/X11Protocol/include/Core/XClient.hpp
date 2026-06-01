@@ -38,6 +38,15 @@ public:
   bool bigReqEnabled() const { return big_req_enabled_; }
   void setBigReqEnabled(bool v) { big_req_enabled_ = v; }
 
+  // SetCloseDownMode (opcode 112): 0 = DestroyAll (default, X11 spec),
+  // 1 = RetainPermanent, 2 = RetainTemporary.  When non-zero, the client's
+  // resources (windows, GCs, pixmaps, etc.) survive its disconnect.
+  // Java AWT uses RetainPermanent for short-lived XDND helper connections
+  // that create proxy windows the main JVM connection still needs after
+  // the helper closes.  See XProtoDaemon::removeClient for the retain path.
+  uint8_t closeDownMode() const { return close_down_mode_; }
+  void setCloseDownMode(uint8_t v) { close_down_mode_ = v; }
+
   // XC-MISC: allocate a range of XIDs from this client's ID space.
   // Xlib allocates from the bottom (1, 2, 3…); we allocate from the top
   // downward to avoid collision until the client exhausts ~8M XIDs.
@@ -54,6 +63,7 @@ private:
   XProtoTransport transport_;
   ReplyWriter reply_;
   bool big_req_enabled_ = false;
+  uint8_t close_down_mode_ = 0;  // 0=DestroyAll, 1=RetainPermanent, 2=RetainTemporary
   // XC-MISC: cursor for XID allocation, starts at rid_mask/2 and grows upward
   uint32_t xid_alloc_cursor_ = 0;  // 0 = uninitialised
 };

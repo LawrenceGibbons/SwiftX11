@@ -47,7 +47,8 @@ private:
   void handleChangeHosts(XProtoContext& ctx, uint16_t seq, ByteReader& br);            // 109
   void handleListHosts(XProtoContext& ctx, uint16_t seq, ByteReader& br);              // 110 (reply)
   void handleSetAccessControl(XProtoContext& ctx, uint16_t seq, ByteReader& br);       // 111
-  void handleSetCloseDownMode(XProtoContext& ctx, uint16_t seq, ByteReader& br);       // 112
+  void handleSetCloseDownMode(XProtoContext& ctx, uint16_t seq, uint8_t mode,
+                              ByteReader& br);                                          // 112
   void handleKillClient(XProtoContext& ctx, uint16_t seq, ByteReader& br);             // 113
   void handleForceScreenSaver(XProtoContext& ctx, uint16_t seq, ByteReader& br);       // 115
   void handleNoOperation(XProtoContext& ctx, uint16_t seq, ByteReader& br);            // 127

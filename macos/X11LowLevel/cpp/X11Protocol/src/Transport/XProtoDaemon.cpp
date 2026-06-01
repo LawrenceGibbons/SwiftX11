@@ -523,14 +523,43 @@ void XProtoDaemon::removeClient(int fd) {
   // Activate this client for teardown
   activateClient(cs);
 
-  // Erase windows owned by this client
-  std::vector<uint32_t> owned = server_->ctx().windows().eraseOwnedBy(fd);
-  for (uint32_t wid : owned) {
-    x11_ui_push_destroy(wid);
-  }
+  // ── SetCloseDownMode honouring (v1.19.35.58) ──────────────────────
+  // If the client called SetCloseDownMode(RetainPermanent | RetainTemporary)
+  // before closing, its resources must persist past the disconnect.  Java
+  // AWT uses this for XDND drag-and-drop helper connections: a short-lived
+  // connection creates an off-screen proxy window and then closes; the
+  // main JVM connection refers to that window for the duration of the
+  // drag.  Without this honouring, every Vivado hw_ila drag fails because
+  // the proxy window dies the moment the helper connection closes.
+  const uint8_t closeDownMode =
+      cs.client ? cs.client->closeDownMode() : (uint8_t)0;
+  const bool retainResources = (closeDownMode != 0);
 
-  // Remove grabs for destroyed windows
-  server_->ctx().grabs().removeForWindows(owned);
+  std::vector<uint32_t> owned;
+  if (retainResources) {
+    // Reassign owner_fd → -1 so the windows survive but have no live
+    // transport to receive events on.  Cross-client property ops still
+    // work because they only need WindowTable lookup, not a live fd.
+    std::vector<uint32_t> retained =
+        server_->ctx().windows().reassignOwner(fd, -1);
+#ifndef NDEBUG
+    TS_FPRINTF("[X11] retaining %zu windows from fd=%d "
+               "(close_down_mode=%u)\n",
+               retained.size(), fd, (unsigned)closeDownMode);
+#endif
+    // `owned` left empty so we skip the destroy push + grab removal below.
+    // No matching x11_ui_push_destroy(): the NSWindow (if any) persists
+    // alongside the X11 window.
+  } else {
+    // Default DestroyAll behaviour: erase all windows and tear down their
+    // NSWindow counterparts.
+    owned = server_->ctx().windows().eraseOwnedBy(fd);
+    for (uint32_t wid : owned) {
+      x11_ui_push_destroy(wid);
+    }
+    // Remove grabs for destroyed windows
+    server_->ctx().grabs().removeForWindows(owned);
+  }
 
   // Cancel any active INCR clipboard transfers for this client
   x11::IncrTransfer::instance().cancelForFd(fd);
