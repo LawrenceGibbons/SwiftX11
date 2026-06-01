@@ -15,19 +15,19 @@
 
 #pragma once
 
-// ---- Temporary opt-in for live diagnostics ----
-// Vivado License Manager 2024.1 renders text as solid black rectangles
-// (font path bug, see TODO.md).  These two categories are enabled
-// here so we can capture an [Font] / [RENDER] trace without changing
-// Xcode build settings.  Remove these two lines once the bug is fixed.
-#define X11_TRACE_FONT
-#define X11_TRACE_RENDER
-
-// hw_ila_x drag-and-drop diagnostics (v1.19.35.55+): each button press /
-// release pair emits [DRAG] BEGIN / motion / END lines so we can see
-// whether motion events fire during a drag and where they route.
-// Remove this line once the hw_ila bug is closed (see TODO.md).
-#define X11_TRACE_DRAG
+// ---- Opt-in categories (kept off by default in release builds) ----
+//
+// Historically v1.19.35.52-.61 enabled X11_TRACE_FONT / RENDER / DRAG
+// unconditionally here while chasing live bugs.  The bugs are fixed
+// (License Manager glyphs in v.53/.54, hw_ila drag in v.62), so these
+// are now back to opt-in via -DX11_TRACE_<CATEGORY> in
+// OTHER_CPLUSPLUSFLAGS, exactly like RESIZE / PRESENT / etc.  The
+// names below are kept as a reminder of the available knobs:
+//
+//   -DX11_TRACE_FONT      — Font / glyph diagnostics
+//   -DX11_TRACE_RENDER    — RENDER extension diagnostics
+//   -DX11_TRACE_DRAG      — Drag session bracketing + motion routing
+//   -DX11_TRACE_VERBOSE   — every category at once
 
 // ---- Category defines ----
 
