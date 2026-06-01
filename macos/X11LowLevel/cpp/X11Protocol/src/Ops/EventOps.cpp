@@ -481,9 +481,6 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   uint8_t ev[32] = {0};
 
   ev[0] = is_press ? 2 : 3; // KeyPress=2, KeyRelease=3
-  TS_FPRINTF("[KEY_SEND] fd=%d wid=0x%08X type=%d kc=%u seq=%u\n",
-          ctx.transport().clientFd(), wid, (int)ev[0], (unsigned)keycode,
-          (unsigned)ctx.transport().lastSeq());
   ev[1] = keycode;          // detail = keycode (bring-up)
   wire::wr16_le(ev + 2, ctx.transport().lastSeq());
   wire::wr32_le(ev + 4, x11_now_ms_monotonic()); // time (ms)
@@ -505,11 +502,27 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   wire::wr16_le(ev + 22, (uint16_t)ry);
   wire::wr16_le(ev + 24, (uint16_t)rx);
   wire::wr16_le(ev + 26, (uint16_t)ry);
-  
+
   const uint16_t st = x11::input::toX11State(buttons, mods);
   wire::wr16_le(ev + 28, st); // state
   ev[30] = 1;
   ev[31] = 0;
+
+  // Log AFTER computing state so we can see exactly what xterm/AWT will
+  // observe in the wire payload.  modsRaw is the internal bit layout
+  // (Shift=0, Ctrl=1, Alt=2, Cmd=3); state is the X11 wire layout
+  // (Shift=0x1, Ctrl=0x4, Mod1=0x8, Mod4=0x40, button bits at 0x100+).
+  // For Ctrl+V we expect state to have bit 2 (0x0004) set on the V event.
+  TS_FPRINTF("[KEY_SEND] fd=%d wid=0x%08X focus=0x%08X type=%d kc=%u "
+             "modsRaw=0x%02X state=0x%04X seq=%u\n",
+             ctx.transport().clientFd(),
+             (unsigned)wid,
+             (unsigned)ctx.input().focus_xid,
+             (int)ev[0],
+             (unsigned)keycode,
+             (unsigned)(mods & 0xFFu),
+             (unsigned)st,
+             (unsigned)ctx.transport().lastSeq());
 
   ctx.transport().sendEvent32(wid, ev);
 }
