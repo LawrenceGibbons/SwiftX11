@@ -14,6 +14,7 @@
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
 #include "Core/XEventMask.hpp"
+#include "Core/XConstants.hpp"
 #include "Utils/DragTrace.hpp"
 
 #include <atomic>
@@ -178,6 +179,30 @@ void postMotion(uint32_t host_xid,
   x11::drag_trace::route(ctx->input().drag_xid, haveGrab, hostCorrected,
                          activeGrab.grabWindow, activeGrab.eventMask,
                          activeGrab.ownerEvents);
+
+  // X11 motion-event delivery is gated by THREE families of mask bits:
+  //   bit 6  (0x0040) PointerMotionMask     — all motion
+  //   bit 13 (0x2000) ButtonMotionMask      — motion while ANY button held
+  //   bits 8-12      Button1-5MotionMask   — motion while a specific button held
+  //
+  // Before v1.19.35.62 we only honoured PointerMotionMask, so an active
+  // pointer grab installed by AWT's XDND code with mask
+  //   0x200C = ButtonPress | ButtonRelease | ButtonMotion
+  // dropped every drag motion event into the no-target sink and the
+  // hw_ila drag silently died.  Now we accept any motion bit relevant to
+  // the currently-held buttons.
+  auto grabWantsMotion = [&](uint16_t mask, uint32_t held) -> bool {
+    if (mask & (1u << 6))  return true;                    // PointerMotion
+    if (held == 0)         return false;                   // nothing else applies
+    if (mask & (1u << 13)) return true;                    // ButtonMotion (any)
+    // Per-button: held bit N → mask bit (8 + N)
+    for (int i = 0; i < 5; i++) {
+      if ((held & (1u << i)) && (mask & (1u << (8 + i)))) return true;
+    }
+    return false;
+  };
+  const uint32_t heldButtons = ctx->input().buttons;
+
   uint32_t target = 0;  // EXPLICITLY initialise — must never be undefined
   if (haveGrab) {
     // Active pointer grab (GrabPointer / activated passive grab).
@@ -210,15 +235,27 @@ void postMotion(uint32_t host_xid,
       }
       if (!target) {
         // Still nothing → fall back to grab window if it wants motion
-        if (activeGrab.eventMask & (1u << 6)) // PointerMotionMask
+        if (grabWantsMotion(activeGrab.eventMask, heldButtons))
           target = activeGrab.grabWindow;
       }
     } else {
       // owner_events=False: route directly to grab window
-      if (activeGrab.eventMask & (1u << 6)) // PointerMotionMask
+      if (grabWantsMotion(activeGrab.eventMask, heldButtons))
         target = activeGrab.grabWindow;
       else
         target = 0;
+    }
+    // Root-window grab delivery (XDND pattern): AWT's drag-and-drop code
+    // calls XGrabPointer(grab_window=root, owner_events=False, mask=
+    // ButtonPress|ButtonRelease|ButtonMotion).  In real X11 the events
+    // would be sent to the GRABBING CLIENT (AWT), filtered by mask, with
+    // coordinates relative to root.  We don't currently track which
+    // client installed the grab, so root-target events would deliver to
+    // nobody.  As a pragmatic fallback during an active drag, route to
+    // drag_xid (which is owned by the same client that installed the
+    // root grab — the click that started the drag also picked drag_xid).
+    if (target == x11::kRootXid && ctx->input().drag_xid != 0) {
+      target = ctx->input().drag_xid;
     }
   } else if (ctx->input().drag_xid && !hostCorrected) {
     // No active grab, but button drag in progress AND pointer is still
