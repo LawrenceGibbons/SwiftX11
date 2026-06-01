@@ -175,7 +175,10 @@ void postMotion(uint32_t host_xid,
   // drag_xid is our internal button-drag tracker; it must NOT override
   // an active grab (e.g., popup menu's GrabPointer with ownerEvents=True
   // needs to route to SimpleMenu child, not the original click target).
-  uint32_t target;
+  x11::drag_trace::route(ctx->input().drag_xid, haveGrab, hostCorrected,
+                         activeGrab.grabWindow, activeGrab.eventMask,
+                         activeGrab.ownerEvents);
+  uint32_t target = 0;  // EXPLICITLY initialise — must never be undefined
   if (haveGrab) {
     // Active pointer grab (GrabPointer / activated passive grab).
     //
