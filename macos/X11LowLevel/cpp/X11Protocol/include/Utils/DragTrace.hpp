@@ -60,21 +60,65 @@ inline void begin(uint32_t host, uint32_t drag_xid, uint32_t button) {
 // delivered to an X11 target.  Pair with motion() (called after target
 // resolution) to detect motion events that get dropped due to deliver=0
 // or target=0 after host correction.
+//
+// `live_drag_xid` is the CURRENT value of InputState::drag_xid at the
+// moment this motion arrives — distinct from g_drag_xid (captured once
+// at begin()).  Comparing the two lets us see whether drag_xid got
+// silently cleared somewhere mid-drag (e.g., by a stray removeClient,
+// a button() side effect, or some other unexpected path).
 inline void motionRaw(uint32_t host_xid,
                       int32_t root_x, int32_t root_y,
-                      uint8_t deliver, uint32_t buttons) {
+                      uint8_t deliver, uint32_t buttons,
+                      uint32_t live_drag_xid) {
 #if X11_TRACE_DRAG_ENABLED
   if (!g_active.load(std::memory_order_acquire)) return;
   const uint32_t n = g_raw_motions.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n <= 3 || (n % 10) == 0) {
     TS_FPRINTF("[DRAG] raw    #%u host=0x%08X root=(%d,%d) "
-               "deliver=%u buttons=0x%02X\n",
+               "deliver=%u buttons=0x%02X drag_xid=0x%08X\n",
                (unsigned)n, (unsigned)host_xid,
                (int)root_x, (int)root_y,
-               (unsigned)deliver, (unsigned)(buttons & 0xFFu));
+               (unsigned)deliver, (unsigned)(buttons & 0xFFu),
+               (unsigned)live_drag_xid);
   }
 #else
-  (void)host_xid; (void)root_x; (void)root_y; (void)deliver; (void)buttons;
+  (void)host_xid; (void)root_x; (void)root_y;
+  (void)deliver; (void)buttons; (void)live_drag_xid;
+#endif
+}
+
+// Called at each early-return point inside postMotion.  `reason` is a
+// short literal identifying the return site.  We sample the same way
+// as raw/motion (first 3, then every 10th) so the log shows pattern
+// without flooding for long drags.
+inline void dropped(const char* reason) {
+#if X11_TRACE_DRAG_ENABLED
+  if (!g_active.load(std::memory_order_acquire)) return;
+  // Lazy local counter, encoded into the high bits of the address-derived
+  // hash so each reason has its own per-drag count.  Simplest version:
+  // log every call up to 3 per reason, suppress thereafter.
+  // (Thread-locality avoids cross-drag contamination because drags are
+  // single-threaded on the xproto thread.)
+  static thread_local const char* names[8] = {nullptr};
+  static thread_local uint32_t counts[8] = {0};
+  static thread_local uint32_t last_raw[8] = {0};
+  const uint32_t n_raw = g_raw_motions.load(std::memory_order_relaxed);
+  int slot = -1;
+  for (int i = 0; i < 8; i++) {
+    if (names[i] == reason) { slot = i; break; }
+    if (names[i] == nullptr) { names[i] = reason; counts[i] = 0; last_raw[i] = 0; slot = i; break; }
+  }
+  if (slot < 0) return;
+  // Reset slot's count when the raw counter went backwards (new drag).
+  if (n_raw < last_raw[slot]) counts[slot] = 0;
+  last_raw[slot] = n_raw;
+  const uint32_t c = ++counts[slot];
+  if (c <= 3 || (c % 10) == 0) {
+    TS_FPRINTF("[DRAG] DROP   reason=%s count=%u at raw=%u\n",
+               reason, (unsigned)c, (unsigned)n_raw);
+  }
+#else
+  (void)reason;
 #endif
 }
 

@@ -81,8 +81,10 @@ void postMotion(uint32_t host_xid,
   // Raw motion trace — counts EVERY motion that reaches postMotion, before
   // any of the early returns or routing logic.  Comparing this against the
   // `motions` count at DRAG END tells us whether motion events are being
-  // dropped between Cocoa and X11 delivery.
-  x11::drag_trace::motionRaw(host_xid, root_x, root_y, deliver, buttons);
+  // dropped between Cocoa and X11 delivery.  Also captures the CURRENT
+  // drag_xid so we can see whether it got silently cleared mid-drag.
+  x11::drag_trace::motionRaw(host_xid, root_x, root_y, deliver, buttons,
+                             ctx->input().drag_xid);
 
   // XI2 RawMotion is a root-level event — deliver on ANY pointer move,
   // even when deliver=0 (cursor outside X11 windows).  GlobalPointerTracker
@@ -98,8 +100,10 @@ void postMotion(uint32_t host_xid,
   // must not gate X11 grab-routed events.
   if (!deliver) {
     x11::PointerGrab earlyGrab{};
-    if (!(ctx->grabs().getPointerGrab(earlyGrab) && earlyGrab.active))
+    if (!(ctx->grabs().getPointerGrab(earlyGrab) && earlyGrab.active)) {
+      x11::drag_trace::dropped("no_deliver_no_grab");
       return;
+    }
   }
 
   // ---- macOS drag correction ----
@@ -226,7 +230,10 @@ void postMotion(uint32_t host_xid,
   }
 
 
-  if (!target) return;
+  if (!target) {
+    x11::drag_trace::dropped("no_target");
+    return;
+  }
 
   // The cursor is applied to the *host* (Cocoa window), but chosen from the *effective target*.
   uint32_t host = host_xid;
