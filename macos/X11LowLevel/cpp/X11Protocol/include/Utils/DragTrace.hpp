@@ -34,7 +34,8 @@ namespace drag_trace {
 inline std::atomic<uint32_t> g_host{0};
 inline std::atomic<uint32_t> g_drag_xid{0};
 inline std::atomic<uint32_t> g_button{0};
-inline std::atomic<uint32_t> g_motions{0};
+inline std::atomic<uint32_t> g_motions{0};      // delivered to a target
+inline std::atomic<uint32_t> g_raw_motions{0};  // arrived at postMotion at all
 inline std::atomic<double>   g_start_s{0.0};
 inline std::atomic<bool>     g_active{false};
 
@@ -44,12 +45,56 @@ inline void begin(uint32_t host, uint32_t drag_xid, uint32_t button) {
   g_drag_xid.store(drag_xid, std::memory_order_relaxed);
   g_button.store(button, std::memory_order_relaxed);
   g_motions.store(0, std::memory_order_relaxed);
+  g_raw_motions.store(0, std::memory_order_relaxed);
   g_start_s.store(x11::util::machTimeSeconds(), std::memory_order_relaxed);
   g_active.store(true, std::memory_order_release);
   TS_FPRINTF("[DRAG] BEGIN  host=0x%08X drag_xid=0x%08X button=%u\n",
              (unsigned)host, (unsigned)drag_xid, (unsigned)button);
 #else
   (void)host; (void)drag_xid; (void)button;
+#endif
+}
+
+// Called at the very top of postMotion — counts every motion event that
+// reached our server from Cocoa, regardless of whether it ultimately gets
+// delivered to an X11 target.  Pair with motion() (called after target
+// resolution) to detect motion events that get dropped due to deliver=0
+// or target=0 after host correction.
+inline void motionRaw(uint32_t host_xid,
+                      int32_t root_x, int32_t root_y,
+                      uint8_t deliver, uint32_t buttons) {
+#if X11_TRACE_DRAG_ENABLED
+  if (!g_active.load(std::memory_order_acquire)) return;
+  const uint32_t n = g_raw_motions.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n <= 3 || (n % 10) == 0) {
+    TS_FPRINTF("[DRAG] raw    #%u host=0x%08X root=(%d,%d) "
+               "deliver=%u buttons=0x%02X\n",
+               (unsigned)n, (unsigned)host_xid,
+               (int)root_x, (int)root_y,
+               (unsigned)deliver, (unsigned)(buttons & 0xFFu));
+  }
+#else
+  (void)host_xid; (void)root_x; (void)root_y; (void)deliver; (void)buttons;
+#endif
+}
+
+// Called inside postMotion's host-correction loop when a higher-stacking
+// top-level window is picked as the effective host.  Logs which window
+// won so we can spot the case where a retained XDND proxy (or some other
+// unexpected window) silently steals motion routing away from drag_xid.
+inline void hostCorr(uint32_t original_host, uint32_t corrected_host,
+                     uint32_t corrected_w, uint32_t corrected_h,
+                     int32_t corrected_x, int32_t corrected_y) {
+#if X11_TRACE_DRAG_ENABLED
+  if (!g_active.load(std::memory_order_acquire)) return;
+  TS_FPRINTF("[DRAG] HOST_CORR orig=0x%08X → 0x%08X (size=%ux%u origin=(%d,%d))\n",
+             (unsigned)original_host, (unsigned)corrected_host,
+             (unsigned)corrected_w, (unsigned)corrected_h,
+             (int)corrected_x, (int)corrected_y);
+#else
+  (void)original_host; (void)corrected_host;
+  (void)corrected_w; (void)corrected_h;
+  (void)corrected_x; (void)corrected_y;
 #endif
 }
 
@@ -84,15 +129,18 @@ inline void motion(uint32_t target,
 inline void end(uint32_t button) {
 #if X11_TRACE_DRAG_ENABLED
   if (!g_active.load(std::memory_order_acquire)) return;
-  const uint32_t n  = g_motions.load(std::memory_order_relaxed);
-  const double   t0 = g_start_s.load(std::memory_order_relaxed);
-  const double   dt = x11::util::machTimeSeconds() - t0;
-  const uint32_t ms = (dt > 0.0) ? (uint32_t)(dt * 1000.0 + 0.5) : 0;
+  const uint32_t n_del = g_motions.load(std::memory_order_relaxed);
+  const uint32_t n_raw = g_raw_motions.load(std::memory_order_relaxed);
+  const double   t0    = g_start_s.load(std::memory_order_relaxed);
+  const double   dt    = x11::util::machTimeSeconds() - t0;
+  const uint32_t ms    = (dt > 0.0) ? (uint32_t)(dt * 1000.0 + 0.5) : 0;
   TS_FPRINTF("[DRAG] END    host=0x%08X drag_xid=0x%08X button=%u "
-             "motions=%u duration=%ums\n",
+             "delivered=%u raw=%u dropped=%u duration=%ums\n",
              (unsigned)g_host.load(std::memory_order_relaxed),
              (unsigned)g_drag_xid.load(std::memory_order_relaxed),
-             (unsigned)button, (unsigned)n, (unsigned)ms);
+             (unsigned)button, (unsigned)n_del, (unsigned)n_raw,
+             (unsigned)(n_raw > n_del ? n_raw - n_del : 0u),
+             (unsigned)ms);
   g_active.store(false, std::memory_order_release);
 #else
   (void)button;

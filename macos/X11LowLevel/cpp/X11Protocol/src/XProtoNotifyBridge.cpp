@@ -78,6 +78,12 @@ void postMotion(uint32_t host_xid,
                             root_x, root_y,
                             buttons, mods);
 
+  // Raw motion trace — counts EVERY motion that reaches postMotion, before
+  // any of the early returns or routing logic.  Comparing this against the
+  // `motions` count at DRAG END tells us whether motion events are being
+  // dropped between Cocoa and X11 delivery.
+  x11::drag_trace::motionRaw(host_xid, root_x, root_y, deliver, buttons);
+
   // XI2 RawMotion is a root-level event — deliver on ANY pointer move,
   // even when deliver=0 (cursor outside X11 windows).  GlobalPointerTracker
   // fires with deliver=0 for global motion; xeyes relies on this for
@@ -117,6 +123,7 @@ void postMotion(uint32_t host_xid,
         host_xid = *it;
         win_x = root_x - vw.x;
         win_y = root_y - vw.y;
+        x11::drag_trace::hostCorr(originalHost, *it, vw.w, vw.h, vw.x, vw.y);
         break;
       }
     }
