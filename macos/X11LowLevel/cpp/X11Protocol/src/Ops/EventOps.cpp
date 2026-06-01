@@ -513,6 +513,7 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   // (Shift=0, Ctrl=1, Alt=2, Cmd=3); state is the X11 wire layout
   // (Shift=0x1, Ctrl=0x4, Mod1=0x8, Mod4=0x40, button bits at 0x100+).
   // For Ctrl+V we expect state to have bit 2 (0x0004) set on the V event.
+#ifndef NDEBUG
   TS_FPRINTF("[KEY_SEND] fd=%d wid=0x%08X focus=0x%08X type=%d kc=%u "
              "modsRaw=0x%02X state=0x%04X seq=%u\n",
              ctx.transport().clientFd(),
@@ -523,6 +524,7 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
              (unsigned)(mods & 0xFFu),
              (unsigned)st,
              (unsigned)ctx.transport().lastSeq());
+#endif
 
   ctx.transport().sendEvent32(wid, ev);
 }

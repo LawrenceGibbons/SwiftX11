@@ -1403,10 +1403,16 @@ final class WindowRegistry {
 
     #if DEBUG
     let cs = win.contentView?.frame.size ?? .zero
-    fputs(String(format: "[GEOM_NS] wid=0x%08X source=SIZE_HINTS_APPLIED contentSize=%.0fx%.0f minSize=%.0fx%.0f maxSize=%.0fx%.0f inc=%.0fx%.0f\n",
+    // contentMaxSize is set to CGFloat.greatestFiniteMagnitude (≈1.8e308) when
+    // there's no genuine upper bound; printing that as %.0f produces a
+    // 309-digit decimal monstrosity.  Render it as "MAX" instead.
+    let maxFmt: (CGFloat) -> String = { v in
+      v >= CGFloat.greatestFiniteMagnitude / 2 ? "MAX" : String(format: "%.0f", v)
+    }
+    fputs(String(format: "[GEOM_NS] wid=0x%08X source=SIZE_HINTS_APPLIED contentSize=%.0fx%.0f minSize=%.0fx%.0f maxSize=%@x%@ inc=%.0fx%.0f\n",
                  xid, cs.width, cs.height,
                  win.contentMinSize.width, win.contentMinSize.height,
-                 win.contentMaxSize.width, win.contentMaxSize.height,
+                 maxFmt(win.contentMaxSize.width), maxFmt(win.contentMaxSize.height),
                  win.contentResizeIncrements.width, win.contentResizeIncrements.height), stderr)
     #endif
   }

@@ -421,17 +421,29 @@ A multi-commit campaign to fix two recurring crash classes that bit Vivado users
 - **v1.19.35.48 — C++ owns HostSurface buffers (C3.1/3)**: Added `HostSurface` (posix_memalign-allocated, freed by dtor). `DrawableSurfaceRegistry` stores `unique_ptr<HostSurface>`. New `ensure(xid, w, h, bpr, fillByte)` allocates atomically under the exclusive lock. Legacy `set(SurfaceDesc)` retained transitionally — allocates owned buffer + memcpys from external ptr.
 - **v1.19.35.49 — Swift drops Foundation.Data ownership (C3.2/3)**: `X11View.hostSurface: Data?` deleted. `ensureHostSurface` shrinks from ~110 lines to ~25: snapshot displayFrame via `x11_server_copy_window_bgra` on the first live-resize tick, then call `x11_surface_ensure(xid, w, h, fillByte)`. Eliminates the ARC-vs-shared_mutex side-channel that plagued every prior surface UAF — Swift no longer holds any reference to the live buffer; the registry's exclusive lock IS the buffer's lifetime guard. Verified by ASan during live xterm/Vivado resize.
 
+### Vivado License Manager + hw_ila Drag (v1.19.36)
+Two long-standing Vivado-only bugs closed in this release.
+
+- **v1.19.35.53 / .54 — ARGB32 component-alpha glyph rendering**: Vivado License Manager 2024.1 rendered every text glyph as a solid black rectangle. Root cause was the `AddGlyphs` ARGB32 branch extracting only the alpha channel from each pixel; Cairo / Java AWT's subpixel-AA encoding sets `A=0xFF` across the entire glyph bounding box and stores the real per-channel coverage in `R, G, B`.  Stage 1 (`.53`) switched the coverage byte to `max(R,G,B)` so text became legible at grayscale-AA quality. Stage 2 (`.54`) wired full per-channel modulation via a new `applyOpComponent()` for `PictOpOver`/`Src`/`Add`, restoring true LCD-subpixel quality matching XQuartz.
+- **v1.19.35.57 — SubstructureRedirect emulation skips override_redirect**: Java AWT's XDND helper connection creates a 1×1 off-screen `override_redirect=True` proxy window per drag. Our `SubstructureRedirect` emulation (`v1.17.0`) was rescuing it to a 500×300 fallback the moment it was mapped, breaking AWT's downstream `GetProperty(XdndAware)` with `BadWindow`. Real X11 servers never apply `SubstructureRedirect` to OR windows; the deferred-map branch in `handleMapWindow` now bails when `override_redirect=True`.
+- **v1.19.35.58 — `SetCloseDownMode(RetainPermanent)` honored**: AWT's XDND helper connection sets `RetainPermanent` then closes; the proxy window must outlive the helper connection. Our `SetCloseDownMode` was a no-op stub, so `removeClient` destroyed the proxy and AWT's next `GetProperty` returned `BadWindow`. `XClient` now stores the close-down mode; `removeClient` calls `WindowTable::reassignOwner(fd, -1)` instead of `eraseOwnedBy(fd)` when retention is requested.
+- **v1.19.35.62 — XDND grab motion routing**: The actual hw_ila drag failure. After XDND init AWT calls `XGrabPointer(grab_window=root, owner_events=False, mask=ButtonPress|ButtonRelease|ButtonMotion)`. Our `postMotion` routing only checked `PointerMotionMask` (bit 6) when consulting the grab eventMask — the spec says the server must accept any of `PointerMotionMask`, `ButtonMotionMask` (bit 13), or `Button1-5MotionMask` (bits 8-12) per held button.  New `grabWantsMotion(mask, heldButtons)` helper covers all three families. Also: when the grab window is root (no live client transport), motion target falls back to `drag_xid` so the actual grabbing client receives events. Out of scope but noted for later: add `PointerGrab::owner_fd` and route directly to the grabbing client.
+
 ### Self-Contained App
 - **Bundled fonts**: PCF fonts from `/opt/X11/share/fonts/` embedded in `SwiftX11.app/Contents/Resources/fonts/`. No XQuartz needed.
 - **Font scanner**: Searches bundle fonts first, system `/opt/X11/` second. Bridge function `x11_set_bundle_resource_path()`.
 - **Startup dialogs**: Metal GPU check (critical, exits) + missing fonts check (warning, continue or quit).
 
-### Known Issues (v1.19.35)
+### Known Issues (v1.19.36)
 - **Ctrl+click regression**: Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19. (MEDIUM)
 - **XI2 wire corruption**: Enabling XI2 crashes Electron. Event format fixed but delivery path has sequence regression. Global xi2_root_mask needs per-client tracking. (LOW — workaround in place)
+- **xterm `Ctrl+V` paste**: Not a SwiftX11 bug. xterm's `insert-selection` translation lives on the VT100 widget and only fires when X11 focus is on that widget; xterm doesn't call `XSetInputFocus` to put focus there. Workarounds: middle-click paste (Option+click on Magic Mouse), Shift+Insert, or add `XTerm*translations: #override Ctrl<Key>v: insert-selection(CLIPBOARD,PRIMARY)` to `~/.Xresources`.
+- **License Manager glyphs**: ✅ FIXED in v1.19.36 (ARGB32 component-alpha).
+- **hw_ila drag-and-drop**: ✅ FIXED in v1.19.36 (OR exemption + RetainPermanent + grab motion-mask).
 - **Docker dbus**: ✅ FIXED — `dbus-daemon --session` bypasses stale X11 root window property.
 
 ### Next Major Tasks
 See `docs/TODO.md` for the comprehensive roadmap. Remaining priorities:
 1. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it
-2. **XI2 proper fix** — per-client root mask, wire trace diagnosis (LOW)
+2. **`PointerGrab::owner_fd`** — track grabbing client fd so root-grab motion routes there directly instead of via the drag_xid fallback (v.62 quick fix)
+3. **XI2 proper fix** — per-client root mask, wire trace diagnosis (LOW)
