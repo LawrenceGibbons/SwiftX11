@@ -87,6 +87,33 @@ inline void motionRaw(uint32_t host_xid,
 #endif
 }
 
+// Called right before postMotion's routing decision.  Logs the inputs
+// to the if/else-if/else cascade so we can see *exactly* which branch
+// was taken when target ends up 0.  Sampled the same way as motion().
+inline void route(uint32_t live_drag_xid, bool haveGrab, bool hostCorrected,
+                  uint32_t grab_window, uint16_t grab_mask, bool ownerEvents) {
+#if X11_TRACE_DRAG_ENABLED
+  if (!g_active.load(std::memory_order_acquire)) return;
+  static thread_local uint32_t last_seen_raw = 0;
+  static thread_local uint32_t calls = 0;
+  const uint32_t n_raw = g_raw_motions.load(std::memory_order_relaxed);
+  if (n_raw < last_seen_raw) calls = 0;  // new drag
+  last_seen_raw = n_raw;
+  ++calls;
+  if (calls <= 3 || (calls % 10) == 0) {
+    TS_FPRINTF("[DRAG] ROUTE  raw=%u drag_xid=0x%08X haveGrab=%d hostCorr=%d "
+               "grab_win=0x%08X grab_mask=0x%04X ownerEv=%d\n",
+               (unsigned)n_raw, (unsigned)live_drag_xid,
+               (int)haveGrab, (int)hostCorrected,
+               (unsigned)grab_window, (unsigned)grab_mask,
+               (int)ownerEvents);
+  }
+#else
+  (void)live_drag_xid; (void)haveGrab; (void)hostCorrected;
+  (void)grab_window; (void)grab_mask; (void)ownerEvents;
+#endif
+}
+
 // Called at each early-return point inside postMotion.  `reason` is a
 // short literal identifying the return site.  We sample the same way
 // as raw/motion (first 3, then every 10th) so the log shows pattern
