@@ -913,12 +913,25 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
         // earlier peak ConfigureWindow size (Vivado/AWT race: a stale
         // ConfigureWindow arrives AFTER WM_NORMAL_HINTS committed the real
         // size, walking the window back to its initial skeleton dimensions).
+        //
+        // **override_redirect EXEMPTION** (v1.19.35.57, fixes hw_ila drag +
+        // xterm Ctrl+V paste regressions):  Real X11 servers MUST NOT redirect
+        // MapRequest on override_redirect windows.  OR=1 means "WM/server,
+        // hands off — this is a private helper window".  Java AWT's XDND
+        // drag-and-drop creates 1×1 off-screen OR helper windows; xterm and
+        // other toolkits create similar OR proxies for selection transfer.
+        // Our SubstructureRedirect emulation was rescuing those helpers to a
+        // 500×300 fallback and moving them on-screen, which broke the client's
+        // own protocol logic the moment it tried GetProperty/ChangeProperty
+        // on its newly-created window.  Skip the deferral entirely for OR.
         WindowView pre_map_vw{};
         bool is_tiny = false;
         bool shrunk_below_peak = false;
+        bool is_or = false;
         if (ctx.windows().snapshot(wid, pre_map_vw)) {
+          is_or   = pre_map_vw.override_redirect;
           is_tiny = (pre_map_vw.w < 50 || pre_map_vw.h < 50);
-          if (!is_tiny) {
+          if (!is_or && !is_tiny) {
             uint16_t pw = 0, ph = 0;
             if (ctx.getPeakSize(wid, pw, ph)) {
               const uint32_t cur_area  = (uint32_t)pre_map_vw.w * pre_map_vw.h;
@@ -936,7 +949,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
           }
         }
 
-        if (is_tiny || shrunk_below_peak) {
+        if (!is_or && (is_tiny || shrunk_below_peak)) {
 #if X11_TRACE_LIFECYCLE_ENABLED
           TS_FPRINTF("[MAP_DEFER] wid=0x%08X geom=%ux%u — deferring map (reason=%s)\n",
                   (unsigned)wid, (unsigned)pre_map_vw.w, (unsigned)pre_map_vw.h,
