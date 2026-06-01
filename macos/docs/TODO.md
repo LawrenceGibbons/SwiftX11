@@ -916,24 +916,14 @@ Root cause: `dbus-launch` checks the X11 root window for a `_DBUS_SESSION_BUS_*`
 ### Ctrl+Click Regression (MEDIUM)
 Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
 
-### hw_ila_x Drag-and-Drop Doesn't Fire (MEDIUM)
-In Vivado's `hw_ila_x` waveform/debug window, click-and-drag of a debug item to add it to the trigger setup doesn't work. Button press + release land correctly (confirmed via `[BTN_SEND]` trace), but the drag gesture never triggers.
+### hw_ila_x Drag-and-Drop — ✅ FIXED (v1.19.36)
+The bug had three layers, all closed in this release:
 
-**Hypotheses (ordered by likelihood):**
-1. **Motion delivery rate too low during drag.** MotionNotify coalescing in HostCommandQueue (v1.15.15) may be dropping too aggressively for Java AWT's drag recognizer (needs minimum sample count + threshold distance).
-2. **drag_xid capture scope.** `InputState::button` sets `drag_xid` to the deepest mapped window under the pointer — typically a JTree cell. During the drag, motion routes to the cell, but the enclosing drag handler lives on the parent viewport. Real X11 with `XGrabPointer(owner_events=False)` would route motion to the grab window regardless.
-3. **Missing PointerMotionHintMask (bit 8) support.** Java/Swing sometimes selects hint mode — client waits for a hint event then calls QueryPointer. If we don't emit hint events, drag never starts.
-4. **Explicit GrabPointer on press.** AWT may call `XGrabPointer` at button-down; check the grab is active and motion routes to the grab window.
+1. **OR window SubstructureRedirect rescue** (`.57`) — AWT's XDND helper creates a 1×1 off-screen `override_redirect` proxy window per drag. Our v1.17.0 deferred-map machinery was rescuing it to a 500×300 fallback, causing AWT's subsequent `GetProperty(XdndAware)` to hit `BadWindow`. Fix: skip the deferred-map path entirely when `override_redirect=True`.
+2. **`SetCloseDownMode(RetainPermanent)` stubbed out** (`.58`) — AWT's helper connection sets `RetainPermanent` then closes; the proxy window must outlive the disconnect. Our handler was a no-op consumer. Fix: store the mode on `XClient`, call `WindowTable::reassignOwner(fd, -1)` in `removeClient` instead of `eraseOwnedBy(fd)` when retention is requested.
+3. **`postMotion` grab routing only honoured `PointerMotionMask`** (`.62`) — the actual smoking gun. AWT installs `XGrabPointer(grab_window=root, owner_events=False, mask=ButtonPress|ButtonRelease|ButtonMotion = 0x200C)`. Our routing only checked bit 6 (`PointerMotionMask`); the spec requires accepting any of `PointerMotionMask`, `ButtonMotionMask` (bit 13), or `Button1-5MotionMask` (bits 8-12) per held button. New `grabWantsMotion(mask, heldButtons)` helper covers all three families. Also added a root-grab → `drag_xid` target fallback because we don't yet track the grabbing client's fd on `PointerGrab`.
 
-**Request for user (next repro):**
-1. Enable `X11_TRACE_VERBOSE` (or add a new `[DRAG]` trace category): button-down, running motion counter, button-up, grab/ungrab events.
-2. Repro the drag in hw_ila_x once — just enough to see button-down → a few motion events → button-up without the drag firing.
-3. Capture stderr from app start through the failed drag. We want to see:
-   - Was `[GrabPointer]` logged at button-down?
-   - How many motion events fire during the button-held window? To which `wid` do they go (tree cell vs parent)?
-   - Is `PointerMotionHintMask` in the target's `del_mask`?
-
-**Next dbg build for this (future):** add a `[DRAG]` trace category — button-down starts a counter, each motion during drag increments, button-up emits a one-line summary (`[DRAG] host=0x... drag_xid=0x... motions=N duration=Xms`). Makes the diagnostic much easier to read than grepping raw motion logs.
+Open follow-up: add `PointerGrab::owner_fd` so the root-grab case can route to the grabbing client directly instead of via `drag_xid`. Logged under "Next Major Tasks" in CLAUDE.md.
 
 ### Vivado Crashes After Laptop Sleep (MEDIUM)
 After leaving SwiftX11 + Vivado running overnight and sleeping the laptop (several hours), clicking into the Vivado window on wake causes Vivado to crash. SwiftX11 log signature:

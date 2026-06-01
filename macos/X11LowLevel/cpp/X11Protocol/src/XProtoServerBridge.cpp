@@ -871,6 +871,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 
 
+#ifndef NDEBUG
           {
             const x11::WindowView* dbgDel = ctx.window(deliver);
             TS_FPRINTF("[BTN_SEND] host=0x%08X under=0x%08X deliver=0x%08X "
@@ -884,6 +885,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                        (int)effectiveWinX, (int)effectiveWinY,
                        (int)c.button, c.isDown ? "DOWN" : "UP");
           }
+#endif
           srv->eventOps().sendButtonEvent(ctx, deliver,
                                           c.isDown != 0, c.button,
                                           ctx.input().root_x_u, ctx.input().root_y_u,

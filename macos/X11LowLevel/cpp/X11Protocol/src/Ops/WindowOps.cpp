@@ -541,11 +541,13 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   ctx.ui().pushCreate(wid, parent, title, (int32_t)x, (int32_t)y, (int32_t)wpx, (int32_t)hpx, createFlags);
 
   // Trace OR window creation for popup diagnosis
+#ifndef NDEBUG
   if (override_redirect) {
     TS_FPRINTF("[CREATE_OR] wid=0x%08X parent=0x%08X pos=(%d,%d) size=%ux%u fd=%d\n",
             (unsigned)wid, (unsigned)parent, (int)x, (int)y,
             (unsigned)wpx, (unsigned)hpx, ctx.transport().clientFd());
   }
+#endif
 
   // Optional: mark dirty so first present/expose happens when mapped/presentable.
   ctx.windows().markDirty(wid);
