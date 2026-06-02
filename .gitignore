@@ -8,6 +8,10 @@ DerivedData/
 *.xcuserdatad
 *.xcworkspace
 
+# Locally-built Release bundle (macos/SwiftX11.app) — see HANDOFF.md for
+# how to build via xcodebuild -derivedDataPath without disturbing Xcode.
+macos/SwiftX11.app/
+
 # Swift Package Manager (if used later)
 .build/
 
