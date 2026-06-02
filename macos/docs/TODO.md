@@ -700,6 +700,17 @@ rendercheck                 # RENDER extension tests
 - **CreateWindow size floor removed**: Windows stored at client's requested size. WM emulation at map time handles sizing, matching XQuartz/quartz-wm behavior.
 - **`pushMapExtras()` helper**: Sends resize/move/_NET_FRAME_EXTENTS after map. Used by both immediate and deferred map paths.
 
+### Bug fixes (v1.19.36)
+- **ARGB32 component-alpha glyph rendering** (`.53` / `.54`): Vivado License Manager 2024.1 rendered every text glyph as a solid black filled rectangle. The `AddGlyphs` ARGB32 branch was extracting only the alpha channel of each pixel — but Cairo / Java AWT's subpixel-AA encoding sets `A ≈ 0xFF` across the entire glyph bounding box and stores per-channel coverage in `R, G, B`. Stage 1 switched the coverage byte to `max(R, G, B)` (grayscale-AA quality). Stage 2 wired full per-channel modulation via a new `applyOpComponent(op, dst, src, gA, gR, gG, gB)` covering `PictOpOver`, `PictOpSrc`, `PictOpAdd` — LCD-subpixel quality matching XQuartz.
+- **`override_redirect` SubstructureRedirect exemption** (`.57`): Java AWT's XDND helper connection creates a 1×1 off-screen `override_redirect=True` proxy window per drag. Our v1.17.0 deferred-map machinery rescued it to a 500×300 fallback, breaking the drag immediately. Real X11 servers never apply `SubstructureRedirectMask` to OR windows; `handleMapWindow` now bails when the window has `override_redirect=True`.
+- **`SetCloseDownMode(RetainPermanent)` honored** (`.58`): AWT's XDND helper connection sets `RetainPermanent` then closes; the proxy window must outlive the disconnect for the main JVM connection to use it as the XDND source XID. `XClient` now stores `close_down_mode_`. `XProtoDaemon::removeClient` calls `WindowTable::reassignOwner(fd, -1)` instead of `eraseOwnedBy(fd)` when retention is requested; the NSWindow and X11 window both persist.
+- **XDND drag motion-mask routing** (`.62`): the actual hw_ila drag failure. AWT installs `XGrabPointer(grab_window=root, owner_events=False, mask=0x200C)` (`ButtonPress | ButtonRelease | ButtonMotion`). Our `postMotion` routing only checked bit 6 (`PointerMotionMask`) when consulting the grab eventMask; spec requires accepting any of `PointerMotion` (bit 6), `ButtonMotion` (bit 13), or `Button1-5Motion` (bits 8-12) per held button. New `grabWantsMotion(mask, heldButtons)` helper handles all three families. Also: when the grab window is root (no live transport), motion target falls back to `drag_xid` so the grabbing client receives events. (Long-term: add `PointerGrab::owner_fd`.)
+
+### Hygiene (v1.19.36)
+- High-frequency `TS_FPRINTF` calls (`[KEY_SEND]`, `[BTN_SEND]`, `[SEL]`, `[CLIPBOARD]`, `[CURSOR]`, `[CREATE_OR]`) gated behind `#ifndef NDEBUG` via new `TS_DBG(...)` macro in `Utils/MachTime.hpp`. Release builds (Xcode "Release" config, `NDEBUG` defined) get a quiet stderr.
+- Swift `[GEOM_NS] SIZE_HINTS_APPLIED` no longer prints a 309-digit decimal for unbounded `maxSize` — renders `MAX` instead.
+- `X11_TRACE_FONT / RENDER / DRAG` reverted from always-on (set during diagnosis) to standard opt-in via `-DX11_TRACE_<CAT>` flag.
+
 ---
 
 ## HIGH PRIORITY — Active Bugs
