@@ -355,8 +355,8 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
       target == atom::kSTRING ||
       target == atom::kTEXT)
   {
-    // Read macOS clipboard into dynamic buffer (up to 4MB)
-    static constexpr uint32_t kMaxClipRead = 4u * 1024 * 1024;
+    // Read macOS clipboard into dynamic buffer (up to 12MB)
+    static constexpr uint32_t kMaxClipRead = 12u * 1024 * 1024;
     std::vector<char> clipBuf(kMaxClipRead);
     uint32_t len = x11_clipboard_get_text(clipBuf.data(), kMaxClipRead);
 
@@ -618,12 +618,33 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
     // property was set on root (1), so we must read from the event's requestor.
     const uint32_t evRequestor = wire::rd32_le(event + 8);
     if ((selAtom == atom::kCLIPBOARD || selAtom == atom::kPRIMARY) &&
+        propAtom == 0)
+    {
+#ifndef NDEBUG
+      // Owner refused the conversion (property=None). Classic causes:
+      // ICCCM timestamp rejection, unsupported target, or empty selection.
+      TS_DBG("[CLIPBOARD] Capture FAILED: owner sent SelectionNotify property=None "
+              "(sel=%u requestor=0x%08X) — conversion refused\n",
+              (unsigned)selAtom, (unsigned)wire::rd32_le(event + 8));
+#endif
+    }
+    if ((selAtom == atom::kCLIPBOARD || selAtom == atom::kPRIMARY) &&
         propAtom != 0 && evRequestor != 0)
     {
       // The selection owner just set a property on the requestor.
       // Read it and push to macOS clipboard.
       PropertyTable::Prop p{};
-      if (PropertyTable::instance().get(evRequestor, propAtom, p) &&
+      const bool haveProp = PropertyTable::instance().get(evRequestor, propAtom, p);
+#ifndef NDEBUG
+      if (!haveProp || p.format != 8 || p.data.empty()) {
+        TS_DBG("[CLIPBOARD] Capture FAILED: prop %s (sel=%u req=0x%08X prop=%u "
+                "format=%u size=%zu type=%u)\n",
+                !haveProp ? "missing" : (p.format != 8 ? "wrong format (INCR?)" : "empty"),
+                (unsigned)selAtom, (unsigned)evRequestor, (unsigned)propAtom,
+                (unsigned)p.format, p.data.size(), (unsigned)p.type);
+      }
+#endif
+      if (haveProp &&
           p.format == 8 && !p.data.empty())
       {
         // Before pushing X11 content to macOS, check if the macOS clipboard

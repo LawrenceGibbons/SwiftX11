@@ -513,12 +513,24 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const bool srcIsPix = ctx.pixmaps().exists(src);
 
   if (srcIsWin) {
-    if (!x11::resolveDrawableRW(ctx, src, srcRW) || !srcRW.pixels32) return;
+    if (!x11::resolveDrawableRW(ctx, src, srcRW) || !srcRW.pixels32) {
+#ifndef NDEBUG
+      TS_DBG("[BLIT] CopyArea DROP: src=0x%08X resolve failed (dst=0x%08X %dx%d)\n",
+             (unsigned)src, (unsigned)dst, (int)wpx, (int)hpx);
+#endif
+      return;
+    }
     srcPixels = srcRW.pixels32;
     srcW = (int)srcRW.w;
     srcH = (int)srcRW.h;
     srcStride = srcRW.stridePixels;
-    if (srcW <= 0 || srcH <= 0 || srcStride == 0) return;
+    if (srcW <= 0 || srcH <= 0 || srcStride == 0) {
+#ifndef NDEBUG
+      TS_DBG("[BLIT] CopyArea DROP: src=0x%08X zero dims %dx%d stride=%u\n",
+             (unsigned)src, srcW, srcH, (unsigned)srcStride);
+#endif
+      return;
+    }
   } else if (srcIsPix) {
     PixmapView pv{};
     if (!ctx.pixmaps().snapshot(src, pv)) return;
@@ -558,12 +570,24 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   const bool dstIsPix = ctx.pixmaps().exists(dst);
 
   if (dstIsWin) {
-    if (!x11::resolveDrawableRW(ctx, dst, dstRW) || !dstRW.pixels32) return;
+    if (!x11::resolveDrawableRW(ctx, dst, dstRW) || !dstRW.pixels32) {
+#ifndef NDEBUG
+      TS_DBG("[BLIT] CopyArea DROP: dst=0x%08X resolve failed (src=0x%08X %dx%d)\n",
+             (unsigned)dst, (unsigned)src, (int)wpx, (int)hpx);
+#endif
+      return;
+    }
     dstPixels = dstRW.pixels32;
     dstW = (int)dstRW.w;
     dstH = (int)dstRW.h;
     dstStride = dstRW.stridePixels;
-    if (dstW <= 0 || dstH <= 0 || dstStride == 0) return;
+    if (dstW <= 0 || dstH <= 0 || dstStride == 0) {
+#ifndef NDEBUG
+      TS_DBG("[BLIT] CopyArea DROP: dst=0x%08X zero dims %dx%d stride=%u\n",
+             (unsigned)dst, dstW, dstH, (unsigned)dstStride);
+#endif
+      return;
+    }
   } else if (dstIsPix) {
     uint16_t pw = 0, ph = 0;
     dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
@@ -628,7 +652,34 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (sy0 + ch > srcH) ch = srcH - sy0;
   if (dy0 + ch > dstH) ch = dstH - dy0;
 
-  if (cw <= 0 || ch <= 0) return;
+  if (cw <= 0 || ch <= 0) {
+#ifndef NDEBUG
+    if (srcIsWin && dstIsWin) {
+      TS_DBG("[BLIT] CopyArea CLAMPED-OUT: src=0x%08X dst=0x%08X req=(%d,%d)->(%d,%d) %dx%d "
+             "srcWH=%dx%d dstWH=%dx%d\n",
+             (unsigned)src, (unsigned)dst,
+             (int)srcX, (int)srcY, (int)dstX, (int)dstY, (int)wpx, (int)hpx,
+             srcW, srcH, dstW, dstH);
+    }
+#endif
+    return;
+  }
+
+#ifndef NDEBUG
+  // Window→window blits are the Swing scroll path — rare outside scrolling,
+  // so an always-on debug trace is cheap and catches partial-copy truncation.
+  if (srcIsWin && dstIsWin) {
+    const bool shrunk = (cw != (int)wpx) || (ch != (int)hpx);
+    TS_DBG("[BLIT] CopyArea W2W: src=0x%08X dst=0x%08X req=(%d,%d)->(%d,%d) %dx%d "
+           "clamped=(%d,%d)->(%d,%d) %dx%d%s srcWH=%dx%d dstWH=%dx%d off=(%d,%d)/(%d,%d)\n",
+           (unsigned)src, (unsigned)dst,
+           (int)srcX, (int)srcY, (int)dstX, (int)dstY, (int)wpx, (int)hpx,
+           sx0, sy0, dx0, dy0, cw, ch,
+           shrunk ? " SHRUNK" : "",
+           srcW, srcH, dstW, dstH,
+           srcRW.offsetX, srcRW.offsetY, dstRW.offsetX, dstRW.offsetY);
+  }
+#endif
 
   // ------------------------------------------------------------
   // Overlap detection in backing coordinates (host coords)
