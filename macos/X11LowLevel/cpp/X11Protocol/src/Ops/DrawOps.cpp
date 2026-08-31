@@ -702,14 +702,24 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // ------------------------------------------------------------
   const bool gcClipActive = gc.has_clip;
 
-  auto rowCopyFast = [&](int sy, int dy) {
+  auto rowCopyFast = [&](int sy, int dy, bool rightToLeft) {
     const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcStride + (size_t)sx0;
     uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstStride + (size_t)dx0;
     if (!gcClipActive) {
+      // memmove is overlap-safe in both directions.
       std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
       for (int i = 0; i < cw; i++) dp[i] = (dp[i] & 0x00FFFFFFu) | 0xFF000000u;
-    } else {
+    } else if (!rightToLeft) {
       for (int i = 0; i < cw; i++) {
+        if (!x11::gcPointVisible(gc, dx0 + i, dy)) continue;
+        dp[i] = (sp[i] & 0x00FFFFFFu) | 0xFF000000u;
+      }
+    } else {
+      // Same-row overlap with dst right of src (e.g. horizontal scroll-left
+      // moving content right): copy right-to-left so unread source pixels
+      // aren't overwritten first.  The forward loop here smeared vlm's
+      // leftward horizontal scrolling (GC clip active => no memmove).
+      for (int i = cw - 1; i >= 0; i--) {
         if (!x11::gcPointVisible(gc, dx0 + i, dy)) continue;
         dp[i] = (sp[i] & 0x00FFFFFFu) | 0xFF000000u;
       }
@@ -742,19 +752,17 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     rowStep  = -1;
   }
 
+  // Within-row direction only matters when source and destination rows
+  // coincide (same-Y overlap); different rows are handled by row ordering.
+  const bool rtl = overlaps && (dstAbsY0 == srcAbsY0) && (dstAbsX0 > srcAbsX0);
+
   for (int r = rowStart; r != rowEnd; r += rowStep) {
     const int sy = sy0 + r;
     const int dy = dy0 + r;
 
-    if (canMemmoveFast && !gcClipActive) {
-      rowCopyFast(sy, dy);
-    } else if (canMemmoveFast) {
-      rowCopyFast(sy, dy); // handles clip inside
+    if (canMemmoveFast) {
+      rowCopyFast(sy, dy, rtl); // handles clip + direction inside
     } else {
-      bool rtl = false;
-      if (overlaps && (dstAbsY0 + r) == (srcAbsY0 + r)) {
-        rtl = (dstAbsX0 > srcAbsX0);
-      }
       rowRop(sy, dy, rtl);
     }
   }
