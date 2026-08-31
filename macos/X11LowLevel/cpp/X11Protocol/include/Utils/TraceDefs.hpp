@@ -78,6 +78,11 @@
 
 // RENDER extension: CreatePicture, CreateGlyphSet, AddGlyphs,
 //                   CompositeGlyphs, Composite, source promotion
+//
+// TEMPORARILY force-enabled (v1.19.36.4-dbg, Aug 2026) for the vlm
+// scrollbar investigation — need visibility into backbuffer (pixmap-dst)
+// rendering.  Revert to opt-in once the vlm scroll bugs are fixed.
+#define X11_TRACE_RENDER 1
 #if defined(X11_TRACE_RENDER) || defined(X11_TRACE_VERBOSE)
   #define X11_TRACE_RENDER_ENABLED 1
 #else

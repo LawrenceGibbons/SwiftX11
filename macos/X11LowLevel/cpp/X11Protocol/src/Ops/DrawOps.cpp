@@ -654,7 +654,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
   if (cw <= 0 || ch <= 0) {
 #ifndef NDEBUG
-    if (srcIsWin && dstIsWin) {
+    if (srcIsWin || dstIsWin || src == dst) {
       TS_DBG("[BLIT] CopyArea CLAMPED-OUT: src=0x%08X dst=0x%08X req=(%d,%d)->(%d,%d) %dx%d "
              "srcWH=%dx%d dstWH=%dx%d\n",
              (unsigned)src, (unsigned)dst,
@@ -664,22 +664,6 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 #endif
     return;
   }
-
-#ifndef NDEBUG
-  // Window→window blits are the Swing scroll path — rare outside scrolling,
-  // so an always-on debug trace is cheap and catches partial-copy truncation.
-  if (srcIsWin && dstIsWin) {
-    const bool shrunk = (cw != (int)wpx) || (ch != (int)hpx);
-    TS_DBG("[BLIT] CopyArea W2W: src=0x%08X dst=0x%08X req=(%d,%d)->(%d,%d) %dx%d "
-           "clamped=(%d,%d)->(%d,%d) %dx%d%s srcWH=%dx%d dstWH=%dx%d off=(%d,%d)/(%d,%d)\n",
-           (unsigned)src, (unsigned)dst,
-           (int)srcX, (int)srcY, (int)dstX, (int)dstY, (int)wpx, (int)hpx,
-           sx0, sy0, dx0, dy0, cw, ch,
-           shrunk ? " SHRUNK" : "",
-           srcW, srcH, dstW, dstH,
-           srcRW.offsetX, srcRW.offsetY, dstRW.offsetX, dstRW.offsetY);
-  }
-#endif
 
   // ------------------------------------------------------------
   // Overlap detection in backing coordinates (host coords)
@@ -693,6 +677,25 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     sameBacking &&
     (dstAbsX0 < srcAbsX0 + cw) && (dstAbsX0 + cw > srcAbsX0) &&
     (dstAbsY0 < srcAbsY0 + ch) && (dstAbsY0 + ch > srcAbsY0);
+
+#ifndef NDEBUG
+  // Trace ALL CopyArea ops (vlm scroll investigation, v1.19.36.4-dbg):
+  // the Swing scroll path turned out not to be window→window — cover every
+  // src/dst combination so no blit path is dark.  P=pixmap, W=window.
+  {
+    const bool shrunk = (cw != (int)wpx) || (ch != (int)hpx);
+    TS_DBG("[BLIT] CopyArea %c2%c: src=0x%08X dst=0x%08X req=(%d,%d)->(%d,%d) %dx%d "
+           "clamped=(%d,%d)->(%d,%d) %dx%d%s%s%s srcWH=%dx%d dstWH=%dx%d fn=%u\n",
+           srcIsWin ? 'W' : 'P', dstIsWin ? 'W' : 'P',
+           (unsigned)src, (unsigned)dst,
+           (int)srcX, (int)srcY, (int)dstX, (int)dstY, (int)wpx, (int)hpx,
+           sx0, sy0, dx0, dy0, cw, ch,
+           shrunk ? " SHRUNK" : "",
+           sameBacking ? " SAMEBACK" : "",
+           overlaps ? " OVERLAP" : "",
+           srcW, srcH, dstW, dstH, (unsigned)fn);
+  }
+#endif
 
   // ------------------------------------------------------------
   // Copy / ROP with overlap-safe ordering + GC clip
