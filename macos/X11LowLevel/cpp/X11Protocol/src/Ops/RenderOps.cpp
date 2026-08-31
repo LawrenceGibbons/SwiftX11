@@ -700,6 +700,21 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // XRGB8888 window surfaces need alpha=0xFF for Metal rendering.
     const bool forceOpaque = dst.isWindow;
 
+#ifndef NDEBUG
+    // Large composites onto windows are Swing backbuffer→window blits and
+    // initial paints — low frequency, high diagnostic value (vlm missing
+    // initial paint investigation).
+    if (dst.isWindow && (uint32_t)width * (uint32_t)height >= 10000u) {
+      TS_DBG("[RENDER] Composite→win: op=%u src=0x%X(solid=%d rep=%d grad=%d) "
+             "msk=%d src(%d,%d)->dst(%d,%d) %ux%u dstWH=%ux%u off=(%d,%d)\n",
+             (unsigned)op, srcPid, srcIsSolid ? 1 : 0, srcRepeat ? 1 : 0,
+             srcGrad ? 1 : 0, hasMask ? 1 : 0,
+             (int)xSrc, (int)ySrc, (int)xDst, (int)yDst,
+             (unsigned)width, (unsigned)height,
+             (unsigned)dst.w, (unsigned)dst.h, dst.offsetX, dst.offsetY);
+    }
+#endif
+
     // Handle non-solid source with Repeat: if 1x1, treat as solid
     if (!srcIsSolid && srcRepeat && srcDrawable != 0) {
       DrawableRW srcDrw{};
@@ -754,6 +769,56 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (!resolveDrawableRW(ctx, srcDrawable, src)) return;
       if (!src.pixels32) return;
 
+      // ---- Self-overlap detection (Java XRender copyArea) ----
+      // Java's XRender pipeline implements Graphics.copyArea() as
+      // Composite(PictOpSrc, srcPict == dstPict, offset) — a self-copy on
+      // the same window. Naive top-down iteration re-reads rows already
+      // overwritten, smearing content on one scroll direction. When src
+      // and dst share a backing buffer and the rects overlap, snapshot
+      // the (clamped) source region and read from the copy instead.
+      std::vector<uint32_t> snap;
+      size_t snapW = 0;
+      int32_t snapX0 = 0, snapY0 = 0;
+      bool useSnap = false;
+      if (!srcRepeat &&
+          src.backingPixels32 != nullptr &&
+          src.backingPixels32 == dst.backingPixels32) {
+        snapX0 = std::max((int32_t)xSrc, (int32_t)0);
+        snapY0 = std::max((int32_t)ySrc, (int32_t)0);
+        const int32_t snapX1 = std::min((int32_t)xSrc + (int32_t)width,  (int32_t)src.w);
+        const int32_t snapY1 = std::min((int32_t)ySrc + (int32_t)height, (int32_t)src.h);
+        const int32_t dX0 = std::max((int32_t)xDst, (int32_t)0);
+        const int32_t dY0 = std::max((int32_t)yDst, (int32_t)0);
+        const int32_t dX1 = std::min((int32_t)xDst + (int32_t)width,  (int32_t)dst.w);
+        const int32_t dY1 = std::min((int32_t)yDst + (int32_t)height, (int32_t)dst.h);
+        // Overlap test in absolute (backing) coordinates
+        const int32_t sAX0 = src.offsetX + snapX0, sAY0 = src.offsetY + snapY0;
+        const int32_t sAX1 = src.offsetX + snapX1, sAY1 = src.offsetY + snapY1;
+        const int32_t dAX0 = dst.offsetX + dX0,   dAY0 = dst.offsetY + dY0;
+        const int32_t dAX1 = dst.offsetX + dX1,   dAY1 = dst.offsetY + dY1;
+        const bool overlap =
+            (sAX0 < dAX1 && dAX0 < sAX1 && sAY0 < dAY1 && dAY0 < sAY1);
+        if (overlap && snapX1 > snapX0 && snapY1 > snapY0) {
+          snapW = (size_t)(snapX1 - snapX0);
+          const size_t snapH = (size_t)(snapY1 - snapY0);
+          snap.resize(snapW * snapH);
+          for (size_t r = 0; r < snapH; r++) {
+            std::memcpy(snap.data() + r * snapW,
+                        src.pixels32 + ((size_t)snapY0 + r) * (size_t)src.stridePixels
+                                     + (size_t)snapX0,
+                        snapW * sizeof(uint32_t));
+          }
+          useSnap = true;
+#ifndef NDEBUG
+          TS_DBG("[RENDER] Composite self-overlap (scroll blit): op=%u "
+                 "src=0x%X dst=0x%X src(%d,%d)->dst(%d,%d) %ux%u snap=%zux%zu\n",
+                 (unsigned)op, srcDrawable, dstDrawable,
+                 (int)xSrc, (int)ySrc, (int)xDst, (int)yDst,
+                 (unsigned)width, (unsigned)height, snapW, snapH);
+#endif
+        }
+      }
+
       for (int32_t row = 0; row < (int32_t)height; row++) {
         int32_t sy = (int32_t)ySrc + row;
         const int32_t dy = (int32_t)yDst + row;
@@ -773,7 +838,13 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             sx = ((sx % (int32_t)src.w) + (int32_t)src.w) % (int32_t)src.w;
           } else if (sx < 0 || sx >= (int32_t)src.w) continue;
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
-          const uint32_t sc = modulateAlpha(srow[(size_t)sx], ma);
+          // In the useSnap case sx/sy are guaranteed inside the snapshot
+          // rect: the non-repeat clamp above already restricts them to
+          // [snapX0,snapX1) x [snapY0,snapY1).
+          const uint32_t spx = useSnap
+              ? snap[(size_t)(sy - snapY0) * snapW + (size_t)(sx - snapX0)]
+              : srow[(size_t)sx];
+          const uint32_t sc = modulateAlpha(spx, ma);
           uint32_t px = applyOp(op, drow[(size_t)dx], sc);
           if (forceOpaque) px |= 0xFF000000u;
           drow[(size_t)dx] = px;
