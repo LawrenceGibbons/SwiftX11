@@ -701,10 +701,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const bool forceOpaque = dst.isWindow;
 
 #ifndef NDEBUG
-    // Large composites onto windows are Swing backbuffer→window blits and
-    // initial paints — low frequency, high diagnostic value (vlm missing
-    // initial paint investigation).
-    if (dst.isWindow && (uint32_t)width * (uint32_t)height >= 10000u) {
+    // Composites onto windows are Swing backbuffer→window blits and initial
+    // paints — low frequency, high diagnostic value (vlm missing initial
+    // paint investigation: trace ALL of them, the scrollbar blit is small).
+    if (dst.isWindow) {
       TS_DBG("[RENDER] Composite→win: op=%u src=0x%X(solid=%d rep=%d grad=%d) "
              "msk=%d src(%d,%d)->dst(%d,%d) %ux%u dstWH=%ux%u off=(%d,%d)\n",
              (unsigned)op, srcPid, srcIsSolid ? 1 : 0, srcRepeat ? 1 : 0,
