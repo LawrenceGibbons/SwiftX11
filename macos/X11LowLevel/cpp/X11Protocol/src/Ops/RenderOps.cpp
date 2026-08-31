@@ -161,6 +161,11 @@ static uint32_t sampleGradient(const GradientData& grad, float sx, float sy) {
 // ============================================================================
 // Picture table — maps Picture XID -> state
 // ============================================================================
+struct ClipRect {
+  int16_t  x = 0, y = 0;
+  uint16_t w = 0, h = 0;
+};
+
 struct PictureState {
   uint32_t drawable = 0;
   uint32_t format   = 0;
@@ -168,11 +173,44 @@ struct PictureState {
   bool     isSolid  = false;
   // Solid fill color (premultiplied ARGB8888)
   uint32_t solidARGB = 0;
-  // Clip (not implemented -- just tracked)
+  // Clip rectangles (SetPictureClipRectangles, v1.19.36.5).  Rect coords
+  // are relative to the picture's drawable origin, offset by the clip
+  // origin.  Java's Swing pipeline sets these on the backbuffer picture
+  // for EVERY repaint cycle — ignoring them lets each component's paint
+  // splat over the whole dirty-union rect (vlm scrollbar eraser bug).
   bool     hasClip = false;
+  int16_t  clipXOrg = 0, clipYOrg = 0;
+  std::vector<ClipRect> clipRects;
   // Gradient source (non-null when this picture is a gradient fill)
   std::shared_ptr<GradientData> gradient;
 };
+
+// Copy of a picture's clip state, usable outside sPicMtx.
+struct ClipSnapshot {
+  bool hasClip = false;
+  int16_t xOrg = 0, yOrg = 0;
+  std::vector<ClipRect> rects;
+
+  inline bool allows(int32_t x, int32_t y) const {
+    if (!hasClip) return true;
+    for (const auto& r : rects) {
+      const int32_t rx = (int32_t)r.x + xOrg;
+      const int32_t ry = (int32_t)r.y + yOrg;
+      if (x >= rx && x < rx + (int32_t)r.w &&
+          y >= ry && y < ry + (int32_t)r.h) return true;
+    }
+    return false;
+  }
+};
+
+static ClipSnapshot snapshotClip(const PictureState& ps) {
+  ClipSnapshot cs;
+  cs.hasClip = ps.hasClip;
+  cs.xOrg    = ps.clipXOrg;
+  cs.yOrg    = ps.clipYOrg;
+  cs.rects   = ps.clipRects;
+  return cs;
+}
 
 static std::mutex sPicMtx;
 static std::unordered_map<uint32_t, PictureState> sPictures;
@@ -545,8 +583,26 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     ps.drawable = drawable;
     ps.format   = format;
 
-    if (mask & (1u << 0)) { // CPRepeat
-      if (br.remaining() >= 4) ps.repeat = (br.readU32() != 0);
+    // Walk the value list in bit order (each value is 4 bytes):
+    // 0 repeat, 1 alphamap, 2/3 alpha origin, 4/5 clip origin,
+    // 6 clip-mask, 7 graphics-exposures, 8 subwindow-mode,
+    // 9 poly-edge, 10 poly-mode, 11 dither, 12 component-alpha.
+    for (int bit = 0; bit <= 12 && br.remaining() >= 4; bit++) {
+      if (!(mask & (1u << bit))) continue;
+      const uint32_t v = br.readU32();
+      switch (bit) {
+        case 0: ps.repeat = (v != 0); break;
+        case 4: ps.clipXOrg = (int16_t)(v & 0xFFFF); break;
+        case 5: ps.clipYOrg = (int16_t)(v & 0xFFFF); break;
+        case 6:
+          // clip-mask: None (0) clears the clip.  Pixmap-based clip masks
+          // are not supported — treat as unclipped rather than clipping
+          // everything out.
+          ps.hasClip = false;
+          ps.clipRects.clear();
+          break;
+        default: break;
+      }
     }
     br.skip(br.remaining());
 
@@ -570,8 +626,23 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* ps = findPicture(pid);
-      if (ps && (mask & (1u << 0)) && br.remaining() >= 4) {
-        ps->repeat = (br.readU32() != 0);
+      if (ps) {
+        // Same value-list walk as CreatePicture (bit order, 4 bytes each).
+        for (int bit = 0; bit <= 12 && br.remaining() >= 4; bit++) {
+          if (!(mask & (1u << bit))) continue;
+          const uint32_t v = br.readU32();
+          switch (bit) {
+            case 0: ps->repeat = (v != 0); break;
+            case 4: ps->clipXOrg = (int16_t)(v & 0xFFFF); break;
+            case 5: ps->clipYOrg = (int16_t)(v & 0xFFFF); break;
+            case 6:
+              // clip-mask=None clears the clip; pixmap masks unsupported.
+              ps->hasClip = false;
+              ps->clipRects.clear();
+              break;
+            default: break;
+          }
+        }
       }
     }
     br.skip(br.remaining());
@@ -580,7 +651,44 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // ---- 6: SetPictureClipRectangles ----
   case 6: {
+    if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+    const uint32_t pid = br.readU32();
+    const int16_t  cxo = (int16_t)br.readU16();
+    const int16_t  cyo = (int16_t)br.readU16();
+
+    std::vector<ClipRect> rects;
+    while (br.remaining() >= 8) {
+      ClipRect r;
+      r.x = (int16_t)br.readU16();
+      r.y = (int16_t)br.readU16();
+      r.w = br.readU16();
+      r.h = br.readU16();
+      rects.push_back(r);
+    }
     br.skip(br.remaining());
+
+#if X11_TRACE_RENDER_ENABLED
+    if (!rects.empty()) {
+      TS_FPRINTF("[RENDER SetClipRects] pid=0x%X org=(%d,%d) n=%zu first=(%d,%d %ux%u)\n",
+              pid, (int)cxo, (int)cyo, rects.size(),
+              (int)rects[0].x, (int)rects[0].y,
+              (unsigned)rects[0].w, (unsigned)rects[0].h);
+    } else {
+      TS_FPRINTF("[RENDER SetClipRects] pid=0x%X org=(%d,%d) EMPTY (clips all)\n",
+              pid, (int)cxo, (int)cyo);
+    }
+#endif
+
+    {
+      std::lock_guard<std::mutex> lk(sPicMtx);
+      PictureState* ps = findPicture(pid);
+      if (ps) {
+        ps->hasClip   = true; // empty list => everything clipped out (spec)
+        ps->clipXOrg  = cxo;
+        ps->clipYOrg  = cyo;
+        ps->clipRects = std::move(rects);
+      }
+    }
     return;
   }
 
@@ -676,10 +784,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Resolve destination
     uint32_t dstDrawable = 0;
+    ClipSnapshot dstClip;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
-      if (dps) dstDrawable = dps->drawable;
+      if (dps) {
+        dstDrawable = dps->drawable;
+        dstClip = snapshotClip(*dps);
+      }
     }
     if (dstDrawable == 0) return;
 
@@ -738,6 +850,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         for (int32_t col = 0; col < (int32_t)width; col++) {
           const int32_t dx = (int32_t)xDst + col;
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
+          if (!dstClip.allows(dx, dy)) continue;
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
           const uint32_t sc = modulateAlpha(srcColor, ma);
           uint32_t px = applyOp(op, drow[(size_t)dx], sc);
@@ -755,6 +868,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         for (int32_t col = 0; col < (int32_t)width; col++) {
           const int32_t dx = (int32_t)xDst + col;
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
+          if (!dstClip.allows(dx, dy)) continue;
           const float sx = (float)(xSrc + col);
           uint32_t gradColor = sampleGradient(*srcGrad, sx, sy);
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
@@ -834,6 +948,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           int32_t sx = (int32_t)xSrc + col;
           const int32_t dx = (int32_t)xDst + col;
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
+          if (!dstClip.allows(dx, dy)) continue;
           if (srcRepeat && src.w > 0) {
             sx = ((sx % (int32_t)src.w) + (int32_t)src.w) % (int32_t)src.w;
           } else if (sx < 0 || sx >= (int32_t)src.w) continue;
@@ -887,10 +1002,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Resolve destination
     uint32_t dstDrawable = 0;
+    ClipSnapshot dstClip;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
-      if (dps) dstDrawable = dps->drawable;
+      if (dps) {
+        dstDrawable = dps->drawable;
+        dstClip = snapshotClip(*dps);
+      }
     }
     if (dstDrawable == 0) { br.skip(br.remaining()); return; }
 
@@ -1047,6 +1166,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             coverageBuf[idx] = (uint8_t)std::min(v, 255);
           } else {
             // maskFormat == 0: composite directly
+            if (!dstClip.allows(x, y)) continue;
             uint32_t* row = dst.pixels32 + (size_t)y * (size_t)dst.stridePixels;
             uint32_t sc = modulateAlpha(srcColor, cov);
             uint32_t px = applyOp(op, row[(size_t)x], sc);
@@ -1113,6 +1233,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             for (int32_t x = bbX0; x < bbX1; x++) {
               uint8_t cov = crow[x - bbX0];
               if (cov == 0) continue;
+              if (!dstClip.allows(x, y)) continue;
               uint32_t sc = modulateAlpha(srcColor, cov);
               uint32_t px = applyOp(op, drow[(size_t)x], sc);
               if (forceOpaque) px |= 0xFF000000u;
@@ -1172,10 +1293,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Resolve destination
     uint32_t triDstDrawable = 0;
+    ClipSnapshot dstClip;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(triDstPid);
-      if (dps) triDstDrawable = dps->drawable;
+      if (dps) {
+        triDstDrawable = dps->drawable;
+        dstClip = snapshotClip(*dps);
+      }
     }
     if (triDstDrawable == 0) { br.skip(br.remaining()); return; }
 
@@ -1242,6 +1367,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (xLeft < xRight) {
           uint32_t* row = triDst.pixels32 + (size_t)y * (size_t)triDst.stridePixels;
           for (int32_t x = xLeft; x < xRight; x++) {
+            if (!dstClip.allows(x, y)) continue;
             uint32_t px = applyOp(triOp, row[(size_t)x], triSrcColor);
             if (triForceOpaque) px |= 0xFF000000u;
             row[(size_t)x] = px;
@@ -1577,10 +1703,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // Resolve destination
     uint32_t dstDrawable = 0;
+    ClipSnapshot dstClip;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
-      if (dps) dstDrawable = dps->drawable;
+      if (dps) {
+        dstDrawable = dps->drawable;
+        dstClip = snapshotClip(*dps);
+      }
     }
     if (dstDrawable == 0) { br.skip(br.remaining()); return; }
 
@@ -1791,6 +1921,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         for (int32_t col = 0; col < bufW; col++) {
           const int32_t dx = bx0 + col;
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
+          if (!dstClip.allows(dx, dy)) continue;
           const uint8_t a = maskBuf[(size_t)row * (size_t)bufW + (size_t)col];
           if (a == 0) continue;
           const uint32_t sc = modulateAlpha(srcColor, a);
@@ -1835,6 +1966,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           for (int32_t col = 0; col < (int32_t)rg.width; col++) {
             const int32_t dx = gx + col;
             if (dx < 0 || dx >= (int32_t)dst.w) continue;
+            if (!dstClip.allows(dx, dy)) continue;
             const size_t pi = (size_t)row * rg.width + (size_t)col;
 
             if (isCompAlpha) {
@@ -1894,10 +2026,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t fillColor = renderColorToARGB(cR, cG, cB, cA);
 
     uint32_t dstDrawable = 0;
+    ClipSnapshot dstClip;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
-      if (dps) dstDrawable = dps->drawable;
+      if (dps) {
+        dstDrawable = dps->drawable;
+        dstClip = snapshotClip(*dps);
+      }
     }
     if (dstDrawable == 0) { br.skip(br.remaining()); return; }
 
@@ -1925,6 +2061,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       for (int32_t yy = y0; yy < y1; yy++) {
         uint32_t* row = dst.pixels32 + (size_t)yy * (size_t)dst.stridePixels;
         for (int32_t xx = x0; xx < x1; xx++) {
+          if (!dstClip.allows(xx, yy)) continue;
           uint32_t px = applyOp(op, row[(size_t)xx], fillColor);
           if (forceOpaque) px |= 0xFF000000u;
           row[(size_t)xx] = px;
