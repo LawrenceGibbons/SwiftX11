@@ -812,10 +812,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // XRGB8888 window surfaces need alpha=0xFF for Metal rendering.
     const bool forceOpaque = dst.isWindow;
 
-#ifndef NDEBUG
-    // Composites onto windows are Swing backbuffer→window blits and initial
-    // paints — low frequency, high diagnostic value (vlm missing initial
-    // paint investigation: trace ALL of them, the scrollbar blit is small).
+#if X11_TRACE_RENDER_ENABLED
+    // Composites onto windows are Swing backbuffer→window blits and
+    // initial paints (was NDEBUG-on during the v1.19.36.3-.6 vlm
+    // investigation; now rides the RENDER trace category).
     if (dst.isWindow) {
       TS_DBG("[RENDER] Composite→win: op=%u src=0x%X(solid=%d rep=%d grad=%d) "
              "msk=%d src(%d,%d)->dst(%d,%d) %ux%u dstWH=%ux%u off=(%d,%d)\n",

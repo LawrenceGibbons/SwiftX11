@@ -429,6 +429,18 @@ Two long-standing Vivado-only bugs closed in this release.
 - **v1.19.35.58 — `SetCloseDownMode(RetainPermanent)` honored**: AWT's XDND helper connection sets `RetainPermanent` then closes; the proxy window must outlive the helper connection. Our `SetCloseDownMode` was a no-op stub, so `removeClient` destroyed the proxy and AWT's next `GetProperty` returned `BadWindow`. `XClient` now stores the close-down mode; `removeClient` calls `WindowTable::reassignOwner(fd, -1)` instead of `eraseOwnedBy(fd)` when retention is requested.
 - **v1.19.35.62 — XDND grab motion routing**: The actual hw_ila drag failure. After XDND init AWT calls `XGrabPointer(grab_window=root, owner_events=False, mask=ButtonPress|ButtonRelease|ButtonMotion)`. Our `postMotion` routing only checked `PointerMotionMask` (bit 6) when consulting the grab eventMask — the spec says the server must accept any of `PointerMotionMask`, `ButtonMotionMask` (bit 13), or `Button1-5MotionMask` (bits 8-12) per held button.  New `grabWantsMotion(mask, heldButtons)` helper covers all three families. Also: when the grab window is root (no live client transport), motion target falls back to `drag_xid` so the actual grabbing client receives events. Out of scope but noted for later: add `PointerGrab::owner_fd` and route directly to the grabbing client.
 
+### RENDER Picture Clips + Scroll Blits (v1.19.36.1–.7)
+The vlm (License Manager 2025.1) scroll-corruption cluster — scrollbar
+thumbs invisible until hover, horizontal scrollbar vanishing after data
+load, and drag-scroll blanking most of the window — all traced to one
+root cause plus one latent CopyArea bug:
+
+- **v1.19.36.5 — RENDER picture clip rectangles implemented**: `SetPictureClipRectangles` (minor 6) had been a no-op that discarded its rects. Java's Swing/XRender pipeline sets a clip on the backbuffer picture for *every* repaint cycle (13.5k SetClipRects in one short vlm session) and trusts it to confine each component's paint. With clips ignored, each paint splatted over the whole dirty-union rect: the exposed-strip repaint during a thumb drag whitewashed the entire scrolled viewport in the backbuffer, and the data-population repaint erased the just-painted scrollbar thumb (visible only after a thumb-only hover repaint). `PictureState` now stores clip rects + origin; `ClipSnapshot` copies them out of the mutex; every RENDER write site enforces the dst clip (Composite solid/gradient/drawable, Trapezoids direct+mask, Triangles, CompositeGlyphs mask+direct, FillRectangles). `CreatePicture`/`ChangePicture` walk the full bit-ordered value list (clip origins honored; `clip-mask=None` clears; pixmap clip masks unsupported → treated as unclipped).
+- **v1.19.36.6 — CopyArea same-row overlap under GC clip**: the Swing scroll blit is core CopyArea pixmap→pixmap on the backbuffer *with a GC clip set*. `rowCopyFast`'s gc-clip branch always copied left-to-right; a scroll-left (content moves right, dst right of src, same row) overwrote unread source pixels → stripe smear. Now direction-aware like `rowRop`. (No-clip path was always safe via `memmove`; cross-row overlap was already handled by row ordering — which is why only horizontal scroll-left corrupted.)
+- **v1.19.36.2 — overlap-safe self-Composite**: RENDER Composite with src == dst on the same backing (the XRender copyArea idiom) now snapshots the source region first. vlm turned out to scroll via core CopyArea instead, but the fix stays for clients that scroll through RENDER.
+- **Diagnostics** (kept, quieter): `[BLIT]` CopyArea drop/clamp traces are NDEBUG-on; the per-op all-combos `[BLIT]` trace is `X11_TRACE_VERBOSE`; `[RENDER] Composite→win` rides `X11_TRACE_RENDER`; `[RENDER SetClipRects]` likewise. `[CLIPBOARD] Capture FAILED` traces (v1.19.36.1) are NDEBUG-on for the still-open tcl-console shift-click copy investigation.
+- Also in this line: clipboard paste buffer tripled to 12MB, PropertyTable cap tripled to 48MB (v1.19.36.1).
+
 ### Self-Contained App
 - **Bundled fonts**: PCF fonts from `/opt/X11/share/fonts/` embedded in `SwiftX11.app/Contents/Resources/fonts/`. No XQuartz needed.
 - **Font scanner**: Searches bundle fonts first, system `/opt/X11/` second. Bridge function `x11_set_bundle_resource_path()`.
@@ -441,6 +453,8 @@ Two long-standing Vivado-only bugs closed in this release.
 - **License Manager glyphs**: ✅ FIXED in v1.19.36 (ARGB32 component-alpha).
 - **hw_ila drag-and-drop**: ✅ FIXED in v1.19.36 (OR exemption + RetainPermanent + grab motion-mask).
 - **Docker dbus**: ✅ FIXED — `dbus-daemon --session` bypasses stale X11 root window property.
+- **vlm scrollbars/scroll corruption**: ✅ FIXED in v1.19.36.5–.6 (RENDER picture clips + CopyArea same-row overlap; see "RENDER Picture Clips + Scroll Blits").
+- **Vivado tcl console shift-click copy**: highlight works but copy doesn't reach the macOS pasteboard. Under investigation — `[CLIPBOARD] Capture FAILED` traces in place since v1.19.36.1; needs a repro run with the debug build. (MEDIUM)
 
 ### Next Major Tasks
 See `docs/TODO.md` for the comprehensive roadmap. Remaining priorities:

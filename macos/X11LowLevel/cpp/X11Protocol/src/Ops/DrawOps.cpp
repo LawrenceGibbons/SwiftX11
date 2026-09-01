@@ -678,10 +678,10 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     (dstAbsX0 < srcAbsX0 + cw) && (dstAbsX0 + cw > srcAbsX0) &&
     (dstAbsY0 < srcAbsY0 + ch) && (dstAbsY0 + ch > srcAbsY0);
 
-#ifndef NDEBUG
-  // Trace ALL CopyArea ops (vlm scroll investigation, v1.19.36.4-dbg):
-  // the Swing scroll path turned out not to be window→window — cover every
-  // src/dst combination so no blit path is dark.  P=pixmap, W=window.
+#ifdef X11_TRACE_VERBOSE
+  // Per-op CopyArea trace (all src/dst combos; P=pixmap, W=window).
+  // Was NDEBUG-on during the v1.19.36.4-.6 vlm scroll investigation —
+  // too chatty for everyday debug builds, now opt-in via verbose.
   {
     const bool shrunk = (cw != (int)wpx) || (ch != (int)hpx);
     TS_DBG("[BLIT] CopyArea %c2%c: src=0x%08X dst=0x%08X req=(%d,%d)->(%d,%d) %dx%d "
