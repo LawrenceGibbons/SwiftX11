@@ -9,6 +9,7 @@
 #include "Ops/PropOps.hpp"
 #include "Core/PropertyTable.hpp"
 #include "Core/IncrTransfer.hpp"
+#include "Ops/SelectionOps.hpp"
 
 #include <array>
 #include <cstddef>
@@ -157,6 +158,14 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
 
   // X11 spec: generate PropertyNotify on every property change
   sendPropertyNotify(ctx, wid, atom, /*deleted*/false);
+
+  // INCR clipboard receive: when the proactive capture is mid-INCR on this
+  // (window, property), the chunk just stored is consumed, acknowledged
+  // with PropertyNotify(Deleted), and accumulated; a zero-length write
+  // completes the transfer (pushes to NSPasteboard).
+  if (SelectionOps::incrReceiveActive(wid, atom)) {
+    SelectionOps::incrOnChunk(ctx, wid, atom, data, dataBytes);
+  }
 
 #if X11_TRACE_LIFECYCLE_ENABLED
   {

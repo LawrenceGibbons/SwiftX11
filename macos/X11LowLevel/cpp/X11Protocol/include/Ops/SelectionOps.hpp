@@ -20,6 +20,16 @@ public:
   /// claim PRIMARY+CLIPBOARD so the next paste serves macOS content.
   static void claimSelectionsIfMacOSChanged(XProtoContext& ctx);
 
+  /// INCR receive (server-as-requestor): large X11→macOS clipboard
+  /// captures arrive as chunked INCR transfers.  PropOps calls these from
+  /// ChangeProperty so each chunk written to the proxy requestor (root)
+  /// is consumed, acknowledged with PropertyNotify(Deleted), and
+  /// accumulated; a zero-length chunk completes the transfer and pushes
+  /// the text to NSPasteboard.  xproto thread only.
+  static bool incrReceiveActive(uint32_t wid, uint32_t prop);
+  static void incrOnChunk(XProtoContext& ctx, uint32_t wid, uint32_t prop,
+                          const uint8_t* data, uint64_t len);
+
 private:
   static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
   void handle(XProtoContext& ctx, DispatchContext& dc);

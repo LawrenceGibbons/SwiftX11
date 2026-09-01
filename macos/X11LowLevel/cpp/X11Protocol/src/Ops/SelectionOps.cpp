@@ -17,6 +17,7 @@
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/timestamp.hpp"
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -53,6 +54,44 @@ static std::unordered_map<uint32_t /*atom*/, int64_t> sSelPushedCC;
 // Timestamp of last SetSelectionOwner per selection atom (ICCCM compliance).
 // Used to reject stale requests and return via TIMESTAMP target.
 static std::unordered_map<uint32_t /*atom*/, uint32_t /*time*/> sSelTime;
+
+// ---------------------------------------------------------------------------
+// INCR receive state (server-as-requestor).  When the proactive capture's
+// SelectionNotify carries a property of type INCR, the owner will deliver
+// the actual data as chunks via ChangeProperty on the proxy requestor
+// (root, XID 1), each acknowledged by deleting the property.  We accumulate
+// chunks here; a zero-length chunk completes the transfer.
+// xproto thread only — no mutex.
+// ---------------------------------------------------------------------------
+struct IncrRecvState {
+  uint32_t selection = 0;   // CLIPBOARD or PRIMARY atom
+  uint64_t announced = 0;   // owner's size estimate (advisory)
+  std::vector<uint8_t> data;
+};
+static std::unordered_map<uint64_t /*(wid<<32)|prop*/, IncrRecvState> sIncrRecv;
+
+static inline uint64_t incrKey(uint32_t wid, uint32_t prop) {
+  return (uint64_t(wid) << 32) | uint64_t(prop);
+}
+
+// Accumulation cap — matches the PropertyTable safety valve (48MB).
+static constexpr uint64_t kIncrRecvMax = (3ull << 24);
+
+// Send PropertyNotify for the proxy requestor window on the CURRENT
+// transport (the owner is the client being dispatched in both call paths).
+// The owner waits for state=Deleted on the requestor to advance the
+// transfer; root has no real event_mask entry, so send directly.
+static void incrNotifyOwner(XProtoContext& ctx, uint32_t wid, uint32_t prop,
+                            bool deleted) {
+  uint8_t ev[32] = {};
+  ev[0] = 28; // PropertyNotify
+  wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+  wire::wr32_le(ev + 4, wid);
+  wire::wr32_le(ev + 8, prop);
+  wire::wr32_le(ev + 12, x11_now_ms_monotonic());
+  ev[16] = deleted ? 1 : 0;
+  (void)ctx.transport().sendEvent32(wid, ev);
+}
 
 
 // ---------------------------------------------------------------------------
@@ -635,6 +674,27 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
       // Read it and push to macOS clipboard.
       PropertyTable::Prop p{};
       const bool haveProp = PropertyTable::instance().get(evRequestor, propAtom, p);
+
+      // Large transfers arrive as INCR: the property holds a CARD32 size
+      // estimate (type=INCR, format=32).  Start a chunked receive — the
+      // owner sends the data via ChangeProperty on the requestor, gated on
+      // our PropertyNotify(Deleted) acks (see PropOps → incrOnChunk).
+      if (haveProp && p.type == atom::kINCR && p.format == 32) {
+        uint64_t announced = 0;
+        if (p.data.size() >= 4) announced = wire::rd32_le(p.data.data());
+        sIncrRecv[incrKey(evRequestor, propAtom)] =
+            IncrRecvState{selAtom, announced, {}};
+        PropertyTable::instance().erase(evRequestor, propAtom);
+        incrNotifyOwner(ctx, evRequestor, propAtom, /*deleted*/true);
+#ifndef NDEBUG
+        TS_DBG("[CLIPBOARD] INCR receive START: sel=%u req=0x%08X prop=%u "
+                "announced=%llu bytes\n",
+                (unsigned)selAtom, (unsigned)evRequestor, (unsigned)propAtom,
+                (unsigned long long)announced);
+#endif
+        return;
+      }
+
 #ifndef NDEBUG
       if (!haveProp || p.format != 8 || p.data.empty()) {
         TS_DBG("[CLIPBOARD] Capture FAILED: prop %s (sel=%u req=0x%08X prop=%u "
@@ -722,6 +782,89 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
 #ifdef X11_TRACE_VERBOSE
   ctx.tracef("[SelectionOps] SendEvent dest=0x%08X resolved=0x%08X type=%u\n",
              (unsigned)destination, (unsigned)resolvedDest, (unsigned)(event[0] & 0x7Fu));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// INCR receive hooks (called from PropOps::handleChangeProperty)
+// ---------------------------------------------------------------------------
+bool SelectionOps::incrReceiveActive(uint32_t wid, uint32_t prop) {
+  return sIncrRecv.find(incrKey(wid, prop)) != sIncrRecv.end();
+}
+
+void SelectionOps::incrOnChunk(XProtoContext& ctx, uint32_t wid, uint32_t prop,
+                               const uint8_t* data, uint64_t len) {
+  auto it = sIncrRecv.find(incrKey(wid, prop));
+  if (it == sIncrRecv.end()) return;
+  IncrRecvState& st = it->second;
+
+  if (len > 0) {
+    // Data chunk: accumulate (capped), consume the property, ack with
+    // PropertyNotify(Deleted) so the owner sends the next chunk.
+    if ((uint64_t)st.data.size() + len <= kIncrRecvMax) {
+      st.data.insert(st.data.end(), data, data + len);
+    }
+#ifndef NDEBUG
+    TS_DBG("[CLIPBOARD] INCR chunk: %llu bytes (total %zu / announced %llu)\n",
+           (unsigned long long)len, st.data.size(),
+           (unsigned long long)st.announced);
+#endif
+    PropertyTable::instance().erase(wid, prop);
+    incrNotifyOwner(ctx, wid, prop, /*deleted*/true);
+    return;
+  }
+
+  // Zero-length chunk: transfer complete.
+  const uint32_t selAtom = st.selection;
+  std::vector<uint8_t> text = std::move(st.data);
+  sIncrRecv.erase(it);
+  PropertyTable::instance().erase(wid, prop);
+  incrNotifyOwner(ctx, wid, prop, /*deleted*/true);
+
+  // Push to macOS unless the macOS clipboard changed externally since our
+  // last push (same guard as the direct capture path).
+  bool shouldPush = !text.empty();
+  if (shouldPush) {
+    std::lock_guard<std::mutex> lk(sSelMtx);
+    auto ccIt = sSelPushedCC.find(selAtom);
+    if (ccIt != sSelPushedCC.end()) {
+      int64_t currentCC = x11_clipboard_get_change_count();
+      if (currentCC > ccIt->second) shouldPush = false;
+    }
+  }
+  if (shouldPush) {
+    x11_clipboard_set_text(reinterpret_cast<const char*>(text.data()),
+                           (uint32_t)text.size());
+    int64_t newCC = x11_clipboard_get_change_count();
+    std::lock_guard<std::mutex> lk(sSelMtx);
+    sSelPushedCC[selAtom] = newCC;
+  }
+
+  // For CLIPBOARD only: take over ownership so the next paste re-queries
+  // through the server (mirrors the direct capture path; see there for
+  // why PRIMARY must keep its owner).
+  if (selAtom == atom::kCLIPBOARD) {
+    uint32_t prevSelOwner = 0;
+    {
+      std::lock_guard<std::mutex> lk(sSelMtx);
+      auto oIt = sSelOwner.find(selAtom);
+      if (oIt != sSelOwner.end()) prevSelOwner = oIt->second;
+      sSelOwner[selAtom] = 1; // root proxy
+    }
+    if (prevSelOwner > 1) {
+      uint8_t clrEv[32] = {0};
+      clrEv[0] = 29; // SelectionClear
+      wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
+      wire::wr32_le(clrEv + 4,  0); // CurrentTime
+      wire::wr32_le(clrEv + 8,  prevSelOwner);
+      wire::wr32_le(clrEv + 12, selAtom);
+      (void)ctx.transport().sendEvent32(prevSelOwner, clrEv);
+    }
+  }
+
+#ifndef NDEBUG
+  TS_DBG("[CLIPBOARD] INCR receive DONE: %zu bytes, sel=%u, pushed=%s, owner→root\n",
+         text.size(), (unsigned)selAtom, shouldPush ? "yes" : "SKIPPED(macOS newer)");
 #endif
 }
 
