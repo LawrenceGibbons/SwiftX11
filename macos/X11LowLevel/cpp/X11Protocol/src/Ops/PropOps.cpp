@@ -164,7 +164,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
   // with PropertyNotify(Deleted), and accumulated; a zero-length write
   // completes the transfer (pushes to NSPasteboard).
   if (SelectionOps::incrReceiveActive(wid, atom)) {
-    SelectionOps::incrOnChunk(ctx, wid, atom, data, dataBytes);
+    SelectionOps::incrOnChunk(ctx, wid, atom, type, fmt, data, dataBytes);
   }
 
 #if X11_TRACE_LIFECYCLE_ENABLED

@@ -28,6 +28,7 @@ public:
   /// the text to NSPasteboard.  xproto thread only.
   static bool incrReceiveActive(uint32_t wid, uint32_t prop);
   static void incrOnChunk(XProtoContext& ctx, uint32_t wid, uint32_t prop,
+                          uint32_t type, uint8_t format,
                           const uint8_t* data, uint64_t len);
 
 private:

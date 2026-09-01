@@ -80,7 +80,12 @@ static constexpr uint64_t kIncrRecvMax = (3ull << 24);
 // Send PropertyNotify for the proxy requestor window on the CURRENT
 // transport (the owner is the client being dispatched in both call paths).
 // The owner waits for state=Deleted on the requestor to advance the
-// transfer; root has no real event_mask entry, so send directly.
+// transfer.
+//
+// MUST use sendAll, not sendEvent32: the proxy requestor is root (XID 1),
+// which has no WindowView — sendEvent32 silently drops events for windows
+// it can't look up, which starved the owner of acks and stalled every
+// INCR transfer (v1.19.36.9 field failure).
 static void incrNotifyOwner(XProtoContext& ctx, uint32_t wid, uint32_t prop,
                             bool deleted) {
   uint8_t ev[32] = {};
@@ -90,7 +95,7 @@ static void incrNotifyOwner(XProtoContext& ctx, uint32_t wid, uint32_t prop,
   wire::wr32_le(ev + 8, prop);
   wire::wr32_le(ev + 12, x11_now_ms_monotonic());
   ev[16] = deleted ? 1 : 0;
-  (void)ctx.transport().sendEvent32(wid, ev);
+  (void)ctx.transport().sendAll(ev, 32);
 }
 
 
@@ -793,9 +798,28 @@ bool SelectionOps::incrReceiveActive(uint32_t wid, uint32_t prop) {
 }
 
 void SelectionOps::incrOnChunk(XProtoContext& ctx, uint32_t wid, uint32_t prop,
+                               uint32_t type, uint8_t format,
                                const uint8_t* data, uint64_t len) {
   auto it = sIncrRecv.find(incrKey(wid, prop));
   if (it == sIncrRecv.end()) return;
+
+  // A fresh INCR announcement on this slot supersedes a stale transfer
+  // (both PRIMARY and CLIPBOARD captures share the (root, UTF8_STRING)
+  // slot).  Drop the stale state and leave the property stored so the
+  // upcoming SelectionNotify starts a new receive — do NOT consume it as
+  // a data chunk (v1.19.36.9 field failure: the CLIPBOARD announcement
+  // was eaten as a 4-byte chunk of the abandoned PRIMARY transfer).
+  if (type == atom::kINCR && format == 32) {
+#ifndef NDEBUG
+    TS_DBG("[CLIPBOARD] INCR receive SUPERSEDED: sel=%u dropped (%zu bytes "
+            "accumulated) — new announcement on wid=0x%08X prop=%u\n",
+            (unsigned)it->second.selection, it->second.data.size(),
+            (unsigned)wid, (unsigned)prop);
+#endif
+    sIncrRecv.erase(it);
+    return;
+  }
+
   IncrRecvState& st = it->second;
 
   if (len > 0) {
