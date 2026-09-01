@@ -21,6 +21,7 @@
 #include "Core/KeySyms.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/X11ExtOpcodes.hpp"
+#include "Core/X11Modifiers.hpp"
 
 extern "C" {
 #include "SwiftX11Bridge.h"
@@ -268,7 +269,10 @@ namespace x11 {
     // Root coords (global, top-left)
     const int32_t rootx32 = in.root_x_u;
     const int32_t rooty32 = in.root_y_u;
-    const uint16_t mask = (uint16_t)(in.buttons | in.mods);
+    // Wire-format state: internal button bits 0-4 must map to X11
+    // positions 8-12 (raw buttons|mods reported Button1 as ShiftMask —
+    // Java drag loops polling XQueryPointer saw "no buttons held").
+    const uint16_t mask = x11::input::toX11State(in.buttons, in.mods);
     
     // Host-local coords (relative to host_xid view)
     const uint32_t host = in.last_xid;

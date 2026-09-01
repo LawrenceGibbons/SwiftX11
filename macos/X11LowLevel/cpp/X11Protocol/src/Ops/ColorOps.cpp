@@ -260,8 +260,10 @@ void ColorOps::handleAllocColor(XProtoContext& ctx, uint16_t seq, ByteReader& br
     std::lock_guard<std::mutex> lock(cmapMu());
     cmapState().ensureCreated(cmap);
     // For bring-up: deterministic mapping for same rgb isn’t required.
+    // NOTE: pixel 0 is valid TrueColor black — the old
+    // `if (pixel == 0) allocPixel()` fallback handed black requests a
+    // random allocated pixel (dark-red Motif/GTK text).
     pixel = packRGB16ToPixel24(r, g, b);
-    if (pixel == 0) pixel = cmapState().allocPixel();
   }
 
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {

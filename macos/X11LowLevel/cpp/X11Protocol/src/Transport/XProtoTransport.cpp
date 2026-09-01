@@ -250,16 +250,23 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
         if (clientDelta < 0) {
           // Client request seq is also "behind" the floor — this is a
           // 16-bit wrap.  Reset the floor to the current packet seq.
-#ifndef NDEBUG
+          //
+          // ALWAYS logged (also in release): review 2026-08-31 §1.2 argues
+          // a *poisoned* floor (one packet that ever carried bogus bytes
+          // 2-3) takes this branch and matches the post-sleep crash
+          // signature.  Discriminator: a real wrap shows pkt/clientSeq
+          // just past 0 with floor near 65535; a poisoned floor shows an
+          // arbitrary floor value unrelated to wrapping.  This evidence
+          // gates the M3 floor removal (see REMEDIATION_PLAN.md).
           {
-            char lbuf[160];
+            char lbuf[192];
             snprintf(lbuf, sizeof(lbuf),
-                     "[SEQ_WRAP] 16-bit wrap detected: pkt=%u floor=%u clientSeq=%u — resetting floor (fd=%d)\n",
+                     "[SEQ_WRAP] pkt=%u floor=%u clientSeq=%u type=%u — resetting floor (fd=%d)\n",
                      (unsigned)pkt_seq, (unsigned)max_wire_seq_,
-                     (unsigned)clientSeq, client_fd_);
+                     (unsigned)clientSeq,
+                     (unsigned)static_cast<const uint8_t*>(buf)[0], client_fd_);
             x11_ui_push_log(1, lbuf);
           }
-#endif
           max_wire_seq_ = pkt_seq;
           delta = 0; // no correction needed
         }

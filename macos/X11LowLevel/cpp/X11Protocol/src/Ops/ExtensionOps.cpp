@@ -1604,7 +1604,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       rep[1] = 2;                            // server_major_version
       wire::wr16_le(rep.data() + 2, seq);   // sequence
       wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
-      wire::wr16_le(rep.data() + 8, 2);     // server_minor_version (2.2)
+      // v2.0, NOT 2.2: reporting 2.2 lets clients call GrabControl, which
+      // triggers the unresolved Vivado segfault (see CLAUDE.md "XTEST /
+      // GrabControl Crash Investigation").  The v1.19.14 downgrade was
+      // found missing from the code in the 2026-08-31 adversarial review
+      // (docs claimed 2.0, code shipped 2.2) — restored in v1.19.36.8.
+      wire::wr16_le(rep.data() + 8, 0);     // server_minor_version (2.0)
       (void)ctx.reply().sendReplyRaw(rep.data(), rep.size());
       return;
     }

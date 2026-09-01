@@ -396,12 +396,17 @@ When `x11_surface_ensure` detects a surface size change (e.g., initial 64×64 �
 
 **Workaround**: Report XTEST v2.0 — client never calls GrabControl, no crash.
 
-### Clipboard Bridge (v1.19.35)
-- **INCR protocol** for large clipboard transfers (>64KB, up to 4MB)
+**History note (2026-08-31 adversarial review)**: the v1.19.14 downgrade was
+found ABSENT from the shipped code — GetVersion had been replying 2.2 all
+along (lost in a merge). Restored in v1.19.36.8. If the GrabControl crash
+"mysteriously returns", check this reply first.
+
+### Clipboard Bridge (v1.19.35, buffers grown v1.19.36.1)
+- **INCR protocol** for large clipboard transfers (>64KB)
 - **X11→macOS fix**: `sSelPushedCC` reset on SetSelectionOwner prevents permanent push block after macOS Cmd+C
 - **macOS→X11 fix**: Focus-based claim — returning to X11 window after macOS Cmd+C displaces stale PRIMARY/CLIPBOARD ownership so Xlib doesn't short-circuit ConvertSelection
-- **Dynamic buffer**: 4MB clipboard read (was 65KB stack buffer)
-- **PropertyTable cap**: 16MB (was 1MB)
+- **Dynamic buffer**: 12MB clipboard read (65KB stack buffer → 4MB v1.19.35 → 12MB v1.19.36.1)
+- **PropertyTable cap**: 48MB (1MB → 16MB v1.19.35 → 48MB v1.19.36.1)
 
 ### Deferred Map Race Fix (v1.19.35.37)
 - **Blank dialog fix**: Deferred map (tiny windows awaiting flushPendingMaps) no longer sends stale tiny Expose before resize. `post_map` block skipped for deferred maps; SetPresentable sends Expose at real geometry.

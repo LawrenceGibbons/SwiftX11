@@ -49,6 +49,7 @@ static constexpr uint32_t k_MOTIF_WM_HINTS            = 93;
 static constexpr uint32_t kPRIMARY           = 1;
 static constexpr uint32_t kSECONDARY         = 2;
 static constexpr uint32_t kATOM              = 4;
+static constexpr uint32_t kCARDINAL          = 6;
 static constexpr uint32_t kSTRING            = 31;
 static constexpr uint32_t kWM_HINTS          = 35;
 static constexpr uint32_t kWM_NAME           = 39;

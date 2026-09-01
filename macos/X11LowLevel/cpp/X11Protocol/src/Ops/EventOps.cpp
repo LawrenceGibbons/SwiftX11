@@ -571,8 +571,23 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   wire::wr16_le(ev + 28, st);
 
   ev[30] = 0; // mode: NotifyNormal (0)
-  ev[31] = 1; // sameScreen (TRUE) — focus byte is folded into xCrossingEvent in some layouts,
-              // but for our 32-byte wire event union this is acceptable for bring-up.
+
+  // Byte 31 is a packed flags byte: bit0 = focus, bit1 = same_screen.
+  // (The old `ev[31] = 1` claimed focus=True + same_screen=False on every
+  // crossing — toolkits taking the "different screen" branch ignored the
+  // coordinates.)  focus = event window is the focus window or an inferior.
+  uint8_t focusBit = 0;
+  {
+    const uint32_t focusXid = ctx.input().focus_xid;
+    uint32_t cur = wid;
+    for (int depth = 0; cur != 0 && depth < 64; depth++) {
+      if (cur == focusXid) { focusBit = 0x01; break; }
+      WindowView v{};
+      if (!ctx.windows().snapshot(cur, v)) break;
+      cur = v.parent_xid;
+    }
+  }
+  ev[31] = (uint8_t)(0x02 | focusBit); // same_screen=True | focus
 
 #ifdef X11_TRACE_VERBOSE
   TS_FPRINTF("[CROSS] wid=0x%08X %s time=%u root=(%d,%d) event=(%d,%d) state=0x%04X\n",

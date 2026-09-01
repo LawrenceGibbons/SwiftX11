@@ -674,6 +674,18 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
 
     if (ext_words < 2) return DispatchResult::Error; // minimum is 2 words (8 bytes: 4 hdr + 4 ext_len)
 
+    // Clamp to the advertised BigReqEnable maximum (1M words = 4MB).
+    // Previously unbounded: a corrupt length field drove a resize() of up
+    // to ~17GB outside dispatch's try/catch → std::terminate took down the
+    // whole app (review 2026-08-31 §1.6).  A legitimate client never
+    // exceeds the advertised max; treat overflow as a protocol error.
+    static constexpr uint32_t kMaxExtWords = 1u << 20; // == BigReqEnable reply
+    if (ext_words > kMaxExtWords) {
+      TS_FPRINTF("[X11] BIG-REQUESTS length %u words exceeds advertised max %u — dropping client fd=%d\n",
+                 ext_words, kMaxExtWords, fd);
+      return DispatchResult::Error;
+    }
+
     // Total bytes = ext_words * 4, already consumed 4 (hdr) + 4 (ext_len) = 8
     const size_t total = (size_t)ext_words * 4u;
     cs.buf_need = total - 8u;
@@ -926,9 +938,13 @@ void XProtoDaemon::drainHostCommands() {
         }
 
         // UnmapNotify (type 18)
+        // Stamp lastSeq(): these were the last zero-seq emitters (found in
+        // the 2026-08-31 review §1.3) — a raw seq=0 event poisons the
+        // client's 16-bit widening and arms the SEQ_WRAP misfire.
         {
           std::array<uint8_t, 32> ev{};
           ev[0] = 18; // UnmapNotify
+          wire::wr16_le(ev.data() + 2, server_->ctx().transport().lastSeq());
           wire::wr32_le(ev.data() + 4, c.xid);  // event window
           wire::wr32_le(ev.data() + 8, c.xid);  // window
           ev[12] = 0; // from_configure = false
@@ -939,6 +955,7 @@ void XProtoDaemon::drainHostCommands() {
         {
           std::array<uint8_t, 32> ev{};
           ev[0] = 17; // DestroyNotify
+          wire::wr16_le(ev.data() + 2, server_->ctx().transport().lastSeq());
           wire::wr32_le(ev.data() + 4, c.xid);  // event window
           wire::wr32_le(ev.data() + 8, c.xid);  // window
           server_->ctx().transport().sendAll(ev.data(), 32);

@@ -555,8 +555,10 @@ void XProtoServer::flushPendingMaps() {
         x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
         x11::wire::wr32_le(extents + 12, 0);  // bottom
       }
+      // Type must be CARDINAL (was ATOM — Java's type-checked GetProperty
+      // saw a mismatch and computed zero frame insets).
       PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
-                                           x11::atom::kATOM, 32, extents, 16);
+                                           x11::atom::kCARDINAL, 32, extents, 16);
     }
 
     // Note: ConfigureNotify + Expose are NOT queued here — the caller

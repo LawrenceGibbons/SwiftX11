@@ -825,7 +825,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
       x11::wire::wr32_le(extents + 12, 0);  // bottom
     }
     PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
-                                         x11::atom::kATOM /*CARDINAL*/, 32,
+                                         x11::atom::kCARDINAL, 32,
                                          extents, 16);
   }
 }

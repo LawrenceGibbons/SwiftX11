@@ -403,6 +403,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 /*aboveSibling*/ 0,
                 pv.x, pv.y, pv.w, pv.h,
                 pv.border_width, pv.override_redirect);
+              // ICCCM: WM-synthesized ConfigureNotify must carry the
+              // send_event bit — Swing branches on it for inset/coordinate
+              // interpretation of the rescue geometry.
+              ev[0] |= 0x80;
               (void)ctx.transport().sendEvent32(c.xid, ev.data());
 #ifndef NDEBUG
               TS_FPRINTF("[GEOM] wid=0x%08X source=POST_MAP_CONFIGNOTIFY size=%ux%u@(%d,%d)\n",

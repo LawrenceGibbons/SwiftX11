@@ -1752,12 +1752,14 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     };
     std::vector<GlyphCmd> cmds;
 
-    // Parse GlyphElt items
+    // Parse GlyphElt items.
+    // NOTE: len==0 is NOT a terminator — the spec uses empty elts to carry
+    // additional dx/dy deltas (Xlib emits them when an offset exceeds
+    // ±32767); fall through so the delta below is applied and the glyph
+    // loop simply runs zero times.
     while (br.remaining() >= 8) {
       const uint8_t len = br.readU8();
       br.skip(3); // pad
-
-      if (len == 0) break; // end marker
 
       if (len == 255) {
         // Glyphset switch
