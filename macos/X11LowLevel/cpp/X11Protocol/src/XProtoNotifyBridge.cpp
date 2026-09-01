@@ -263,7 +263,34 @@ void postMotion(uint32_t host_xid,
     // When hostCorrected is true, the pointer moved to a different
     // top-level window (popup menu), so ignore drag_xid and route
     // to the actual window under the pointer.
+    //
+    // Mask filtering (review 2026-08-31 §2.6): the implicit grab only
+    // reports motion the grab window selected for.  If drag_xid didn't
+    // select any motion mask, climb the parent chain for an ancestor
+    // that did (mirrors ButtonPress propagation) instead of forcing
+    // unwanted events on the grab window while a selecting ancestor
+    // starves.
     target = ctx->input().drag_xid;
+    {
+      const uint32_t held = ctx->input().buttons;
+      auto wantsMotionAt = [&](uint32_t xid) -> bool {
+        const x11::WindowView* vw = ctx->window(xid);
+        return vw && grabWantsMotion((uint16_t)vw->event_mask, held);
+      };
+      if (!wantsMotionAt(target)) {
+        uint32_t cur = target;
+        uint32_t found = 0;
+        for (int hop = 0; hop < 64 && cur; hop++) {
+          x11::WindowView vw{};
+          if (!ctx->windows().snapshot(cur, vw)) break;
+          cur = vw.parent_xid;
+          if (cur && wantsMotionAt(cur)) { found = cur; break; }
+        }
+        if (found) target = found;
+        // If nobody in the chain wants motion, keep drag_xid — the
+        // downstream mask check will drop it as before.
+      }
+    }
   } else {
     // Normal case: route based on WINDOW-LOCAL coords
     target = pick_motion_target(*ctx, host_xid, win_x, win_y);

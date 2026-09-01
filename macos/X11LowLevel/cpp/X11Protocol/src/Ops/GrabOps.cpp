@@ -14,7 +14,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
-#include "Utils/WireLE.hpp"
+#include "Utils/MachTime.hpp"
 
 namespace x11 {
 
@@ -81,7 +81,7 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
 
   (void)br.readU32(); // confineTo
   (void)br.readU32(); // cursor
-  (void)br.readU32(); // time
+  const uint32_t time = br.readU32();
 
   br.skip(br.remaining());
 
@@ -94,13 +94,22 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
     }
   }
 
-  ctx.grabs().setPointerGrab(grabWindow, ownerEvents != 0, eventMask);
+  // Ownership-aware: a grab held by another client returns AlreadyGrabbed
+  // instead of being silently stomped (review §2.5).
+  const uint8_t status = ctx.grabs().tryPointerGrab(
+      grabWindow, ownerEvents != 0, eventMask,
+      ctx.transport().clientFd(), time);
 
-  // GrabPointer reply: status=GrabSuccess (same pattern as GrabKeyboard).
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-    rep[1] = 0; // GrabSuccess
+    rep[1] = status;
   });
 
+#ifndef NDEBUG
+  if (status != x11::kGrabSuccess) {
+    TS_DBG("[GrabPointer] AlreadyGrabbed: fd=%d wanted 0x%08X\n",
+           ctx.transport().clientFd(), (unsigned)grabWindow);
+  }
+#endif
 }
 
 // -----------------------------
@@ -112,7 +121,10 @@ void GrabOps::handleUngrabPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
   if (br.remaining() >= 4) (void)br.readU32(); // time
   br.skip(br.remaining());
 
-  ctx.grabs().clearPointerGrab();
+  // Only releases this client's own grab (review §2.5 — Java calls
+  // XUngrabPointer(CurrentTime) liberally; it must not destroy another
+  // client's active menu/drag grab).
+  ctx.grabs().clearPointerGrab(ctx.transport().clientFd());
 }
 
 // -----------------------------
@@ -219,6 +231,17 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
     }
   }
 
+  // Ownership-aware (review §2.5): refuse if another client holds the
+  // keyboard grab.  Also skip the focus-event choreography on refusal.
+  const uint8_t status = ctx.grabs().tryKeyboardGrab(
+      grabWindow, ctx.transport().clientFd());
+  if (status != x11::kGrabSuccess) {
+    (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+      rep[1] = status;
+    });
+    return;
+  }
+
   // X11 spec: When a keyboard grab activates, the server generates
   // FocusIn(mode=Grab) to the grab window and FocusOut(mode=Grab)
   // to the old focus window.
@@ -244,9 +267,6 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
     (void)ctx.transport().sendEvent32(grabWindow, ev);
   }
 
-  // Store keyboard grab window for UngrabKeyboard focus events
-  ctx.grabs().setKeyboardGrab(grabWindow);
-
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
     rep[1] = 0; // GrabSuccess
   });
@@ -260,7 +280,7 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
 void GrabOps::handleUngrabKeyboard(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
 
-  const uint32_t grabWin = ctx.grabs().clearKeyboardGrab();
+  const uint32_t grabWin = ctx.grabs().clearKeyboardGrab(ctx.transport().clientFd());
   const uint32_t focusWin = ctx.input().focus_xid;
 
   if (grabWin && grabWin != focusWin) {

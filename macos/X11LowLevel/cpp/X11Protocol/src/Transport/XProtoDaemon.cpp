@@ -572,6 +572,12 @@ void XProtoDaemon::removeClient(int fd) {
     server_->ctx().grabs().removeForWindows(owned);
   }
 
+  // Release any grabs the dying client still holds — on BOTH paths,
+  // including RetainPermanent (review §6.5: an XDND helper dying
+  // mid-drag left the active pointer grab installed, freezing all
+  // pointer input).
+  server_->ctx().grabs().clearOwnedBy(fd);
+
   // Cancel any active INCR clipboard transfers for this client
   x11::IncrTransfer::instance().cancelForFd(fd);
 

@@ -859,6 +859,15 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             break;
           }
 
+          // Implicit-grab target (review 2026-08-31 §2.6): the spec's
+          // automatic grab belongs to the window the press was DELIVERED
+          // to, not the pre-propagation pick.  InputState::button() above
+          // set drag_xid = under; retarget to deliver so drag motion
+          // routes to the window that actually received the ButtonPress.
+          if (c.isDown && ctx.input().drag_xid == under && deliver != under) {
+            ctx.input().drag_xid = deliver;
+          }
+
           // child field: per X11 spec, "child is set to the child of the
           // event window that is the ancestor of (or is) the source window."
           // This means the IMMEDIATE child of deliver, not the deepest descendant.
@@ -1014,6 +1023,25 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             const bool wantRelease = (mask & x11::mask::KeyRelease) != 0;
             return c.isDown ? wantPress : wantRelease;
           };
+
+          // Active keyboard grab takes precedence over focus routing
+          // (review 2026-08-31 §2.2 — Swing popup menus/combos grab the
+          // keyboard for arrow/Escape navigation; routing purely by focus
+          // sent those keys to the frame instead).  Grabbed keys are
+          // delivered regardless of the grab window's event mask, per the
+          // spec's active-grab semantics.
+          const uint32_t kbGrab = ctx.grabs().getKeyboardGrab();
+          if (kbGrab != 0 && ctx.window(kbGrab)) {
+            srv->eventOps().sendKeyEvent(ctx, kbGrab,
+                                         c.isDown != 0,
+                                         x11_kc,
+                                         ctx.input().buttons, c.modsMask);
+            srv->eventOps().sendXI2KeyEvent(ctx, kbGrab,
+                                            c.isDown != 0,
+                                            x11_kc,
+                                            ctx.input().buttons, c.modsMask);
+            break;
+          }
 
           // Primary: keyboard focus (only if it belongs to this host)
           uint32_t target = 0;
