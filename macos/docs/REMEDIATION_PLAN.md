@@ -153,6 +153,23 @@ clipboard, portal-gtk dialogs.
   add a note that it was found absent 2026-08-31 and restored.
 - Note in CLAUDE.md that `src/Extensions/*.cpp` are dead until M4 removes them.
 
+## Field observations (2026-09-01, testing v1.19.36.10)
+
+- **Large tcl-console copy CONFIRMED FIXED** in .10 (INCR receive:
+  3-chunk 595KB transfer, both PRIMARY and CLIPBOARD, pushed to
+  NSPasteboard). The .9 stall was sendEvent32 dropping root-targeted
+  acks; the CLIPBOARD announcement collision is also handled.
+- **Dialogs at upper-left INCREASED after .8** — suspected M0 regression:
+  making `_NET_FRAME_EXTENTS` readable (CARDINAL) exposed the fabricated
+  top=28 inset to Java for the first time. Fixed in .11: extents now all
+  zeros (matching the documented non-reparenting intent). Retest; any
+  residual upper-left placements are the §3 PPosition-zero defect (M1).
+- **Vivado window doesn't shrink when moving to a smaller monitor** —
+  X11 apps don't self-resize on RRScreenChangeNotify; a real WM would
+  clamp the window. As pseudo-WM we could clamp the NSWindow to the new
+  screen's visible frame on ScreenLayoutChanged (Swift side). Queue with
+  M4 RANDR work.
+
 ## Field observations (2026-09-01, testing v1.19.36.8)
 
 - **tcl console copy of LARGE selections fails** → root-caused same day:

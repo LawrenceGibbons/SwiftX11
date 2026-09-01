@@ -459,7 +459,7 @@ root cause plus one latent CopyArea bug:
 - **hw_ila drag-and-drop**: ✅ FIXED in v1.19.36 (OR exemption + RetainPermanent + grab motion-mask).
 - **Docker dbus**: ✅ FIXED — `dbus-daemon --session` bypasses stale X11 root window property.
 - **vlm scrollbars/scroll corruption**: ✅ FIXED in v1.19.36.5–.6 (RENDER picture clips + CopyArea same-row overlap; see "RENDER Picture Clips + Scroll Blits").
-- **Vivado tcl console shift-click copy**: highlight works but copy doesn't reach the macOS pasteboard. Under investigation — `[CLIPBOARD] Capture FAILED` traces in place since v1.19.36.1; needs a repro run with the debug build. (MEDIUM)
+- **Vivado tcl console large-selection copy**: ✅ FIXED in v1.19.36.9–.10 — large selections arrive via the INCR protocol, which the proactive capture now implements (chunked receive on the root proxy, acks via direct sendAll since root has no WindowView). Selection *size* was the trigger, not shift-click vs drag.
 
 ### Next Major Tasks
 See `docs/TODO.md` for the comprehensive roadmap. Remaining priorities:

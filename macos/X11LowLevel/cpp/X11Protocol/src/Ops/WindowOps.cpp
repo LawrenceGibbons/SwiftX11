@@ -817,13 +817,9 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
 
   // _NET_FRAME_EXTENTS: WM frame decoration sizes.
   {
+    // All zeros — non-reparenting server, content-relative coordinates
+    // (see XProtoServer.cpp counterpart for the top=28 history).
     uint8_t extents[16] = {0};
-    if (!vw.override_redirect) {
-      x11::wire::wr32_le(extents + 0, 0);   // left
-      x11::wire::wr32_le(extents + 4, 0);   // right
-      x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
-      x11::wire::wr32_le(extents + 12, 0);  // bottom
-    }
     PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                          x11::atom::kCARDINAL, 32,
                                          extents, 16);

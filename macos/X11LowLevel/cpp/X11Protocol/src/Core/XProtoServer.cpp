@@ -548,15 +548,12 @@ void XProtoServer::flushPendingMaps() {
 
     // _NET_FRAME_EXTENTS
     {
+      // All zeros: non-reparenting server, X11 positions are content-
+      // relative (the Cocoa title bar lives outside X11 coordinate space).
+      // The old top=28 was invisible while the property carried the wrong
+      // type (ATOM); once v1.19.36.8 made it readable (CARDINAL), the
+      // phantom 28px inset skewed Java dialog placement.
       uint8_t extents[16] = {0};
-      if (!vw.override_redirect) {
-        x11::wire::wr32_le(extents + 0, 0);   // left
-        x11::wire::wr32_le(extents + 4, 0);   // right
-        x11::wire::wr32_le(extents + 8, 28);  // top (title bar)
-        x11::wire::wr32_le(extents + 12, 0);  // bottom
-      }
-      // Type must be CARDINAL (was ATOM — Java's type-checked GetProperty
-      // saw a mismatch and computed zero frame insets).
       PropertyTable::instance().setReplace(wid, x11::atom::k_NET_FRAME_EXTENTS,
                                            x11::atom::kCARDINAL, 32, extents, 16);
     }
