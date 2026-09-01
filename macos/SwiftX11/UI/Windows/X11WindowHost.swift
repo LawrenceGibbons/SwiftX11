@@ -76,8 +76,16 @@ final class X11View: NSView {
   
   // MARK: -- interface to X11
   private var buttonMask: UInt32 = 0
-  private var optionClickButton: UInt8 = 1  // tracks Option+click → button 2 remap
-  private var ctrlClickSuppressRight = false  // suppress duplicate rightMouseDown from Ctrl+click
+  // Button identity for the current physical left-button press, decided
+  // ONCE at mouseDown from the modifiers (Ctrl→3, Option→2, else 1) and
+  // reused symmetrically by mouseUp/mouseDragged (review 2026-08-31 §2.11).
+  private var leftPressButton: UInt8 = 1
+  // True while a Ctrl+click press is being delivered as button 3 via the
+  // mouseDown/mouseUp pair; any rightMouse events AppKit also generates
+  // for the same physical press are suppressed (never latched — the old
+  // one-shot flag could swallow the NEXT genuine right-click).
+  private var ctrlClickActive = false
+  private var suppressRightDownUntil: TimeInterval = 0
   private var scrollAccumX: CGFloat = 0
   private var scrollAccumY: CGFloat = 0
   private var lastModifierFlags: NSEvent.ModifierFlags = []
@@ -1058,34 +1066,45 @@ final class X11View: NSView {
   override func mouseDown(with event: NSEvent) {
     lastInsideForSyntheticCrossing = true
     requestFirstResponderCoalesced()
-    // On macOS, Ctrl+click generates BOTH mouseDown AND rightMouseDown.
-    // We send button 1 + ControlMask (which triggers xterm's Ctrl+Btn1
-    // popup-menu translation). Suppress the duplicate rightMouseDown
-    // that macOS will also fire, to avoid confusing Xt event dispatch.
+    // Button identity decided ONCE per physical press (macOS conventions):
+    //   Ctrl+click   → button 3 (right-click; restores v1.9.6 behavior —
+    //                  a later revision remapped this to button 1+Ctrl for
+    //                  xterm's Ctrl<Btn1> menus, breaking right-click in
+    //                  Vivado; xterm's VT menu remains on Ctrl+Btn3)
+    //   Option+click → button 2 (middle; Xaw scrollbar thumb drag etc.)
+    //   otherwise    → button 1
+    let btn: UInt8
     if event.modifierFlags.contains(.control) {
-      ctrlClickSuppressRight = true
+      btn = 3
+      // AppKit may ALSO synthesize rightMouseDown/right­MouseUp for a
+      // Ctrl+click; suppress those for the duration of this press (plus a
+      // short window), never latched beyond it.
+      ctrlClickActive = true
+      suppressRightDownUntil = event.timestamp + 0.25
+    } else if event.modifierFlags.contains(.option) {
+      btn = 2
+    } else {
+      btn = 1
     }
-    // Option+click → button 2 (middle mouse) for Xaw scrollbar thumb drag etc.
-    let btn: UInt8 = event.modifierFlags.contains(.option) ? 2 : 1
-    optionClickButton = btn   // remember for mouseUp / mouseDragged
+    leftPressButton = btn   // remember for mouseUp / mouseDragged
     buttonMask |= bitForButton(Int(btn))
     sendButton(true, button: btn, event)
   }
 
   override func mouseUp(with event: NSEvent) {
-    let btn = optionClickButton
-    optionClickButton = 1     // reset
+    let btn = leftPressButton
+    leftPressButton = 1     // reset
+    ctrlClickActive = false
     // report release while still "down", then clear
     sendButton(false, button: btn, event)
     buttonMask &= ~bitForButton(Int(btn))
   }
-  
+
   override func rightMouseDown(with event: NSEvent) {
-    // If this rightMouseDown was triggered by Ctrl+click, mouseDown already
-    // sent button 1 + ControlMask. Suppress this duplicate button 3 event
-    // to avoid confusing Xt's popup-menu grab action dispatch.
-    if ctrlClickSuppressRight {
-      ctrlClickSuppressRight = false
+    // Suppress the rightMouseDown AppKit synthesizes for a Ctrl+click —
+    // that press is already being delivered as button 3 by mouseDown.
+    if ctrlClickActive || event.timestamp < suppressRightDownUntil {
+      suppressRightDownUntil = 0
       return
     }
     lastInsideForSyntheticCrossing = true
@@ -1093,9 +1112,12 @@ final class X11View: NSView {
     buttonMask |= bitForButton(3)
     sendButton(true, button: 3, event)
   }
-  
+
   override func rightMouseUp(with event: NSEvent) {
-    // Only send release if button 3 was actually pressed (not suppressed by Ctrl+click)
+    // A Ctrl+click press releases via mouseUp; ignore the synthesized
+    // rightMouseUp so button 3 isn't double-released.
+    if ctrlClickActive { return }
+    // Only send release if button 3 was actually pressed
     guard buttonMask & bitForButton(3) != 0 else { return }
     sendButton(false, button: 3, event)
     buttonMask &= ~bitForButton(3)

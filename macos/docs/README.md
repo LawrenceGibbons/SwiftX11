@@ -111,6 +111,20 @@ See [CLAUDE.md](macos/CLAUDE.md) for detailed architecture documentation.
 | Vivado | ✅ Working | Full GUI, menus, dialogs, banner, clipboard |
 | Vitis | ✅ Working | Electron/Theia IDE, menus, file dialogs |
 
+## Mouse Buttons
+
+macOS gestures map to X11 buttons following macOS conventions:
+
+| Gesture | X11 button |
+|---------|-----------|
+| Click | Button 1 (left) |
+| Ctrl + Click | Button 3 (right-click) |
+| Two-finger click / right button | Button 3 (right-click) |
+| Option + Click | Button 2 (middle) — paste, scrollbar thumb drag |
+
+The button identity is decided when the press starts and holds for the
+whole click-drag-release, so Ctrl+click drags deliver button-3 motion.
+
 ## Display Number
 
 SwiftX11 runs on **display :1** (TCP port 6001) to avoid conflict with XQuartz on :0. Set `DISPLAY=127.0.0.1:1` in your shell profile.

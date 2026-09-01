@@ -452,7 +452,7 @@ root cause plus one latent CopyArea bug:
 - **Startup dialogs**: Metal GPU check (critical, exits) + missing fonts check (warning, continue or quit).
 
 ### Known Issues (v1.19.36)
-- **Ctrl+click regression**: Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19. (MEDIUM)
+- **Ctrl+click regression**: ✅ FIXED in v1.19.36.16 — a later revision had remapped Ctrl+click to button 1+Ctrl for xterm's Ctrl<Btn1> menus and its one-shot right-suppression flag could latch and swallow the next genuine right-click. Button identity is now decided once per physical press (Ctrl→3, Option→2, else 1) with symmetric down/up; rightMouse events AppKit synthesizes for a Ctrl+click are suppressed only within that press.
 - **XI2 wire corruption**: Enabling XI2 crashes Electron. Event format fixed but delivery path has sequence regression. Global xi2_root_mask needs per-client tracking. (LOW — workaround in place)
 - **xterm `Ctrl+V` paste**: Not a SwiftX11 bug. xterm's `insert-selection` translation lives on the VT100 widget and only fires when X11 focus is on that widget; xterm doesn't call `XSetInputFocus` to put focus there. Workarounds: middle-click paste (Option+click on Magic Mouse), Shift+Insert, or add `XTerm*translations: #override Ctrl<Key>v: insert-selection(CLIPBOARD,PRIMARY)` to `~/.Xresources`.
 - **License Manager glyphs**: ✅ FIXED in v1.19.36 (ARGB32 component-alpha).

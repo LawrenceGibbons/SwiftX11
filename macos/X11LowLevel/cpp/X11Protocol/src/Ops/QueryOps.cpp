@@ -824,9 +824,27 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
     }
   }
 
+  // Spec: `child` = the mapped direct child of dst containing the point,
+  // topmost wins (children_order_ is bottom→top, so last match wins).
+  // Was hardcoded to None — AWT's XDnD descends the hierarchy through
+  // this field, so drop-target discovery terminated at the toplevel
+  // (review 2026-08-31 §2.10).
+  uint32_t childWin = 0;
+  for (uint32_t c : ctx.windows().childrenInStackOrder(dstWin)) {
+    WindowView cv{};
+    if (!ctx.windows().snapshot(c, cv) || !cv.mapped) continue;
+    const int32_t cx0 = (int32_t)cv.x;
+    const int32_t cy0 = (int32_t)cv.y;
+    const int32_t cx1 = cx0 + (int32_t)cv.w + 2 * (int32_t)cv.border_width;
+    const int32_t cy1 = cy0 + (int32_t)cv.h + 2 * (int32_t)cv.border_width;
+    if (dstX >= cx0 && dstX < cx1 && dstY >= cy0 && dstY < cy1) {
+      childWin = c;
+    }
+  }
+
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
     rep[1] = 1; // sameScreen
-    wire::wr32_le(rep.data() + 8, 0); // child = None
+    wire::wr32_le(rep.data() + 8, childWin);
     wire::wr16_le(rep.data() + 12, (uint16_t)(int16_t)dstX);
     wire::wr16_le(rep.data() + 14, (uint16_t)(int16_t)dstY);
   });
