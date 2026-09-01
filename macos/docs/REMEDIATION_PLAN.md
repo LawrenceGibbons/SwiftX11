@@ -153,6 +153,23 @@ clipboard, portal-gtk dialogs.
   add a note that it was found absent 2026-08-31 and restored.
 - Note in CLAUDE.md that `src/Extensions/*.cpp` are dead until M4 removes them.
 
+## Field observations (2026-09-01, testing v1.19.36.8)
+
+- **tcl console copy of LARGE selections fails** → root-caused same day:
+  Java uses INCR above its size threshold; our proactive capture had no
+  INCR receive. Fixed in v1.19.36.9. (Selection size, not shift-click vs
+  drag, was the discriminator.)
+- **vlm column reorder drag doesn't work** (width-resize drag does) —
+  likely M2 implicit-grab/drag territory (§2.6); retest after M2.
+- **Tooltip text missing on first appearances**, starts working after
+  opening a menu — popup first-paint timing; fold into M1 testing (§3.2
+  surface-realloc re-expose is a candidate mechanism).
+- **Status popups sometimes appear at screen upper-left** — matches the §3
+  supporting defect "PPosition with obsolete-zero fields moves windows to
+  (0,0)"; M1.
+- Dialogs with buttons now center correctly (M0 `_NET_FRAME_EXTENTS` /
+  synthetic ConfigureNotify fixes in effect).
+
 ## Open investigations folded into this plan
 
 - **tcl console shift-click copy** (pre-review open item): first check §6.10
