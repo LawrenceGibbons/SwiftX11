@@ -264,30 +264,42 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
 
     // If we have a desired size and the window should be resized, do it (WM role).
     //
-    // Resize when:
-    //   (a) window is tiny (<50px) — original case; or
-    //   (b) window is at the WM floor size (200×100) and desired is LARGER —
-    //       the floor was applied in CreateWindow for a 1×1 window, and now the
-    //       client's WM_NORMAL_HINTS tells us the real intended size; or
-    //   (c) window size doesn't match desired — the client explicitly set PSize
-    //       or PMinSize and expects the WM to honour it.
-    //
-    // Don't resize if the desired size would shrink the window below the floor.
+    // Rules (tightened v1.19.36.12, review 2026-08-31 §3.1 — the old logic
+    // OR'd the axes and ran on mapped windows, so hints with ONE larger
+    // axis forced a mapped, correctly-sized dialog to the hint pair in
+    // BOTH axes with no ConfigureNotify; AWT often commits hints after
+    // setVisible, making dialogs intermittently shrink):
+    //   - NEVER resize a mapped window from hints.
+    //   - Unmapped: per-axis grow-only (hints can enlarge the pre-map
+    //     skeleton — the 1×1/floor bring-up case — but never shrink an
+    //     axis the client already configured larger).
+    //   - If the server resizes, tell the client with a synthetic
+    //     ConfigureNotify (send_event bit set, ICCCM) so it relayouts.
     bool did_resize = false;
     if (desired_w > 0 && desired_h > 0) {
       WindowView vw{};
-      if (ctx.windows().snapshot(host, vw)) {
-        const bool isTiny = (vw.w < 50 || vw.h < 50);
-        const bool desiredLarger = (desired_w > (int32_t)vw.w || desired_h > (int32_t)vw.h);
-        if (isTiny || desiredLarger) {
-          // No minimum size floor — let the client choose any size.
-          uint16_t nw = (uint16_t)std::min(desired_w, (int32_t)65535);
-          uint16_t nh = (uint16_t)std::min(desired_h, (int32_t)65535);
-          if (nw != vw.w || nh != vw.h) {
-            ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
-            x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
-            did_resize = true;
-          }
+      if (ctx.windows().snapshot(host, vw) && !vw.mapped) {
+        uint16_t nw = (uint16_t)std::min(std::max(desired_w, (int32_t)vw.w), (int32_t)65535);
+        uint16_t nh = (uint16_t)std::min(std::max(desired_h, (int32_t)vw.h), (int32_t)65535);
+        if (nw != vw.w || nh != vw.h) {
+          ctx.windows().setGeometry(host, vw.x, vw.y, nw, nh);
+          x11_ui_push_resize(host, (int32_t)nw, (int32_t)nh);
+          did_resize = true;
+
+          // Synthetic ConfigureNotify: the owner is the current client.
+          uint8_t ev[32] = {};
+          ev[0] = 22 | 0x80; // ConfigureNotify, send_event (WM-synthesized)
+          x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+          x11::wire::wr32_le(ev + 4, host);   // event
+          x11::wire::wr32_le(ev + 8, host);   // window
+          x11::wire::wr32_le(ev + 12, 0);     // above-sibling: None
+          x11::wire::wr16_le(ev + 16, (uint16_t)vw.x);
+          x11::wire::wr16_le(ev + 18, (uint16_t)vw.y);
+          x11::wire::wr16_le(ev + 20, nw);
+          x11::wire::wr16_le(ev + 22, nh);
+          x11::wire::wr16_le(ev + 24, vw.border_width);
+          ev[26] = vw.override_redirect ? 1 : 0;
+          (void)ctx.transport().sendEvent32(host, ev);
         }
       }
     }

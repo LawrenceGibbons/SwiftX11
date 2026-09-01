@@ -441,25 +441,27 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           x11::WindowView sv{};
           bool haveSV = ctx.windows().snapshot(c.xid, sv);
 
-          if (haveSV && !sv.surface_resize_exposed) {
-            // Case A: initial surface growth — full re-expose needed.
-            // The first sendExposeSubtree (at SetPresentable time) may have
-            // run when the surface was at its initial (small) size.  Children
-            // at far offsets were clipped to zero and never rendered.
-            // Uses surface_resize_exposed (not presentable) because
-            // SetPresentable may have already set presentable=true while the
-            // surface was still small.
+          // Gate on the live-resize flag (carried in w_px), NOT the old
+          // one-shot surface_resize_exposed: that flag meant only the
+          // FIRST size change ever re-exposed — a client-driven grow
+          // later in the window's life (dialog resized via
+          // ConfigureWindow) reallocated the surface after Expose had
+          // already been sent, silently dropping the client's paint
+          // (white/clipped dialog; review 2026-08-31 §3.2).
+          const bool inLiveResize = (c.w_px != 0);
+          if (haveSV && !inLiveResize) {
+            // Non-live surface change — full re-expose needed.
 #if X11_TRACE_RESIZE_ENABLED
-            TS_FPRINTF("[SURFACE_RESIZED] xid=0x%08X (initial) -> re-expose subtree\n",
+            TS_FPRINTF("[SURFACE_RESIZED] xid=0x%08X (non-live) -> re-expose subtree\n",
                     (unsigned)c.xid);
 #endif
             sendExposeSubtree(ctx, srv->eventOps(), c.xid);
 
-            // Write full-window damage for the initial expose.
+            // Write full-window damage for the re-expose.
             x11_shared_damage_union(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
             x11_ui_push_damage(c.xid, 0, 0, (int32_t)sv.w, (int32_t)sv.h);
             ctx.windows().markDirty(c.xid);
-            ctx.windows().setSurfaceResizeExposed(c.xid, true);
+            ctx.windows().setSurfaceResizeExposed(c.xid, true); // vestigial
           } else {
             // Case B: live resize — skip EVERYTHING.
             // Do NOT call sendExposeSubtree (destructive BG fill wipes children).
@@ -1295,12 +1297,13 @@ extern "C" void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid)
   srv->hostCmds().push(HostCmd{HostCmdType::SetPresentable, xid, 0, 0});
 }
 
-extern "C" void x11_proto_bridge_surface_resized(uint32_t xid)
+extern "C" void x11_proto_bridge_surface_resized(uint32_t xid, int32_t in_live_resize)
 {
   if (xid == 0) return;
   auto* srv = x11_proto_bridge_get_server();
   if (!srv) return;
-  srv->hostCmds().push(HostCmd{HostCmdType::SurfaceResized, xid, 0, 0});
+  // live-resize flag rides in w_px.
+  srv->hostCmds().push(HostCmd{HostCmdType::SurfaceResized, xid, in_live_resize, 0});
 }
 
 extern "C" void x11_proto_bridge_expose_children(uint32_t xid)

@@ -237,10 +237,14 @@ void x11_surface_update(uint32_t host_xid,
 // If the registry already has a surface of the requested shape, returns
 // the existing generation and is a no-op.  Triggers a SurfaceResized
 // host command for downstream re-expose if the dimensions changed.
+// in_live_resize: 1 when called during a genuine Cocoa live-resize drag
+// (SurfaceResized skips re-expose; RootlessResize follows), 0 otherwise
+// (client-driven growth — triggers a full re-expose).
 uint32_t x11_surface_ensure(uint32_t host_xid,
                             int32_t  w_px,
                             int32_t  h_px,
-                            uint8_t  fill_byte);
+                            uint8_t  fill_byte,
+                            int32_t  in_live_resize);
 
 void x11_surface_clear(uint32_t host_xid);
 

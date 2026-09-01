@@ -47,7 +47,10 @@ void x11_proto_bridge_window_set_presentable_and_flush(uint32_t xid);
 
 // Called when the host surface dimensions change after initial registration.
 // Triggers re-expose of the host + all mapped descendants on the xproto thread.
-void x11_proto_bridge_surface_resized(uint32_t xid);
+/* in_live_resize: 1 when the reallocation happened during a genuine Cocoa
+   live-resize drag (skip re-expose; RootlessResize follows), 0 otherwise
+   (client-driven growth — full re-expose needed, review 2026-08-31 §3.2). */
+void x11_proto_bridge_surface_resized(uint32_t xid, int32_t in_live_resize);
   
 
 // ------- mouse related event bridging  

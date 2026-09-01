@@ -155,7 +155,12 @@ final class X11View: NSView {
     // until they release; the previous buffer (if any) is freed
     // atomically inside the lock.  Returns 0 on allocation failure
     // (silently ignored — next resize tick will retry).
-    _ = x11_surface_ensure(xid, wPx, hPx, fillByte)
+    //
+    // The live-resize flag tells the SurfaceResized handler whether to
+    // re-expose (client-driven growth) or defer to the RootlessResize
+    // path (genuine Cocoa drag).
+    let inLive: Int32 = (self.window?.inLiveResize == true) ? 1 : 0
+    _ = x11_surface_ensure(xid, wPx, hPx, fillByte, inLive)
   }
 
   /// Copy the live host surface bytes into a Swift-owned Data and store

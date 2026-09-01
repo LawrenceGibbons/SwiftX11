@@ -72,14 +72,16 @@ extern "C" void x11_surface_update(uint32_t host_xid,
             hadPrev ? (unsigned)prev.w : 0u, hadPrev ? (unsigned)prev.h : 0u,
             (unsigned)w, (unsigned)h);
 #endif
-    x11_proto_bridge_surface_resized(host_xid);
+    // Legacy path has no live-resize context — treat as non-live (re-expose).
+    x11_proto_bridge_surface_resized(host_xid, 0);
   }
 }
 
 extern "C" uint32_t x11_surface_ensure(uint32_t host_xid,
                                        int32_t  w_px,
                                        int32_t  h_px,
-                                       uint8_t  fill_byte)
+                                       uint8_t  fill_byte,
+                                       int32_t  in_live_resize)
 {
   if (host_xid == 0 || w_px < 1 || h_px < 1) return 0;
   if (w_px > 65535 || h_px > 65535) return 0;
@@ -115,9 +117,10 @@ extern "C" uint32_t x11_surface_ensure(uint32_t host_xid,
              (int)sizeChanged);
 #endif
 
-  // Same downstream re-expose semantics as the legacy path.
+  // Same downstream re-expose semantics as the legacy path, but with the
+  // caller's live-resize context so client-driven growth re-exposes.
   if (sizeChanged) {
-    x11_proto_bridge_surface_resized(host_xid);
+    x11_proto_bridge_surface_resized(host_xid, in_live_resize);
   }
 
   return gen;
