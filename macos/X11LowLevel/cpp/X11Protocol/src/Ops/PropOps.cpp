@@ -231,6 +231,17 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
       pos_x = (int32_t)d32[1];
       pos_y = (int32_t)d32[2];
       has_position = true;
+
+      // Program-specified PPosition (0,0) without user-specified
+      // USPosition is the classic obsolete-hint pattern: toolkits fill
+      // the field from a window's default (unset) origin.  Real WMs
+      // ignore it and place the window themselves; honoring it teleported
+      // dialogs to the screen's top-left corner (review 2026-08-31 §3
+      // supporting defects; "Open Synthesized Design" field report).
+      const bool userSpecified = (flags & 0x01) != 0;
+      if (!userSpecified && pos_x == 0 && pos_y == 0) {
+        has_position = false;
+      }
     }
 
     // Extract size constraints
@@ -312,7 +323,9 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     //     and depend on WM_NORMAL_HINTS for sizing (e.g., Vivado splash banner).
     if (has_position) {
       WindowView vw{};
-      if (ctx.windows().snapshot(host, vw)) {
+      // Same rule as size: hints inform placement at map time (ICCCM);
+      // they must not teleport an already-mapped window.
+      if (ctx.windows().snapshot(host, vw) && !vw.mapped) {
         ctx.windows().setGeometry(host, (int16_t)pos_x, (int16_t)pos_y, vw.w, vw.h);
         x11_ui_push_move(host, pos_x, pos_y);
       }

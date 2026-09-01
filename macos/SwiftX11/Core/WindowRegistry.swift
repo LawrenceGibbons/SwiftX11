@@ -167,10 +167,6 @@ final class WindowRegistry {
   private var childrenByParent: [UInt32: Set<UInt32>] = [:]   // optional, but useful
   private let rootXid: UInt32 = 1
 
-  // avoid rootless_resize thrashing
-  // For each xid, the size we just asked Cocoa to apply via CONFIGURE
-  
-  private var suppressExpectedSize: [UInt32: (w: Int32, h: Int32)] = [:]
   // During initial window construction/layout, Cocoa emits resize callbacks
   // (often 1x1 -> 2x2 jitter). We must NOT echo those back into X11 until
   // the X11 window is mapped/visible.
@@ -178,9 +174,6 @@ final class WindowRegistry {
 
   // WindowRegistry.swift
   private var applyingX11Resize: Set<UInt32> = []
-
-  // Budget of how many callbacks to suppress before giving up (layout can generate intermediate sizes)
-  private var suppressBudget: [UInt32: Int] = [:]
 
   // resize related
   private var pendingX11Resize: [UInt32: (w: CGFloat, h: CGFloat)] = [:]
@@ -1128,9 +1121,10 @@ final class WindowRegistry {
     // Record the size we are *actually sending* to X11 for the HOST.
     lastSentHostSizePtByXid[host] = (w: w, h: h)
 
-    // Suppress Cocoa echo for the HOST (these are keyed by the window id we resize).
-    suppressExpectedSize[host] = (w: w, h: h)
-    suppressBudget[host] = 8   // swallow a few intermediate callbacks
+    // (No echo suppression here: the X11→Cocoa direction sets
+    // suppressCocoaResizeExpected in applyX11Resize.  A second write-only
+    // suppression layer lived here until v1.19.36.14 — its reader,
+    // shouldSuppressRootlessResize, had zero callers.)
 
     DispatchQueue.main.async {
       x11_post_window_resize(host, w, h)
@@ -1176,7 +1170,11 @@ final class WindowRegistry {
     //if let exp = suppressCocoaResizeExpected[xid] {
     if let exp = suppressCocoaResizeExpected[host] {
 
-      if exp.wX11 == wPt && exp.hX11 == hPt {
+      // ±1pt tolerance: non-integer backing scales can leave Cocoa's
+      // reported content size one point off the X11 request, which made
+      // exact-match convergence unreachable and drove every such cascade
+      // into budget exhaustion (review 2026-08-31 §3.3).
+      if abs(exp.wX11 - wPt) <= 1 && abs(exp.hX11 - hPt) <= 1 {
         suppressCocoaResizeExpected.removeValue(forKey: host)
         suppressCocoaResizeBudget.removeValue(forKey: host)
         suppressNextResizeFromCocoa.remove(host)
@@ -1196,13 +1194,32 @@ final class WindowRegistry {
         return
       }
 
-      // Fail-safe: give up suppression if it never converges.
+      // Fail-safe: suppression never converged.  Clear ALL suppression
+      // state — including applyingX11Resize: leaving it set wedged the
+      // echo path permanently (with `exp` gone the convergence branch was
+      // unreachable, so every future Cocoa callback for this host was
+      // swallowed and user resizes stopped reaching X11).  Do NOT echo
+      // this callback's frame immediately either — style-mask churn
+      // yields stale intermediate sizes; debounce so the settled frame
+      // wins (review 2026-08-31 §3.3).
       suppressCocoaResizeExpected.removeValue(forKey: host)
       suppressCocoaResizeBudget.removeValue(forKey: host)
-      suppressNextResizeFromCocoa.insert(host)
+      suppressNextResizeFromCocoa.remove(host)
+      applyingX11Resize.remove(host)
+      latestHostSizePxByXid[host] = (w: wPx, h: hPx)
+      latestHostSizePtByXid[host] = (w: wPt, h: hPt)
 
-      // Important: don’t clear applyingX11Resize here; we’re no longer “expecting”
-      // but we still want to avoid immediate ping-pong for 1 callback.
+      repaintWorkItemByXid[host]?.cancel()
+      let work = DispatchWorkItem { [weak self] in
+        guard let self else { return }
+        guard let sz = self.latestHostSizePtByXid[host] else { return }
+        guard self.mappedXids.contains(host) else { return }
+        self.lastRepaintTimeByXid[host] = CACurrentMediaTime()
+        self.sendConfigureAsync(xid: host, w: sz.w, h: sz.h)
+      }
+      repaintWorkItemByXid[host] = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: work)
+      return
     }
 
     // --------------------------------------------------------------------
@@ -1726,30 +1743,10 @@ final class WindowRegistry {
     }
   }
   
-  @MainActor
-  func shouldSuppressRootlessResize(xid: UInt32, w_pt: Int32, h_pt: Int32) -> Bool {
-      guard let exp = suppressExpectedSize[xid] else { return false }
+  // (shouldSuppressRootlessResize and its write-only suppressExpectedSize/
+  // suppressBudget state were removed in v1.19.36.14 — zero callers;
+  // review 2026-08-31 §3.3.)
 
-      // If we've reached the requested size, consume suppression.
-      if exp.w == w_pt && exp.h == h_pt {
-          suppressExpectedSize.removeValue(forKey: xid)
-          suppressBudget.removeValue(forKey: xid)
-          return true
-      }
-
-      // Otherwise suppress a limited number of callbacks (layout jitter).
-      let b = suppressBudget[xid] ?? 0
-      if b > 0 {
-          suppressBudget[xid] = b - 1
-          return true
-      }
-
-      // Fail-safe: stop suppressing if it never converges.
-      suppressExpectedSize.removeValue(forKey: xid)
-      suppressBudget.removeValue(forKey: xid)
-      return false
-  }
-  
   // WindowRegistry.swift
   @MainActor
   func applyCursor(hostXid: UInt32, shapeRaw: Int32) {

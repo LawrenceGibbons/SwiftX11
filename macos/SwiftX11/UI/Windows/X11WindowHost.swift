@@ -1419,7 +1419,13 @@ final class X11Renderer: NSObject, MTKViewDelegate {
       let wX11 = Int32(max(1, Int((CGFloat(s.w) / scale).rounded(.down))))
       let hX11 = Int32(max(1, Int((CGFloat(s.h) / scale).rounded(.down))))
 
-      self.owner?.ensureHostSurface(wPx: wX11, hPx: hX11)
+      // pendingSize is in PIXELS: the surface must be ensured at pixel
+      // dimensions.  (This used to pass the POINT values, so on Retina
+      // the surface was ensured at half size and immediately re-ensured
+      // at full size by handleDrawableSize — realloc churn that fed the
+      // Cocoa-echo suppression budget; review 2026-08-31 §3.3.)
+      self.owner?.ensureHostSurface(wPx: s.w, hPx: s.h)
+      // X11 logical geometry is in points.
       x11_post_window_resize(self.xid, wX11, hX11)
 
       // If another size landed while we were waiting, keep draining.
