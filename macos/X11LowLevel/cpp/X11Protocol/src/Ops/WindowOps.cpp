@@ -28,7 +28,11 @@
 
 // bridge
 #include "XProtoServerBridge.h"
+#include "Core/XProtoServer.hpp"
 #include <cstdio>   // snprintf
+
+// WM-emulation state cleanup on unmap/destroy (defined in XProtoServerBridge.cpp).
+extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
 extern "C" {
 #include "SwiftX11Bridge.h"
 }
@@ -590,6 +594,12 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
   if (!ctx.windows().exists(wid)) {
     ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::DestroyWindow);
     return;
+  }
+
+  // Clear WM-emulation state (pending map, peak size, post-map-notify)
+  // so a recycled XID can't inherit ghost rescue state (§3.5).
+  if (auto* srv = x11_proto_bridge_get_server()) {
+    srv->clearWindowWmState(wid);
   }
 
   // Snapshot before erase for DestroyNotify delivery
@@ -1155,6 +1165,13 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
   if (!ctx.windows().exists(wid)) {
     ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::UnmapWindow);
     return;
+  }
+
+  // Clear WM-emulation state: a withdrawn dialog legitimately
+  // reconfigured smaller must not trip the stale-peak "shrunk-below-peak"
+  // rescue on re-map (§3.5).
+  if (auto* srv = x11_proto_bridge_get_server()) {
+    srv->clearWindowWmState(wid);
   }
 
   // Snapshot geometry BEFORE unmapping (geometry persists, but we need wasMapped).

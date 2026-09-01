@@ -76,11 +76,20 @@ public:
   HostCommandQueue& hostCmds() { return hostCmds_; }
 
   // ---- SubstructureRedirect emulation ----
-  // Tiny root children defer their map UI push until all buffered client
-  // requests have been processed (emulating quartz-wm MapRequest delay).
-  void addPendingMap(uint32_t wid) { pending_maps_.push_back(wid); }
+  // Tiny root children defer their map UI push until a settle deadline
+  // (v1.19.36.13, review §3.4 — the old flush-on-first-socket-drain raced
+  // TCP segmentation between MapWindow and the trailing ConfigureWindow/
+  // hints, resolving the rescue with no data).
+  void addPendingMap(uint32_t wid);
   bool hasPendingMaps() const { return !pending_maps_.empty(); }
-  // Flush all pending maps: push x11_ui_push_map + resize for each.
+  bool isPendingMap(uint32_t wid) const;
+  void removePendingMap(uint32_t wid);
+  // Clear all per-window WM-emulation state (pending map, peak size,
+  // post-map-notify flag).  Call on UnmapWindow/DestroyWindow so stale
+  // peaks can't rescue a legitimately re-configured re-map, and recycled
+  // XIDs don't inherit ghost state (review §3.5).
+  void clearWindowWmState(uint32_t wid);
+  // Flush pending maps whose settle deadline has passed.
   void flushPendingMaps();
 
   // Peak pre-map size: track the largest ConfigureWindow size seen on each
@@ -131,8 +140,10 @@ private:
   };
   std::array<Entry, 256> table_{};
 
-  // SubstructureRedirect emulation: pending maps.
-  std::vector<uint32_t> pending_maps_;
+  // SubstructureRedirect emulation: pending maps with enqueue timestamps
+  // (flushed once the settle deadline passes).
+  struct PendingMapEntry { uint32_t wid = 0; uint32_t enqueue_ms = 0; };
+  std::vector<PendingMapEntry> pending_maps_;
 
   // Peak pre-map size: largest ConfigureWindow size seen per unmapped root child.
   struct PeakSize { uint16_t w = 0; uint16_t h = 0; };

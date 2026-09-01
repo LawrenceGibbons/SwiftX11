@@ -469,10 +469,13 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // ------------------------------------------------------------------
     // 1.5) Peak pre-map size tracking (SubstructureRedirect emulation)
     // ------------------------------------------------------------------
-    // Track the largest ConfigureWindow size for unmapped root children.
+    // Track the largest ConfigureWindow size for root children.
     // If the client undoes its resize (e.g., Java AWT ConfigureWindow→1×1)
     // before MapWindow, flushPendingMaps uses the peak size instead.
-    if (host != 0 && host == wid && (vmask & 0x0C) && !ctx.windows().isMapped(wid)) {
+    // The unmapped/pending gate lives server-side in notePeakSize —
+    // windows in pending_maps_ are already marked mapped, and the old
+    // call-site isMapped() check went blind for exactly those (§3.4).
+    if (host != 0 && host == wid && (vmask & 0x0C)) {
       ctx.notePeakSize(wid, w, h);
     }
 

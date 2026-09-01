@@ -357,9 +357,59 @@ void XProtoServer::clearTestWindows() {
   impl_->testWindows.clear();
 }
 
+// Settle window for deferred maps: how long after MapWindow we wait for
+// the trailing ConfigureWindow / WM_NORMAL_HINTS before resolving the
+// rescue.  The daemon polls at 50ms, so worst-case latency is ~75ms —
+// imperceptible for dialog presentation, and long enough to span the TCP
+// segmentation gaps that used to resolve rescues with no data (§3.4).
+static constexpr uint32_t kPendingMapSettleMs = 25;
+
+void XProtoServer::addPendingMap(uint32_t wid) {
+  for (const auto& e : pending_maps_) {
+    if (e.wid == wid) return; // already pending
+  }
+  pending_maps_.push_back(PendingMapEntry{wid, x11_now_ms_monotonic()});
+}
+
+bool XProtoServer::isPendingMap(uint32_t wid) const {
+  for (const auto& e : pending_maps_) {
+    if (e.wid == wid) return true;
+  }
+  return false;
+}
+
+void XProtoServer::removePendingMap(uint32_t wid) {
+  pending_maps_.erase(
+      std::remove_if(pending_maps_.begin(), pending_maps_.end(),
+                     [wid](const PendingMapEntry& e) { return e.wid == wid; }),
+      pending_maps_.end());
+}
+
+void XProtoServer::clearWindowWmState(uint32_t wid) {
+  removePendingMap(wid);
+  clearPeakSize(wid);
+  needs_post_map_configure_notify_.erase(wid);
+}
+
 void XProtoServer::flushPendingMaps() {
   if (pending_maps_.empty()) return;
-  for (uint32_t wid : pending_maps_) {
+
+  // Only flush entries whose settle deadline has passed; keep the rest
+  // pending for the next poll cycle.
+  const uint32_t now = x11_now_ms_monotonic();
+  std::vector<PendingMapEntry> still_pending;
+  std::vector<uint32_t> ready;
+  for (const auto& e : pending_maps_) {
+    if ((uint32_t)(now - e.enqueue_ms) >= kPendingMapSettleMs) {
+      ready.push_back(e.wid);
+    } else {
+      still_pending.push_back(e);
+    }
+  }
+  pending_maps_.swap(still_pending);
+  if (ready.empty()) return;
+
+  for (uint32_t wid : ready) {
     WindowView vw{};
     if (!windows_.snapshot(wid, vw)) continue;
 
@@ -565,7 +615,6 @@ void XProtoServer::flushPendingMaps() {
     // sendExposeSubtree under the right client context, delivering a
     // full-window Expose at the real geometry.
   }
-  pending_maps_.clear();
 }
 
 void XProtoServer::pendingMapTrampoline(uint32_t wid, void* user) {
@@ -593,6 +642,17 @@ bool XProtoServer::takeNeedsPostMapConfigureNotify(uint32_t wid) {
 }
 
 void XProtoServer::notePeakSize(uint32_t wid, uint16_t w, uint16_t h) {
+  // Gate here, not at the ConfigureWindow call site: peak must keep
+  // recording while the window sits in pending_maps_ — setMapped(true)
+  // happens before the map is deferred, so the old unmapped-only gate at
+  // the call site went blind exactly during the pending window and the
+  // Configure(real)→Configure(tiny) walk-back left no peak (§3.4).
+  {
+    WindowView vw{};
+    const bool mapped = windows_.snapshot(wid, vw) && vw.mapped;
+    if (mapped && !isPendingMap(wid)) return;
+  }
+
   uint32_t area = (uint32_t)w * (uint32_t)h;
   auto it = peak_sizes_.find(wid);
   if (it == peak_sizes_.end()) {
