@@ -157,6 +157,7 @@ public:
   void setWinGravity(uint32_t xid, uint8_t v);
   void setBitGravity(uint32_t xid, uint8_t v);
   void setBackingStore(uint32_t xid, uint8_t v);
+  void setDontPropagateMask(uint32_t xid, uint32_t mask);
   void setWantsInput(uint32_t xid, bool v);
   void setWantsTakeFocus(uint32_t xid, bool v);
   
@@ -190,6 +191,7 @@ private:
 
     uint32_t event_mask = 0;
     uint32_t xi2_mask = 0;    // XI2 event selection mask (bits = 1 << XI2 event type)
+    uint32_t do_not_propagate_mask = 0; // CWDontPropagate (bit 12)
 
     // X11 window background pixel (ARGB8888, alpha forced opaque).
     uint32_t background_pixel = 0;

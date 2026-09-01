@@ -33,6 +33,47 @@
 
 // WM-emulation state cleanup on unmap/destroy (defined in XProtoServerBridge.cpp).
 extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
+
+namespace {
+
+// §2.9 (review 2026-08-31): when the focus window goes away, revert focus
+// per the stored SetInputFocus revert-to instead of resetting to None —
+// the None reset was the classic "keyboard dead after closing a dialog
+// until the user clicks" bug.
+//   RevertToParent (2):     focus → nearest mapped ancestor; revert-to
+//                           becomes None per spec.
+//   RevertToPointerRoot (1): focus → root (PointerRoot approximation).
+//   RevertToNone (0):        focus → None (old behavior).
+void applyFocusRevert(x11::XProtoContext& ctx, uint32_t parentHint) {
+  auto& in = ctx.input();
+  uint32_t next = 0;
+  if (in.focus_revert_to == 2) {
+    uint32_t cur = parentHint;
+    for (int hop = 0; hop < 64 && cur && cur != x11::kRootXid; hop++) {
+      x11::WindowView pv{};
+      if (!ctx.windows().snapshot(cur, pv)) break;
+      if (pv.mapped) { next = cur; break; }
+      cur = pv.parent_xid;
+    }
+    if (!next) next = x11::kRootXid;
+    in.focus_revert_to = 0; // spec: revert-to becomes None after reverting
+  } else if (in.focus_revert_to == 1) {
+    next = x11::kRootXid;
+  }
+  in.setFocusXid(next);
+  if (next != 0 && next != x11::kRootXid) {
+    uint8_t ev[32] = {};
+    ev[0] = 9;  // FocusIn
+    ev[1] = 0;  // detail = NotifyAncestor
+    x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
+    x11::wire::wr32_le(ev + 4, next);
+    ev[8] = 0;  // mode = NotifyNormal
+    ev[9] = 1;  // same-screen
+    (void)ctx.transport().sendEvent32(next, ev);
+  }
+}
+
+} // namespace
 extern "C" {
 #include "SwiftX11Bridge.h"
 }
@@ -400,6 +441,8 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   bool     has_backing_store = false;
   bool     override_redirect = false; // CWOverrideRedirect (bit 9)
   bool     has_override_redirect = false;
+  uint32_t dnp_mask = 0;              // CWDontPropagate (bit 12)
+  bool     has_dnp_mask = false;
 
   // Consume values for *all* bits set in increasing bit order.
   for (uint32_t bit = 0; bit < 32; bit++) {
@@ -441,8 +484,14 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
       case 11: // CWEventMask
         event_mask = val;
         break;
+      case 12: // CWDontPropagate (review 2026-08-31 §2.8: AWT fences off
+               // ancestors with this on every window; ignoring it caused
+               // duplicate/misattributed events)
+        dnp_mask = val;
+        has_dnp_mask = true;
+        break;
       default:
-        break; // consume but ignore unhandled bits (2, 7, 8, 10, 12-14)
+        break; // consume but ignore unhandled bits (2, 7, 8, 10, 13-14)
     }
   }
   br.skip(br.remaining());
@@ -522,6 +571,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
   // Window management attributes (Phase 4.3)
   if (has_override_redirect) ctx.windows().setOverrideRedirect(wid, override_redirect);
+  if (has_dnp_mask)          ctx.windows().setDontPropagateMask(wid, dnp_mask);
   if (has_win_gravity)       ctx.windows().setWinGravity(wid, win_gravity);
   if (has_bit_gravity)       ctx.windows().setBitGravity(wid, bit_gravity);
   if (has_backing_store)     ctx.windows().setBackingStore(wid, backing_store);
@@ -617,7 +667,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
     fev[8]  = 0;  // mode = NotifyNormal
     fev[9]  = 1;  // same-screen = true
     (void)ctx.transport().sendEvent32(wid, fev);
-    ctx.input().setFocusXid(0);
+    applyFocusRevert(ctx, parentXid);
   }
 
   // Clear WM_TAKE_FOCUS bounce tracking if this window was in the history.
@@ -1207,7 +1257,7 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
     fev[8]  = 0;  // mode = NotifyNormal
     fev[9]  = 1;  // same-screen = true
     (void)ctx.transport().sendEvent32(wid, fev);
-    ctx.input().setFocusXid(0);
+    applyFocusRevert(ctx, cv.parent_xid);
   }
 
   // 1) Update authoritative table

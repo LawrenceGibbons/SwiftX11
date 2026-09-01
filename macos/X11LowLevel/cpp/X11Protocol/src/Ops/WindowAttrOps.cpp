@@ -125,6 +125,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     uint8_t newWinGravity = 0;    bool sawWinGravity = false;
     uint8_t newBackingStore = 0;  bool sawBackingStore = false;
     bool    newOverrideRedirect = false; bool sawOverrideRedirect = false;
+    uint32_t newDnpMask = 0;             bool sawDnpMask = false;
 
     // Value list is 32-bit items in increasing bit order.
     // We must consume every provided value in order, even if we ignore most.
@@ -191,6 +192,11 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           ctx.tracef("[CWA] CWEventMask wid=0x%08X val=0x%08X\n", wid, cur_mask);
           break;
 
+        case 12: // CWDontPropagate (§2.8 — was parsed-but-discarded)
+          newDnpMask = val;
+          sawDnpMask = true;
+          break;
+
         case 14: // CWCursor
           newCursor = val;  // 0 is valid (None / inherit)
           sawCursor = true;
@@ -250,6 +256,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     if (sawWinGravity)       ctx.windows().setWinGravity(wid, newWinGravity);
     if (sawBackingStore)     ctx.windows().setBackingStore(wid, newBackingStore);
     if (sawOverrideRedirect) ctx.windows().setOverrideRedirect(wid, newOverrideRedirect);
+    if (sawDnpMask)          ctx.windows().setDontPropagateMask(wid, newDnpMask);
 
     // ---- Apply event mask only if present ----
     if (!sawEventMask) return;
@@ -629,8 +636,9 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     wire::wr32_le(rep.data() + 32, eventMask);
     wire::wr32_le(rep.data() + 36, eventMask);
 
-    // do-not-propagate-mask + pad
-    wire::wr16_le(rep.data() + 40, 0);
+    // do-not-propagate-mask + pad (§2.8: was hardcoded 0)
+    wire::wr16_le(rep.data() + 40,
+                  (uint16_t)(wv ? (wv->do_not_propagate_mask & 0xFFFF) : 0));
     wire::wr16_le(rep.data() + 42, 0);
 
     // IMPORTANT: this is a single 44-byte reply (not "32 + payload separately")

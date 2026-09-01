@@ -246,7 +246,7 @@ namespace x11 {
   void QueryOps::handleGetInputFocus(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     br.skip(br.remaining());
     const uint32_t f = ctx.input().focus_xid ? ctx.input().focus_xid : 0;
-    (void)ctx.reply().sendGetInputFocusReply(seq, /*revertTo*/0, /*focus*/f);
+    (void)ctx.reply().sendGetInputFocusReply(seq, ctx.input().focus_revert_to, f);
   }
   
   // ---- 38: QueryPointer ----
@@ -941,8 +941,9 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t rev
     (void)ctx.transport().sendEvent32(newFocus, ev);
   }
 
-  (void)revertTo; // stored but unused for now
-
+  // §2.9: remember revert-to so destroy/unmap of the focus window can
+  // revert to Parent/PointerRoot instead of leaving the keyboard dead.
+  ctx.input().focus_revert_to = (revertTo <= 2) ? revertTo : 0;
 }
 
 // ---- 39: GetMotionEvents (stub: empty list) ----

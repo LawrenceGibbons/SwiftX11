@@ -264,15 +264,34 @@ void postMotion(uint32_t host_xid,
     // top-level window (popup menu), so ignore drag_xid and route
     // to the actual window under the pointer.
     //
-    // NOTE (v1.19.36.18): motion is deliberately NOT mask-filtered here.
-    // A v1.19.36.17 attempt to filter with grabWantsMotion() + ancestor
-    // climb (review §2.6) broke xterm's Xaw scrollbar thumb drag: the
-    // scrollbar's STORED event_mask showed no motion bits (though the
-    // real client certainly selected Btn2Motion), so the climb redirected
-    // drag motion to the shell (PointerMotionMask) and the thumb froze.
-    // Until stored event masks are verified trustworthy (M6 per-client
-    // masks work), route unconditionally to drag_xid as before.
+    // Mask filtering (review §2.6, reinstated v1.19.36.19): the implicit
+    // grab only reports motion the grab window selected for; if it
+    // selected none, climb the parent chain like ButtonPress propagation.
+    // (The .18 revert blamed untrustworthy stored masks, but field data
+    // disproved that — xterm's scrollbar mask is 0xA70F with all motion
+    // bits present; the .17 "thumb regression" was a testing slip.)
     target = ctx->input().drag_xid;
+    {
+      const uint32_t held = ctx->input().buttons;
+      auto wantsMotionAt = [&](uint32_t xid) -> bool {
+        const x11::WindowView* vw = ctx->window(xid);
+        return vw && grabWantsMotion((uint16_t)vw->event_mask, held);
+      };
+      if (!wantsMotionAt(target)) {
+        uint32_t cur = target;
+        uint32_t found = 0;
+        for (int hop = 0; hop < 64 && cur; hop++) {
+          x11::WindowView vw{};
+          if (!ctx->windows().snapshot(cur, vw)) break;
+          // do_not_propagate_mask fences motion propagation too (§2.8)
+          if (vw.do_not_propagate_mask & (1u << 6)) break;
+          cur = vw.parent_xid;
+          if (cur && wantsMotionAt(cur)) { found = cur; break; }
+        }
+        if (found) target = found;
+        // Nobody wants motion → keep drag_xid (harmless; masks drop it).
+      }
+    }
   } else {
     // Normal case: route based on WINDOW-LOCAL coords
     target = pick_motion_target(*ctx, host_xid, win_x, win_y);

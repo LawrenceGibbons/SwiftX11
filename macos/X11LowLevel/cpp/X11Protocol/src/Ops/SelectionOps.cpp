@@ -129,7 +129,7 @@ void SelectionOps::claimSelectionsIfMacOSChanged(XProtoContext& ctx) {
         uint8_t ev[32] = {0};
         ev[0] = 29; // SelectionClear
         wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-        wire::wr32_le(ev + 4,  0); // CurrentTime
+        wire::wr32_le(ev + 4, x11_now_ms_monotonic()); // ICCCM: never 0
         wire::wr32_le(ev + 8,  prevOwner);
         wire::wr32_le(ev + 12, sel);
         (void)ctx.transport().sendEvent32(prevOwner, ev);
@@ -233,7 +233,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     uint8_t ev[32] = {0};
     ev[0] = 29; // SelectionClear
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-    wire::wr32_le(ev + 4,  time);
+    wire::wr32_le(ev + 4,  time ? time : x11_now_ms_monotonic()); // ICCCM: never 0
     wire::wr32_le(ev + 8,  prevOwner);  // window
     wire::wr32_le(ev + 12, selection);  // atom
     (void)ctx.transport().sendEvent32(prevOwner, ev);
@@ -323,6 +323,10 @@ static bool serveMacOSClipboard(XProtoContext& ctx,
                                 uint32_t property,
                                 uint32_t time)
 {
+  // ICCCM forbids time=0 in SelectionNotify (§2.13): stamp server time
+  // when the requestor passed CurrentTime.
+  if (time == 0) time = x11_now_ms_monotonic();
+
   // If target == TARGETS, return list of supported target atoms
   if (target == atom::kTARGETS) {
     // Write TARGETS list as CARD32 array (format=32)
@@ -766,7 +770,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
             uint8_t clrEv[32] = {0};
             clrEv[0] = 29; // SelectionClear
             wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
-            wire::wr32_le(clrEv + 4,  0); // CurrentTime
+            wire::wr32_le(clrEv + 4, x11_now_ms_monotonic()); // ICCCM: never 0
             wire::wr32_le(clrEv + 8,  prevSelOwner);  // window
             wire::wr32_le(clrEv + 12, selAtom);        // selection atom
             (void)ctx.transport().sendEvent32(prevSelOwner, clrEv);
@@ -879,7 +883,7 @@ void SelectionOps::incrOnChunk(XProtoContext& ctx, uint32_t wid, uint32_t prop,
       uint8_t clrEv[32] = {0};
       clrEv[0] = 29; // SelectionClear
       wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
-      wire::wr32_le(clrEv + 4,  0); // CurrentTime
+      wire::wr32_le(clrEv + 4, x11_now_ms_monotonic()); // ICCCM: never 0
       wire::wr32_le(clrEv + 8,  prevSelOwner);
       wire::wr32_le(clrEv + 12, selAtom);
       (void)ctx.transport().sendEvent32(prevSelOwner, clrEv);

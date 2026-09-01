@@ -251,6 +251,7 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.h = st->h;
   out.event_mask = st->event_mask;
   out.xi2_mask = st->xi2_mask;
+  out.do_not_propagate_mask = st->do_not_propagate_mask;
   out.background_pixel = st->background_pixel;
   out.has_background_pixel = st->has_background_pixel;
   out.is_parent_relative = st->is_parent_relative;
@@ -459,6 +460,15 @@ void WindowTable::setBackingStore(uint32_t xid, uint8_t v) {
   WindowState* st = findLocked(xid);
   if (!st) return;
   st->backing_store = v;
+  st->serial++;
+}
+
+void WindowTable::setDontPropagateMask(uint32_t xid, uint32_t mask) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->do_not_propagate_mask = mask;
   st->serial++;
 }
 

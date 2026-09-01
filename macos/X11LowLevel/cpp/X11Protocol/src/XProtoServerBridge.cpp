@@ -826,18 +826,28 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           uint32_t deliver = under;
 
           // If under doesn't select, climb to parent until effective host (simple propagation).
+          // do_not_propagate_mask (§2.8): propagation from a window stops
+          // when the event's mask bit is in that window's dnp mask.
+          const uint32_t btnDnpBit = c.isDown ? x11::mask::ButtonPress
+                                              : x11::mask::ButtonRelease;
+          bool btnPropagationFenced = false;
           if (!wantsBtn(deliver)) {
             uint32_t cur = under;
             int safety = 0;
             while (cur && cur != effectiveHost) {
               x11::WindowView vw{};
               if (!ctx.windows().snapshot(cur, vw)) break;
+              if (vw.do_not_propagate_mask & btnDnpBit) {
+                btnPropagationFenced = true;
+                break;
+              }
               cur = vw.parent_xid;
               if (wantsBtn(cur)) { deliver = cur; break; }
               if (++safety > 64) break;
             }
-            // If still not found, try effective host last.
-            if (!wantsBtn(deliver) && wantsBtn(effectiveHost)) deliver = effectiveHost;
+            // If still not found, try effective host last (unless fenced).
+            if (!btnPropagationFenced &&
+                !wantsBtn(deliver) && wantsBtn(effectiveHost)) deliver = effectiveHost;
           }
 
           // If nobody wants it, drop.
@@ -1053,18 +1063,23 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           if (!target) target = host; // fallback: host
 
           // If target doesn't select, climb parent chain until host (simple propagation).
+          // do_not_propagate_mask (§2.8) fences the climb.
+          const uint32_t keyDnpBit = c.isDown ? x11::mask::KeyPress
+                                              : x11::mask::KeyRelease;
           if (!wantsKey(target)) {
             uint32_t cur = target;
             int safety = 0;
+            bool fenced = false;
             while (cur && cur != host) {
               x11::WindowView vw{};
               if (!ctx.windows().snapshot(cur, vw)) break;
+              if (vw.do_not_propagate_mask & keyDnpBit) { fenced = true; break; }
               cur = vw.parent_xid;
               if (wantsKey(cur)) { target = cur; break; }
               if (++safety > 64) break;
             }
-            if (!wantsKey(target) && wantsKey(host)) target = host;
-            if (!wantsKey(target)) break; // nobody wants it
+            if (!fenced && !wantsKey(target) && wantsKey(host)) target = host;
+            if (!wantsKey(target)) break; // nobody wants it (or fenced)
           }
 
         #ifdef X11_TRACE_VERBOSE
