@@ -705,8 +705,20 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           // ---- macOS drag correction ----
           // macOS routes mouseUp to the original mouseDown window. If the
-          // pointer is actually over a higher-stacking window (popup menu),
-          // correct the host using root coords from the last motion event.
+          // pointer is actually over a higher-stacking POPUP (override-
+          // redirect menu/tooltip/combo), correct the host using root
+          // coords from the last motion event.
+          //
+          // ONLY override-redirect windows are valid correction targets
+          // (v1.19.36.24, matching the motion-path fix in .21).  The walk
+          // uses X11 stacking order, which for NORMAL top-level windows is
+          // stale relative to what the user sees (Cocoa owns their
+          // Z-order).  Without this guard, a click on the FRONT window
+          // (e.g. Vitis) was redirected to a normal window merely stacked
+          // "above" it in X11's stale order (e.g. Vivado behind it) — the
+          // click's action went to the wrong app.  macOS already delivers
+          // the press to the correct normal window; only borderless popups
+          // need rescuing.
           uint32_t effectiveHost = host;
           int32_t effectiveWinX = c.win_x_u;
           int32_t effectiveWinY = c.win_y_u;
@@ -720,6 +732,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
               x11::WindowView vw{};
               if (!ctx.windows().snapshot(*it, vw)) continue;
               if (!vw.mapped) continue;
+              if (!vw.override_redirect) continue; // only popups may capture
               int32_t bw = (int32_t)vw.border_width;
               if (rx >= vw.x - bw && rx < vw.x + (int32_t)vw.w + bw &&
                   ry >= vw.y - bw && ry < vw.y + (int32_t)vw.h + bw) {
