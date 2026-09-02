@@ -313,6 +313,70 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   }
 
   // ============================================================================================
+  // PIXMAP path: ZPixmap depth {24,32}  (review 2026-08-31 §4.1)
+  // ============================================================================================
+  // Java2D's XRender pipeline uploads antialiased coverage masks (and Cairo
+  // its "similar" ARGB32 surfaces) via PutImage(ZPixmap) into a pixmap, then
+  // Composites them.  This path was missing entirely — the upload was
+  // silently dropped, the pixmap kept its init value, and used as a mask
+  // every pixel read alpha=0xFF, so every AA Java2D shape filled its
+  // bounding box solid.  This is the single biggest Vivado rendering fix.
+  if (format == 2 && (depth == 24 || depth == 32)) {
+    uint16_t pw = 0, ph = 0;
+    uint32_t* dstPixels = ctx.pixmaps().mutablePixels(drawable, &pw, &ph);
+    if (!dstPixels || pw == 0 || ph == 0) { br.skip(br.remaining()); return; }
+
+    const uint32_t srcStride = (uint32_t)(((uint32_t)width * 4u + 3u) & ~3u);
+    const uint64_t need64 = (uint64_t)srcStride * (uint64_t)height;
+    if (need64 > br.remaining()) { br.skip(br.remaining()); return; }
+    const uint8_t* src = br.ptr();
+    br.skip(br.remaining());
+
+    const int32_t dx0 = (int32_t)dstX;
+    const int32_t dy0 = (int32_t)dstY;
+    // depth-32 keeps the client's real alpha (mask/ARGB32 content); depth-24
+    // has no meaningful alpha, force opaque.  NEVER force opaque on depth-32
+    // — that was effectively what the missing path + 0xFF init did.
+    const bool keepAlpha = (depth == 32);
+
+    // Pixmap pixels are tightly packed (stride == pw); coords are pixmap-local.
+    auto copyRegion = [&](int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1) {
+      cx0 = std::max<int32_t>(cx0, 0);
+      cy0 = std::max<int32_t>(cy0, 0);
+      cx1 = std::min<int32_t>(cx1, (int32_t)pw);
+      cy1 = std::min<int32_t>(cy1, (int32_t)ph);
+      if (cx0 >= cx1 || cy0 >= cy1) return;
+      for (int32_t py = cy0; py < cy1; py++) {
+        const int32_t srcRow = py - dy0;
+        if (srcRow < 0 || srcRow >= (int32_t)height) continue;
+        const uint32_t* sp =
+            reinterpret_cast<const uint32_t*>(src + (size_t)srcRow * srcStride)
+            + (cx0 - dx0);
+        uint32_t* dp = dstPixels + (size_t)py * (size_t)pw + cx0;
+        const int32_t n = cx1 - cx0;
+        if (piFast && keepAlpha) {
+          std::memcpy(dp, sp, (size_t)n * 4u);
+        } else {
+          for (int32_t i = 0; i < n; i++) {
+            const uint32_t s = keepAlpha ? sp[i] : (sp[i] | 0xFF000000u);
+            dp[i] = piFast ? s : x11_apply_rop_argb(dp[i], s, piFn, piPm);
+          }
+        }
+      }
+    };
+
+    if (!piGC.has_clip) {
+      copyRegion(dx0, dy0, dx0 + (int32_t)width, dy0 + (int32_t)height);
+    } else {
+      x11::gcClipForEachRect(piGC, dx0, dy0,
+                             dx0 + (int32_t)width, dy0 + (int32_t)height,
+                             copyRegion);
+    }
+    // Pixmaps are off-screen — no damage/present.
+    return;
+  }
+
+  // ============================================================================================
   // PIXMAP path: XYBitmap/XYPixmap depth=1
   // ============================================================================================
 
