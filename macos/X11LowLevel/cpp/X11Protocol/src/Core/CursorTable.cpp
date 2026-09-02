@@ -59,6 +59,17 @@ bool CursorTable::erase(uint32_t cid) {
   return map_.erase(cid) != 0;
 }
 
+size_t CursorTable::eraseOwnedBy(uint32_t clientBase, uint32_t clientMask) {
+  std::lock_guard<std::mutex> lk(mu_);
+  const uint32_t hi = ~clientMask;
+  size_t n = 0;
+  for (auto it = map_.begin(); it != map_.end(); ) {
+    if ((it->first & hi) == (clientBase & hi)) { it = map_.erase(it); ++n; }
+    else ++it;
+  }
+  return n;
+}
+
 bool CursorTable::recolor(uint32_t cid, RGB16 fg, RGB16 bg) {
   if (cid == 0) return false;
   std::lock_guard<std::mutex> lk(mu_);

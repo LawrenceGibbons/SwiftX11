@@ -68,7 +68,12 @@ namespace x11 {
     void upsert(const GCState& st);
     
     void erase(uint32_t gcXid);
-    
+
+    // Free all GCs owned by a disconnecting client (XID range
+    // [clientBase, clientBase|~clientMask]).  Review §6.4 — GCs leaked on
+    // every client disconnect.
+    size_t eraseOwnedBy(uint32_t clientBase, uint32_t clientMask);
+
   private:
     GCTable() = default;
     

@@ -40,6 +40,11 @@ public:
   // major=54 FreePixmap
   void freePixmap(uint32_t xid);
 
+  // Free all pixmaps owned by a disconnecting client (XID range).
+  // Review §6.4 — pixmaps (w×h×4 each; Java double-buffers heavily)
+  // leaked on every client disconnect.
+  size_t eraseOwnedBy(uint32_t clientBase, uint32_t clientMask);
+
   // Read-only snapshot. Pointers remain valid until next mutation of same pixmap.
   bool snapshot(uint32_t xid, PixmapView& out) const;
 

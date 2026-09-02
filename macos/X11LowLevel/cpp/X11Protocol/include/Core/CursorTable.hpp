@@ -57,6 +57,10 @@ public:
   // Returns true if removed.
   bool erase(uint32_t cid);
 
+  // Free all cursors owned by a disconnecting client (XID range).
+  // Review §6.4 — cursors leaked on every client disconnect.
+  size_t eraseOwnedBy(uint32_t clientBase, uint32_t clientMask);
+
   // Returns false if not found.
   bool recolor(uint32_t cid, RGB16 fg, RGB16 bg);
 

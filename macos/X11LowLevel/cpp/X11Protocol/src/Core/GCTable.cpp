@@ -46,4 +46,15 @@ void GCTable::erase(uint32_t gcXid) {
   map_.erase(gcXid);
 }
 
+size_t GCTable::eraseOwnedBy(uint32_t clientBase, uint32_t clientMask) {
+  std::lock_guard<std::mutex> lock(mu_);
+  const uint32_t hi = ~clientMask; // top-byte rid_base selector
+  size_t n = 0;
+  for (auto it = map_.begin(); it != map_.end(); ) {
+    if ((it->first & hi) == (clientBase & hi)) { it = map_.erase(it); ++n; }
+    else ++it;
+  }
+  return n;
+}
+
 } // namespace x11

@@ -34,6 +34,7 @@
 #include "Core/WindowTable.hpp"
 #include "Core/WindowView.hpp"
 #include "Core/GrabTable.hpp"
+#include "Core/GCTable.hpp"
 #include "Core/InputState.hpp"
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
@@ -604,6 +605,27 @@ void XProtoDaemon::removeClient(int fd) {
     }
     // Remove grabs for destroyed windows
     server_->ctx().grabs().removeForWindows(owned);
+
+    // Free the client's non-window resources too (review §6.4 — these
+    // were leaked on every disconnect; pixmaps are large and Java
+    // double-buffers heavily).  Erase by the client's XID range.
+    if (cs.client) {
+      const uint32_t base = cs.client->ridBase();
+      const uint32_t mask = cs.client->ridMask();
+      const size_t nP = server_->ctx().pixmaps().eraseOwnedBy(base, mask);
+      const size_t nG = x11::GCTable::instance().eraseOwnedBy(base, mask);
+      const size_t nC = server_->ctx().cursors().eraseOwnedBy(base, mask);
+      server_->ctx().fonts().eraseOwnedBy(base, mask);
+#ifndef NDEBUG
+      if (nP || nG || nC) {
+        char rbuf[128];
+        snprintf(rbuf, sizeof(rbuf),
+                 "[X11] freed on disconnect fd=%d: pixmaps=%zu gcs=%zu cursors=%zu\n",
+                 fd, nP, nG, nC);
+        x11_ui_push_log(2, rbuf);
+      }
+#endif
+    }
   }
 
   // Release any grabs the dying client still holds — on BOTH paths,

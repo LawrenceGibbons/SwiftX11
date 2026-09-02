@@ -57,6 +57,17 @@ void PixmapTable::freePixmap(uint32_t xid) {
   map_.erase(xid);
 }
 
+size_t PixmapTable::eraseOwnedBy(uint32_t clientBase, uint32_t clientMask) {
+  std::lock_guard<std::mutex> lock(mu_);
+  const uint32_t hi = ~clientMask;
+  size_t n = 0;
+  for (auto it = map_.begin(); it != map_.end(); ) {
+    if ((it->first & hi) == (clientBase & hi)) { it = map_.erase(it); ++n; }
+    else ++it;
+  }
+  return n;
+}
+
 bool PixmapTable::exists(uint32_t xid) const {
   std::lock_guard<std::mutex> lock(mu_);
   return map_.find(xid) != map_.end();
