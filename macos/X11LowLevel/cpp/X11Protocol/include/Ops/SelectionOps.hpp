@@ -20,6 +20,14 @@ public:
   /// claim PRIMARY+CLIPBOARD so the next paste serves macOS content.
   static void claimSelectionsIfMacOSChanged(XProtoContext& ctx);
 
+  /// Clear selection ownership held by a disconnecting client's windows
+  /// (XID range).  Review §6.3: a dead owner otherwise strands every
+  /// future ConvertSelection (the SelectionNotify never arrives, so the
+  /// requestor blocks its full timeout on each paste); a recycled XID
+  /// could also become an accidental owner.  The root proxy (XID 1,
+  /// macOS-clipboard bridge) is preserved.
+  static void clearOwnersOwnedBy(uint32_t clientBase, uint32_t clientMask);
+
   /// INCR receive (server-as-requestor): large X11→macOS clipboard
   /// captures arrive as chunked INCR transfers.  PropOps calls these from
   /// ChangeProperty so each chunk written to the proxy requestor (root)

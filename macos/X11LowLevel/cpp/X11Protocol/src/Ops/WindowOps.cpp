@@ -706,6 +706,11 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
   // 2) Authoritative C++ state
   ctx.windows().erase(wid);
 
+  // 2b) Purge this window's properties (§6.7 — ghost WM_PROTOCOLS etc.
+  // otherwise outlive the window; a recycled XID would inherit them and,
+  // e.g., receive stray WM_DELETE ClientMessages).
+  x11::PropertyTable::instance().eraseWindow(wid);
+
   // 3) Swift/UI teardown event path
   x11_ui_push_destroy(wid);
 }

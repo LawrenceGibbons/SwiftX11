@@ -78,6 +78,31 @@ public:
     map_.erase(key(wid, atom));
   }
 
+  // Erase all properties on every window in a client's XID range (review
+  // §6.7 — properties survived DestroyWindow/disconnect, so a recycled XID
+  // inherited ghost WM_PROTOCOLS etc.).  key = (wid<<32)|atom, so the wid
+  // is the high 32 bits.
+  size_t eraseWindowsOwnedBy(uint32_t clientBase, uint32_t clientMask) {
+    std::lock_guard<std::mutex> lock(mu_);
+    const uint32_t hi = ~clientMask;
+    size_t n = 0;
+    for (auto it = map_.begin(); it != map_.end(); ) {
+      const uint32_t wid = (uint32_t)(it->first >> 32);
+      if ((wid & hi) == (clientBase & hi)) { it = map_.erase(it); ++n; }
+      else ++it;
+    }
+    return n;
+  }
+
+  // Erase all properties on a single window (for DestroyWindow).
+  void eraseWindow(uint32_t wid) {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (auto it = map_.begin(); it != map_.end(); ) {
+      if ((uint32_t)(it->first >> 32) == wid) it = map_.erase(it);
+      else ++it;
+    }
+  }
+
   bool listAtoms(uint32_t wid, std::vector<uint32_t>& outAtoms) const {
     std::lock_guard<std::mutex> lock(mu_);
     outAtoms.clear();

@@ -37,6 +37,7 @@
 #include "Core/GCTable.hpp"
 #include "Core/InputState.hpp"
 #include "Core/PropertyTable.hpp"
+#include "Ops/SelectionOps.hpp"
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/ScreenLayout.hpp"
 #include "Core/XConstants.hpp"
@@ -616,6 +617,9 @@ void XProtoDaemon::removeClient(int fd) {
       const size_t nG = x11::GCTable::instance().eraseOwnedBy(base, mask);
       const size_t nC = server_->ctx().cursors().eraseOwnedBy(base, mask);
       server_->ctx().fonts().eraseOwnedBy(base, mask);
+      // Properties on the destroyed windows (§6.7 — ghost WM_PROTOCOLS
+      // etc. otherwise outlive the window and haunt a recycled XID).
+      x11::PropertyTable::instance().eraseWindowsOwnedBy(base, mask);
 #ifndef NDEBUG
       if (nP || nG || nC) {
         char rbuf[128];
@@ -633,6 +637,15 @@ void XProtoDaemon::removeClient(int fd) {
   // mid-drag left the active pointer grab installed, freezing all
   // pointer input).
   server_->ctx().grabs().clearOwnedBy(fd);
+
+  // Clear selection ownership held by this client on BOTH paths (§6.3):
+  // even a RetainPermanent-retained window can no longer serve a selection
+  // (its client connection is gone), so a lingering owner would strand
+  // every future ConvertSelection.  The root proxy (XID 1) is preserved.
+  if (cs.client) {
+    x11::SelectionOps::clearOwnersOwnedBy(cs.client->ridBase(),
+                                          cs.client->ridMask());
+  }
 
   // Cancel any active INCR clipboard transfers for this client
   x11::IncrTransfer::instance().cancelForFd(fd);

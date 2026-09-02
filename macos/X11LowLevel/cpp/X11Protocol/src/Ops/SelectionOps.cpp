@@ -148,6 +148,25 @@ void SelectionOps::claimSelectionsIfMacOSChanged(XProtoContext& ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Clear selection ownership held by a disconnecting client's windows (§6.3)
+// ---------------------------------------------------------------------------
+void SelectionOps::clearOwnersOwnedBy(uint32_t clientBase, uint32_t clientMask) {
+  const uint32_t hi = ~clientMask;
+  std::lock_guard<std::mutex> lk(sSelMtx);
+  for (auto it = sSelOwner.begin(); it != sSelOwner.end(); ) {
+    const uint32_t owner = it->second;
+    // Keep the root proxy (XID 1 = macOS-clipboard bridge); clear real
+    // client windows in the disconnecting range so ConvertSelection falls
+    // back to serving the macOS clipboard instead of a dead owner.
+    if (owner > 1 && (owner & hi) == (clientBase & hi)) {
+      it = sSelOwner.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Construction — register opcodes 22-25
 // ---------------------------------------------------------------------------
 SelectionOps::SelectionOps(XProtoRegistrar& reg) {
