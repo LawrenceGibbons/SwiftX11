@@ -20,6 +20,8 @@
 #include <cstring>
 #include <cstdio>
 #include <atomic>
+#include <bitset>
+#include <mutex>
 #include <algorithm>
 #include <vector>
 
@@ -50,7 +52,33 @@ extern "C" void x11_ui_push_destroy(uint32_t xid);
 extern "C" void x11_ui_push_log(int level, const char* message);
 extern "C" int x11_get_wire_trace(void);
 
-static std::atomic<uint32_t> g_nextClientSlot{1}; // 0 reserved
+// Client ID-space slot allocation (review 2026-08-31 §6.1).
+//
+// rid_base is (slot << 24), and only 8 bits fit — so there are 255 usable
+// slots (1..255; slot 0 is reserved for the server/root XID space).  The
+// old code used a monotonic counter, so connection #256 wrapped to slot 0
+// and #257 collided with the still-alive connection #1 (Vivado's long-lived
+// JVM): silent cross-client XID corruption on multi-day sessions where Java
+// opens many short-lived helper connections.
+//
+// Now slots are RECYCLED: allocated on accept, returned on disconnect, so
+// the bound is 255 *concurrent* clients (ample) rather than 255 *total*.
+static std::mutex     g_slotMutex;
+static std::bitset<256> g_slotInUse; // index 0 reserved, never handed out
+
+static uint32_t allocClientSlot() {
+  std::lock_guard<std::mutex> lk(g_slotMutex);
+  for (uint32_t s = 1; s < 256; s++) {
+    if (!g_slotInUse.test(s)) { g_slotInUse.set(s); return s; }
+  }
+  return 0; // all 255 in use
+}
+
+static void freeClientSlot(uint32_t slot) {
+  if (slot == 0 || slot >= 256) return;
+  std::lock_guard<std::mutex> lk(g_slotMutex);
+  g_slotInUse.reset(slot);
+}
 
 
 namespace x11 {
@@ -437,9 +465,15 @@ void XProtoDaemon::acceptClient(int listenFd) {
     return;
   }
 
-  // ---- Allocate client ID space ----
-  uint32_t clientSlot = g_nextClientSlot.fetch_add(1, std::memory_order_relaxed);
-  if (clientSlot == 0) clientSlot = g_nextClientSlot.fetch_add(1, std::memory_order_relaxed);
+  // ---- Allocate client ID space (recycled slot, §6.1) ----
+  uint32_t clientSlot = allocClientSlot();
+  if (clientSlot == 0) {
+    // All 255 concurrent slots in use — refuse rather than wrap into
+    // another client's XID range.
+    x11_ui_push_log(1, "[X11] accept refused: all 255 client slots in use\n");
+    ::close(cfd);
+    return;
+  }
 
   const uint32_t rid_mask = 0x00FFFFFFu;
   const uint32_t rid_base = (clientSlot & 0xFFu) << 24;
@@ -596,6 +630,13 @@ void XProtoDaemon::removeClient(int fd) {
   if (input.last_xid && isOwned(input.last_xid)) input.last_xid = 0;
 
   deactivateClient();
+
+  // Return this client's ID-space slot to the free pool so it can be
+  // reused by a future connection (§6.1).  Freed even on the
+  // RetainPermanent path: retained windows are reassigned to owner_fd=-1
+  // and cleaned by normal destruction; keeping the slot reserved forever
+  // would re-introduce the counter-walk exhaustion this fix removes.
+  if (cs.client) freeClientSlot(cs.client->ridBase() >> 24);
 
   // Destroy client and close socket
   delete cs.client;
