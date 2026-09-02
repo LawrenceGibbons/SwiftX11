@@ -126,24 +126,23 @@ final class WindowRegistry {
     // Use NSScreen.main (screen with key window / menu bar) as target
     guard let mainScreen = NSScreen.main else { return (origin, false) }
 
-    // Check if window center already lands on the main screen
-    let center = NSPoint(x: origin.x + size.width / 2,
-                         y: origin.y + size.height / 2)
-    if mainScreen.frame.contains(center) { return (origin, false) }
-
-    // Place window at the top-left of the main screen's visible area,
-    // offset slightly (like a WM cascade placement).
+    // CENTER on the main screen's visible area (v1.19.36.23).
+    // Previously this cascaded to the top-left corner (+40), which left
+    // default-position (0,0) dialogs — e.g. Vivado's "Generating
+    // bitstream" progress dialog — pinned in the upper-left; and an
+    // early-out ("center already on main screen → don't adjust") let a
+    // (0,0) window whose corner-center happened to land on the main
+    // screen stay in the corner.  A (0,0) window is by definition NOT
+    // well-placed, so always center it.  (Decorated transients still get
+    // the better parent-centering in syncAndShowNonORWindow; this is the
+    // fallback for the rest.)
     let vs = mainScreen.visibleFrame
-    var newX = vs.minX + 40
-    var newY = vs.maxY - size.height - 40  // below menu bar, accounting for title bar
-
-    // Clamp to screen bounds
-    if newX + size.width > vs.maxX { newX = vs.maxX - size.width }
+    var newX = vs.minX + (vs.width  - size.width)  / 2
+    var newY = vs.minY + (vs.height - size.height) / 2
     if newX < vs.minX { newX = vs.minX }
     if newY < vs.minY { newY = vs.minY }
-
-    #if DEBUG
-    #endif
+    if newX + size.width  > vs.maxX { newX = vs.maxX - size.width }
+    if newY + size.height > vs.maxY { newY = vs.maxY - size.height }
     return (NSPoint(x: newX, y: newY), true)
   }
 
