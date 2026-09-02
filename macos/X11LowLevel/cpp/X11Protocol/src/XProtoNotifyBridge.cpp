@@ -111,8 +111,19 @@ void postMotion(uint32_t host_xid,
   // macOS's drag tracking loop routes ALL mouseDragged events to the
   // original mouseDown window. If a popup menu (override-redirect) is
   // on top, the pointer is actually over THAT window, not the reported
-  // host. Use root coords to find the real top-level window under the
-  // pointer and correct host_xid/win_x/win_y accordingly.
+  // host. Use root coords to find the real popup under the pointer and
+  // correct host_xid/win_x/win_y accordingly.
+  //
+  // ONLY override-redirect windows (menus/tooltips/combo popups) are
+  // valid correction targets (v1.19.36.21).  The walk uses X11 stacking
+  // order, which for NORMAL top-level windows is stale relative to what
+  // the user actually sees (Cocoa owns their Z-order).  Correcting to a
+  // normal window let a window that merely sits "above" in X11's stale
+  // order steal motion over its whole rectangle even while visually
+  // behind — field repro 2026-09-02: vlm behind the Vivado main window
+  // froze menu highlighting and killed clicks over vlm's rect, and the
+  // dead zone tracked vlm's position.  Cocoa already delivers events to
+  // the correct normal window; only borderless popups need rescuing.
   const uint32_t originalHost = host_xid;
   {
     auto topLevels = ctx->windows().childrenInStackOrder(1); // root children
@@ -122,6 +133,7 @@ void postMotion(uint32_t host_xid,
       x11::WindowView vw{};
       if (!ctx->windows().snapshot(*it, vw)) continue;
       if (!vw.mapped) continue;
+      if (!vw.override_redirect) continue; // only popups may capture
       int32_t bw = (int32_t)vw.border_width;
       if (root_x >= vw.x - bw && root_x < vw.x + (int32_t)vw.w + bw &&
           root_y >= vw.y - bw && root_y < vw.y + (int32_t)vw.h + bw) {

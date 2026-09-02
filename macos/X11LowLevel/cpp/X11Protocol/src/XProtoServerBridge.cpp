@@ -599,18 +599,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
             ctx.input().focus_host = host;
 
-            // Mirror Cocoa's Z-order into X11 stacking: the WindowTable
-            // keeps root children in map/restack order, which goes stale
-            // when the USER brings a window forward (Cocoa-side only).
-            // The motion/button host-correction walks root children
-            // topmost-down, so a stale-stacked window (e.g. vlm mapped
-            // after the Vivado main window) silently steals input over
-            // its whole rectangle even while visually BEHIND — menu
-            // highlight died at the hidden window's boundary and clicks
-            // over its rect went nowhere (field repro 2026-09-02: the
-            // dead zone tracked the hidden vlm window's position).
-            ctx.windows().raiseToTop(host);
-
             // Focus the HOST — let the toolkit propagate to children
             // via SetInputFocus (opcode 42).
             ctx.input().focus_xid = host;
