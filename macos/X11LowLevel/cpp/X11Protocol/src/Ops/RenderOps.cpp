@@ -990,14 +990,40 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t maskFmt = br.readU32();
     const int16_t  xSrc    = (int16_t)br.readU16();
     const int16_t  ySrc    = (int16_t)br.readU16();
-    (void)xSrc; (void)ySrc; // used for source offset (solid fill = no effect)
 
-    // Resolve source color (typically solid fill)
-    uint32_t srcColor = 0xFF000000u;
+    // Resolve source to a scalar color (the trapezoid rasterizer modulates
+    // it by per-pixel coverage).  Beyond CreateSolidFill, handle the cases
+    // that previously fell through to opaque black — which blacked out GTK
+    // rounded/gradient fills (review 2026-08-31 §4.6):
+    //   - 1x1 Repeat pixmap → its single pixel (the Cairo/Xft solid idiom)
+    //   - gradient          → sampled at the source origin (representative;
+    //                         true per-pixel gradient across a trap is a
+    //                         later refinement)
+    //   - other drawable    → its pixel[0]
+    // Picture fields are copied under the mutex, then resolveDrawableRW /
+    // sampleGradient run without it (matching the Composite handler).
+    uint32_t srcColor = 0xFF000000u;   // opaque-black fallback (unchanged)
+    uint32_t srcDrawable = 0;
+    std::shared_ptr<GradientData> srcGrad;
+    bool srcResolved = false;
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* sps = findPicture(srcPid);
-      if (sps && sps->isSolid) srcColor = sps->solidARGB;
+      if (sps) {
+        if (sps->isSolid) { srcColor = sps->solidARGB; srcResolved = true; }
+        srcDrawable = sps->drawable;
+        srcGrad     = sps->gradient;
+      }
+    }
+    if (!srcResolved) {
+      if (srcGrad) {
+        srcColor = sampleGradient(*srcGrad, (float)xSrc, (float)ySrc);
+      } else if (srcDrawable != 0) {
+        DrawableRW srcDrw{};
+        if (resolveDrawableRW(ctx, srcDrawable, srcDrw) && srcDrw.pixels32) {
+          srcColor = srcDrw.pixels32[0];
+        }
+      }
     }
 
     // Resolve destination
