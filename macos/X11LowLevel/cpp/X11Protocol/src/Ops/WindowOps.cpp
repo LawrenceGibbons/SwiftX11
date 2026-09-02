@@ -700,6 +700,28 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
     }
   }
 
+  // 0) Destroy all inferiors first (X11 spec: DestroyWindow destroys the
+  //    window AND all its subwindows).  Previously only `wid` was erased,
+  //    so children were orphaned with a dangling parent and leaked, and a
+  //    recycled child XID inherited stale state (§6.7).  descendantsOf is
+  //    shallow→deep; iterate reverse so a child is gone before its parent.
+  {
+    auto desc = ctx.windows().descendantsOf(wid);
+    for (auto it = desc.rbegin(); it != desc.rend(); ++it) {
+      const uint32_t c = *it;
+      WindowView cv{};
+      if (ctx.windows().snapshot(c, cv) &&
+          (cv.event_mask & x11::mask::StructureNotify)) {
+        auto ev = x11::wireev::buildDestroyNotify(ctx.transport().lastSeq(), c, c);
+        (void)ctx.transport().sendEvent32(c, ev.data());
+      }
+      ctx.grabs().removeForWindows({c});
+      ctx.windows().erase(c);
+      x11::PropertyTable::instance().eraseWindow(c);
+      x11_ui_push_destroy(c);
+    }
+  }
+
   // 1) Clear any grabs referencing this window (passive + active)
   ctx.grabs().removeForWindows({wid});
 
