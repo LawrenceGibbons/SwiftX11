@@ -39,6 +39,20 @@ public:
                           uint32_t type, uint8_t format,
                           const uint8_t* data, uint64_t len);
 
+  /// XFIXES SelectionNotify support (M4).  A client subscribes with
+  /// XFixesSelectSelectionInput(window, selection, eventMask); we record it and
+  /// fire XFixesSelectionNotify(SetSelectionOwnerNotify) whenever `selection`
+  /// changes owner (grounded in xorg xfixes/select.c).  eventMask==0 removes
+  /// the (client,window,selection) subscription.  xproto thread only.
+  static void xfixesSelectSelectionInput(int clientFd, uint32_t window,
+                                         uint32_t selection, uint32_t eventMask);
+  /// Fire XFixesSelectionNotify(SetSelectionOwnerNotify) to every subscriber of
+  /// `selection`.  ownerWindow is the new owner (0 = None).  xproto thread only.
+  static void xfixesNotifySetOwner(XProtoContext& ctx, uint32_t selection,
+                                   uint32_t ownerWindow, uint32_t timestamp);
+  /// Drop all XFIXES selection-input subscriptions held by a disconnecting fd.
+  static void xfixesClearSubscriptionsOwnedBy(int clientFd);
+
 private:
   static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
   void handle(XProtoContext& ctx, DispatchContext& dc);

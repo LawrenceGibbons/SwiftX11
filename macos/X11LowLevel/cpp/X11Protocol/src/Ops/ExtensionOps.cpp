@@ -19,6 +19,7 @@ extern "C" {
 }
 
 #include "Ops/ExtensionOps.hpp"
+#include "Ops/SelectionOps.hpp"
 #include "Core/XProtoContext.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/WindowTable.hpp"
@@ -90,9 +91,19 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case 1: // XFixesChangeSaveSet — extended save-set with map/target modes (void)
       br.skip(br.remaining());
       return;
-    case 2: // XFixesSelectSelectionInput — selection change event mask (void)
+    case 2: { // XFixesSelectSelectionInput (M4)
+      // Request body: Window window, Atom selection, CARD32 eventMask.
+      // Record the subscription so SetSelectionOwner can fire
+      // XFixesSelectionNotify(SetSelectionOwnerNotify) back to this client.
+      if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+      const uint32_t window    = br.readU32();
+      const uint32_t selection = br.readU32();
+      const uint32_t eventMask = br.readU32();
       br.skip(br.remaining());
+      SelectionOps::xfixesSelectSelectionInput(ctx.transport().clientFd(),
+                                               window, selection, eventMask);
       return;
+    }
     case 3: // SelectCursorInput — consume silently (cursor event selection)
       br.skip(br.remaining());
       return;

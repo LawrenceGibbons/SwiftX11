@@ -647,6 +647,10 @@ void XProtoDaemon::removeClient(int fd) {
                                           cs.client->ridMask());
   }
 
+  // Drop this client's XFIXES SelectionNotify subscriptions (M4) so we don't
+  // try to route selection-change events to a dead fd.
+  x11::SelectionOps::xfixesClearSubscriptionsOwnedBy(fd);
+
   // Cancel any active INCR clipboard transfers for this client
   x11::IncrTransfer::instance().cancelForFd(fd);
 

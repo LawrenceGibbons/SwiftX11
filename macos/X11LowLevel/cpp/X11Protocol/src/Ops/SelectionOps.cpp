@@ -17,7 +17,9 @@
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/X11ExtOpcodes.hpp"
 #include "Core/timestamp.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -167,6 +169,65 @@ void SelectionOps::clearOwnersOwnedBy(uint32_t clientBase, uint32_t clientMask) 
 }
 
 // ---------------------------------------------------------------------------
+// XFIXES SelectionNotify subscriptions (M4).
+// Modeled on xorg xfixes/select.c.  Accessed only from the single xproto
+// dispatch thread, so no lock is needed on the subscription vector.
+// ---------------------------------------------------------------------------
+namespace {
+struct XFixesSelSub {
+  int      fd;         // subscribing client's transport fd (event destination client)
+  uint32_t window;     // window the client selected on (event destination window)
+  uint32_t selection;  // selection atom being watched
+  uint32_t mask;       // XFixes selection-event mask (SetSelectionOwner/... bits)
+};
+std::vector<XFixesSelSub> g_xfixesSubs;
+constexpr uint32_t kXFixesSetSelectionOwnerNotifyMask = (1u << 0);
+constexpr uint8_t  kXFixesSelectionNotifyEvent        = 0; // event number within XFIXES
+} // namespace
+
+void SelectionOps::xfixesSelectSelectionInput(int fd, uint32_t window,
+                                              uint32_t selection, uint32_t mask) {
+  for (auto it = g_xfixesSubs.begin(); it != g_xfixesSubs.end(); ++it) {
+    if (it->fd == fd && it->window == window && it->selection == selection) {
+      if (mask == 0) g_xfixesSubs.erase(it);  // eventMask 0 = unsubscribe
+      else           it->mask = mask;
+      return;
+    }
+  }
+  if (mask != 0) g_xfixesSubs.push_back({fd, window, selection, mask});
+}
+
+void SelectionOps::xfixesClearSubscriptionsOwnedBy(int fd) {
+  g_xfixesSubs.erase(
+      std::remove_if(g_xfixesSubs.begin(), g_xfixesSubs.end(),
+                     [fd](const XFixesSelSub& s) { return s.fd == fd; }),
+      g_xfixesSubs.end());
+}
+
+void SelectionOps::xfixesNotifySetOwner(XProtoContext& ctx, uint32_t selection,
+                                        uint32_t ownerWindow, uint32_t timestamp) {
+  if (g_xfixesSubs.empty()) return;
+  const uint8_t evType =
+      (uint8_t)(x11::ext::kXFIXES_FirstEvent + kXFixesSelectionNotifyEvent);
+  for (const auto& s : g_xfixesSubs) {
+    if (s.selection != selection) continue;
+    if (!(s.mask & kXFixesSetSelectionOwnerNotifyMask)) continue;
+    uint8_t ev[32];
+    std::memset(ev, 0, sizeof(ev));
+    ev[0] = evType;                                    // XFixesSelectionNotify
+    ev[1] = 0;                                          // subtype=SetSelectionOwnerNotify
+    wire::wr16_le(ev + 2,  ctx.transport().lastSeq());  // sequenceNumber
+    wire::wr32_le(ev + 4,  s.window);                   // window (client's selected window)
+    wire::wr32_le(ev + 8,  ownerWindow);                // owner (new owner; 0 = None)
+    wire::wr32_le(ev + 12, selection);                  // selection atom
+    wire::wr32_le(ev + 16, timestamp);                  // timestamp
+    wire::wr32_le(ev + 20, timestamp);                  // selectionTimestamp
+    // pad2 (offset 24) and pad3 (offset 28) already zero.
+    (void)ctx.transport().sendEvent32(s.window, ev);    // routes to owner_fd of s.window
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Construction — register opcodes 22-25
 // ---------------------------------------------------------------------------
 SelectionOps::SelectionOps(XProtoRegistrar& reg) {
@@ -257,6 +318,12 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     wire::wr32_le(ev + 12, selection);  // atom
     (void)ctx.transport().sendEvent32(prevOwner, ev);
   }
+
+  // XFIXES (M4): notify every subscriber that this selection changed owner.
+  // Fires on any SetSelectionOwner — claim (owner!=0) or clear (owner==0) —
+  // matching xorg's SelectionSetOwner callback.  `owner` is the new owner.
+  SelectionOps::xfixesNotifySetOwner(ctx, selection, owner,
+                                     time ? time : (uint32_t)x11_now_ms_monotonic());
 
   // Track macOS changeCount so ConvertSelection can detect external macOS changes.
   // Also reset sSelPushedCC so the proactive capture push isn't blocked by
