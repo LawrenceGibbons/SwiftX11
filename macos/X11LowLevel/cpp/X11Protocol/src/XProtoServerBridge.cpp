@@ -539,12 +539,13 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t cursorTarget = ctx.input().routePointer(under);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/true,
-                                            ctx.input().root_x_u, ctx.input().root_y_u,
-                                            ctx.input().buttons, c.modsMask);
-          srv->eventOps().sendXI2CrossingEvent(ctx, under, /*is_enter=*/true,
-                                               ctx.input().root_x_u, ctx.input().root_y_u,
-                                               ctx.input().buttons, c.modsMask);
+          if (!srv->eventOps().sendXI2CrossingEvent(ctx, under, /*is_enter=*/true,
+                                                    ctx.input().root_x_u, ctx.input().root_y_u,
+                                                    ctx.input().buttons, c.modsMask)) {
+            srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/true,
+                                              ctx.input().root_x_u, ctx.input().root_y_u,
+                                              ctx.input().buttons, c.modsMask);
+          }
           break;
         }
 
@@ -567,12 +568,13 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t cursorTarget = ctx.input().routePointer(host);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          srv->eventOps().sendCrossingEvent(ctx, leaveWin, /*is_enter=*/false,
-                                            ctx.input().root_x_u, ctx.input().root_y_u,
-                                            ctx.input().buttons, c.modsMask);
-          srv->eventOps().sendXI2CrossingEvent(ctx, leaveWin, /*is_enter=*/false,
-                                               ctx.input().root_x_u, ctx.input().root_y_u,
-                                               ctx.input().buttons, c.modsMask);
+          if (!srv->eventOps().sendXI2CrossingEvent(ctx, leaveWin, /*is_enter=*/false,
+                                                    ctx.input().root_x_u, ctx.input().root_y_u,
+                                                    ctx.input().buttons, c.modsMask)) {
+            srv->eventOps().sendCrossingEvent(ctx, leaveWin, /*is_enter=*/false,
+                                              ctx.input().root_x_u, ctx.input().root_y_u,
+                                              ctx.input().buttons, c.modsMask);
+          }
           break;
         }
 
@@ -924,16 +926,21 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                        (int)c.button, c.isDown ? "DOWN" : "UP");
           }
 #endif
-          srv->eventOps().sendButtonEvent(ctx, deliver,
-                                          c.isDown != 0, c.button,
-                                          ctx.input().root_x_u, ctx.input().root_y_u,
-                                          buttonsBefore, c.modsMask,
-                                          child);
-          srv->eventOps().sendXI2ButtonEvent(ctx, deliver,
-                                             c.isDown != 0, c.button,
-                                             ctx.input().root_x_u, ctx.input().root_y_u,
-                                             buttonsBefore, c.modsMask,
-                                             child);
+          // xorg DeliverDeviceEvents: XI2 first; if it delivers via the window's
+          // own selection, the core event is suppressed (no double-processing).
+          const bool xi2Sent =
+            srv->eventOps().sendXI2ButtonEvent(ctx, deliver,
+                                               c.isDown != 0, c.button,
+                                               ctx.input().root_x_u, ctx.input().root_y_u,
+                                               buttonsBefore, c.modsMask,
+                                               child);
+          if (!xi2Sent) {
+            srv->eventOps().sendButtonEvent(ctx, deliver,
+                                            c.isDown != 0, c.button,
+                                            ctx.input().root_x_u, ctx.input().root_y_u,
+                                            buttonsBefore, c.modsMask,
+                                            child);
+          }
           break;
         }
 
@@ -986,28 +993,30 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                     (unsigned)x11_now_ms_monotonic());
         #endif
 
-            srv->eventOps().sendButtonEvent(ctx, target,
-                                            /*is_press=*/true, btn,
-                                            rx, ry,
-                                            ctx.input().buttons, c.modsMask,
-                                            /*child_xid=*/0);
-            srv->eventOps().sendXI2ButtonEvent(ctx, target,
-                                               /*is_press=*/true, btn,
-                                               rx, ry,
-                                               ctx.input().buttons, c.modsMask,
-                                               /*child_xid=*/0);
+            if (!srv->eventOps().sendXI2ButtonEvent(ctx, target,
+                                                    /*is_press=*/true, btn,
+                                                    rx, ry,
+                                                    ctx.input().buttons, c.modsMask,
+                                                    /*child_xid=*/0)) {
+              srv->eventOps().sendButtonEvent(ctx, target,
+                                              /*is_press=*/true, btn,
+                                              rx, ry,
+                                              ctx.input().buttons, c.modsMask,
+                                              /*child_xid=*/0);
+            }
 
             const uint32_t wheelMask = (btn >= 1 && btn <= 31) ? (1u << (btn - 1u)) : 0;
-            srv->eventOps().sendButtonEvent(ctx, target,
-                                            /*is_press=*/false, btn,
-                                            rx, ry,
-                                            (ctx.input().buttons | wheelMask), c.modsMask,
-                                            /*child_xid=*/0);
-            srv->eventOps().sendXI2ButtonEvent(ctx, target,
-                                               /*is_press=*/false, btn,
-                                               rx, ry,
-                                               (ctx.input().buttons | wheelMask), c.modsMask,
-                                               /*child_xid=*/0);
+            if (!srv->eventOps().sendXI2ButtonEvent(ctx, target,
+                                                    /*is_press=*/false, btn,
+                                                    rx, ry,
+                                                    (ctx.input().buttons | wheelMask), c.modsMask,
+                                                    /*child_xid=*/0)) {
+              srv->eventOps().sendButtonEvent(ctx, target,
+                                              /*is_press=*/false, btn,
+                                              rx, ry,
+                                              (ctx.input().buttons | wheelMask), c.modsMask,
+                                              /*child_xid=*/0);
+            }
           }
 
           // NOTE: Do NOT send Expose after scroll events. xterm handles
@@ -1055,14 +1064,15 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // spec's active-grab semantics.
           const uint32_t kbGrab = ctx.grabs().getKeyboardGrab();
           if (kbGrab != 0 && ctx.window(kbGrab)) {
-            srv->eventOps().sendKeyEvent(ctx, kbGrab,
-                                         c.isDown != 0,
-                                         x11_kc,
-                                         ctx.input().buttons, c.modsMask);
-            srv->eventOps().sendXI2KeyEvent(ctx, kbGrab,
-                                            c.isDown != 0,
-                                            x11_kc,
-                                            ctx.input().buttons, c.modsMask);
+            if (!srv->eventOps().sendXI2KeyEvent(ctx, kbGrab,
+                                                 c.isDown != 0,
+                                                 x11_kc,
+                                                 ctx.input().buttons, c.modsMask)) {
+              srv->eventOps().sendKeyEvent(ctx, kbGrab,
+                                           c.isDown != 0,
+                                           x11_kc,
+                                           ctx.input().buttons, c.modsMask);
+            }
             break;
           }
 
@@ -1106,14 +1116,15 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                   (unsigned)c.modsMask);
         #endif
 
-          srv->eventOps().sendKeyEvent(ctx, target,
-                                       c.isDown != 0,
-                                       x11_kc,
-                                       ctx.input().buttons, c.modsMask);
-          srv->eventOps().sendXI2KeyEvent(ctx, target,
-                                          c.isDown != 0,
-                                          x11_kc,
-                                          ctx.input().buttons, c.modsMask);
+          if (!srv->eventOps().sendXI2KeyEvent(ctx, target,
+                                               c.isDown != 0,
+                                               x11_kc,
+                                               ctx.input().buttons, c.modsMask)) {
+            srv->eventOps().sendKeyEvent(ctx, target,
+                                         c.isDown != 0,
+                                         x11_kc,
+                                         ctx.input().buttons, c.modsMask);
+          }
           break;
         }
 

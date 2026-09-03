@@ -122,21 +122,31 @@ namespace x11 {
 
     // ---- XI2 (XInput2) GenericEvent senders ----
     // Each checks xi2_mask on the target window; no-op if the appropriate bit is not set.
-    void sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
+    //
+    // Return value: TRUE when the event was delivered via the window's OWN xi2_mask
+    // (a per-window XISelectEvents selection by that window's client).  Callers use
+    // this to suppress the matching CORE event, mirroring xorg's DeliverDeviceEvents
+    // (dix/events.c): XI2 is tried first and, once it delivers, the walk breaks and
+    // the core event is never sent — so a client selecting XI2 does not also receive
+    // the core copy of the same physical event (which double-processed clicks in
+    // Chromium/GTK).  A delivery that happened ONLY via the shared xi2_root_mask
+    // returns FALSE (the root mask is a global hack, not a per-client selection, and
+    // must not suppress core delivery to the window's own client).
+    bool sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
                             int32_t root_x, int32_t root_y,
                             uint32_t buttons, uint32_t mods);
 
-    void sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
+    bool sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
                             bool is_press, uint8_t button,
                             int32_t root_x, int32_t root_y,
                             uint32_t buttons, uint32_t mods,
                             uint32_t child_xid);
 
-    void sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
+    bool sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
                          bool is_press, uint8_t keycode,
                          uint32_t buttons, uint32_t mods);
 
-    void sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
+    bool sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                               bool is_enter,
                               int32_t root_x, int32_t root_y,
                               uint32_t buttons, uint32_t mods,

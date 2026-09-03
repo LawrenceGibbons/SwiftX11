@@ -170,15 +170,17 @@ void postMotion(uint32_t host_xid,
     const uint32_t prev = ctx->input().pointer_xid;
     if (under != prev) {
       if (prev != 0) {
-        ev->sendCrossingEvent(*ctx, prev, /*is_enter=*/false,
-                              root_x, root_y, buttons, mods);
-        ev->sendXI2CrossingEvent(*ctx, prev, /*is_enter=*/false,
-                                 root_x, root_y, buttons, mods);
+        if (!ev->sendXI2CrossingEvent(*ctx, prev, /*is_enter=*/false,
+                                      root_x, root_y, buttons, mods)) {
+          ev->sendCrossingEvent(*ctx, prev, /*is_enter=*/false,
+                                root_x, root_y, buttons, mods);
+        }
       }
-      ev->sendCrossingEvent(*ctx, under, /*is_enter=*/true,
-                            root_x, root_y, buttons, mods);
-      ev->sendXI2CrossingEvent(*ctx, under, /*is_enter=*/true,
-                               root_x, root_y, buttons, mods);
+      if (!ev->sendXI2CrossingEvent(*ctx, under, /*is_enter=*/true,
+                                    root_x, root_y, buttons, mods)) {
+        ev->sendCrossingEvent(*ctx, under, /*is_enter=*/true,
+                              root_x, root_y, buttons, mods);
+      }
       ctx->input().pointer_xid = under;
     }
   }
@@ -336,9 +338,12 @@ void postMotion(uint32_t host_xid,
   // motion events arriving, so this is the next thing to verify.
   x11::drag_trace::motion(target, root_x, root_y, buttons, mods);
 
-  // Send MotionNotify with ROOT coords (root_x/root_y)
-  ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
-  ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods);
+  // Send MotionNotify with ROOT coords (root_x/root_y).
+  // xorg DeliverDeviceEvents: XI2 first; if the window's own selection consumes
+  // it, the core MotionNotify is suppressed (no double delivery).
+  if (!ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods)) {
+    ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
+  }
 }
   
 void postButtonLegacy(uint32_t xid, int is_press, int32_t x_px, int32_t y_px, uint32_t buttons, uint32_t mods)
