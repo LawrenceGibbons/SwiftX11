@@ -358,7 +358,7 @@ void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
       p.aboveSibling = 0;
       p.overrideRedirect = w->override_redirect;
       auto ev = buildConfigureNotify(p);
-      ctx_.transport().sendEvent32(pn.wid, ev.data());
+      ctx_.transport().sendEventToSelectors(pn.wid, x11::mask::StructureNotify, ev.data());
     }
   }
   

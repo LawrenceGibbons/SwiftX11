@@ -559,7 +559,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             vw2->parent_xid, wid, aboveSib,
             vw2->x, vw2->y, vw2->w, vw2->h,
             vw2->border_width, vw2->override_redirect);
-          (void)ctx.transport().sendEvent32(vw2->parent_xid, cfgEv.data());
+          (void)ctx.transport().sendEventToSelectors(vw2->parent_xid, x11::mask::SubstructureNotify, cfgEv.data());
         }
       }
 

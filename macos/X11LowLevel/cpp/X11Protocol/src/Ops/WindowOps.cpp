@@ -615,7 +615,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
         auto ev = x11::wireev::buildCreateNotify(
           ctx.transport().lastSeq(),
           parent, wid, x, y, wpx, hpx, borderWidth, override_redirect);
-        (void)ctx.transport().sendEvent32(parent, ev.data());
+        (void)ctx.transport().sendEventToSelectors(parent, x11::mask::SubstructureNotify, ev.data());
       }
     }
   }
@@ -688,14 +688,14 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
     const uint16_t evSeq = ctx.transport().lastSeq();
     if (hadSnap && (dv.event_mask & x11::mask::StructureNotify)) {
       auto ev = x11::wireev::buildDestroyNotify(evSeq, wid, wid);
-      (void)ctx.transport().sendEvent32(wid, ev.data());
+      (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
     }
     if (parentXid != 0 && parentXid != x11::kRootXid) {
       WindowView pv{};
       if (ctx.windows().snapshot(parentXid, pv) &&
           (pv.event_mask & x11::mask::SubstructureNotify)) {
         auto ev = x11::wireev::buildDestroyNotify(evSeq, parentXid, wid);
-        (void)ctx.transport().sendEvent32(parentXid, ev.data());
+        (void)ctx.transport().sendEventToSelectors(parentXid, x11::mask::SubstructureNotify, ev.data());
       }
     }
   }
@@ -713,7 +713,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
       if (ctx.windows().snapshot(c, cv) &&
           (cv.event_mask & x11::mask::StructureNotify)) {
         auto ev = x11::wireev::buildDestroyNotify(ctx.transport().lastSeq(), c, c);
-        (void)ctx.transport().sendEvent32(c, ev.data());
+        (void)ctx.transport().sendEventToSelectors(c, x11::mask::StructureNotify, ev.data());
       }
       ctx.grabs().removeForWindows({c});
       ctx.windows().erase(c);
@@ -764,7 +764,7 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
         const uint16_t evSeq = ctx.transport().lastSeq();
         if (cv.event_mask & x11::mask::StructureNotify) {
           auto ev = x11::wireev::buildDestroyNotify(evSeq, child, child);
-          (void)ctx.transport().sendEvent32(child, ev.data());
+          (void)ctx.transport().sendEventToSelectors(child, x11::mask::StructureNotify, ev.data());
         }
         const uint32_t parentXid = cv.parent_xid;
         if (parentXid != 0 && parentXid != x11::kRootXid) {
@@ -772,7 +772,7 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
           if (ctx.windows().snapshot(parentXid, pv) &&
               (pv.event_mask & x11::mask::SubstructureNotify)) {
             auto ev = x11::wireev::buildDestroyNotify(evSeq, parentXid, child);
-            (void)ctx.transport().sendEvent32(parentXid, ev.data());
+            (void)ctx.transport().sendEventToSelectors(parentXid, x11::mask::SubstructureNotify, ev.data());
           }
         }
       }
@@ -837,7 +837,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     const uint32_t oldParent = vw.parent_xid;
 
     // Helper lambda to build a ReparentNotify event
-    auto buildReparentNotify = [&](uint32_t eventWid) {
+    auto buildReparentNotify = [&](uint32_t eventWid, uint32_t bit) {
       uint8_t ev[32] = {};
       ev[0] = 21; // ReparentNotify
       wire::wr16_le(ev + 2, evSeq);
@@ -847,12 +847,12 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
       wire::wr16_le(ev + 16, (uint16_t)x);
       wire::wr16_le(ev + 18, (uint16_t)y);
       ev[20] = vw.override_redirect ? 1 : 0;
-      (void)ctx.transport().sendEvent32(eventWid, ev);
+      (void)ctx.transport().sendEventToSelectors(eventWid, bit, ev);
     };
 
     // To the window itself (if StructureNotifyMask)
     if (vw.event_mask & x11::mask::StructureNotify) {
-      buildReparentNotify(wid);
+      buildReparentNotify(wid, x11::mask::StructureNotify);
     }
 
     // To old parent (if SubstructureNotifyMask)
@@ -860,7 +860,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
       WindowView opv{};
       if (ctx.windows().snapshot(oldParent, opv) &&
           (opv.event_mask & x11::mask::SubstructureNotify)) {
-        buildReparentNotify(oldParent);
+        buildReparentNotify(oldParent, x11::mask::SubstructureNotify);
       }
     }
 
@@ -869,7 +869,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
       WindowView npv{};
       if (ctx.windows().snapshot(newParent, npv) &&
           (npv.event_mask & x11::mask::SubstructureNotify)) {
-        buildReparentNotify(newParent);
+        buildReparentNotify(newParent, x11::mask::SubstructureNotify);
       }
     }
   }
@@ -964,7 +964,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
       // To window itself
       if (mv.event_mask & x11::mask::StructureNotify) {
         auto ev = x11::wireev::buildMapNotify(evSeq, wid, wid, orFlag);
-        (void)ctx.transport().sendEvent32(wid, ev.data());
+        (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
       }
       // To parent
       if (mv.parent_xid != 0 && mv.parent_xid != x11::kRootXid) {
@@ -972,7 +972,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
         if (ctx.windows().snapshot(mv.parent_xid, pv) &&
             (pv.event_mask & x11::mask::SubstructureNotify)) {
           auto ev = x11::wireev::buildMapNotify(evSeq, mv.parent_xid, wid, orFlag);
-          (void)ctx.transport().sendEvent32(mv.parent_xid, ev.data());
+          (void)ctx.transport().sendEventToSelectors(mv.parent_xid, x11::mask::SubstructureNotify, ev.data());
         }
       }
     }
@@ -1170,14 +1170,14 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader
         const uint16_t evSeq = ctx.transport().lastSeq();
         if (childView.event_mask & x11::mask::StructureNotify) {
           auto ev = x11::wireev::buildMapNotify(evSeq, xid, xid, childView.override_redirect);
-          (void)ctx.transport().sendEvent32(xid, ev.data());
+          (void)ctx.transport().sendEventToSelectors(xid, x11::mask::StructureNotify, ev.data());
         }
         if (parent != 0 && parent != x11::kRootXid) {
           WindowView pv{};
           if (ctx.windows().snapshot(parent, pv) &&
               (pv.event_mask & x11::mask::SubstructureNotify)) {
             auto ev = x11::wireev::buildMapNotify(evSeq, parent, xid, childView.override_redirect);
-            (void)ctx.transport().sendEvent32(parent, ev.data());
+            (void)ctx.transport().sendEventToSelectors(parent, x11::mask::SubstructureNotify, ev.data());
           }
         }
       }
@@ -1262,14 +1262,14 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
     const uint16_t evSeq = ctx.transport().lastSeq();
     if (hadSnap && (cv.event_mask & x11::mask::StructureNotify)) {
       auto ev = x11::wireev::buildUnmapNotify(evSeq, wid, wid, /*fromConfigure*/false);
-      (void)ctx.transport().sendEvent32(wid, ev.data());
+      (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
     }
     if (cv.parent_xid != 0 && cv.parent_xid != x11::kRootXid) {
       WindowView pv{};
       if (ctx.windows().snapshot(cv.parent_xid, pv) &&
           (pv.event_mask & x11::mask::SubstructureNotify)) {
         auto ev = x11::wireev::buildUnmapNotify(evSeq, cv.parent_xid, wid, /*fromConfigure*/false);
-        (void)ctx.transport().sendEvent32(cv.parent_xid, ev.data());
+        (void)ctx.transport().sendEventToSelectors(cv.parent_xid, x11::mask::SubstructureNotify, ev.data());
       }
     }
   }
@@ -1342,14 +1342,14 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteRead
       const uint16_t evSeq = ctx.transport().lastSeq();
       if (cv.event_mask & x11::mask::StructureNotify) {
         auto ev = x11::wireev::buildUnmapNotify(evSeq, xid, xid, /*fromConfigure*/false);
-        (void)ctx.transport().sendEvent32(xid, ev.data());
+        (void)ctx.transport().sendEventToSelectors(xid, x11::mask::StructureNotify, ev.data());
       }
       if (parent != 0 && parent != x11::kRootXid) {
         WindowView pv{};
         if (ctx.windows().snapshot(parent, pv) &&
             (pv.event_mask & x11::mask::SubstructureNotify)) {
           auto ev = x11::wireev::buildUnmapNotify(evSeq, parent, xid, /*fromConfigure*/false);
-          (void)ctx.transport().sendEvent32(parent, ev.data());
+          (void)ctx.transport().sendEventToSelectors(parent, x11::mask::SubstructureNotify, ev.data());
         }
       }
     }
@@ -1442,7 +1442,7 @@ void WindowOps::handleCirculateWindow(XProtoContext& ctx, uint16_t seq,
     if (ctx.windows().snapshot(wid, parentView) &&
         (parentView.event_mask & x11::mask::StructureNotify)) {
       auto ev = x11::wireev::buildCirculateNotify(evSeq, wid, target, place);
-      (void)ctx.transport().sendEvent32(wid, ev.data());
+      (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
     }
 
     // To the circulated child if it selects StructureNotify
@@ -1450,7 +1450,7 @@ void WindowOps::handleCirculateWindow(XProtoContext& ctx, uint16_t seq,
     if (ctx.windows().snapshot(target, childView) &&
         (childView.event_mask & x11::mask::StructureNotify)) {
       auto ev = x11::wireev::buildCirculateNotify(evSeq, target, target, place);
-      (void)ctx.transport().sendEvent32(target, ev.data());
+      (void)ctx.transport().sendEventToSelectors(target, x11::mask::StructureNotify, ev.data());
     }
   }
 
