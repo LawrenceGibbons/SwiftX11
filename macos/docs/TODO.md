@@ -1,8 +1,116 @@
 # SwiftX11 TODO
 
-Last updated: 2026-04-01 (v1.19.35.29-dbg — XI2 event fixes, XI2 hidden for Electron, Vitis+Vivado working)
+Last updated: 2026-09-02 (v1.19.36.31-dbg — M0–M2 complete, M4/M5/M7 high-value items landed; deferred work consolidated below)
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
+
+---
+
+## Deferred / Decided-Against Work — Adversarial Review M0–M7 (as of 2026-09-02, v1.19.36.31-dbg)
+
+The 2026-08-31 adversarial review drove milestones M0–M7 (see
+`docs/REMEDIATION_PLAN.md`; `§N.M` references point at
+`docs/ADVERSARIAL_REVIEW_2026-08-31.md`). M0–M2 landed in full; M4/M5/M7 landed
+their high-value items. This section tracks everything intentionally **not** done
+yet, so nothing is silently lost before the next release + second review.
+
+### Decided against (verified wrong for this codebase — not merely skipped)
+
+- **Do NOT unadvertise Composite (§5, M4).** The xorg reference confirms Composite
+  is window-redirection for a root compositor; our rootless model has none, so the
+  redirect/overlay no-ops are harmless. But the stub is load-bearing: removing it
+  regresses Vitis portal-GTK dialogs to inverted colors. Kept advertised; only
+  `NameWindowPixmap` was made honest (→ BadMatch, v1.19.36.30).
+- **Do NOT drop XFIXES to v1.0 (§5, M4).** Clients negotiated 5.0 and work today;
+  lowering it is cosmetic honesty with real regression risk (feature gating) and no
+  upside. Left at 5.0; the real gap — SelectionNotify delivery — was implemented
+  instead (v1.19.36.31).
+- **Do NOT implement DamageNotify; unadvertised DAMAGE instead (§5, M4).** No
+  rootless consumer exists (compositors can't run rootless; Vivado/Vitis don't use
+  it). Unadvertised in v1.19.36.30; `[EXT_PROBE]` logs any future demand.
+
+### Open investigation (needs a live repro)
+
+- **Composite inverted-colors root cause (M4).** Advertising Composite masks a real
+  rendering bug in GTK's no-compositor path (looks like an ARGB byte-order or
+  ROP/PictOp inversion). Once found + fixed, Composite advertisement becomes a free
+  choice instead of a crutch. Needs a Vitis reproduction to isolate; cut a probe
+  build (unadvertise Composite + observe) when time allows.
+
+### M3 — Wire integrity endgame (fully deferred, gated)
+
+Blocked on field evidence per the plan's "floor stays until its feeders are fixed"
+rule. Do NOT delete the sequence floor without a post-sleep crash repro.
+- §1.7 extend reply safety net to extension opcodes; §1.5 single
+  `writeReply(header,payload)` entry point owning lenw; §1.4 fix
+  `[SEQ_REGRESS]`/ring-buffer instrumentation; **then** §1.1/§1.2 delete floor +
+  SEQ_WRAP + payload heuristics. §1.8 head-of-line/EAGAIN backpressure.
+- Diagnostic to add first: log `max_wire_seq_` vs `last_request_seq_` at SEQ_WRAP
+  to gather evidence before the deletion.
+
+### M4 — Extension honesty (remaining, Tier 3)
+
+- XTEST FakeInput → wire into the existing `x11_post_*` host-input path (machinery
+  exists; enables Java Robot/xdotool) or stop advertising (§5). Currently consumed
+  silently ("not yet routed").
+- RANDR: rotation=1, track RRSelectInput, monotonic timestamps, answer
+  GetScreenInfo/SetScreenConfig (§5).
+- GraphicsExpose for clamped/occluded CopyArea (§4.3).
+- Delete the 8 dead `src/Extensions/*.cpp` + `include/Extensions/*.hpp`. Deferred:
+  the headers are pbxproj file-refs, so removal needs Xcode-managed pbxproj edits
+  (crash risk). Zero runtime effect (never compiled) — purely cosmetic.
+- Clamp the Vivado NSWindow to the new monitor's visible frame on
+  ScreenLayoutChanged (Swift) — X11 apps don't self-shrink on RRScreenChangeNotify
+  (field obs 2026-09-01).
+
+### M5 — RENDER/drawing fidelity (remaining)
+
+Done: §4.1 PutImage ZPixmap→pixmap (v1.19.36.22), §4.6 Trapezoid non-solid sources
+(v1.19.36.25). Deferred:
+- §4.2 SetPictureTransform/SetPictureFilter honored for scale.
+- §4.4 GetImage: BadMatch on out-of-bounds instead of short reply.
+- §4.7 Alpha-forcing only for window destinations; format-aware sampling.
+- §4.8 RENDER cursors from pictures — **parked** unless stuck cursors are confirmed
+  in Vitis.
+- §4.10–4.12 cleanup pass.
+
+### M6 — Per-(window,client) event masks + XI2 (NEXT UP — not deferred)
+
+The architectural keystone. Replaces the single `event_mask`/`owner_fd` delivery
+with a per-(window,client) selection table consulted by all senders, then re-enables
+XI2 on top. Unblocks: XI2 (xeyes pupil tracking + the `XInputExtension` probe),
+PropertyNotify to all selectors (§6.8), SendEvent mask semantics, and
+ChangeWindowAttributes no longer clobbering other clients' masks. Exit test:
+Electron/Vitis with XI2 advertised, two-JVM clipboard, portal-gtk dialogs.
+- Related deferred correctness item: **Cocoa↔X11 stacking sync** — X11 stacking
+  order goes stale when the user reorders NSWindows via Cocoa, so input picking can
+  use a stale Z-order.
+
+### M7 — Long-session hygiene (remaining)
+
+Done: slot recycling (§6.1, .26), resource free on disconnect (§6.4, .27),
+selection-owner sweep (§6.3, .28), recursive DestroyWindow + property purge
+(§6.7, .28/.29), grab cleanup incl. RetainPermanent (§6.5). Deferred:
+- ID-range ownership enforcement on Create* ops (CreatePixmap/GC/Cursor/Font) —
+  only CreateWindow validates today (§6.1 second half).
+- KillClient + RetainTemporary semantics; allow children under retained windows
+  (§6.6 — XDND robustness). KillClient is a stub.
+- §6.9 fonts: OpenFont can never fail — **risky** (changes font fallback); hold.
+- §6.10 same-connection ConvertSelection refusal; §6.11 misc.
+- Peak/suppression-state purge on recycled XIDs (§6.7 tail).
+
+### Demand-driven extension candidates (from `[EXT_PROBE]` field data, 2026-09-02)
+
+Real clients probe these; all have working core-protocol fallbacks today, so
+absence is non-fatal. Prioritized by value within rootless limits:
+- **SYNC (XSync)** — highest value. `_NET_WM_SYNC_REQUEST` smooth-resize handshake +
+  counters/alarms (AWT/Swing/GTK/Qt). Pure wire protocol, fits rootless cleanly.
+  Probed by Vitis.
+- **XKEYBOARD (XKB)** — probed by every Xlib startup; we serve core keyboard mapping
+  instead, and clients fall back fine. Medium interest.
+- **MIT-SCREEN-SAVER** — trivial QueryVersion stub if ever needed.
+- Correctly absent (rootless / network mismatch — leave unimplemented): DRI3, GLX,
+  MIT-SHM (can't cross TCP/Docker), Present (native Metal present), DAMAGE.
 
 ---
 
