@@ -12,7 +12,7 @@ macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fil
 
 - **Native Metal rendering** — GPU-accelerated compositing, partial texture uploads, shaped window transparency
 - **Full X11 core protocol** — 100+ opcodes: window management, drawing operations, events, properties, selections, atoms, fonts, cursors, colormaps
-- **10 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XInputExtension (XI2), XTEST
+- **10 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XTEST, Composite (XInput2/XI2 handlers are implemented but not advertised, for Electron compatibility)
 - **ICCCM/EWMH compliance** — WM_NORMAL_HINTS, WM_HINTS, WM_TAKE_FOCUS, WM_DELETE_WINDOW, _NET_WM_WINDOW_TYPE, _NET_WM_STATE, _NET_FRAME_EXTENTS
 - **Font support** — PCF/BDF bitmap fonts, CoreText bridge for system fonts with antialiasing toggle
 - **Multi-monitor** — Dynamic RANDR/Xinerama with real display data, per-monitor DPI, hot-plug support
@@ -29,11 +29,11 @@ macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fil
 
 ## Installation
 
-### From .pkg Installer
+### From the .dmg
 
-Download the latest `.pkg` from [Releases](https://github.com/LawrenceGibbons/SwiftX11/releases) and double-click to install. The installer places `SwiftX11.app` in `/Applications` and optionally installs X11 bitmap fonts to `/opt/X11/share/fonts/`.
+Download the latest `.dmg` from [Releases](https://github.com/LawrenceGibbons/SwiftX11/releases), open it, and drag **SwiftX11** to Applications. X11 bitmap fonts are bundled inside the app — no XQuartz required for the server itself.
 
-> **Note**: The app is unsigned — right-click → Open to bypass Gatekeeper on first launch.
+> **Note**: The app is ad-hoc signed but not notarized — right-click → Open to bypass Gatekeeper on first launch.
 
 ### From Source
 
@@ -71,13 +71,13 @@ For native macOS X11 clients, Unix socket also works:
 export DISPLAY=:1
 ```
 
-## Building the Installer
+## Building the DMG
 
 ```bash
-bash macos/scripts/build-installer.sh
+bash macos/scripts/build-dmg.sh
 ```
 
-This builds a Release configuration, packages the app and optionally X11 fonts (from `/opt/X11/share/fonts/`) into a `.pkg` installer.
+This builds the Release configuration and packages `SwiftX11.app` (with bundled X11 fonts) into a distributable `.dmg`.
 
 ## Architecture
 
@@ -85,17 +85,17 @@ This builds a Release configuration, packages the app and optionally X11 fonts (
 ┌─────────────────────────────────────────────────┐
 │  Swift (macos/SwiftX11/)                        │
 │  AppKit windows, Metal rendering, input events, │
-│  surface allocation, networking                 │
+│  networking (owns UI, not pixel buffers)        │
 ├─────────────────────────────────────────────────┤
 │  extern "C" bridge (SwiftBridge.cpp)            │
 ├─────────────────────────────────────────────────┤
 │  C++ (macos/X11LowLevel/cpp/X11Protocol/)       │
-│  Wire protocol parsing, request dispatch,       │
-│  raster drawing, resource tables, WM emulation  │
+│  Wire protocol, raster drawing, resource tables,│
+│  WM emulation, host pixel-buffer ownership      │
 └─────────────────────────────────────────────────┘
 ```
 
-Swift owns all window surfaces (CPU-backed Metal textures). C++ draws into them via `DrawableSurfaceRegistry`. Child windows draw into their host's surface at an offset — no per-child allocation.
+C++ owns all host window surfaces — CPU pixel buffers held in `DrawableSurfaceRegistry` (since v1.19.35.49). Swift requests sizes and uploads the buffers to Metal textures at present time; it never holds a reference to the live buffer. Child windows draw into their host's surface at an offset — no per-child allocation.
 
 See [CLAUDE.md](macos/CLAUDE.md) for detailed architecture documentation.
 
@@ -107,8 +107,8 @@ See [CLAUDE.md](macos/CLAUDE.md) for detailed architecture documentation.
 | xeyes | ✅ Working | SHAPE extension, transparent background |
 | xcalc | ✅ Working | Including RPN mode |
 | xclock | ✅ Working | Analog and digital |
-| Vivado | ✅ Working | Full GUI, menus, dialogs, banner, clipboard |
-| Vitis | 🔄 In progress | Extension stubs in place, needs testing |
+| Vivado | ✅ Working | Full GUI, menus, dialogs, banner, clipboard, hardware-manager drag |
+| Vitis | ✅ Working | Electron/Eclipse + GTK portal file dialogs, over TCP from a container |
 
 ## Display Number
 

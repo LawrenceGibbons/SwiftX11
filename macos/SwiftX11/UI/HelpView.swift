@@ -30,14 +30,14 @@ struct HelpView: View {
                 }
 
                 helpSection("Fonts") {
-                    Text("SwiftX11 loads fonts from three sources:")
+                    Text("SwiftX11 is self-contained \u{2014} X11 bitmap fonts are bundled in the app, so no XQuartz install is required. It resolves fonts from:")
                     bulletList([
-                        "PCF bitmap fonts from /opt/X11/share/fonts/{misc,75dpi,100dpi}/",
+                        "Bundled PCF fonts (SwiftX11.app/Contents/Resources/fonts/) \u{2014} searched first",
+                        "System PCF fonts from /opt/X11/share/fonts/{misc,75dpi,100dpi}/ if present",
                         "CoreText system fonts: fixed\u{2192}Menlo, courier\u{2192}Courier, helvetica\u{2192}Helvetica, times\u{2192}Times New Roman, lucida\u{2192}Lucida Grande",
                         "Built-in \"fixed\" fallback font for unresolved requests"
                     ])
                     Text("Toggle antialiased (CoreText) fonts in Settings \u{2192} Rendering \u{2192} \"Antialiased Fonts\".")
-                    Text("Install XQuartz or the X11 font packages from Homebrew to get PCF fonts.")
                 }
 
                 helpSection("Settings") {
@@ -93,14 +93,15 @@ struct HelpView: View {
                         "SHAPE \u{2014} Non-rectangular windows (e.g., xeyes)",
                         "GE \u{2014} Generic Events",
                         "XC-MISC \u{2014} XID range recycling for long-running sessions",
-                        "XInput2 \u{2014} Input device enumeration for GTK3/4",
-                        "XTEST \u{2014} Synthetic input events for accessibility and automation"
+                        "XTEST \u{2014} Synthetic input events for accessibility and automation",
+                        "Composite \u{2014} Advertised for GTK compatibility (redirection is a no-op in the rootless model)"
                     ])
                 }
 
                 helpSection("Known Limitations") {
                     bulletList([
                         "No GLX \u{2014} OpenGL rendering over X11 is not supported",
+                        "XInput2 (XI2) \u{2014} implemented but not advertised, for Electron compatibility (xeyes may note it as missing)",
                         "No XKB compose sequences \u{2014} dead keys and multi-key compose not supported",
                         "Little-endian only \u{2014} big-endian X11 clients are rejected at connection time",
                         "Requires Metal GPU \u{2014} software rendering is not supported",
