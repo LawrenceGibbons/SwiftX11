@@ -533,7 +533,8 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
                                 uint32_t wid,
                                 bool is_enter,
                                 int32_t root_x, int32_t root_y,
-                                uint32_t buttons, uint32_t mods)
+                                uint32_t buttons, uint32_t mods,
+                                uint8_t mode)
 {
   auto clamp16 = [](int32_t v) -> int16_t {
     if (v < -32768) return -32768;
@@ -570,7 +571,7 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   const uint16_t st = x11::input::toX11State(buttons, mods);
   wire::wr16_le(ev + 28, st);
 
-  ev[30] = 0; // mode: NotifyNormal (0)
+  ev[30] = mode; // mode: 0=Normal, 1=NotifyGrab, 2=NotifyUngrab
 
   // Byte 31 is a packed flags byte: bit0 = focus, bit1 = same_screen.
   // (The old `ev[31] = 1` claimed focus=True + same_screen=False on every
@@ -831,7 +832,8 @@ void EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
 void EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                                     bool is_enter,
                                     int32_t root_x, int32_t root_y,
-                                    uint32_t buttons, uint32_t mods) {
+                                    uint32_t buttons, uint32_t mods,
+                                    uint8_t mode) {
   uint32_t mask_bit = is_enter ? xi2::kEnterMask : xi2::kLeaveMask;
   const WindowView* wv = ctx.window(wid);
   if (!wv) return;
@@ -856,7 +858,7 @@ void EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
   wire::wr16_le(buf + 16, xi2::kXTESTPointer);           // sourceid (slave device)
-  buf[18] = 0;   // mode = Normal
+  buf[18] = mode; // mode: 0=Normal, 1=NotifyGrab, 2=NotifyUngrab
   buf[19] = 0;   // detail = Ancestor
   wire::wr32_le(buf + 20, 1);                            // root
   wire::wr32_le(buf + 24, wid);                          // event

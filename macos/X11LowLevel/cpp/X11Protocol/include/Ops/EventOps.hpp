@@ -110,7 +110,8 @@ namespace x11 {
                            uint32_t wid,
                            bool is_enter,
                            int32_t root_x, int32_t root_y,
-                           uint32_t buttons, uint32_t mods);
+                           uint32_t buttons, uint32_t mods,
+                           uint8_t mode = 0);  // 0=Normal, 1=Grab, 2=Ungrab
     
     
     void sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
@@ -138,7 +139,8 @@ namespace x11 {
     void sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                               bool is_enter,
                               int32_t root_x, int32_t root_y,
-                              uint32_t buttons, uint32_t mods);
+                              uint32_t buttons, uint32_t mods,
+                              uint8_t mode = 0);  // 0=Normal, 1=Grab, 2=Ungrab
 
     void sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
 

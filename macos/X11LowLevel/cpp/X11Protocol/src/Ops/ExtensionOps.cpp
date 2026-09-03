@@ -26,6 +26,12 @@ extern "C" {
 #include "Core/WindowView.hpp"
 #include "Core/InputRouting.hpp"   // pickDeepestMappedWindowAtHostPoint (XIQueryPointer)
 #include "Core/GrabTable.hpp"      // tryPointerGrab/clearPointerGrab (XIGrabDevice)
+#include "Core/XProtoServer.hpp"   // eventOps() for grab-activation crossings
+#include "Ops/EventOps.hpp"
+
+// Bridge accessor (defined in XProtoServerBridge.cpp) — lets the XI2 grab
+// handlers emit grab/ungrab crossing events via EventOps.
+extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
 #include "Core/PixmapTable.hpp"
 #include "Core/ShapeRegion.hpp"
 #include "Core/ScreenLayout.hpp"
@@ -1592,14 +1598,41 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         wire::wr32_le(rep.data() + 4, 0);  // length = 0
         rep[8] = gs;                        // status at byte 8 (xXIGrabDeviceReply)
       });
+
+      // Grab-activation crossing (xorg ActivatePointerGrab -> DoEnterLeaveEvents
+      // NotifyGrab): Chromium/GTK menus rely on the Enter(mode=Grab) to the grab
+      // window to know the grab is live and start driving the popup.
+      if (gs == 0) {
+        if (auto* srv = x11_proto_bridge_get_server()) {
+          const auto& gin = ctx.input();
+          srv->eventOps().sendCrossingEvent(ctx, win, /*is_enter=*/true,
+              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Grab*/1);
+          srv->eventOps().sendXI2CrossingEvent(ctx, win, /*is_enter=*/true,
+              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Grab*/1);
+        }
+      }
       return;
     }
 
     // ---- minor 52: XIUngrabDevice (void) — release the active grab ----
-    case 52:
+    case 52: {
       br.skip(br.remaining());
+      // Ungrab crossing (xorg DeactivatePointerGrab NotifyUngrab): Leave the
+      // grab window before releasing so the client sees the grab end.
+      x11::PointerGrab pg{};
+      if (ctx.grabs().getPointerGrab(pg) && pg.grabWindow &&
+          pg.owner_fd == ctx.transport().clientFd()) {
+        if (auto* srv = x11_proto_bridge_get_server()) {
+          const auto& gin = ctx.input();
+          srv->eventOps().sendCrossingEvent(ctx, pg.grabWindow, /*is_enter=*/false,
+              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Ungrab*/2);
+          srv->eventOps().sendXI2CrossingEvent(ctx, pg.grabWindow, /*is_enter=*/false,
+              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Ungrab*/2);
+        }
+      }
       ctx.grabs().clearPointerGrab(ctx.transport().clientFd());
       return;
+    }
 
     // ---- minor 53/55: XI2 stubs ----
     case 53: // XIAllowEvents (void)
