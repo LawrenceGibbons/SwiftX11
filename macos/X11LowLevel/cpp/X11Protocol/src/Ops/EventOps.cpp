@@ -727,14 +727,18 @@ void EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));    // root_y FP16.16
   wire::wr32_le(buf + 40, (uint32_t)((int32_t)ex << 16)); // event_x FP16.16
   wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16)); // event_y FP16.16
-  wire::wr16_le(buf + 48, 1);                           // buttons_len
-  wire::wr16_le(buf + 50, 0);                           // valuators_len
+  wire::wr16_le(buf + 48, xi2::kXIButtonsLen);          // buttons_len = 8 (xorg)
+  wire::wr16_le(buf + 50, xi2::kXIValuatorsLen);        // valuators_len = 2 (xorg)
   wire::wr16_le(buf + 52, xi2::kXTESTPointer);          // sourceid (slave device)
   // buf[54-55] = pad
   wire::wr32_le(buf + 56, 0);                           // flags
   fillXI2Mods(buf + 60, mods);                           // mods (16 bytes)
   fillXI2Group(buf + 76);                                // group (4 bytes)
-  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));       // button_mask
+  // Trailing (buf is zero-init): 32B button mask + 8B valuator mask + 2×FP3232.
+  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));       // button mask, word 0
+  buf[112] = 0x03;                                       // valuator mask bits 0,1 (x,y)
+  wire::wr32_le(buf + 120, (uint32_t)root_x);            // valuator 0 = x (FP3232 integral)
+  wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }
@@ -775,13 +779,17 @@ void EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));
   wire::wr32_le(buf + 40, (uint32_t)((int32_t)ex << 16));
   wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16));
-  wire::wr16_le(buf + 48, 1);                            // buttons_len
-  wire::wr16_le(buf + 50, 0);                            // valuators_len
+  wire::wr16_le(buf + 48, xi2::kXIButtonsLen);           // buttons_len = 8 (xorg)
+  wire::wr16_le(buf + 50, xi2::kXIValuatorsLen);         // valuators_len = 2 (xorg)
   wire::wr16_le(buf + 52, xi2::kXTESTPointer);           // sourceid (slave device)
   wire::wr32_le(buf + 56, 0);                            // flags
   fillXI2Mods(buf + 60, mods);
   fillXI2Group(buf + 76);
-  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));
+  // Trailing: 32B button mask + 8B valuator mask + 2×FP3232 (x,y).
+  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));       // button mask, word 0
+  buf[112] = 0x03;                                       // valuator mask bits 0,1 (x,y)
+  wire::wr32_le(buf + 120, (uint32_t)root_x);            // valuator 0 = x (FP3232 integral)
+  wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }
@@ -795,11 +803,11 @@ void EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
   if (!(eff_mask & mask_bit)) return;
 
-  uint8_t buf[xi2::kDeviceEventSize] = {};
+  uint8_t buf[xi2::kKeyEventSize] = {};
   buf[0] = 35;
   buf[1] = (uint8_t)ext::kXInput2;
   wire::wr16_le(buf + 2,  ctx.transport().lastSeq());
-  wire::wr32_le(buf + 4,  xi2::kDeviceEventLength);
+  wire::wr32_le(buf + 4,  xi2::kKeyEventLength);
   wire::wr16_le(buf + 8,  is_press ? xi2::kKeyPress : xi2::kKeyRelease);
   wire::wr16_le(buf + 10, xi2::kVirtualCoreKeyboard);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
@@ -808,13 +816,14 @@ void EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 24, wid);
   wire::wr32_le(buf + 28, 0);   // child
   // Coordinates: 0 for keyboard events (no pointer position included)
-  wire::wr16_le(buf + 48, 1);   // buttons_len
-  wire::wr16_le(buf + 50, 0);   // valuators_len
+  wire::wr16_le(buf + 48, xi2::kXIButtonsLen);   // buttons_len = 8 (xorg)
+  wire::wr16_le(buf + 50, xi2::kXIValuatorsLen); // valuators_len = 2 (xorg)
   wire::wr16_le(buf + 52, xi2::kXTESTKeyboard);          // sourceid (slave device)
   wire::wr32_le(buf + 56, 0);   // flags
   fillXI2Mods(buf + 60, mods);
   fillXI2Group(buf + 76);
-  wire::wr32_le(buf + 80, 0);   // button_mask = 0 for keyboard events
+  // Trailing: 32B button mask (all zero) + 8B valuator mask (all zero, no axes).
+  // (keys carry no valuators, so no FP3232 axisvalues follow the mask.)
 
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }
@@ -858,10 +867,12 @@ void EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16));
   buf[48] = 1;   // same_screen = True
   buf[49] = 0;   // focus = False
-  wire::wr16_le(buf + 50, 1);                            // buttons_len
+  wire::wr16_le(buf + 50, xi2::kXIButtonsLen);          // buttons_len = 8 (xorg)
   fillXI2Mods(buf + 52, mods);                            // mods (16 bytes)
   fillXI2Group(buf + 68);                                 // group (4 bytes)
-  wire::wr32_le(buf + 72, xi2ButtonMask(buttons));        // button_mask
+  // Trailing: 32B button mask (buttons_len=8), word 0 carries the buttons.
+  // xXIEnterEvent has no valuators.
+  wire::wr32_le(buf + 72, xi2ButtonMask(buttons));        // button mask, word 0
 
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }
@@ -890,10 +901,10 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
   // coordinates = 0 for focus events
   buf[48] = 1;   // same_screen
   buf[49] = 1;   // focus = True (for focus events)
-  wire::wr16_le(buf + 50, 1);   // buttons_len
+  wire::wr16_le(buf + 50, xi2::kXIButtonsLen);   // buttons_len = 8 (xorg)
   fillXI2Mods(buf + 52, 0);
   fillXI2Group(buf + 68);
-  wire::wr32_le(buf + 72, 0);   // button_mask = 0
+  // Trailing: 32B button mask (all zero for focus events).
 
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }

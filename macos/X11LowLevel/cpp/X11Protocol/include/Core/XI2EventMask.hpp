@@ -52,14 +52,28 @@ constexpr uint16_t kVirtualCoreKeyboard = 3;  // master keyboard
 constexpr uint16_t kXTESTPointer        = 4;  // slave pointer (sourceid for pointer events)
 constexpr uint16_t kXTESTKeyboard       = 5;  // slave keyboard (sourceid for keyboard events)
 
-// --- Wire format sizes ---
-// xXIDeviceEvent with buttons_len=1, valuators_len=0: 84 bytes
-constexpr size_t kDeviceEventSize = 84;
-constexpr uint32_t kDeviceEventLength = 13;  // (84 - 32) / 4
+// --- Wire format sizes (mirror xorg eventToDeviceEvent / xXIEnterEvent) ---
+// xorg ALWAYS emits buttons_len=8 (MAX_BUTTONS=256 -> 32-byte mask) and, for
+// device events, valuators_len=2 (MAX_VALUATORS=36 -> 8-byte mask) plus one
+// FP3232 (8 bytes) per SET valuator.  A client that queries the device sees the
+// valuator classes we advertise (x,y) and expects that axis data to be present
+// in motion/button events; sending valuators_len=0 (our old layout) made
+// Chromium/Electron register the axes then die on the first axis-less motion.
+constexpr uint16_t kXIButtonsLen   = 8;   // bytes_to_int32(bits_to_bytes(256))
+constexpr uint16_t kXIValuatorsLen = 2;   // bytes_to_int32(bits_to_bytes(36))
 
-// xXIEnterEvent with buttons_len=1: 76 bytes
-constexpr size_t kEnterEventSize = 76;
-constexpr uint32_t kEnterEventLength = 11;  // (76 - 32) / 4
+// Device event (motion/button) WITH x,y valuators:
+//   80 (fixed header) + 32 (button mask) + 8 (valuator mask) + 16 (2 FP3232) = 136
+constexpr size_t kDeviceEventSize = 136;
+constexpr uint32_t kDeviceEventLength = 26;  // (136 - 32) / 4
+
+// Key device event (no valuators set): 80 + 32 + 8 + 0 = 120
+constexpr size_t kKeyEventSize = 120;
+constexpr uint32_t kKeyEventLength = 22;     // (120 - 32) / 4
+
+// xXIEnterEvent: 72 (fixed header) + 32 (button mask) = 104 (crossing has no valuators)
+constexpr size_t kEnterEventSize = 104;
+constexpr uint32_t kEnterEventLength = 18;  // (104 - 32) / 4
 
 // xXIRawEvent with 2 valuators (X, Y axes):
 // GenericEvent header (8) + evtype(2)+deviceid(2)+time(4)+detail(4)+
