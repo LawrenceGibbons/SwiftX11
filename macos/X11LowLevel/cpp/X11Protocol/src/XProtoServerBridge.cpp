@@ -17,6 +17,7 @@
 
 #include "XProtoServerBridge.h"
 #include "Core/XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
+#include "Core/XI2EventMask.hpp"   // xi2::kButtonPress/Release/Key masks for deliverability
 #include "Ops/QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 #include "Core/WindowTable.hpp"
 #include "Core/XProtoModules.hpp"
@@ -828,14 +829,24 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // to children via SetInputFocus.
 
           // Pick a delivery window that selected the relevant mask.
+          // xorg EventIsDeliverable (dix/events.c): a window is a delivery
+          // target if it selected the event at ANY level — XI2 (its own
+          // XISelectEvents mask) or core.  GTK3 under XI2 selects buttons
+          // ONLY via XI2 and never sets the core ButtonPressMask; checking
+          // core alone made every GTK click fall through to [BTN_DROP]
+          // before either sender ran (dialog got XI2 motion but no clicks,
+          // so double-click-to-open-folder could never fire).
           auto wantsBtn = [&](uint32_t xid) -> bool {
             if (!xid) return false;
             const x11::WindowView* vw = ctx.window(xid);
             if (!vw || vw->owner_fd <= 0) return false;
             const uint32_t mask = vw->event_mask;
-            const bool wantPress   = (mask & x11::mask::ButtonPress) != 0;
-            const bool wantRelease = (mask & x11::mask::ButtonRelease) != 0;
-            return (c.isDown ? wantPress : wantRelease);
+            const bool coreWant = c.isDown ? (mask & x11::mask::ButtonPress)   != 0
+                                           : (mask & x11::mask::ButtonRelease) != 0;
+            const uint32_t xi2bit = c.isDown ? x11::xi2::kButtonPressMask
+                                             : x11::xi2::kButtonReleaseMask;
+            const bool xi2Want = (vw->xi2_mask & xi2bit) != 0;
+            return coreWant || xi2Want;
           };
 
           uint32_t deliver = under;
@@ -1046,14 +1057,20 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // Keep canonical mods in sync
           ctx.input().mods = c.modsMask;
 
+          // xorg EventIsDeliverable: deliverable via the window's own XI2 mask
+          // OR its core mask.  GTK3 under XI2 selects keys only via XI2, so
+          // a core-only check dropped typing in GTK dialogs.
           auto wantsKey = [&](uint32_t xid) -> bool {
             if (!xid) return false;
             const x11::WindowView* vw = ctx.window(xid);
             if (!vw || vw->owner_fd <= 0) return false;
             const uint32_t mask = vw->event_mask;
-            const bool wantPress   = (mask & x11::mask::KeyPress) != 0;
-            const bool wantRelease = (mask & x11::mask::KeyRelease) != 0;
-            return c.isDown ? wantPress : wantRelease;
+            const bool coreWant = c.isDown ? (mask & x11::mask::KeyPress)   != 0
+                                           : (mask & x11::mask::KeyRelease) != 0;
+            const uint32_t xi2bit = c.isDown ? x11::xi2::kKeyPressMask
+                                             : x11::xi2::kKeyReleaseMask;
+            const bool xi2Want = (vw->xi2_mask & xi2bit) != 0;
+            return coreWant || xi2Want;
           };
 
           // Active keyboard grab takes precedence over focus routing
