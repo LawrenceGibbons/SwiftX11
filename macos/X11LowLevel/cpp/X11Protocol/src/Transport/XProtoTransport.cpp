@@ -344,23 +344,29 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   // sendBuf points to the final bytes (after floor fix), n is the total size.
   recordWirePacket(static_cast<const uint8_t*>(sendBuf), n);
 
-  // Live wire trace to stderr (gated by x11_set_wire_trace toggle).
+  // Live wire trace (gated by x11_set_wire_trace toggle).  Emitted to BOTH
+  // stderr (Xcode console) and the in-app log window via x11_ui_push_log — the
+  // [WIRE] lines previously went to stderr only, so users watching the in-app
+  // log window (where [XInput2] etc. appear) never saw them.
   if (n >= 32 && payload_remaining_ == 0) {
     if (x11_get_wire_trace()) {
       const uint8_t* h = static_cast<const uint8_t*>(sendBuf);
       uint16_t ws = uint16_t(h[2] | (uint16_t(h[3]) << 8));
+      char wbuf[192];
       if (h[0] == 0) {
-        TS_FPRINTF("[WIRE] fd=%d ERROR code=%u seq=%u res=0x%02X%02X%02X%02X major=%u minor=%u\n",
+        snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d ERROR code=%u seq=%u res=0x%02X%02X%02X%02X major=%u minor=%u\n",
                 client_fd_, h[1], ws, h[7],h[6],h[5],h[4], h[10], h[11]);
       } else if (h[0] == 1) {
         uint32_t lw = uint32_t(h[4])|(uint32_t(h[5])<<8)|(uint32_t(h[6])<<16)|(uint32_t(h[7])<<24);
-        TS_FPRINTF("[WIRE] fd=%d REPLY seq=%u data=%u lenw=%u\n",
+        snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d REPLY seq=%u data=%u lenw=%u\n",
                 client_fd_, ws, h[1], lw);
       } else {
         uint32_t w = uint32_t(h[4])|(uint32_t(h[5])<<8)|(uint32_t(h[6])<<16)|(uint32_t(h[7])<<24);
-        TS_FPRINTF("[WIRE] fd=%d EVENT type=%u seq=%u detail=%u wid=0x%08X\n",
+        snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d EVENT type=%u seq=%u detail=%u wid=0x%08X\n",
                 client_fd_, h[0], ws, h[1], w);
       }
+      TS_FPRINTF("%s", wbuf);
+      x11_ui_push_log(1, wbuf);
     }
   }
 

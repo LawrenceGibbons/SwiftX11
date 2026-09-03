@@ -115,9 +115,9 @@ struct ContentView: View {
         }
         .keyboardShortcut("f", modifiers: .command)
         Spacer()
-        Toggle("Wire Trace (stderr)", isOn: $settings.wireTrace)
+        Toggle("Wire Trace", isOn: $settings.wireTrace)
           .toggleStyle(.switch)
-          .help("Log every incoming request and outgoing packet to the Xcode console")
+          .help("Log every incoming request and outgoing packet ([WIRE]) to this log window and the Xcode console")
       }
 
       LogTextViewWithFind(text: $server.logText, holder: logHolder)

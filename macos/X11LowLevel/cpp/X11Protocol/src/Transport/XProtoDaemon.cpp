@@ -835,8 +835,11 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
   // Live wire trace: log every incoming request to stderr when enabled.
   {
     if (x11_get_wire_trace()) {
-      TS_FPRINTF("[WIRE] fd=%d REQ major=%u minor=%u seq=%u len=%zu\n",
+      char wbuf[160];
+      snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d REQ major=%u minor=%u seq=%u len=%zu\n",
               fd, (unsigned)major, (unsigned)minor, (unsigned)cs.seq, remain);
+      TS_FPRINTF("%s", wbuf);       // stderr (Xcode console)
+      x11_ui_push_log(1, wbuf);     // in-app log window
     }
   }
 
