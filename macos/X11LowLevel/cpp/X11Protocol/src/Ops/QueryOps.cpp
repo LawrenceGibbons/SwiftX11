@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <set>
 
 #include "Ops/QueryOps.hpp"
 #include "Core/XClient.hpp"
@@ -635,15 +636,32 @@ namespace x11 {
       present = 1; major = ext::kXTEST;
     } else if (name == "Composite") {
       present = 1; major = ext::kCOMPOSITE;
-    } else if (name == "DAMAGE") {
-      present = 1; major = ext::kDAMAGE;
-      first_event = ext::kDAMAGE_FirstEvent;
     }
+    // DAMAGE deliberately NOT advertised (M4): we never generate DamageNotify
+    // — a rootless server has no compositor to feed, so every DamageCreate
+    // would silently never fire.  Advertising it was dishonest.  The major
+    // handler stays dormant; without a QueryExtension major, no client reaches
+    // it.  The EXT_PROBE log below records anyone who asks, so we can gauge
+    // real-world demand for it (or any other extension) within rootless limits.
 
 #ifndef NDEBUG
     TS_FPRINTF("[QueryExtension] \"%s\" -> present=%u major=%u\n",
             name.c_str(), (unsigned)present, (unsigned)major);
 #endif
+
+    // Surface outside demand: log the first time each *unadvertised* extension
+    // is requested this session.  The xproto dispatch is single-threaded, so a
+    // function-local static set needs no lock.  Goes to the SwiftX11 console.
+    if (present == 0 && !name.empty()) {
+      static std::set<std::string> s_probed;
+      if (s_probed.insert(name).second) {
+        char buf[192];
+        snprintf(buf, sizeof(buf),
+                 "[EXT_PROBE] client requested unadvertised extension \"%s\" "
+                 "(not supported — rootless server)\n", name.c_str());
+        x11_ui_push_log(1, buf);
+      }
+    }
 
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       wire::wr32_le(rep.data() + 4, 0); // length = 0
@@ -676,9 +694,9 @@ namespace x11 {
       "XC-MISC",
       "XTEST",
       "Composite",
-      "DAMAGE",
+      // DAMAGE removed (M4): advertised-but-silent; see handleQueryExtension.
     };
-    static constexpr uint8_t nExt = 11;
+    static constexpr uint8_t nExt = 10;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;

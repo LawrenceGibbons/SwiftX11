@@ -1680,9 +1680,21 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // ---- minor 3: CompositeUnredirectWindow (void) ----
     // ---- minor 4: CompositeUnredirectSubwindows (void) ----
     // ---- minor 5: CompositeCreateRegionFromBorderClip (void) ----
-    // ---- minor 6: CompositeNameWindowPixmap (void) ----
-    case 1: case 2: case 3: case 4: case 5: case 6:
+    //   Benign no-ops in a rootless server: there is no root compositor and
+    //   nothing to redirect (each top-level window is its own NSWindow surface).
+    case 1: case 2: case 3: case 4: case 5:
       br.skip(br.remaining());
+      return;
+
+    // ---- minor 6: CompositeNameWindowPixmap ----
+    //   M4/honesty: we never redirect, so there is no named window pixmap to
+    //   hand out.  The reference server (composite/compext.c) returns BadMatch
+    //   when the window has no CompWindow (i.e. is not redirected); do the same
+    //   instead of silently "succeeding" and leaking a phantom pixmap XID that
+    //   would fault the moment the client used it (GetImage/CopyArea/CreatePicture).
+    case 6:
+      br.skip(br.remaining());
+      ctx.transport().sendErrorCore(x11::error::BadMatch, seq, 0, major);
       return;
 
     // ---- minor 7: CompositeGetOverlayWindow (reply-bearing) ----
