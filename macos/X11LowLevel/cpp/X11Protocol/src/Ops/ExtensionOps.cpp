@@ -1222,6 +1222,16 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining());
       (void)deviceid;
 
+      // xorg ProcXIQueryPointer returns BadWindow for an invalid win.
+      if (qwin != 1u && qwin != 0) {
+        WindowView qv{};
+        if (!ctx.windows().snapshot(qwin, qv)) {
+          ctx.transport().sendErrorCore(x11::error::BadWindow, seq, qwin,
+                                        (uint8_t)ext::kXInput2);
+          return;
+        }
+      }
+
       const auto& in = ctx.input();
       const int32_t root_x = in.root_x_u, root_y = in.root_y_u;
       const uint32_t host = in.last_xid;
@@ -1236,8 +1246,16 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       } else {
         const uint32_t qhost = ctx.windows().topLevelAncestorOf(qwin);
         if (qhost == host && host != 0) {
+          // child = the DIRECT child of qwin on the path to the pointer window
+          // (xorg ProcXIQueryPointer walks pSprite->win up to pWin), NOT the
+          // deepest window under the pointer.
           uint32_t deepest = pickDeepestMappedWindowAtHostPoint(ctx, host, in.win_x_u, in.win_y_u);
-          child = (deepest && deepest != qwin) ? deepest : 0;
+          uint32_t cur2 = deepest; int cdepth = 0;
+          while (cur2 && cur2 != qwin && cdepth < 64) {
+            WindowView dv{}; if (!ctx.windows().snapshot(cur2, dv)) break;
+            if (dv.parent_xid == qwin) { child = cur2; break; }
+            cur2 = dv.parent_xid; cdepth++;
+          }
           // win coords: pointer relative to qwin (walk qwin->host subtracting offsets)
           int32_t lx = in.win_x_u, ly = in.win_y_u;
           uint32_t cur = qwin; int depth = 0;
