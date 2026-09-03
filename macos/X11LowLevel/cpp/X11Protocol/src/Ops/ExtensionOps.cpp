@@ -1346,7 +1346,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         const uint16_t name_len = (uint16_t)std::strlen(dev->name);
         const uint16_t name_pad = (4 - (name_len % 4)) % 4;
         uint16_t num_classes = 0;
-        if (dev->has_buttons) num_classes += 5; // ButtonClass + 2 ValuatorClass + 2 ScrollClass
+        if (dev->has_buttons) num_classes += 3; // ButtonClass + 2 ValuatorClass (X,Y)
         if (dev->has_keys) num_classes++;
 
         // XIDeviceInfo header (12 bytes)
@@ -1418,27 +1418,13 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           payload.push_back(0);
           payload.push_back(0);
 
-          // ScrollClass for vertical scroll (axis 0, mapped to Y valuator)
-          // xXIScrollInfo: 24 bytes = 6 words
-          appendU16(3);              // type = ScrollClass (XI2: 3)
-          appendU16(6);              // length = 6 words
-          appendU16(dev->id);        // sourceid
-          appendU16(0);              // number = 0 (axis number, maps to valuator 0)
-          appendU16(0);              // scroll_type = 0 (Vertical)
-          appendU16(0);              // pad
-          appendU32(2);              // flags = XIScrollFlagPreferred (2)
-          // increment: FP3232 = 1.0 (one scroll unit per click)
-          appendU32(1); appendU32(0);
-
-          // ScrollClass for horizontal scroll (axis 1)
-          appendU16(3);              // type = ScrollClass
-          appendU16(6);              // length = 6 words
-          appendU16(dev->id);        // sourceid
-          appendU16(1);              // number = 1 (axis number, maps to valuator 1)
-          appendU16(1);              // scroll_type = 1 (Horizontal)
-          appendU16(0);              // pad
-          appendU32(0);              // flags = 0
-          appendU32(1); appendU32(0); // increment = 1.0
+          // NO ScrollClass.  xorg (xiquerydevice.c) only emits a ScrollInfo for
+          // axes whose scroll.type != NONE, and those are SEPARATE axes from
+          // x/y (e.g. 2,3), never the position valuators.  We previously
+          // advertised ScrollClass on axes 0,1 — the same axes as x/y — so
+          // Chromium read every pointer-motion valuator update as scroll input
+          // ("contents move with the mouse").  We deliver scroll as core
+          // buttons 4/5, so this device has no smooth-scroll valuators.
         }
 
         // KeyClass for keyboard devices
