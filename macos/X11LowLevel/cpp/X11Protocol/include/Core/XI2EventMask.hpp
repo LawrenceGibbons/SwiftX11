@@ -49,8 +49,15 @@ constexpr uint32_t kRawMotionMask        = (1u << 17);
 // --- Virtual core device IDs (matching XIQueryDevice) ---
 constexpr uint16_t kVirtualCorePointer  = 2;  // master pointer
 constexpr uint16_t kVirtualCoreKeyboard = 3;  // master keyboard
-constexpr uint16_t kXTESTPointer        = 4;  // slave pointer (sourceid for pointer events)
-constexpr uint16_t kXTESTKeyboard       = 5;  // slave keyboard (sourceid for keyboard events)
+constexpr uint16_t kXTESTPointer        = 4;  // XTEST slave pointer  (synthetic/automation input only)
+constexpr uint16_t kXTESTKeyboard       = 5;  // XTEST slave keyboard (synthetic/automation input only)
+// Real (physical) slave devices.  Genuine user input must be sourced from these,
+// NOT from the XTEST slaves: xorg reserves the XTEST device for actual XTEST-faked
+// input, and Chromium/GTK treat XTEST-sourced events as automation and ignore them
+// for menus/dialogs.  (Verified against nxagent, a proxy server like SwiftX11:
+// real input reports sourceid = a real slave, e.g. "nxagent mouse".)
+constexpr uint16_t kRealPointer         = 6;  // slave pointer  (sourceid for real pointer events)
+constexpr uint16_t kRealKeyboard        = 7;  // slave keyboard (sourceid for real keyboard events)
 
 // --- Wire format sizes (mirror xorg eventToDeviceEvent / xXIEnterEvent) ---
 // xorg ALWAYS emits buttons_len=8 (MAX_BUTTONS=256 -> 32-byte mask) and, for

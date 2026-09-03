@@ -1390,6 +1390,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         { 3, 2, 2, "Virtual core keyboard",        false, true  },  // attachment=2 (paired master pointer)
         { 4, 3, 2, "Virtual core XTEST pointer",   true,  false },
         { 5, 4, 3, "Virtual core XTEST keyboard",  false, true  },
+        // Real (physical) slaves — genuine user input is sourced from these, not
+        // the XTEST slaves, so Chromium/GTK treat it as real input (menus/dialogs).
+        // Mirrors nxagent's "nxagent mouse"/"nxagent keyboard" slaves.
+        { 6, 3, 2, "SwiftX11 pointer",             true,  false },  // SlavePointer  attached to master 2
+        { 7, 4, 3, "SwiftX11 keyboard",            false, true  },  // SlaveKeyboard attached to master 3
       };
 
       // Filter devices based on request

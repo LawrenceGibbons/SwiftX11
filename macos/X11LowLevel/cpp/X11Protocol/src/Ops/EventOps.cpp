@@ -730,7 +730,7 @@ void EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16)); // event_y FP16.16
   wire::wr16_le(buf + 48, xi2::kXIButtonsLen);          // buttons_len = 8 (xorg)
   wire::wr16_le(buf + 50, xi2::kXIValuatorsLen);        // valuators_len = 2 (xorg)
-  wire::wr16_le(buf + 52, xi2::kXTESTPointer);          // sourceid (slave device)
+  wire::wr16_le(buf + 52, xi2::kRealPointer);          // sourceid = real slave pointer (not XTEST)
   // buf[54-55] = pad
   wire::wr32_le(buf + 56, 0);                           // flags
   fillXI2Mods(buf + 60, mods);                           // mods (16 bytes)
@@ -782,7 +782,7 @@ void EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16));
   wire::wr16_le(buf + 48, xi2::kXIButtonsLen);           // buttons_len = 8 (xorg)
   wire::wr16_le(buf + 50, xi2::kXIValuatorsLen);         // valuators_len = 2 (xorg)
-  wire::wr16_le(buf + 52, xi2::kXTESTPointer);           // sourceid (slave device)
+  wire::wr16_le(buf + 52, xi2::kRealPointer);           // sourceid = real slave pointer (not XTEST)
   wire::wr32_le(buf + 56, 0);                            // flags
   fillXI2Mods(buf + 60, mods);
   fillXI2Group(buf + 76);
@@ -819,7 +819,7 @@ void EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   // Coordinates: 0 for keyboard events (no pointer position included)
   wire::wr16_le(buf + 48, xi2::kXIButtonsLen);   // buttons_len = 8 (xorg)
   wire::wr16_le(buf + 50, xi2::kXIValuatorsLen); // valuators_len = 2 (xorg)
-  wire::wr16_le(buf + 52, xi2::kXTESTKeyboard);          // sourceid (slave device)
+  wire::wr16_le(buf + 52, xi2::kRealKeyboard);          // sourceid = real slave keyboard (not XTEST)
   wire::wr32_le(buf + 56, 0);   // flags
   fillXI2Mods(buf + 60, mods);
   fillXI2Group(buf + 76);
@@ -857,7 +857,7 @@ void EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr16_le(buf + 8,  is_enter ? xi2::kEnter : xi2::kLeave);
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
-  wire::wr16_le(buf + 16, xi2::kXTESTPointer);           // sourceid (slave device)
+  wire::wr16_le(buf + 16, xi2::kRealPointer);           // sourceid = real slave pointer (not XTEST)
   buf[18] = mode; // mode: 0=Normal, 1=NotifyGrab, 2=NotifyUngrab
   buf[19] = 0;   // detail = Ancestor
   wire::wr32_le(buf + 20, 1);                            // root
@@ -894,7 +894,7 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
   wire::wr16_le(buf + 8,  is_in ? xi2::kFocusIn : xi2::kFocusOut);
   wire::wr16_le(buf + 10, xi2::kVirtualCoreKeyboard);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
-  wire::wr16_le(buf + 16, xi2::kXTESTKeyboard);           // sourceid (slave device)
+  wire::wr16_le(buf + 16, xi2::kRealKeyboard);           // sourceid = real slave keyboard (not XTEST)
   buf[18] = 0;   // mode = Normal
   buf[19] = 0;   // detail = Ancestor
   wire::wr32_le(buf + 20, 1);   // root
@@ -930,7 +930,7 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid) {
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);   // deviceid
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());     // time
   wire::wr32_le(buf + 16, 0);                          // detail = 0
-  wire::wr16_le(buf + 20, xi2::kXTESTPointer);          // sourceid (slave device)
+  wire::wr16_le(buf + 20, xi2::kRealPointer);          // sourceid = real slave pointer (not XTEST)
   wire::wr16_le(buf + 22, 1);                          // valuators_len = 1 (one mask word)
   wire::wr32_le(buf + 24, 0);                          // flags = 0
   // buf[28-31] = pad (already 0)
