@@ -110,14 +110,40 @@ public:
   // read-locked; ensure()/clear() blocks until all read handles drop.
   // ReadHandle is embedded inside DrawableRW so every draw op naturally
   // holds the lock.
+  //
+  //  Re-entrant reads (v1.19.36.34-dbg): only the OUTERMOST acquireRead on a
+  //  given thread takes the real shared_lock; nested acquireRead calls on the
+  //  same thread borrow it (empty lock_, but still active_ for depth
+  //  bookkeeping).  libc++'s shared_mutex is writer-priority: once a writer
+  //  (ensure()/clear() during a resize) is pending, a *nested* lock_shared
+  //  would block forever while the writer waits for the outer read to release
+  //  — a deadlock.  This was hit by `xcalc -rpn` resize, where a fill op holds
+  //  the host read lock and re-enters resolveDrawableRW for sibling fills.
+  //  Correctness relies on LIFO handle lifetimes, which the stack-scoped
+  //  DrawableRW usage guarantees (inner op's handle destroyed before outer's).
+  //
   class ReadHandle {
    public:
     ReadHandle() = default;
-    ReadHandle(ReadHandle&&) noexcept = default;
-    ReadHandle& operator=(ReadHandle&&) noexcept = default;
+    ReadHandle(ReadHandle&& o) noexcept
+      : lock_(std::move(o.lock_)), desc_(o.desc_), active_(o.active_) {
+      o.active_ = false;
+      o.desc_ = SurfaceDesc{};
+    }
+    ReadHandle& operator=(ReadHandle&& o) noexcept {
+      if (this != &o) {
+        releaseCount_();                 // release our own recursion count first
+        lock_   = std::move(o.lock_);
+        desc_   = o.desc_;
+        active_ = o.active_;
+        o.active_ = false;
+        o.desc_ = SurfaceDesc{};
+      }
+      return *this;
+    }
     ReadHandle(const ReadHandle&) = delete;
     ReadHandle& operator=(const ReadHandle&) = delete;
-    ~ReadHandle() = default;
+    ~ReadHandle() { releaseCount_(); }
 
     bool valid() const { return desc_.ptr != nullptr; }
     const SurfaceDesc& desc() const { return desc_; }
@@ -129,10 +155,16 @@ public:
 
    private:
     friend class DrawableSurfaceRegistry;
-    ReadHandle(std::shared_lock<std::shared_mutex>&& l, SurfaceDesc d)
-      : lock_(std::move(l)), desc_(d) {}
+    ReadHandle(std::shared_lock<std::shared_mutex>&& l, SurfaceDesc d, bool active)
+      : lock_(std::move(l)), desc_(d), active_(active) {}
+    // Decrement this thread's read-recursion depth exactly once per active
+    // handle.  Out-of-line (in the .cpp) so it can reach the thread_local
+    // depth after the enclosing class is complete.  The outermost handle also
+    // holds the real shared_lock in lock_, which auto-unlocks after this runs.
+    void releaseCount_();
     std::shared_lock<std::shared_mutex> lock_;
     SurfaceDesc desc_ {};
+    bool active_ = false;   // participates in the thread's read-depth count
   };
 
   ReadHandle acquireRead(uint32_t xid) const;
@@ -144,6 +176,11 @@ private:
 
   mutable std::shared_mutex mu_;
   std::unordered_map<uint32_t, std::unique_ptr<HostSurface>> map_;
+
+  // Per-thread nesting depth for read locks (see ReadHandle).  Only depth 0→1
+  // takes the real shared_lock; nested acquireRead on the same thread borrows
+  // it.  Defined in the .cpp.
+  static thread_local int t_readDepth_;
 };
 
 } // namespace x11

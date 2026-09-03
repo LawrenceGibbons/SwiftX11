@@ -12,6 +12,18 @@
 
 namespace x11 {
 
+// Per-thread read-lock recursion depth (see DrawableSurfaceRegistry::ReadHandle).
+thread_local int DrawableSurfaceRegistry::t_readDepth_ = 0;
+
+void DrawableSurfaceRegistry::ReadHandle::releaseCount_() {
+  if (active_) {
+    if (t_readDepth_ > 0) --t_readDepth_;
+    active_ = false;
+  }
+  // lock_ (real shared_lock only for the outermost handle) auto-unlocks when
+  // this handle's members destruct, i.e. after this function returns.
+}
+
 // ── Internal helpers ────────────────────────────────────────────────────
 
 SurfaceDesc DrawableSurfaceRegistry::snapshotFromSurface(const HostSurface& s) {
@@ -142,14 +154,26 @@ bool DrawableSurfaceRegistry::has(uint32_t xid) const {
 
 DrawableSurfaceRegistry::ReadHandle
 DrawableSurfaceRegistry::acquireRead(uint32_t xid) const {
-  if (xid == 0) return ReadHandle{};
+  if (xid == 0) return ReadHandle{};   // inactive, does not touch the depth
 
-  std::shared_lock<std::shared_mutex> lock(mu_);
+  // Re-entrant: take the real shared_lock only for the outermost read on this
+  // thread.  A nested acquireRead (e.g. a sibling fill re-entering
+  // resolveDrawableRW while an outer fill still holds its handle) must NOT
+  // lock_shared again — libc++'s writer-priority shared_mutex would deadlock it
+  // against a pending resize writer.  The outer handle's lock keeps the buffer
+  // stable for the whole nest; the depth counter tracks the recursion.
+  const bool outermost = (t_readDepth_ == 0);
+  std::shared_lock<std::shared_mutex> lock;              // empty for nested reads
+  if (outermost) lock = std::shared_lock<std::shared_mutex>(mu_);
+  ++t_readDepth_;
+
   auto it = map_.find(xid);
   if (it == map_.end() || !it->second || !it->second->ptr) {
-    return ReadHandle{};
+    // Still an ACTIVE handle so the depth (and any real lock) is released on
+    // destruction; caller sees !valid() and returns.
+    return ReadHandle(std::move(lock), SurfaceDesc{}, /*active=*/true);
   }
-  return ReadHandle(std::move(lock), snapshotFromSurface(*it->second));
+  return ReadHandle(std::move(lock), snapshotFromSurface(*it->second), /*active=*/true);
 }
 
 } // namespace x11
