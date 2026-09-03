@@ -24,6 +24,8 @@ extern "C" {
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/WindowTable.hpp"
 #include "Core/WindowView.hpp"
+#include "Core/InputRouting.hpp"   // pickDeepestMappedWindowAtHostPoint (XIQueryPointer)
+#include "Core/GrabTable.hpp"      // tryPointerGrab/clearPointerGrab (XIGrabDevice)
 #include "Core/PixmapTable.hpp"
 #include "Core/ShapeRegion.hpp"
 #include "Core/ScreenLayout.hpp"
@@ -1211,19 +1213,63 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
 
     // ---- minor 40: XIQueryPointer (reply-bearing) ----
+    // Real pointer state (mirrors core QueryPointer + ProcXIQueryPointer):
+    // GTK's file dialog polls this thousands of times for hit-testing, so the
+    // old hardcoded (0,0)/no-child reply broke hover and double-click.
     case 40: {
+      uint32_t qwin = 0; uint16_t deviceid = 0;
+      if (br.remaining() >= 6) { qwin = br.readU32(); deviceid = br.readU16(); }
       br.skip(br.remaining());
-      // Reply: root=kRootXid, child=0, root_x/y=0, win_x/y=0, buttons_len=1, mods/group=0
-      std::array<uint8_t, 56> rep{};
-      rep[0] = 1;  // reply
+      (void)deviceid;
+
+      const auto& in = ctx.input();
+      const int32_t root_x = in.root_x_u, root_y = in.root_y_u;
+      const uint32_t host = in.last_xid;
+
+      uint32_t child = 0;
+      int32_t win_x = root_x, win_y = root_y;
+      uint8_t same_screen = 1;
+
+      if (qwin == 1u || qwin == 0) {
+        child = host;                 // top-level window the pointer is over
+        win_x = root_x; win_y = root_y;
+      } else {
+        const uint32_t qhost = ctx.windows().topLevelAncestorOf(qwin);
+        if (qhost == host && host != 0) {
+          uint32_t deepest = pickDeepestMappedWindowAtHostPoint(ctx, host, in.win_x_u, in.win_y_u);
+          child = (deepest && deepest != qwin) ? deepest : 0;
+          // win coords: pointer relative to qwin (walk qwin->host subtracting offsets)
+          int32_t lx = in.win_x_u, ly = in.win_y_u;
+          uint32_t cur = qwin; int depth = 0;
+          while (cur && cur != host && depth < 64) {
+            WindowView cv{}; if (!ctx.windows().snapshot(cur, cv)) break;
+            lx -= cv.x; ly -= cv.y; cur = cv.parent_xid; depth++;
+          }
+          win_x = lx; win_y = ly;
+        } else {
+          same_screen = 0; child = 0; win_x = 0; win_y = 0;
+        }
+      }
+
+      // XI2 button mask: internal bit i (0-4) -> XI2 button i+1 (1-indexed).
+      uint32_t btnmask = 0;
+      for (int i = 0; i < 5; i++) if (in.buttons & (1u << i)) btnmask |= (1u << (i + 1));
+
+      std::array<uint8_t, 60> rep{};
+      rep[0] = 1;                                    // Reply
       wire::wr16_le(rep.data() + 2, seq);
-      wire::wr32_le(rep.data() + 4, 6);   // length = 6 extra words (24 bytes)
-      wire::wr32_le(rep.data() + 8, 1);   // root window
-      wire::wr32_le(rep.data() + 12, 0);  // child
-      // root_x/y, win_x/y all 0 (FP16.16 format — 32-bit each)
-      wire::wr16_le(rep.data() + 36, 1);  // buttons_len = 1
-      // mods (base/latched/locked/effective) = 0, group = 0
-      // buttons mask (4 bytes at offset 56-4=52) — all zeros
+      wire::wr32_le(rep.data() + 4, 7);              // length = (60-32)/4
+      wire::wr32_le(rep.data() + 8, 1u);       // root
+      wire::wr32_le(rep.data() + 12, child);         // child
+      wire::wr32_le(rep.data() + 16, (uint32_t)(root_x << 16)); // root_x FP1616
+      wire::wr32_le(rep.data() + 20, (uint32_t)(root_y << 16)); // root_y
+      wire::wr32_le(rep.data() + 24, (uint32_t)(win_x << 16));  // win_x
+      wire::wr32_le(rep.data() + 28, (uint32_t)(win_y << 16));  // win_y
+      rep[32] = same_screen;                         // same_screen
+      rep[33] = 0;                                   // pad
+      wire::wr16_le(rep.data() + 34, 1);             // buttons_len = 1
+      // mods (36-51) + group (52-55) left zero
+      wire::wr32_le(rep.data() + 56, btnmask);       // button mask (buttons_len=1)
       ctx.transport().sendAll(rep.data(), rep.size());
       return;
     }
@@ -1491,17 +1537,53 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     // ---- minor 51: XIGrabDevice (reply-bearing) ----
+    // Establish a REAL active pointer grab so all pointer events (and their XI2
+    // twins) route to the grab window until XIUngrabDevice.  Electron grabs the
+    // device to show menus/popups; the old stub returned Success but grabbed
+    // nothing, so the popup never received events.  We reuse the core pointer
+    // grab (tryPointerGrab) with a broad pointer mask for routing.
     case 51: {
-      br.skip(br.remaining());
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0);  // length
-        rep[1] = 0;                          // status = Success
+      if (br.remaining() < 20) {
+        br.skip(br.remaining());
+        (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+          wire::wr32_le(rep.data() + 4, 0);
+          rep[8] = 0; // status = Success (nothing to grab)
+        });
+        return;
+      }
+      const uint32_t win  = br.readU32();
+      const uint32_t time = br.readU32();
+      (void)br.readU32();               // cursor
+      const uint16_t deviceid = br.readU16();
+      const uint8_t grab_mode = br.readU8();
+      const uint8_t paired    = br.readU8();
+      const uint8_t owner_ev  = br.readU8();
+      (void)br.readU8();                // pad
+      const uint16_t mask_len = br.readU16();
+      br.skip(br.remaining());          // XI2 event mask — we route via core grab
+      (void)deviceid; (void)grab_mode; (void)paired; (void)mask_len;
+
+      const uint32_t coreMask =
+          x11::mask::ButtonPress | x11::mask::ButtonRelease |
+          x11::mask::PointerMotion | x11::mask::ButtonMotion |
+          x11::mask::EnterWindow | x11::mask::LeaveWindow;
+      const uint8_t gs = ctx.grabs().tryPointerGrab(
+          win, owner_ev != 0, coreMask, ctx.transport().clientFd(), time);
+      // XI2 GrabStatus codes match core (0=Success, 1=AlreadyGrabbed).
+      (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);  // length = 0
+        rep[8] = gs;                        // status at byte 8 (xXIGrabDeviceReply)
       });
       return;
     }
 
-    // ---- minor 52-55: XI2 stubs ----
-    case 52: // XIUngrabDevice (void)
+    // ---- minor 52: XIUngrabDevice (void) — release the active grab ----
+    case 52:
+      br.skip(br.remaining());
+      ctx.grabs().clearPointerGrab(ctx.transport().clientFd());
+      return;
+
+    // ---- minor 53/55: XI2 stubs ----
     case 53: // XIAllowEvents (void)
     case 55: // XIPassiveUngrabDevice (void)
       br.skip(br.remaining());
