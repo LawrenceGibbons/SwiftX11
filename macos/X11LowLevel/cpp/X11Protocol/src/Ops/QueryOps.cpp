@@ -625,18 +625,21 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      // M6 Stage 2 (DIAGNOSTIC re-enable, v1.20.0.1-dbg): XI2 was hidden
-      // because its GenericEvent delivery historically (a) crashed Electron on
-      // startup via a sequence regression and (b) interfered with Electron
-      // menus.  Many wire-sequence fixes have landed since (monotonic floor,
-      // lastSeq stamping, cross-client restamp), so the current behavior is
-      // unknown — re-advertising to capture it with Wire Trace on Vitis, and
-      // to restore xeyes pupil tracking / clear the "XInputExtension missing"
-      // warning.  first_event MUST be >= 64: libXi's XextAddDisplay registers
-      // 17 wire-to-event handlers starting here; 0 would clobber core handlers.
-      // ROLLBACK: set present = 0 (handlers stay dormant, exactly as before).
-      present = 1; major = ext::kXInput2;
-      first_event = ext::kXInput_FirstEvent;
+      // Runtime toggle (Settings → "Advertise XInputExtension"). Default OFF.
+      // XI2 event delivery is xorg-correct (button/motion/crossing/grab, M6
+      // Stage 2), but Electron/GTK route their ENTIRE input model through XI2
+      // when it is advertised and misbehave (menus don't drop, dialog clicks
+      // don't register) — the gap is client-side interpretation, not delivery.
+      // OFF keeps Vitis on the fully-working core input path; ON restores XI2
+      // for simple clients (xeyes) and clears the "XInputExtension missing"
+      // warning.  first_event MUST be >= 64: libXi registers 17 wire-to-event
+      // handlers from here; 0 would clobber core handlers.
+      if (x11_get_xi2_advertised()) {
+        present = 1; major = ext::kXInput2;
+        first_event = ext::kXInput_FirstEvent;
+      } else {
+        present = 0;
+      }
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     } else if (name == "Composite") {
@@ -687,9 +690,9 @@ namespace x11 {
     br.skip(br.remaining()); // request has no extra fields we care about
 
     // List extensions that are fully (or minimally) functional.
-    // XInputExtension re-advertised (M6 Stage 2 diagnostic) — keep in sync
-    // with the QueryExtension handler's present flag.
-    static const char* extensions[] = {
+    // XInputExtension is appended only when advertised (runtime toggle) — kept
+    // in sync with the QueryExtension handler's present flag.
+    static const char* base_extensions[] = {
       "BIG-REQUESTS",
       "RENDER",
       "XFIXES",
@@ -700,10 +703,12 @@ namespace x11 {
       "XC-MISC",
       "XTEST",
       "Composite",
-      "XInputExtension",
       // DAMAGE removed (M4): advertised-but-silent; see handleQueryExtension.
     };
-    static constexpr uint8_t nExt = 11;
+    std::vector<const char*> extensions(base_extensions,
+                                        base_extensions + (sizeof(base_extensions) / sizeof(base_extensions[0])));
+    if (x11_get_xi2_advertised()) extensions.push_back("XInputExtension");
+    const uint8_t nExt = (uint8_t)extensions.size();
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;

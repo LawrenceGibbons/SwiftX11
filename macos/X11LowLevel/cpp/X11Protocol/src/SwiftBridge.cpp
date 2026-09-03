@@ -384,6 +384,27 @@ extern "C" int x11_get_wire_trace(void)
 }
 
 // -------------------------------------------------------------------------------------
+// XInputExtension (XI2) advertisement toggle
+// -------------------------------------------------------------------------------------
+// Default OFF (hidden): Electron/GTK route their entire input model through XI2
+// when it is advertised, and our XI2 support is complete for event *delivery*
+// but not for the clients' full grab/interpretation model — so menus/dialogs
+// misbehave under Vitis.  ON restores XI2 for simple clients (xeyes pupil
+// tracking, clearing the "XInputExtension missing" warning).  Consulted live by
+// QueryExtension / ListExtensions.
+static std::atomic<int> g_xi2_advertised{0};
+
+extern "C" void x11_set_xi2_advertised(int enabled)
+{
+  g_xi2_advertised.store(enabled, std::memory_order_relaxed);
+}
+
+extern "C" int x11_get_xi2_advertised(void)
+{
+  return g_xi2_advertised.load(std::memory_order_relaxed);
+}
+
+// -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
 extern "C" void x11_set_font_antialiased(int enabled)

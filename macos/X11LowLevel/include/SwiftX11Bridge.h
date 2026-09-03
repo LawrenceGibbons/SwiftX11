@@ -309,6 +309,13 @@ void x11_set_wire_trace(int enabled);
 int  x11_get_wire_trace(void);
 
 // -------------------------------------------------------------------------------------
+// XInputExtension (XI2) advertisement toggle — default OFF (hidden for Electron/
+// GTK compatibility); ON advertises XI2 for simple clients (xeyes).
+// -------------------------------------------------------------------------------------
+void x11_set_xi2_advertised(int enabled);
+int  x11_get_xi2_advertised(void);
+
+// -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
 // Set/get whether server-side text rendering uses antialiased (8-bit alpha) glyphs.

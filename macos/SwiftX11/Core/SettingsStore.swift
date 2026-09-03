@@ -21,9 +21,12 @@ final class SettingsStore: ObservableObject {
     self.enableUnixSocket = UserDefaults.standard.object(forKey: "enableUnixSocket") as? Bool ?? true
     self.tcpBindAddress = UserDefaults.standard.object(forKey: "tcpBindAddress") as? String ?? "0.0.0.0"
     self.logVerbosity = UserDefaults.standard.object(forKey: "logVerbosity") as? Int ?? 0
-    // Sync initial state to C++
+    self.xi2Advertised = UserDefaults.standard.object(forKey: "xi2Advertised") as? Bool ?? false
+    // Sync initial state to C++ (didSet does NOT fire during init, so apply
+    // the persisted values explicitly here).
     x11_set_font_antialiased(self.antialiasedFonts ? 1 : 0)
     x11_set_log_verbosity(Int32(self.logVerbosity))
+    x11_set_xi2_advertised(self.xi2Advertised ? 1 : 0)
   }
 
   @Published var enableClipboard: Bool = true
@@ -47,6 +50,15 @@ final class SettingsStore: ObservableObject {
   @Published var wireTrace: Bool = false {
     didSet {
       x11_set_wire_trace(wireTrace ? 1 : 0)
+    }
+  }
+
+  // Advertise XInputExtension (XI2). Default OFF for Electron/GTK (Vitis)
+  // compatibility; ON restores XI2 for simple clients like xeyes.
+  @Published var xi2Advertised: Bool {
+    didSet {
+      UserDefaults.standard.set(xi2Advertised, forKey: "xi2Advertised")
+      x11_set_xi2_advertised(xi2Advertised ? 1 : 0)
     }
   }
 }

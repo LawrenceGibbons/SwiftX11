@@ -115,6 +115,9 @@ struct ContentView: View {
         }
         .keyboardShortcut("f", modifiers: .command)
         Spacer()
+        Toggle("XInput2", isOn: $settings.xi2Advertised)
+          .toggleStyle(.switch)
+          .help("Advertise the XInputExtension (XI2). OFF (default) keeps Electron/GTK apps like Vitis on the reliable core input path; ON restores XI2 for simple clients such as xeyes. Restart X11 clients after changing.")
         Toggle("Wire Trace", isOn: $settings.wireTrace)
           .toggleStyle(.switch)
           .help("Log every incoming request and outgoing packet ([WIRE]) to this log window and the Xcode console")
