@@ -625,13 +625,18 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      // HIDDEN: XI2 GenericEvent delivery causes wire protocol corruption
-      // (sequence regression) that crashes Electron/Chromium during startup.
-      // Event format fixes (sourceid, coordinates) are in place; the remaining
-      // issue is in the variable-length event delivery path or cross-client
-      // routing.  Needs live wire tracing with Vitis to diagnose.
-      // XI2 handlers remain active at opcode 141 for future re-enable.
-      present = 0;
+      // M6 Stage 2 (DIAGNOSTIC re-enable, v1.20.0.1-dbg): XI2 was hidden
+      // because its GenericEvent delivery historically (a) crashed Electron on
+      // startup via a sequence regression and (b) interfered with Electron
+      // menus.  Many wire-sequence fixes have landed since (monotonic floor,
+      // lastSeq stamping, cross-client restamp), so the current behavior is
+      // unknown — re-advertising to capture it with Wire Trace on Vitis, and
+      // to restore xeyes pupil tracking / clear the "XInputExtension missing"
+      // warning.  first_event MUST be >= 64: libXi's XextAddDisplay registers
+      // 17 wire-to-event handlers starting here; 0 would clobber core handlers.
+      // ROLLBACK: set present = 0 (handlers stay dormant, exactly as before).
+      present = 1; major = ext::kXInput2;
+      first_event = ext::kXInput_FirstEvent;
     } else if (name == "XTEST") {
       present = 1; major = ext::kXTEST;
     } else if (name == "Composite") {
@@ -682,7 +687,8 @@ namespace x11 {
     br.skip(br.remaining()); // request has no extra fields we care about
 
     // List extensions that are fully (or minimally) functional.
-    // XInputExtension omitted — see QueryExtension handler comment.
+    // XInputExtension re-advertised (M6 Stage 2 diagnostic) — keep in sync
+    // with the QueryExtension handler's present flag.
     static const char* extensions[] = {
       "BIG-REQUESTS",
       "RENDER",
@@ -694,9 +700,10 @@ namespace x11 {
       "XC-MISC",
       "XTEST",
       "Composite",
+      "XInputExtension",
       // DAMAGE removed (M4): advertised-but-silent; see handleQueryExtension.
     };
-    static constexpr uint8_t nExt = 10;
+    static constexpr uint8_t nExt = 11;
 
     // Build payload: each entry is 1-byte length + name bytes (no per-entry padding)
     std::vector<uint8_t> payload;
