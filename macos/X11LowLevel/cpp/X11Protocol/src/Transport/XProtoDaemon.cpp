@@ -254,6 +254,28 @@ bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]
   return cs->client->transport().sendAll(fixed, 32);
 }
 
+// M6 Stage 1: deliver a 32-byte event to every client selecting `bit` on `wid`.
+// Same per-target sequence-restamp discipline as sendEventCrossClient (a foreign
+// sequence would poison the target's monotonic wire floor and desync XCB).
+bool XProtoDaemon::sendEventToSelectors(uint32_t wid, uint32_t bit,
+                                        const uint8_t ev[32]) {
+  if (!server_ || !ev) return false;
+  const std::vector<int> fds = server_->ctx().windows().selectorsOf(wid, bit);
+  bool any = false;
+  for (int fd : fds) {
+    if (fd <= 0) continue;
+    ClientSession* cs = findClient(fd);
+    if (!cs || !cs->client) continue;  // stale fd (disconnected) — skip
+    uint8_t fixed[32];
+    std::memcpy(fixed, ev, 32);
+    uint16_t targetSeq = cs->client->transport().lastSeq();
+    fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
+    fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+    if (cs->client->transport().sendAll(fixed, 32)) any = true;
+  }
+  return any;
+}
+
 bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
   if (!server_ || !ev || len < 32) return false;
   const x11::WindowView* wv = server_->ctx().window(targetWid);
@@ -650,6 +672,10 @@ void XProtoDaemon::removeClient(int fd) {
   // Drop this client's XFIXES SelectionNotify subscriptions (M4) so we don't
   // try to route selection-change events to a dead fd.
   x11::SelectionOps::xfixesClearSubscriptionsOwnedBy(fd);
+
+  // M6 Stage 1: drop this client's per-window event selections so broadcast
+  // delivery never targets a dead fd, and other clients' unions stay correct.
+  server_->ctx().windows().removeClientMasks(fd);
 
   // Cancel any active INCR clipboard transfers for this client
   x11::IncrTransfer::instance().cancelForFd(fd);

@@ -657,6 +657,18 @@ bool XProtoTransport::sendEvent32(uint32_t targetWid, const uint8_t ev[32]) {
   return sendAll(ev, 32);
 }
 
+bool XProtoTransport::sendEventToSelectors(uint32_t wid, uint32_t bit,
+                                           const uint8_t ev[32]) {
+  if (wid == 0 || !ev) return false;
+  if (!xproto_thread_valid_ || !pthread_equal(pthread_self(), xproto_thread_)) {
+    ctx_.tracef("[XProtoTransport] sendEventToSelectors DROP wrong thread\n");
+    return false;
+  }
+  auto* daemon = x11_proto_bridge_get_daemon();
+  if (!daemon) return false;
+  return daemon->sendEventToSelectors(wid, bit, ev);
+}
+
 bool XProtoTransport::sendEventVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
   if (targetWid == 0 || !ev || len < 32) return false;
   if (!xproto_thread_valid_ || !pthread_equal(pthread_self(), xproto_thread_)) return false;

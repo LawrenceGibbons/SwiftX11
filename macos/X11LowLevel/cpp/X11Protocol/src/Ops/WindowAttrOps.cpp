@@ -261,7 +261,11 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // ---- Apply event mask only if present ----
     if (!sawEventMask) return;
 
-    ctx.windows().setEventMask(wid, cur_mask);
+    // M6 Stage 1: record THIS client's selection without clobbering any other
+    // client that has SelectInput'd the same window.  event_mask becomes the
+    // union; broadcast events (PropertyNotify, Structure/Substructure, Expose)
+    // reach every selector.
+    ctx.windows().setClientEventMask(wid, ctx.transport().clientFd(), cur_mask);
 
     // Exposure "unstick" (optional; only meaningful when we changed event_mask)
     const bool hadExposure = ((old_mask & (1u << 15)) != 0);

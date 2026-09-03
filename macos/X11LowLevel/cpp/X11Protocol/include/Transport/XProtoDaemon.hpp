@@ -107,6 +107,12 @@ public:
   // Variable-length version (for XI2 GenericEvent).
   bool sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len);
 
+  // M6 Stage 1: broadcast a 32-byte event to EVERY client that selected `bit`
+  // on `wid` (per-window client_masks), restamping the sequence per target.
+  // Used for PropertyNotify and (Stage 1b) Structure/Substructure/Expose.
+  // Returns true if delivered to at least one client.
+  bool sendEventToSelectors(uint32_t wid, uint32_t bit, const uint8_t ev[32]);
+
 private:
   void runListener(int display, bool enableTCP, bool enableUnix,
                    const char* tcpBindAddr);

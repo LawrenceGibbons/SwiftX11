@@ -38,7 +38,7 @@ extern "C" void x11_ui_push_log(int level, const char* message);
 // the server timestamp needed for SetSelectionOwner.
 static void sendPropertyNotify(x11::XProtoContext& ctx, uint32_t wid,
                                uint32_t atom, bool deleted) {
-  // Only send if the window has PropertyChangeMask selected
+  // Union early-out: skip building if no client selected PropertyChangeMask.
   x11::WindowView wv{};
   if (!ctx.windows().snapshot(wid, wv)) return;
   if (!(wv.event_mask & x11::mask::PropertyChange)) return;
@@ -50,7 +50,10 @@ static void sendPropertyNotify(x11::XProtoContext& ctx, uint32_t wid,
   x11::wire::wr32_le(ev + 8, atom);          // atom
   x11::wire::wr32_le(ev + 12, x11_now_ms_monotonic()); // time
   ev[16] = deleted ? 1 : 0;             // state: 0=NewValue, 1=Deleted
-  (void)ctx.transport().sendEvent32(wid, ev);
+  // M6 Stage 1: deliver to EVERY client selecting PropertyChangeMask, not just
+  // the window owner (§6.8 — multi-JVM clipboard needs the server timestamp on
+  // every connection that watches the property).  Sequence restamped per target.
+  (void)ctx.transport().sendEventToSelectors(wid, x11::mask::PropertyChange, ev);
 }
 
 extern "C" void x11_ui_push_title(uint32_t xid, const char* title_utf8);

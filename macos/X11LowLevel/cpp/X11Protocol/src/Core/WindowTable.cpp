@@ -83,6 +83,20 @@ void WindowTable::upsert(uint32_t xid, uint32_t parent,
   // Owner fd is important for sendEvent32 checks.
   st.owner_fd = owner_fd;
 
+  // M6 Stage 1: seed/refresh the creating client's per-client selection without
+  // disturbing any other client that already SelectInput'd this window (upsert
+  // is also used for reparent).  event_mask is then the union of all entries.
+  if (owner_fd >= 0) {
+    bool found = false;
+    for (auto& c : st.client_masks) {
+      if (c.fd == owner_fd) { c.mask = event_mask; found = true; break; }
+    }
+    if (!found) st.client_masks.push_back({owner_fd, event_mask});
+    uint32_t u = 0;
+    for (const auto& c : st.client_masks) u |= c.mask;
+    st.event_mask = u;
+  }
+
   st.serial++;
 
   // Maintain children_order_: append to new parent's child list.
@@ -532,6 +546,66 @@ void WindowTable::setEventMask(uint32_t xid, uint32_t event_mask) {
 
   st->event_mask = event_mask;
   st->serial++;
+}
+
+// M6 Stage 1: per-client SelectInput.  Updates this fd's entry only, then
+// recomputes event_mask as the union of all clients' selections.
+void WindowTable::setClientEventMask(uint32_t xid, int fd, uint32_t mask) {
+#ifdef X11_TRACE_VERBOSE
+  fprintf(stderr, "[MASK] xid=0x%08X fd=%d mask=0x%08X (per-client)\n",
+          (unsigned)xid, fd, (unsigned)mask);
+#endif
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+
+  auto it = std::find_if(st->client_masks.begin(), st->client_masks.end(),
+                         [fd](const ClientMask& c) { return c.fd == fd; });
+  if (mask == 0) {
+    if (it != st->client_masks.end()) st->client_masks.erase(it);
+  } else if (it != st->client_masks.end()) {
+    it->mask = mask;
+  } else {
+    st->client_masks.push_back({fd, mask});
+  }
+
+  uint32_t u = 0;
+  for (const auto& c : st->client_masks) u |= c.mask;
+  st->event_mask = u;
+  st->serial++;
+}
+
+// M6 Stage 1: fds that selected `bit` on `xid` (broadcast delivery target list).
+std::vector<int> WindowTable::selectorsOf(uint32_t xid, uint32_t bit) const {
+  std::vector<int> out;
+  if (xid == 0 || bit == 0) return out;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = map_.find(xid);
+  if (it == map_.end()) return out;
+  for (const auto& c : it->second.client_masks) {
+    if (c.mask & bit) out.push_back(c.fd);
+  }
+  return out;
+}
+
+// M6 Stage 1: drop a disconnecting client's selections everywhere.
+void WindowTable::removeClientMasks(int fd) {
+  std::lock_guard<std::mutex> lock(mu_);
+  for (auto& kv : map_) {
+    WindowState& st = kv.second;
+    const size_t before = st.client_masks.size();
+    st.client_masks.erase(
+        std::remove_if(st.client_masks.begin(), st.client_masks.end(),
+                       [fd](const ClientMask& c) { return c.fd == fd; }),
+        st.client_masks.end());
+    if (st.client_masks.size() != before) {
+      uint32_t u = 0;
+      for (const auto& c : st.client_masks) u |= c.mask;
+      st.event_mask = u;
+      st.serial++;
+    }
+  }
 }
 
 void WindowTable::setXI2Mask(uint32_t xid, uint32_t xi2_mask) {

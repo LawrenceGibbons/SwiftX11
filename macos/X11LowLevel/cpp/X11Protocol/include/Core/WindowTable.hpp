@@ -21,6 +21,9 @@ class WindowTable {
 public:
   WindowTable() = default;
 
+  // M6 Stage 1: one client's event selection on a window.
+  struct ClientMask { int fd; uint32_t mask; };
+
   // Insert or update a window record.
   void upsert(uint32_t xid, uint32_t parent,
               int16_t x, int16_t y,
@@ -48,8 +51,24 @@ public:
 
   bool snapshot(uint32_t xid, WindowView& out) const;
   
-  // Update only the event mask (CWEventMask / SelectInput semantics)
+  // Update only the event mask (CWEventMask / SelectInput semantics).
+  // Legacy single-mask setter — retained only for the dead
+  // x11_proto_bridge_window_set_event_mask bridge (no live callers); real
+  // SelectInput goes through setClientEventMask below.
   void setEventMask(uint32_t xid, uint32_t event_mask);
+
+  // M6 Stage 1: set ONE client's event selection on a window (CWEventMask /
+  // SelectInput).  Inserts/updates/erases (mask==0 erases) this fd's entry,
+  // then recomputes event_mask as the union of all clients' masks.  Does not
+  // disturb other clients' selections.
+  void setClientEventMask(uint32_t xid, int fd, uint32_t mask);
+
+  // M6 Stage 1: fds that selected `bit` on `xid` (for broadcast delivery).
+  std::vector<int> selectorsOf(uint32_t xid, uint32_t bit) const;
+
+  // M6 Stage 1: drop a disconnecting client's selections from every window and
+  // recompute affected unions.
+  void removeClientMasks(int fd);
 
   // Update XI2 event selection mask
   void setXI2Mask(uint32_t xid, uint32_t xi2_mask);
@@ -189,9 +208,18 @@ private:
 
     uint32_t cursor_xid = 0; // 0 means "inherit/default"
 
+    // event_mask is the DERIVED UNION of all per-client selections below; it
+    // stays authoritative for the ~40 "does any client want this?" gate checks.
     uint32_t event_mask = 0;
     uint32_t xi2_mask = 0;    // XI2 event selection mask (bits = 1 << XI2 event type)
     uint32_t do_not_propagate_mask = 0; // CWDontPropagate (bit 12)
+
+    // M6 Stage 1: per-(window,client) event selection.  Each client that
+    // SelectInputs on this window gets its own entry, so a second client no
+    // longer clobbers the first's mask.  Broadcast events (PropertyNotify,
+    // Structure/Substructure notify, Expose) are delivered to every entry whose
+    // mask matches; event_mask above is kept as the OR of these masks.
+    std::vector<ClientMask> client_masks;
 
     // X11 window background pixel (ARGB8888, alpha forced opaque).
     uint32_t background_pixel = 0;
