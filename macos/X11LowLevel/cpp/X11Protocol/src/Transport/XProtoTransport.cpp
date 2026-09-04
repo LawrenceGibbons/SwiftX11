@@ -675,6 +675,17 @@ bool XProtoTransport::sendEventToSelectors(uint32_t wid, uint32_t bit,
   return daemon->sendEventToSelectors(wid, bit, ev);
 }
 
+bool XProtoTransport::sendEventToFd(int fd, const uint8_t* ev, size_t len) {
+  if (fd <= 0 || !ev || len < 32) return false;
+  if (!xproto_thread_valid_ || !pthread_equal(pthread_self(), xproto_thread_)) {
+    ctx_.tracef("[XProtoTransport] sendEventToFd DROP wrong thread\n");
+    return false;
+  }
+  auto* daemon = x11_proto_bridge_get_daemon();
+  if (!daemon) return false;
+  return daemon->sendEventToFd(fd, ev, len);
+}
+
 bool XProtoTransport::sendEventVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
   if (targetWid == 0 || !ev || len < 32) return false;
   if (!xproto_thread_valid_ || !pthread_equal(pthread_self(), xproto_thread_)) return false;

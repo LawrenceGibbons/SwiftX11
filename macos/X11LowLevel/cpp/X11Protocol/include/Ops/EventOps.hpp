@@ -161,10 +161,12 @@ namespace x11 {
 
     void sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
 
-    // XI2 RawMotion: gated by the per-client root-selection union
-    // (InputState::xi2_root_mask); delivered to the owner of `wid`.  xorg
-    // fans raw events out to every root selector — that is the M5 follow-up.
-    void sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid);
+    // XI2 RawMotion: window-free.  Delivered to EVERY client whose root
+    // XISelectEvents has XI_RawMotion (InputState::xi2_root_masks), each with
+    // its own sequence — xorg DeliverRawEvent (dix/events.c:2464-2488).  Raw
+    // events carry no `event` window (FixUpEventFromWindow returns early for
+    // them), so nothing here depends on which window the pointer is over.
+    void sendXI2RawMotionEvent(XProtoContext& ctx);
 
   private:
     XProtoContext& ctx_;

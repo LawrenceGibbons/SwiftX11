@@ -276,6 +276,19 @@ bool XProtoDaemon::sendEventToSelectors(uint32_t wid, uint32_t bit,
   return any;
 }
 
+bool XProtoDaemon::sendEventToFd(int fd, const uint8_t* ev, size_t len) {
+  if (!server_ || !ev || len < 32 || fd <= 0) return false;
+  ClientSession* cs = findClient(fd);
+  if (!cs || !cs->client) return false;   // stale fd (disconnected)
+  // Same per-target sequence restamp as sendEventCrossClient: a foreign
+  // sequence would poison the target's monotonic wire floor.
+  std::vector<uint8_t> fixed(ev, ev + len);
+  const uint16_t targetSeq = cs->client->transport().lastSeq();
+  fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
+  fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+  return cs->client->transport().sendAll(fixed.data(), fixed.size());
+}
+
 bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
   if (!server_ || !ev || len < 32) return false;
   const x11::WindowView* wv = server_->ctx().window(targetWid);

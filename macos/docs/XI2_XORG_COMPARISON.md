@@ -8,7 +8,7 @@ Comparison of the complete SwiftX11 XInput 2 implementation against the xorg-ser
 | **Reference** | xorg-server source at `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/`; protocol headers at `/opt/X11/include/X11/extensions/` (`XI2proto.h`, `XIproto.h`, `XI.h`, `XI2.h`) |
 | **Date** | 2026-09-04 |
 | **Method** | Five independent, line-cited audit tracks (requests/replies, wire formats, delivery/selection, grabs, crossing/focus/hierarchy) plus lead cross-checks against the xorg source wherever two tracks disagreed |
-| **Status** | Findings. **Phase A** (M1, M2, M6, M8, M10, L10 and the minimal form of M4 — per-client root selections with a union) implemented in **v1.20.0.12-dbg** on 2026-09-04, awaiting test. |
+| **Status** | Findings. **Phase A** (M1, M2, M6, M8, M10, L10 and the minimal form of M4 — per-client root selections with a union) landed in **v1.20.0.12-dbg**; test 2026-09-04: xeyes now survives Vitis launch (clobber fixed) but froze while the pointer was over Vitis — the predicted `activeXid` misroute. **v1.20.0.13-dbg** adds the M5 RawMotion fan-out (window-free delivery to every root selector via `sendEventToFd`), awaiting test. |
 
 ## 0. How to read this document
 
@@ -172,7 +172,7 @@ Comparison of the complete SwiftX11 XInput 2 implementation against the xorg-ser
 |---|---|---|---|
 | **Vitis / Chromium (Electron)** | XI2 pointer + key masks with `XIAllMasterDevices` per window *and* core masks; `HierarchyChanged` + `DeviceChanged` on root; `XIGrabDevice(owner_events=true)` on press; reads both XI1 and XI2 device lists; `is_repeat` from `XIKeyRepeat` *(fetched)* | Core crossings suppressed (R1); spurious `Enter(Grab)` every press; no key-repeat flag; its root selection clobbers xeyes and vice versa | M1, M7, M11, M4/M5, L1 |
 | **xdg-desktop-portal-gtk (GTK 3.24)** | XI2 per window with no core Button/Key bits (core `PointerMotion` is set); `Hierarchy`+`DeviceChanged`+`Property` on root; `XIGrabDevice` ×2 (pointer, keyboard) per popup; `XIChangeCursor` for every cursor; `XIQueryPointer` polling; `XIGetClientPointer`; `XIGetSelectedEvents` *(fetched / recollection as marked)* | Client pointer id 0; cursors inert; keyboard grab → pointer grab; click-outside not delivered; tick-state flicker under grabs; focus detail; `same_screen=0` on `XIQueryPointer` | M2, M3, M6, M7, M8, M9, M14, M15 |
-| **xeyes** | `XI_RawMotion` on root via libXi | **Confirmed**: freezes the instant Vitis launches after it (Chromium's root selection clobbers the global mask). Predicted, not yet observed: freezes while `activeXid` is another client's window; RawMotion never cleared after exit | M4, M5 |
+| **xeyes** | `XI_RawMotion` on root via libXi | **Both confirmed 2026-09-04**: froze the instant Vitis launched after it (root-mask clobber — fixed v1.20.0.12), then froze whenever the pointer was over Vitis, and everywhere but xeyes once the GTK dialog was key (`activeXid` misroute — RawMotion fan-out in v1.20.0.13) | M4 (minimal, done), M5 (RawMotion part, done) |
 | **Xt / Xaw (xterm, xcalc)** | Core only | Unaffected by XI2 gating; wrong crossing/focus `detail` tolerated; no `Leave` after drag-out; passive-grab mask unused | M15, M17, M19, L9 |
 | **Java AWT (Vivado)** | Core only; XTEST; `XSetInputFocus` on focus proxies; XDND root grab | Stray GenericEvents when any root XI2 bit is set; its `XSetInputFocus` leaves a GTK toplevel without an XI2 `FocusOut` (C-3); root-grab motion reaches it only via the `drag_xid` fallback | M4, M5, M9 |
 

@@ -113,6 +113,12 @@ public:
   // Returns true if delivered to at least one client.
   bool sendEventToSelectors(uint32_t wid, uint32_t bit, const uint8_t ev[32]);
 
+  // Send an event (32-byte or variable-length GenericEvent) to ONE client by
+  // fd, restamping the sequence for that client's transport.  Window-free:
+  // used for events that xorg delivers by client rather than by window
+  // (raw events → every root selector, dix/events.c DeliverRawEvent).
+  bool sendEventToFd(int fd, const uint8_t* ev, size_t len);
+
 private:
   void runListener(int display, bool enableTCP, bool enableUnix,
                    const char* tcpBindAddr);

@@ -919,12 +919,16 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
   ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
 }
 
-void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid) {
-  // Only send if root has RawMotionMask
+void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {
+  // Cheap gate on the union before building anything.
   if (!(ctx.input().xi2_root_mask & xi2::kRawMotionMask)) return;
-  // Need a valid window for sendEventVariable's owner check
-  const WindowView* wv = ctx.window(wid);
-  if (!wv) return;
+
+  // xorg DeliverRawEvent (dix/events.c:2464-2488): raw events go to every
+  // client that selected them on root, regardless of the window under the
+  // pointer.  Until v1.20.0.13 this was routed to the OWNER of the last
+  // active host window (GlobalPointerTracker.activeXid), so xeyes froze
+  // whenever the pointer was over Vitis and Chromium received RawMotion it
+  // never selected.  The sequence is restamped per target by sendEventToFd.
 
   // xXIRawEvent wire format with 2 valuators (X, Y):
   //   Header (32 bytes) + valuator_mask[1] (4) + raw[2]×8 + cooked[2]×8 = 68
@@ -951,7 +955,10 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid) {
   // values[1] = Y delta cooked (FP32.32)
   // All zero — xeyes only uses RawMotion as a trigger to call XQueryPointer
 
-  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+  for (const auto& kv : ctx.input().xi2_root_masks) {
+    if (kv.second & xi2::kRawMotionMask)
+      (void)ctx.transport().sendEventToFd(kv.first, buf, sizeof(buf));
+  }
 }
 
 } // namespace x11

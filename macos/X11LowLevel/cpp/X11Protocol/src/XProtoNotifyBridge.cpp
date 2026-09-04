@@ -109,9 +109,9 @@ void postMotion(uint32_t host_xid,
   // XI2 RawMotion is a root-level event — deliver on ANY pointer move,
   // even when deliver=0 (cursor outside X11 windows).  GlobalPointerTracker
   // fires with deliver=0 for global motion; xeyes relies on this for
-  // cursor tracking across the entire screen.
-  if (host_xid)
-    ev->sendXI2RawMotionEvent(*ctx, host_xid);
+  // cursor tracking across the entire screen.  Window-free: it fans out to
+  // every root selector, so host_xid plays no part (v1.20.0.13).
+  ev->sendXI2RawMotionEvent(*ctx);
 
   // Only deliver core MotionNotify when inside (or dragging/grab).
   // Exception: during an active pointer grab, X11 spec requires motion

@@ -73,6 +73,9 @@ public:
   // M6 Stage 1: broadcast a 32-byte event to every client selecting `bit` on
   // `wid` (per-window client_masks).  Thin forward to the daemon primitive.
   bool sendEventToSelectors(uint32_t wid, uint32_t bit, const uint8_t ev[32]);
+  // Window-free delivery to one client by fd (sequence restamped per target).
+  // Thin forward to XProtoDaemon::sendEventToFd; xproto thread only.
+  bool sendEventToFd(int fd, const uint8_t* ev, size_t len);
   bool sendMapNotify(uint16_t seq, uint32_t event, uint32_t window, bool overrideRedirect);
   bool sendUnmapNotify(uint16_t seq, uint32_t event, uint32_t window, bool fromConfigure);
 
