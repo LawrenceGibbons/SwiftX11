@@ -848,25 +848,21 @@ final class WindowRegistry {
     // means the client has drawn.  The previous nine-point sample never
     // matched a Chromium tooltip — one line of dark text on white — so the
     // window was never revealed by content and only the 150 ms fallback
-    // showed it (v1.20.0.14).  Rows are compared 64 bits at a time; the
-    // surface stride is 64-byte aligned so each row start is 8-byte aligned.
+    // showed it (v1.20.0.14).  Plain 32-bit per-pixel scan: the buffers that
+    // reach here (surface snapshot or retained display frame) are not
+    // guaranteed 8-byte aligned per row, and a 64-bit load trapped (v.15).
     let hasContent: Bool = data.withUnsafeBytes { raw -> Bool in
       let stride = bytesPerRow / 4
-      guard stride > 0, height > 0, width > 0,
-            let base = raw.baseAddress else { return false }
+      guard stride > 0, height > 0, width > 0 else { return false }
       let p = raw.bindMemory(to: UInt32.self)
-      let whitePair: UInt64 = 0xFFFF_FFFF_FFFF_FFFF
-      let pairs = width / 2
       for y in 0..<height {
         let rowStart = y * stride
         guard rowStart + width <= p.count else { break }
-        let row = base + rowStart * 4
-        var i = 0
-        while i < pairs {
-          if row.load(fromByteOffset: i * 8, as: UInt64.self) != whitePair { return true }
-          i += 1
+        var x = 0
+        while x < width {
+          if p[rowStart + x] != 0xFFFFFFFF { return true }
+          x += 1
         }
-        if (width & 1) == 1 && p[rowStart + width - 1] != 0xFFFFFFFF { return true }
       }
       return false
     }
