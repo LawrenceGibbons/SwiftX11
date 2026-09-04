@@ -1,0 +1,1054 @@
+# XI2 (XInputExtension) — SwiftX11 vs xorg-server
+
+Comparison of the complete SwiftX11 XInput 2 implementation against the xorg-server reference, with a prioritized modification plan.
+
+| | |
+|---|---|
+| **Audited build** | SwiftX11 worktree HEAD `caf91b3` — v1.20.0.11-dbg (branch `worktree-clipboard-and-vlm-fixes`; `develop` at the same commit) |
+| **Reference** | xorg-server source at `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/`; protocol headers at `/opt/X11/include/X11/extensions/` (`XI2proto.h`, `XIproto.h`, `XI.h`, `XI2.h`) |
+| **Date** | 2026-09-04 |
+| **Method** | Five independent, line-cited audit tracks (requests/replies, wire formats, delivery/selection, grabs, crossing/focus/hierarchy) plus lead cross-checks against the xorg source wherever two tracks disagreed |
+| **Status** | Findings only. No code was changed for this document. |
+
+## 0. How to read this document
+
+- Sections 1–8 are the synthesis. Appendices A–E are the five track reports verbatim — every claim carries `file:line` on both sides, and every line cited was read in this pass. Appendix F records the two cross-track conflicts and how they were settled from the xorg source.
+- Finding IDs used below: **D-n** delivery/selection (App. A), **G-n** grabs (App. B), **C-n** crossing/focus/hierarchy (App. C), **W-n** wire formats (App. D), **Q-n** requests/replies (App. E). **R1/R2** are the resolutions in App. F. Modification IDs are **M1–M22** (prioritized) and **L1–L24** (low).
+- Severity: **Critical** — wrong even for the single-client case, or a confirmed regression. **High** — breaks a named target client (Vitis/Chromium, xdg-desktop-portal-gtk, xeyes) in a reachable scenario. **Medium** — spec deviation with a plausible but unobserved effect, or latent for current targets. **Low** — conformance or hygiene.
+- Client-side behaviour (GDK 3.24, Chromium) is marked *(fetched)* where a track read the public repos on 2026-09-04, and *[recollection]* where it is from memory. The *correctness* of every modification rests on the xorg source; only some *severity* ratings rest on a recollection, and those are marked.
+- Path shorthand in the synthesis: unqualified C++ files are under `macos/X11LowLevel/cpp/X11Protocol/` (`src/Ops/`, `src/Core/`, `src/Transport/`, `include/Core/`); Swift files under `macos/SwiftX11/`; xorg files under `xorg-server/` (`dix/`, `Xi/`, `Xext/`, `mi/`, `xkb/`).
+
+## 1. Executive summary
+
+1. **The wire is right; the semantics are not.** Every XI2 event byte layout, size, `length` word, FP16.16/FP32.32 encoding, button-mask bit numbering and the state-before-event rule match xorg (App. D, verified-correct list). Every XI2 reply layout that exists matches, with one exception (`XIGetClientPointer`, Q-1). Nothing found here explains an Electron *crash* on its own. The gaps are in who is selected, who is delivered to, and what state the fields carry.
+
+2. **One structural defect underlies most of the High findings.** XI2 selection is one `uint32_t` per window, shared by all clients and all devices (`WindowTable.hpp:214`); the root selection is a single global that is overwritten rather than merged, never cleared on disconnect, and OR'd into every sender (`InputState.hpp:45`, `ExtensionOps.cpp:1340-1341`, `EventOps.cpp:704, 758, 809, 847, 894, 924`); and every input event is written to exactly one transport — the window owner's (`XProtoTransport.cpp:650-658, 685-690`). xorg keeps one mask per (window, client, device) (`inputstr.h:120-156`, `Xi/exevents.c:3313-3348`) and delivers to every selector (`dix/events.c:2203-2285`). This is M6 Stage 2's stated scope and is now confirmed as the root of: xeyes freezing whenever a GTK or Chromium client is up (D-3, Q-3), RawMotion routed to the owner of the last-active window instead of the selectors (D-4, W-1), window owners receiving GenericEvents they never selected (D-3), and a second client's `XISelectEvents` erasing the first's (D-1).
+
+3. **One confirmed regression from this week's landing.** v1.20.0.10 applied the "XI2 delivered → suppress core" rule to Enter/Leave. xorg's `DoEnterLeaveEvents` (`dix/enterleave.c:595-608`) sends **both** the core and the XI2 crossing unconditionally, each gated only by its own mask; the XI2-first `break` exists only in `DeliverDeviceEvents` (`dix/events.c:2865-2900`) for button/motion/key. Electron selects both and now loses its core crossings (R1). Four call sites to revert; the suppression for buttons, scroll, keys and motion is correct and stays.
+
+4. **Three small bugs with outsized effect on GTK3 dialogs.** `XIGetClientPointer` writes `set` into the RepType byte and `deviceid` into the `set` byte, so GDK reads `deviceid=0` (Q-1 — one line). `XIChangeCursor` is a silent no-op, and GTK3 sets every window cursor through it once XI2 is present (Q-2). `XIGrabDevice`/`XIUngrabDevice` ignore `deviceid`, so GTK's keyboard grab becomes a second pointer grab, and its keyboard *ungrab* tears down the pointer grab GTK still believes it holds (Q-5/6, G-4/5, C-2).
+
+5. **Grab-time delivery has no grab semantics.** The grab's XI2 mask is never stored; delivery under a grab is filtered by the *window's* selection instead of the *grab's* mask; and `owner_events=True` is not restricted to the grabbing client, so a click on the Electron window while a GTK popup holds the grab goes to Electron instead of dismissing the popup (G-1/2/3). Separately, during any active grab the 30 Hz `GlobalPointerTracker` ticks inject `buttons=0, mods=0` and stale window coordinates into XI2 motion (W-2).
+
+6. **Focus and crossing `detail` are hard-coded.** XI2 focus always says `NotifyAncestor` while the core twin says `NotifyNonlinear`; xorg computes both from the window relation (C-1, W-6). `SetInputFocus`, focus revert and `GrabKeyboard` emit core focus events only, where xorg always emits the XI2 twin (C-3).
+
+7. **What v1.20.0.9–.11 got right and must be kept**: `sourceid` = real slave 6/7 with `deviceid` = master 2/3 (exactly xorg's master copy); XI2-first/core-fallback with `break` for button, motion, key and scroll; deliverability = XI2 | core for button/key (v.11); root-level RawMotion emitted before the pointer-in-window gate; grab-activation crossings at both levels with mode Grab/Ungrab; monotonic timestamps; the monotonic sequence floor leaves GenericEvent tails untouched. Section 7 lists everything verified correct.
+
+## 2. Consolidated modification list
+
+### P0 — Critical and confirmed: do first (small, isolated, verified against xorg)
+
+**M1 — Restore unconditional core crossings (R1; D-9).**
+- Ours: `XProtoServerBridge.cpp:543-549` (PointerEnter), `:572-578` (PointerLeave); `XProtoNotifyBridge.cpp:173-183` (child↔child crossings) — all use `if (!sendXI2CrossingEvent(...)) sendCrossingEvent(...)`.
+- xorg: `dix/enterleave.c:595-608` — `DoEnterLeaveEvents` calls `CoreEnterLeaveEvents` and `DeviceEnterLeaveEvents` unconditionally; each is gated only by its own mask (`dix/events.c:4722, 4745` core; `:4842-4845` XI2).
+- Change: call `sendCrossingEvent(...)` and `sendXI2CrossingEvent(...)` unconditionally at those sites. The XI2 sender's `own` return may remain but must not gate core. **Keep** the suppression for button (`XProtoServerBridge.cpp:942-954`), scroll (`:1007-1030`), key (`:1136-1144`) and motion (`XProtoNotifyBridge.cpp:344-346`) — those match `DeliverDeviceEvents`.
+- Affects: Electron (selects core and XI2 crossings on its windows). Regression introduced in v1.20.0.10.
+
+**M2 — `XIGetClientPointer` reply offsets (Q-1).**
+- Ours: `ExtensionOps.cpp:1310-1314` — `rep[1] = 1` (lands in RepType) and `wr16_le(rep+8, 2)` (lands in `set`). The client decodes `set=2, deviceid=0`.
+- xorg: `Xi/xigetclientpointer.c:79-88`; layout `XI2proto.h:536-549` — `set` @8, `deviceid` @10.
+- Change: `rep[8] = 1; wire::wr16_le(rep.data() + 10, xi2::kVirtualCorePointer);` and drop the two misplaced writes. Optionally BadWindow for an unknown `win` (`xigetclientpointer.c:70-75`).
+- Affects: GTK3 — GDK resolves its client pointer through this reply and looks the id up in its device table; id 0 does not exist. Plausible contributor to "dialog clicks don't register" (see §4).
+
+**M3 — `XIGrabDevice` / `XIUngrabDevice` honour `deviceid` (Q-5, Q-6, Q-7; G-4, G-5, G-15; C-2).**
+- Ours: `ExtensionOps.cpp:1574-1620` (minor 51: `deviceid` read at `:1586`, discarded at `:1593`, always `tryPointerGrab` `:1599-1600`, unconditional `Enter(Grab)` `:1610-1618`); `:1623-1640` (minor 52: body skipped `:1624`, always `clearPointerGrab` `:1638`); keyboard-grab state is a bare window/fd pair `GrabTable.hpp:81-82`; key routing consults only `getKeyboardGrab()` `XProtoServerBridge.cpp:1082-1094`.
+- xorg: `Xi/xigrabdev.c:81-116` (device lookup, keyboard/pointer mode mapping, `GrabDevice` on *that* device), `:159-169` (ungrab only if XI2 grab, same client, valid time); `dix/events.c:1708-1747` `ActivateKeyboardGrab` → `DoFocusEvents(old, grab, NotifyGrab)` at `:1732-1735`; `:1753-1790` deactivate → `NotifyUngrab` at `:1782`; status codes `:5253-5266`.
+- Change: branch on `deviceid`. Ids 2/4/6 → the existing pointer path. Ids 3/5/7 → `tryKeyboardGrab(win, fd, ownerEvents, is_xi2, xi2mask)` plus `FocusOut(old focus, NotifyGrab)` / `FocusIn(win, NotifyGrab)` at **both** levels (reuse the `GrabOps.cpp:248-268` choreography and add the XI2 twins — needs M9's mode/detail parameters), and **no** pointer crossing. Other ids → BadDevice (needs M13's error base; BadValue until then). Ungrab: parse `time` + `deviceid`, route by device class, release only a grab taken via XI2 by this fd; emit the NotifyUngrab focus pair for keyboard (`GrabOps.cpp:283-308` pattern). Return `GrabNotViewable` (3) for an unmapped window and `GrabInvalidTime` (2) for a stale time. In the Key handler, when the keyboard grab `is_xi2`, filter by its `xi2mask` with no core fallback.
+- Affects: GTK3 `gdk_seat_grab` (menus, combos, popovers inside the portal dialog) issues `XIGrabDevice` on 2 then 3 and ungrabs them separately. Today the second grab overwrites the first's record and emits a spurious `Enter(Grab)`, no keyboard grab is installed, no `XI_FocusIn(NotifyGrab)` reaches the menu, and `XIUngrabDevice(3)` releases the pointer grab early.
+
+**M4 — Per-(window, client, device) XI2 selection; delete `xi2_root_mask` (D-1 Critical; D-3, D-6, D-7; Q-3, Q-4, Q-19).**
+- Ours: `WindowTable.hpp:214` (`uint32_t xi2_mask`), `WindowTable.cpp:611-618` (`setXI2Mask` replaces wholesale), `ExtensionOps.cpp:1319-1346` (`XISelectEvents` folds every mask in the request into one word, discards `deviceid` at `:1328-1330`, assigns root at `:1340-1341`), `InputState.hpp:42-45` (`xi2_root_mask`), readers `EventOps.cpp:704, 758, 809, 847, 894, 924`; disconnect purge touches only core masks (`WindowTable.cpp:593-609`, `XProtoDaemon.cpp:546-685`).
+- xorg: `include/inputstr.h:120-126, 141-156` (`InputClients` per client, `xi2mask` per device, union in `OtherInputMasks`); `Xi/exevents.c:3313-3348` `XISetEventMask` replaces only the caller's slot for that device, union recomputed `:2784-2821`, freed on client exit `:2824-2854`; `Xi/xiselectev.c:305-322`; match rule `dix/inpututils.c:1153-1165` (`xi2mask_isset`).
+- Change: replace `xi2_mask` with `std::vector<XI2ClientMask>` where `XI2ClientMask { int fd; uint16_t deviceid; uint32_t mask; }`, plus a derived `xi2_union` (the name `xi2_mask` may stay for the existing gate sites). `setClientXI2Mask(xid, fd, deviceid, mask)` mirrors `XISetEventMask` (find the (fd, deviceid) entry, replace, erase when `mask == 0`, recompute the union). Extend `removeClientMasks(fd)` to purge XI2 entries. Give root the same structure (a synthetic root `WindowState`, or a parallel list in `InputState`) and delete the global. Match rule for an event on device D: entry matches if `deviceid == 0` (XIAllDevices), `deviceid == D`, or `deviceid == 1` and D is a master (all our emitted events are). Rewrite `XIGetSelectedEvents` to iterate the caller's entries and emit one `xXIEventMask` per device (`xiselectev.c:389-418`), which also makes root queries work.
+- Pattern to copy: core masks are already per-client (`WindowTable.hpp:217-222`, `setClientEventMask` `WindowTable.cpp:553-577`, purged at `:593-609`) and mirror `EventSelectForWindow` (`dix/events.c:4604-4633`).
+- Affects: xeyes (its `RawMotion` bit is erased by GDK's `Hierarchy|DeviceChanged|Property` or Chromium's `HierarchyChanged` root selection — and stays set forever after xeyes exits); Electron multi-connection; Electron + portal; any two clients selecting on one window.
+- This is M6 Stage 2. **Correction to `M6_DESIGN.md` §3**: XI2 selection is *not* client-exclusive the way core `ButtonPress` is — xorg keeps one mask per client per window and delivers to each of them — so single-target routing is insufficient for device events too. M5 is required, not optional.
+
+**M5 — Deliver to every selecting client; RawMotion fan-out to the root selectors (D-2, D-4; W-1; G-18).**
+- Ours: `XProtoTransport.cpp:644-663, 683-693` route to `owner_fd` only; `XProtoDaemon.cpp:232-255, 279-293` (cross-client path, also keyed on owner) and `:260-277` (`sendEventToSelectors` — used only for Structure/Substructure/Property broadcasts); `EventOps.cpp:922-955` (`sendXI2RawMotionEvent` requires `ctx.window(wid)` and routes to its owner); `XProtoNotifyBridge.cpp:94-95`; `GlobalPointerTracker.swift:22-30, 85` (`activeXid` = last host view that saw motion).
+- xorg: `dix/events.c:2203-2285` (`GetClientsForDelivery` / `DeliverEventToInputClients` try every `InputClients` entry with its own mask), `:2342-2383` (core: owner then `otherClients`), `:2445-2492` (`DeliverRawEvent`: grab owner, then every selector on every root), `:2676-2689` (raw events need no window), `:4364` (grab events to `rClient(grab)`).
+- Change: add `XProtoDaemon::sendEventToFds(fds, buf, len)` (generalise `sendEventToSelectors` to variable length; keep the per-target sequence restamp at `:269-273`). Each `sendXI2*` computes `fds = xi2SelectorsOf(wid, evtype, deviceid)`, delivers to all, and returns `!fds.empty()` — xorg's `deliveries > 0` — which replaces the `own` flag once the root global is gone. Core senders deliver to `selectorsOf(wid, bit)`, owner first. `sendXI2RawMotionEvent` drops the window requirement and iterates the root entries that selected `RawMotion`. Grab-window events go to `PointerGrab::owner_fd` directly (root has no `WindowView`; today root grabs deliver only via the `drag_xid` fallback at `XProtoNotifyBridge.cpp:271-273`).
+- Affects: xeyes (tracks only while `activeXid` is its own window; multiple xeyes → only one gets events); Electron + portal; Java AWT windows receiving stray GenericEvents.
+
+### P1 — High
+
+**M6 — `XIChangeCursor` (Q-2).**
+- Ours: `ExtensionOps.cpp:1302-1307` — minors 41–44 are one `br.skip` block.
+- xorg: `Xi/xichangecursor.c:69-105` — validates a master pointer, looks up window and cursor, calls `ChangeWindowDeviceCursor` (the per-device equivalent of `ChangeWindowAttributes(CWCursor)`).
+- Change: parse `win(4) cursor(4) deviceid(2)` (`XI2proto.h:431-440`), ignore `deviceid` (single pointer), and take the same path as the core `CWCursor` branch (`WindowState::cursor_xid`, `WindowTable.hpp:209`; cursor re-application in `XProtoNotifyBridge.cpp`). BadDevice for ids ≠ 2 once M13 exists.
+- Affects: GTK3 portal dialogs — text-entry I-beam, resize and busy cursors never appear.
+
+**M7 — Grab mask storage and grab-time routing (G-1, G-2, G-3, G-6, G-18; D-10).**
+- Ours: `GrabTable.hpp:27-34` (`PointerGrab` has no XI2 fields); `ExtensionOps.cpp:1591-1600` (request mask skipped, fixed core mask substituted); `XProtoServerBridge.cpp:762-773` (grab ignored when `ownerEvents`), `:852-877` (climb by window mask), `:976-977` (ScrollTicks ignores grabs); `XProtoNotifyBridge.cpp:221-261`; `EventOps.cpp:386-426, 429-472` (core motion/button senders have no mask check at all).
+- xorg: `dix/events.c:5280-5285` (grab stores `xi2mask`); `:4399-4434` `DeliverGrabbedEvent` — stage 1 walks from the sprite window but `TryClientEvents` returns −1 for any client other than `rClient(grab)` (`:2039-2044`) and `DeliverDeviceEvents` stops on −1 (`:2892-2896`); stage 2 `DeliverOneGrabbedEvent` (`:4309-4375`) filters by the grab's mask at the grab's level (`:4332` XI2, `:4347` core) and sends to `rClient(grab)` (`:4364`); an XI2 grab delivers XI2 only (`:4322-4323, 4429-4430`).
+- Change: `PointerGrab` gains `is_xi2, xi2mask, pointer_mode, keyboard_mode, cursor`; `XIGrabDevice` reads mask word 0 the way `XISelectEvents` does (`:1327-1337`). One helper mirroring `DeliverGrabbedEvent` — `grabRoute(ctx, grab, candidate, useGrab&)`: if `ownerEvents && ownerFd(candidate) == grab.owner_fd` deliver normally to `candidate`; otherwise deliver to the grab window using the grab's mask, at the grab's level only (no core fallback under an XI2 grab). Call it from the Button handler, `postMotion`, ScrollTicks and the crossing sites. Senders take an optional grab-mask override and return `true` when the grab consumed the event. Grab-activation crossings: skip when the pointer window already is the grab window (`events.c:1609-1611`, `enterleave.c:602-603`); `Leave(old)` + `Enter(grab)` on activate, `Leave(grab)` + `Enter(sprite)` on deactivate (`:1688-1689`).
+- Affects: GTK3 popups — "click outside a combo/menu to dismiss" currently goes to Electron/Vivado/xterm; Chromium gets a spurious `Enter(Grab)` on every press; scroll over another client while grabbed goes to that client (G-17).
+
+**M8 — Grab-time motion state from tracker ticks (W-2).**
+- Ours: `GlobalPointerTracker.swift:83-85` posts `x11_post_pointer_move2(activeXid, winX, winY, rootX, rootY, deliver, 0, 0)` with cached `lastWinXY`; `XProtoNotifyBridge.cpp:102-108` admits `deliver=0` whenever a pointer grab is active and proceeds to `sendXI2MotionEvent(..., buttons=0, mods=0)` at `:344`; `InputState.hpp:88` (`updateMotion` also zeroes `mods`).
+- xorg: `Xi/exevents.c:1840-1841` (button/modifier state read from the device at delivery), `:1860-1862` (coordinates from the sprite).
+- Change: when `deliver == 0`, substitute `ctx.input().buttons` / `ctx.input().mods` and recompute `win_x/win_y` from `root − hostOrigins[host]` (`InputState.hpp:52-62`) before calling the senders — or have the tracker pass sentinel values the bridge resolves. Stop `updateMotion` overwriting `mods`.
+- Affects: GTK3 menus/combos and any grab-driven drag — the XI2 button mask, `mods.effective` and `event_x/event_y` alternate between correct and empty at 30 Hz, interleaved with the correct `mouseDragged` events.
+
+**M9 — Focus `detail`/`mode` and XI2 focus twins on every focus change (C-1, C-3, C-4; W-6, W-7; G-15).**
+- Ours: `EventOps.cpp:890-920` (`sendXI2FocusEvent`: `mode=0` @906, `detail=0` @907, no parameters, no "delivered" return); `:634-662` (`sendFocusEventDirect`, core, detail 3); core-only sites `QueryOps.cpp:946-972` (SetInputFocus, detail 0), `WindowOps.cpp:64-73, 661-671, 1278-1288` (revert / unmap / destroy), `GrabOps.cpp:248-268, 283-308` (Grab/UngrabKeyboard); the XI2 sender is called only from the Cocoa Focus HostCmd (`XProtoServerBridge.cpp:613, 663, 683`).
+- xorg: `dix/enterleave.c:1560-1570` — `DoFocusEvents` always runs `CoreFocusEvents` and `DeviceFocusEvents`; detail selection `:1428-1550` (Nonlinear at `1468, 1498, 1536, 1543`; Ancestor/Inferior only when `IsParent`, `1503-1527`); callers `dix/events.c:4946/4950` (SetInputFocus), `1735/1782` (keyboard grab), `5914/5935/5941` (revert); `NotifyWhileGrabbed` at `:4943` and `:5909-5910` — focus-only.
+- Change: one `focusDetail(from, to)` helper (`IsParent(to, from)` → Ancestor/Inferior; reverse → Inferior/Ancestor; else Nonlinear; `to == 0` → Nonlinear on `from`). `sendXI2FocusEvent(ctx, wid, is_in, mode, detail)`. One `sendFocusPair(ctx, from, to, mode)` that emits core + XI2 with the same detail, used by all four core-only sites and by the Cocoa sites (pass Nonlinear there). `applyFocusRevert` passes `WhileGrabbed` under a keyboard grab. `sendXI2FocusEvent` returns "delivered" so the core twin can be mask-gated (M18). Pointer crossings during a grab keep `NotifyNormal` (`events.c:3219-3220`) — `WhileGrabbed` is a focus-only mode.
+- Affects: GTK3 portal dialogs — GDK's focus state machine treats `FocusOut(NotifyAncestor)` arriving while the pointer is inside as "focus moved to my ancestor, I keep pointer focus" and never registers focus loss *[recollection, high confidence; the correct detail is established by the xorg source regardless]*; cross-client focus loss when Electron (`XSetInputFocus` fallback) or AWT (focus proxies) move focus by request rather than by AppKit key window.
+
+### P2 — Medium
+
+| ID | Modification | Findings | Ours | xorg | Affects |
+|---|---|---|---|---|---|
+| M10 | Motion walk tests the XI2 mask too: `\|\| (xi2_union & kMotionMask)` in the `pick_motion_target` climb and in `wantsMotionAt` | R2, D-5 | `XProtoNotifyBridge.cpp:477-483, 290-293` | `dix/events.c:2747-2773` `EventIsDeliverable` | Latent — the v.9 trace shows GDK and Chromium both select core `PointerMotion`; bites a client selecting `XI_Motion` only |
+| M11 | `XIKeyRepeat` flag from `NSEvent.isARepeat` (one HostCmd bit → `buf+56 = 1<<16`); key-event `mods` = state *before* the key | W-3, W-4, C-22 | `EventOps.cpp:828`; `X11WindowHost.swift:1224-1239`; `XProtoServerBridge.cpp:1058` | `dix/eventconvert.c:714-715`, `xkb/xkbActions.c:924-925`; `dix/inpututils.c:794-796` | Chromium/Electron `is_repeat` *(fetched)*; GTK3 off-by-one modifier state on modifier keys |
+| M12 | Rebuild the XI1 minor case lists from `Xi/extinit.c:186-227`: reply-bearing {3, 5, 7, 9, 10, 11, 12, 13, 20, 22, 24, 26–30, 33–36, 39} → BadRequest (or the existing trivial replies moved to the right numbers); void {4, 6, 8, 14–19, 21, 23, 25, 31, 32, 37, 38} → consume; fix minor 10's wrong-shaped reply | Q-17 | `ExtensionOps.cpp:1136-1219` | `Xi/extinit.c:186-227` | Latent XCB desync for any libXi XI1 caller (`xinput`, GTK2): 13 reply-bearing minors are consumed silently today |
+| M13 | `XIQueryVersion`: read the request, reply `min(client, 2.2)`, store per `XClient`, BadValue if major < 2; `GetExtensionVersion` reports 2.2 too; add `kXInput_FirstError` (unused value ≥ 128) to `X11ExtOpcodes.hpp`, return it from QueryExtension, use `first_error + 0` for BadDevice; `XIQueryDevice` unknown id → BadDevice | Q-8, Q-9, Q-10, Q-11 | `ExtensionOps.cpp:1349-1359, 1046-1058, 1401-1409`; `QueryOps.cpp:604, 637-639, 679`; `X11ExtOpcodes.hpp:42-47` | `Xi/xiqueryversion.c:66-115`; `Xi/getvers.c:106-107`; `Xi/extinit.c:1065-1069, 1324`; `Xi/xiquerydevice.c:81-87` | All XI2 clients; with `first_error=0` every device error would be code 0, which GDK error traps read as *no error* |
+| M14 | `XIQueryPointer`: `same_screen=1` always; `win_x/win_y` relative to the queried window even when the pointer is elsewhere (`InputState::getHostOrigin` + the qwin→host walk); fill `mods`; `win == 0` → BadWindow; keyboard `deviceid` → BadDevice | Q-15, Q-16 | `ExtensionOps.cpp:1225-1299` (`:1253-1275`, `:1295`) | `Xi/xiquerypointer.c:100-184` | GTK3 polls this constantly; libXi returns `same_screen` as its Bool result, so GDK treats our 0 as failure and keeps stale coordinates/modifiers |
+| M15 | Crossing `detail` from the window relation (common-ancestor walk): Inferior/Ancestor when nested, Nonlinear otherwise; the same value to core and XI2 senders; XI2 Enter `focus` flag computed as the core sender does; `child` on virtual events | C-5, W-5, W-14, D-14 | `EventOps.cpp:551, 557, 869, 872, 878`; `XProtoNotifyBridge.cpp:170-185` | `dix/enterleave.c:347-586` (`CommonAncestor` `216-222`; XI2 `556-586`); `dix/events.c:4824-4827` | GTK3 hover logic keys on `detail != Inferior` (passes by accident today); Xt/AWT nested windows get the wrong detail |
+| M16 | Two-NSWindow crossing: PointerEnter uses the HostCmd's own `c.win_x_u/c.win_y_u` (translated via the host origin) and sets `last_xid = host`; PointerLeave checks `topLevelAncestorOf(pointer_xid) == host` before choosing the leave window and never clears another host's `pointer_xid`; detail Nonlinear on both sides | C-8 | `XProtoServerBridge.cpp:531-533, 544, 547, 560-578, 1600-1615`; `EventOps.cpp:564-567` | `dix/enterleave.c:371-424, 573-585` | Electron main ↔ GTK dialog: Enter may target the wrong child of B carrying A's coordinates; the Leave is lost when AppKit orders `mouseEntered(B)` before `mouseExited(A)` |
+| M17 | Implicit and activated-passive grabs recorded as real `PointerGrab`s (level and mask at delivery; `ownerEvents` from `OwnerGrabButton` or the passive record); on the last release deliver first, then clear and send `Leave(grab, Ungrab)` + `Enter(under, Ungrab)`; stop suppressing crossings during a same-host drag | G-7, G-9, C-10 | `InputState.hpp:146-150` (`drag_xid`); `XProtoServerBridge.cpp:789-792, 811, 903-905`; `XProtoNotifyBridge.cpp:165, 274-308` | `dix/events.c:2120-2164` `ActivateImplicitGrab`, `:3854-3888`, `:1688-1689`; `Xi/exevents.c:1927-1950` | Xt/Xaw and GTK: a pressed-and-dragged-out widget never sees `Leave`; no Ungrab crossings; a passive grab's own mask/owner_events are never used |
+| M18 | Mask-gate core crossings (`EnterWindow`/`LeaveWindow`) and collapse `sendFocusEventDirect` into the mask-gated `sendFocusEvent`; route the raw `sendEvent32` focus sites through it | C-6, C-7, W-7 | `EventOps.cpp:532-601, 605-662`; `QueryOps.cpp:946-972`; `GrabOps.cpp:248-308` | `dix/events.c:4716-4723, 4745`; `:4862-4863`, `:2174-2176` | Unsolicited events to non-selecting clients today (AWT XDND helpers, xeyes). The "emulate WM SetInputFocus" rationale is satisfied by mask-gated delivery — xorg delivers a WM's FocusIn only because the shell selected `FocusChange` |
+| M19 | Key delivery focus rule: PointerRoot → walk from the pointer window; focus is/ancestor of the pointer window → walk from the pointer window stopping at focus; else deliver to the focus window only, XI2 → core, no propagation above focus | D-8 | `XProtoServerBridge.cpp:1097-1123` | `dix/events.c:4239-4299` `DeliverFocusedEvent` | Xt apps (widget under the pointer inside the focused shell); any app focusing a non-selecting child |
+| M20 | `XIQueryDevice` classes: 10 buttons with atom labels (Button Left … Button Horiz Wheel Right), axes labelled "Rel X"/"Rel Y"; either Relative/−1/−1/resolution 0 like xorg, or keep Absolute consistently with the valuator data we emit — decide once, then align device-event and raw-event valuators (L4) | Q-12, W-13 | `ExtensionOps.cpp:1444-1494`; `EventOps.cpp:742-743, 948-951` | `dix/devices.c:644-671, 1594-1607, 1318-1365`; `Xext/xtest.c:605-640`; `dix/eventconvert.c:797-803` | Buttons 6/7 (horizontal scroll) not advertised though core delivers them; label-driven axis classification in GDK/Chromium sees no labels (degrades to ignore) |
+| M21 | `XIPassiveGrabDevice` → Success with `num_modifiers=0` (optionally store Button-type grabs into `passive_` tagged `is_xi2`); keep minor 55 a no-op | G-10, Q-21 | `ExtensionOps.cpp:1648-1652` | `Xi/xipassivegrab.c:79-258`; reply `XI2proto.h:707-720` | No target client calls it; an Xlib client with the default error handler would exit on today's BadRequest |
+| M22 | Time gating on `XIUngrabDevice`/`UngrabPointer`; same-client check in `ChangeActivePointerGrab`; `GrabNotViewable`/`GrabInvalidTime` for core `GrabPointer` too | G-12, G-13, Q-7 | `GrabOps.cpp:88-101, 121`; `GrabTable.cpp:97-102` | `dix/events.c:5132-5138, 5166-5170, 5207-5266, 5356-5360` | Multi-client (Vitis: Electron + portal) — a foreign client can alter the active grab's mask |
+
+### P3 — Low
+
+| ID | Item | Findings | Ours | xorg |
+|---|---|---|---|---|
+| L1 | XI1 `ListInputDevices`: list all 6 devices; XTEST `use` codes are swapped (3 = IsXExtensionKeyboard, 4 = IsXExtensionPointer); valuator class reports 2 axes not 0 | Q-18, C-21 | `ExtensionOps.cpp:1077-1083` | `Xi/listdev.c:174-183, 227-267, 308-318`; `XI.h:189-193` |
+| L2 | Buttons 6/7 in XI2 button masks and core `state` | W-16 | `EventOps.cpp:675`; `X11Modifiers.hpp:35` | `dix/inpututils.c:784-786` |
+| L3 | Enter/Focus `buttons_len` = `bits_to_bytes(numButtons)` (1 word) rather than 8 — valid either way, 28 bytes larger than xorg | W-12 | `EventOps.cpp:879, 914`; `XI2EventMask.hpp:82-83` | `dix/events.c:4791-4792`; `dix/enterleave.c:788-789` |
+| L4 | Raw event: `valuators_len=2`, `values` (accelerated) before `raw_values`, real deltas; fix the reversed comment | W-13 | `EventOps.cpp:942, 948-951` | `dix/eventconvert.c:777-803` |
+| L5 | Motion and crossing `child` = propagation child (only Button computes it today) | D-14, W-10 | `EventOps.cpp:419, 557, 727, 872` | `dix/events.c:2898, 2563-2588` |
+| L6 | Key events: paired pointer button mask and sprite coordinates | W-9 | `EventOps.cpp:824, 831-832` | `dix/inpututils.c:784-786`; `Xi/exevents.c:1860-1862` |
+| L7 | `XISetFocus` → `SetInputFocus(RevertToParent)`; `XIGetFocus` returns `focus_xid` | C-15, Q-20 | `ExtensionOps.cpp:1554-1566` | `Xi/xisetdevfocus.c:70-122` |
+| L8 | Wheel (ScrollTicks) propagates like any button and respects active/passive grabs | D-12, G-17 | `XProtoServerBridge.cpp:976-977, 1007-1030` | `Xi/exevents.c:1913-1930` |
+| L9 | Passive grab check order root → child (ancestor wins) | G-8 | `XProtoServerBridge.cpp:788-798` | `dix/events.c:4199-4206` |
+| L10 | Remove the unconditional `XIQueryDevice` hex dump and the per-request `[XInput2]` log (GTK polls `XIQueryPointer` at high rate) | Q-13, Q-14 | `ExtensionOps.cpp:1539-1547, 1041-1042` | — |
+| L11 | Error packets carry the XI minor opcode; RepType byte = minor in XI2 replies | Q-25, Q-24 | `WireErrors.hpp:38-44`; `ReplyWriter.hpp:54-69` | e.g. `Xi/xiquerypointer.c:129` |
+| L12 | FP16.16 from a negative `int32_t`: multiply, don't `<< 16` (UB before C++20; value is correct today) | W-17 | `EventOps.cpp:728-729, 782-783, 873-874` | `dix/inpututils.c:1044-1046` |
+| L13 | `XISelectEvents` validation: `num_masks == 0` → BadValue; HierarchyChanged only on XIAllDevices; raw bits on a non-root window → BadValue | D-11 | `ExtensionOps.cpp:1319-1346` | `Xi/xiselectev.c:160-212` |
+| L14 | Core `ButtonPress` exclusivity (`AtMostOneClient` → BadAccess) — M6 Stage 3 | D-13 | `WindowTable.cpp:553-577` | `dix/events.c:4496-4497, 4592-4603` |
+| L15 | Grab cursor (`XIGrabDevice` `cursor`, `ChangeActivePointerGrab`) applied | G-19 | `ExtensionOps.cpp:1585`; `GrabOps.cpp:83, 342` | `dix/events.c:5233-5243, 5287, 1620` |
+| L16 | Keyboard grab `owner_events` | G-14 | `GrabOps.cpp:219`; `XProtoServerBridge.cpp:1082-1094` | `dix/events.c:4399-4425` |
+| L17 | Crossings on restructure under a stationary pointer (map/unmap/configure) | C-11 | `XProtoNotifyBridge.cpp:184` | `dix/events.c:3210-3237` |
+| L18 | PointerRoot sentinel distinct from the root XID; `NotifyPointer`/`PointerRoot`/`DetailNone` focus details | C-16 | `XConstants.hpp:12`; `QueryOps.cpp:942`; `WindowOps.cpp:61` | `dix/events.c:4239-4242`; `dix/enterleave.c:965-1029` |
+| L19 | `KeymapNotify` after FocusIn/EnterNotify when `KeymapStateMask` is selected | C-17 | — | `dix/events.c:4864-4877, 4754-4771` |
+| L20 | `XI_DeviceChanged` / `HierarchyChanged` / `PropertyEvent` / `RawButton*` / `RawKey*` never emitted — harmless with a static 2-master/2-slave tree; required the moment a ScrollClass or a second slave is added | W-18, C-18, C-19, C-20 | — | `dix/eventconvert.c:570-646`; `dix/getevents.c:1383-1394` |
+| L21 | `XIListProperties`/`XIGetProperty` device and atom validation; the standard properties ("Device Enabled", "Coordinate Transformation Matrix", "XTEST Device") | Q-22 | `ExtensionOps.cpp:1655-1682` | `Xi/xiproperty.c:1103-1105, 1198-1201`; `dix/devices.c:308-325` |
+| L22 | `XIBarrierReleasePointer` (61) is void — consume rather than BadRequest | Q-23 | `ExtensionOps.cpp:1715-1724` | `Xi/xibarriers.c:862-912` |
+| L23 | Sync grab modes and `XIAllowEvents` stay no-ops (every target client grabs async) — parse and log the modes so a sync user shows in the wire trace | G-11 | `ExtensionOps.cpp:1587-1588`; `GrabOps.cpp:78-80, 322-324` | `dix/events.c:1422-1449, 1793-1904` |
+| L24 | CapsLock in `locked_mods` rather than `base_mods` (`effective` is identical) | W-15 | `X11Modifiers.hpp:28`; `EventOps.cpp:684-688` | `dix/inpututils.c:798-803` |
+
+## 3. Cross-track resolutions and corrections
+
+- **R1 — core suppression on Enter/Leave is a regression (confirmed).** The crossing track's verified list said the suppression "mirrors `DeliverDeviceEvents` ordering"; the delivery track said xorg sends both. Read directly: `dix/enterleave.c:595-608` calls `CoreEnterLeaveEvents` then `DeviceEnterLeaveEvents` with no `deliveries > 0 → break` between them. The XI2-first rule exists only in `DeliverDeviceEvents` (`dix/events.c:2865-2900`), where the core event is a *conversion* of the same `InternalEvent` to a client that already consumed it. → M1. Full text in App. F.
+- **R2 — `pick_motion_target` core-only walk is real but latent (downgraded High → Medium).** The code reading is exact, but the v1.20.0.9 wire trace shows the GTK portal connection receiving core `type=6` MotionNotify *and* its XI2 twin for the same sequence numbers while never receiving a single core `type=4` ButtonPress. This GDK build selects core `PointerMotionMask` on its toplevel and relies on XI2 only for buttons/keys; Chromium likewise. The v.11 button/key fix was the one that mattered. → M10. Full text in App. F.
+- **`NotifyWhileGrabbed` is focus-only.** Pointer crossings generated by motion during a grab keep `NotifyNormal` (`CheckMotion`, `dix/events.c:3219-3220`); the grab only changes *who receives* them. `WhileGrabbed` appears only in `SetInputFocus` (`:4943`), focus revert (`:5909-5910`) and the Xi equivalent (`Xi/exevents.c:3041`). The audit brief's premise was wrong; M9 and M17 follow xorg.
+- **Core `do_not_propagate` fences XI2 too.** `EventIsDeliverable` sets `EVENT_DONT_PROPAGATE_MASK` from the *core* dnp mask (`dix/events.c:2775-2777`) and `DeliverDeviceEvents` breaks on it regardless of level (`:2892-2896`); there is no XI2-specific dnp mask. Our climbs already do this (`XProtoServerBridge.cpp:866-869, 1116`; `XProtoNotifyBridge.cpp:301`) — verified correct, not a gap.
+- **`M6_DESIGN.md` §3 correction.** XI2 selection is not exclusive per window; xorg keeps one mask per client per window and delivers to each. M5 (fan-out) is part of Stage 2, not an optional Stage 3 refinement.
+- **Absolute vs Relative valuators (M20).** The requests track recommends xorg's Relative/unlimited axes with "Rel X"/"Rel Y" labels; the wire track notes our Absolute 0..screen axes are self-consistent with the root-coordinate valuators we emit. Either is legal; pick one and align `XIQueryDevice`, device-event `axisvalues` and raw-event `values/raw_values` together.
+
+## 4. Symptom → finding map
+
+| Symptom (observed or expected) | Most likely causes, in order | How to confirm on the wire |
+|---|---|---|
+| Vitis: menu opened then closed on one click | Core + XI2 double delivery — **fixed in v1.20.0.10** | — |
+| Vitis "set workspace" dialog (portal-GTK): single or double click on a folder does nothing | v1.20.0.11 `wantsBtn` XI2\|core fix — **untested**; then M2 (`deviceid=0` client pointer); then M8 if a grab is active during the clicks | `[BTN_SEND]` shows two XI2 presses to the GTK fd < 400 ms apart, same `event` window, `sourceid=6`, within 5 px (GDK's double-click rule) |
+| GTK combo/menu inside the dialog does not dismiss when clicking outside it; keys go astray while a menu is open | M3, M7 | `[WIRE]`: `XIGrabDevice deviceid=3` overwriting the pointer grab; `XIUngrabDevice deviceid=3` followed by clicks routed to another client |
+| Cursors never change in GTK dialogs | M6 | `[WIRE]`: `XIChangeCursor` (major 141, minor 42) arriving and nothing following |
+| xeyes stops tracking once a GTK or Chromium client is up, or after the pointer visits another window | M4, M5 | `xinput test-xi2 --root` in a second client while xeyes runs; `[WIRE]` RawMotion GenericEvents going to the wrong fd |
+| GTK dialog keeps caret/IM state after focus leaves while the pointer is over it | M9 | `[WIRE]`: `XI_FocusOut` with `detail=0` |
+| Electron hover state stuck after v1.20.0.10 | M1 (R1) | `[WIRE]`: XI2 `XI_Leave` present, core `LeaveNotify` (type 8) absent for Electron's fd |
+| Jittery drag inside a GTK popup, button mask flickering | M8 | `[WIRE]`: XI_Motion events with an empty button mask interleaved at ~30 Hz during a press |
+| Java/Vivado window receiving GenericEvents it never selected | M4 (root-mask blast radius, D-3) | `[WIRE]`: type 35 to the AWT fd |
+
+## 5. Client impact matrix
+
+| Client | How it uses XI2 (from the tracks) | Broken or at risk today | Modifications |
+|---|---|---|---|
+| **Vitis / Chromium (Electron)** | XI2 pointer + key masks with `XIAllMasterDevices` per window *and* core masks; `HierarchyChanged` + `DeviceChanged` on root; `XIGrabDevice(owner_events=true)` on press; reads both XI1 and XI2 device lists; `is_repeat` from `XIKeyRepeat` *(fetched)* | Core crossings suppressed (R1); spurious `Enter(Grab)` every press; no key-repeat flag; its root selection clobbers xeyes and vice versa | M1, M7, M11, M4/M5, L1 |
+| **xdg-desktop-portal-gtk (GTK 3.24)** | XI2 per window with no core Button/Key bits (core `PointerMotion` is set); `Hierarchy`+`DeviceChanged`+`Property` on root; `XIGrabDevice` ×2 (pointer, keyboard) per popup; `XIChangeCursor` for every cursor; `XIQueryPointer` polling; `XIGetClientPointer`; `XIGetSelectedEvents` *(fetched / recollection as marked)* | Client pointer id 0; cursors inert; keyboard grab → pointer grab; click-outside not delivered; tick-state flicker under grabs; focus detail; `same_screen=0` on `XIQueryPointer` | M2, M3, M6, M7, M8, M9, M14, M15 |
+| **xeyes** | `XI_RawMotion` on root via libXi | Freezes when the root mask is clobbered or when `activeXid` is another client's window; RawMotion never cleared after exit | M4, M5 |
+| **Xt / Xaw (xterm, xcalc)** | Core only | Unaffected by XI2 gating; wrong crossing/focus `detail` tolerated; no `Leave` after drag-out; passive-grab mask unused | M15, M17, M19, L9 |
+| **Java AWT (Vivado)** | Core only; XTEST; `XSetInputFocus` on focus proxies; XDND root grab | Stray GenericEvents when any root XI2 bit is set; its `XSetInputFocus` leaves a GTK toplevel without an XI2 `FocusOut` (C-3); root-grab motion reaches it only via the `drag_xid` fallback | M4, M5, M9 |
+
+## 6. Suggested sequencing and verification
+
+Each phase is one version bump, tested with the runtime "XInput2" toggle on, `[WIRE]` trace on, and `xinput test-xi2 --root` from a container xterm as ground truth.
+
+- **Phase A — isolated fixes, one build**: M1, M2, M6, M8, M10, L10. Verify: Vitis menus still open on one click; folder double-click in the set-workspace dialog; cursors change in the GTK dialog; Electron hover states; no XI2 motion with an empty button mask during a drag.
+- **Phase B — grabs**: M3, M7, M16, M17, M22. Verify: GTK combo/menu dismisses on a click over Electron; arrow keys and Escape work in an open GTK menu; Chromium press/release shows exactly one `Enter(Grab)`/`Leave(Ungrab)` pair only when the pointer window differs from the grab window; Xaw button pressed-and-dragged-out receives `Leave`.
+- **Phase C — selection and delivery (M6 Stage 2)**: M4, M5 (incl. `XIGetSelectedEvents`). Verify: xeyes tracks while a GTK dialog and Vitis are both up and after the pointer visits every window; `xinput test-xi2 --root` in a second client receives RawMotion concurrently with xeyes; disconnecting a client removes its selections (no GenericEvents to remaining clients); `XIGetSelectedEvents` on root returns the caller's mask.
+- **Phase D — focus and crossing semantics**: M9, M15, M18, M19. Verify: Cmd+Tab away with the pointer over the GTK dialog then back — caret stops and resumes; AWT `XSetInputFocus` while a GTK toplevel is focused produces `XI_FocusOut(detail=Nonlinear)` on the GTK fd; xterm shell→VT focus shows `FocusOut(Inferior)`/`FocusIn(Ancestor)`; non-selecting windows receive no crossings.
+- **Phase E — protocol hygiene**: M11, M12, M13, M14, M20, M21 and the L items. Verify: `xinput list` / `xinput list-props` / `xinput --version` output; `XIQueryVersion` negotiation with a 2.0 client; a GTK2 or Motif app if one is available for XI1 minors.
+
+## 7. Verified correct — leave alone
+
+Consolidated from the five tracks (each item is line-cited in its appendix):
+
+- GenericEvent headers: `type=35`, `extension=141` = the advertised major, sequence = last request of the receiving client, restamped on cross-client sends; `length` for all four sizes (136/26, 120/22, 104/18, 68/9); the monotonic sequence floor never touches event tails.
+- `evtype` values and mask bits; `deviceid` 2/3 (master) with `sourceid` 6/7 (real slave) — xorg's master copy, which is what `XIAllMasterDevices` selectors receive; 6/7 advertised in `XIQueryDevice` with Button+Valuator / Key classes; `detail` = 0 / button / keycode.
+- FP16.16 root/event coordinates including negative multi-monitor values; `event_x = root_x − window abs x`; Button `child` = immediate child on the propagation path; XI2 crossing `child` = None.
+- `buttons_len=8`, `valuators_len=2`, valuator mask 0x03, FP32.32 layout; button-mask bit N = button N; state-before-event on press/release including scroll; `mods.effective = base|latched|locked`; `flags=0` on pointer events (no scroll valuators advertised).
+- Delivery ladder for motion/button/key: XI2 first, core only if the window's own XI2 selection did not consume; `return own` semantics keep core flowing when only the root mask matched; deliverability = XI2 | core for button/key; bottom-up first-match walk from the deepest mapped window; core `do_not_propagate` fences the whole climb; implicit grab owner = delivery window; RawMotion emitted before the pointer-in-window gate; key delivery XI2 → core with break.
+- Focus events sent at both levels from the Cocoa path; WM-initiated toplevel focus uses `Nonlinear`/`Normal` on the core twin, FocusOut before FocusIn; cross-client focus/crossing delivery reaches the other connection with a restamped sequence.
+- Grabs: `XIGrabDevice` request parse and reply layout; `AlreadyGrabbed` for a foreign holder, same-client re-grab allowed; ungrab releases only the caller's grab; grabs released on disconnect and on grab-window destroy; active grab takes precedence over `drag_xid`; motion delivered to the grab window outside all X windows; grab motion-mask families; passive-grab lookup only on press with no active grab; passive-grab matching (exact/Any, most-specific wins); core `GrabKeyboard`/`UngrabKeyboard` focus choreography; keys to the grab window regardless of selection; grab/ungrab crossings carry mode 1/2 at both levels.
+- Requests: dispatch of unknown minors ≥ 62; XI1 void minors correctly consumed; `GetExtensionVersion`, `ListInputDevices` framing, `XIQueryPointer` framing and `child`, `XIQueryVersion`, `XIQueryDevice` framing/filtering/class lengths, `XIGetFocus`, `XIListProperties`, `XIGetProperty` (byte-identical to xorg's not-found path), `XIGetSelectedEvents` framing and two-write safety, `XISelectEvents` request parse; `sendReply32` prefill.
+- Core masks are already per-client (`WindowTable.hpp:217-222`) — the pattern M4 copies.
+
+## 8. Relationship to `docs/M6_DESIGN.md`
+
+- **Stage 1** (per-client class-A core masks + `sendEventToSelectors`) — done; verified at `WindowTable.hpp:217-222`, `WindowTable.cpp:553-577, 593-609`, `XProtoDaemon.cpp:260-277`.
+- **Stage 2** (replace `xi2_root_mask` with per-client, per-(window, client) XI2 masks; re-advertise) — **M4 + M5**, plus M1 which undoes the one over-reach of the interim landing. §3's "single-target routing is already correct for device events" premise is corrected above: fan-out is part of Stage 2.
+- **Stage 3** (BadAccess exclusivity, selector-fd routing) — L14; the selector-fd routing is already needed by M5 and M7 (`owner_fd` delivery for grab windows).
+- Not in M6 at all, surfaced by this audit: M2, M3, M6, M7, M8, M9, M12–M22.
+
+## 9. Sources read
+
+- **xorg-server**: `dix/events.c`, `dix/enterleave.c`, `dix/eventconvert.c`, `dix/getevents.c`, `dix/inpututils.c`, `dix/dispatch.c`, `dix/devices.c`, `dix/grabs.c`, `Xi/exevents.c`, `Xi/extinit.c`, `Xi/xiselectev.c`, `Xi/xigrabdev.c`, `Xi/xipassivegrab.c`, `Xi/xiallowev.c`, `Xi/xiquerydevice.c`, `Xi/xiquerypointer.c`, `Xi/xiqueryversion.c`, `Xi/xigetclientpointer.c`, `Xi/xisetclientpointer.c`, `Xi/xichangecursor.c`, `Xi/xichangehierarchy.c`, `Xi/xisetdevfocus.c`, `Xi/xiproperty.c`, `Xi/xiwarppointer.c`, `Xi/xibarriers.c`, `Xi/getvers.c`, `Xi/listdev.c`, and the XI1 `Xi/*.c` Proc files named in App. E; `Xext/xtest.c`; `mi/mieq.c`; `xkb/xkbActions.c`; `include/inputstr.h`, `include/input.h`.
+- **SwiftX11**: `src/Ops/ExtensionOps.cpp`, `src/Ops/EventOps.cpp`, `src/Ops/GrabOps.cpp`, `src/Ops/QueryOps.cpp`, `src/Ops/WindowOps.cpp`, `src/Ops/PropOps.cpp`, `src/Ops/WindowAttrOps.cpp`, `src/XProtoServerBridge.cpp`, `src/XProtoNotifyBridge.cpp`, `src/Transport/XProtoTransport.cpp`, `src/Transport/XProtoDaemon.cpp`, `src/Core/WindowTable.cpp`, `src/Core/GrabTable.cpp`, `src/Core/InputRouting.cpp`, `src/Core/timestamp.cpp`, `include/Core/WindowTable.hpp`, `include/Core/GrabTable.hpp`, `include/Core/InputState.hpp`, `include/Core/XI2EventMask.hpp`, `include/Core/X11ExtOpcodes.hpp`, `include/Core/X11Modifiers.hpp`, `include/Core/XEventMask.hpp`, `include/Core/XConstants.hpp`, `include/Ops/EventOps.hpp`, `include/Ops/ReplyWriter.hpp`, `include/Utils/WireErrors.hpp`; `SwiftX11/UI/Windows/X11WindowHost.swift`, `SwiftX11/Core/GlobalPointerTracker.swift`; `docs/M6_DESIGN.md`.
+- **Protocol headers**: `/opt/X11/include/X11/extensions/XI2proto.h`, `XIproto.h`, `XI.h`, `XI2.h`.
+- **Ground truth traces**: `xinput test-xi2 --root` on the Alma 9 nxagent server (real slave as `sourceid`); SwiftX11 `[WIRE]` traces for v1.20.0.7, .9, .10.
+
+---
+
+# Appendices — track reports (verbatim)
+
+Each appendix is the complete report of one audit track, reproduced as delivered. Path legends are per appendix. The synthesis above uses the finding numbers from these tables.
+
+
+# Appendix A — Delivery semantics and event selection
+
+## Delivery Semantics & Event Selection
+
+Path legend (all citations below are relative to these two roots; every line cited was read in this session):
+- `xorg/` = `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/`
+- `X11Protocol/` = `/Users/lkg/Documents/Vivado/SwiftX11/.claude/worktrees/clipboard-and-vlm-fixes/macos/X11LowLevel/cpp/X11Protocol/`
+- Swift: `/Users/lkg/Documents/Vivado/SwiftX11/.claude/worktrees/clipboard-and-vlm-fixes/macos/SwiftX11/`
+
+### Summary
+
+- **The XI2 selection model is one `uint32_t` per window, shared by all clients and all devices** (`X11Protocol/include/Core/WindowTable.hpp:214`, written by `setXI2Mask` `src/Core/WindowTable.cpp:611-618`). xorg keeps one mask per (window, client, device) in an `InputClients` list (`xorg/include/inputstr.h:120-126, 141-156`) and `XISetEventMask` only replaces the *calling client's* slot for *that device* (`xorg/Xi/exevents.c:3313-3348`). Ours: any client's `XISelectEvents` on W silently replaces every other client's selection on W, and a non-owner's selection is never removed on disconnect. This is the root cause behind most other rows.
+- **Every input event (XI2 and core) is written to exactly one transport: the window owner's** (`X11Protocol/src/Transport/XProtoTransport.cpp:650-658, 685-690` → `XProtoDaemon.cpp:232-255, 279-293`). xorg tries *every* `InputClients` entry on the window (`xorg/dix/events.c:2238-2285`) and, for core, owner + `otherClients` (`2342-2383`). Consequence: a client that selects XI2 on a window it does not own gets nothing, while the owner receives XI2 events it never asked for *and* loses the core copy (because `own` is computed from the shared mask).
+- **`xi2_root_mask` is a single global** (`include/Core/InputState.hpp:42-45`) that is last-writer-wins across clients (`src/Ops/ExtensionOps.cpp:1340-1341`), is never cleared on disconnect (`removeClient`, `src/Transport/XProtoDaemon.cpp:546-685` never touches it), and is OR'd into the effective mask of six senders (`src/Ops/EventOps.cpp:704, 758, 809, 847, 894, 924`). The `own` guard does prevent it from suppressing core (verified), but it still causes XI2 GenericEvents to be sent to window owners that never selected them, and the focus sender has no `own` guard at all.
+- **RawMotion is not delivered to "all clients selecting on root"; it is delivered to the owner of `host_xid`** = the last host NSView that saw a motion event (`src/XProtoNotifyBridge.cpp:94-95` → `sendXI2RawMotionEvent` `EventOps.cpp:922-955` → `sendEventVariable` owner routing). xorg iterates every root `InputClients` (`xorg/dix/events.c:2464-2488`). Predicted symptom: xeyes tracks only while the last host under the pointer is its own window.
+- **`pick_motion_target` consults only the core mask** (`src/XProtoNotifyBridge.cpp:477-483`), unlike the Button/Key `wants*` lambdas which were already fixed to use XI2|core. A pure-XI2 window (GTK3) with no core `PointerMotionMask` in its parent chain makes the walk fall off the top (`cur = parent_xid = 1` → snapshot fails → return 0) and the motion is dropped as `no_target` (`:315-318`). This should be confirmed with the `[WIRE]`/`[DRAG]` trace before fixing, since the Button-handler comment at `XProtoServerBridge.cpp:833-838` claims GTK dialogs *did* receive XI2 motion.
+- Things that are right and should not be touched: XI2-first/core-fallback with break at a single window, the `own`-only suppression, deliverability = XI2|core for Button/Key, bottom-up first-match walk, core `do_not_propagate` fencing the whole climb (xorg does the same, see Verified list), event_x/event_y + child recomputation for the delivery window, focus events sent at both levels.
+
+### Findings table
+
+| # | Aspect | xorg (file:line) | SwiftX11 (file:line) | Gap | Severity | Affects |
+|---|---|---|---|---|---|---|
+| 1 | XI2 selection storage granularity | `InputClients` per client, `xi2mask` per device: `xorg/include/inputstr.h:120-126`; union in `OtherInputMasks`: `:141-156`; `XISetEventMask` replaces only caller's slot for `dev->id`: `xorg/Xi/exevents.c:3319-3343`; union recomputed: `:2784-2821` | One `uint32_t xi2_mask` per window: `X11Protocol/include/Core/WindowTable.hpp:214`; replaced wholesale: `src/Core/WindowTable.cpp:611-618`; handler ORs every mask in the request into one word and stores it: `src/Ops/ExtensionOps.cpp:1326-1344` | Last writer wins across clients *and* devices; a later `XISelectEvents` (even for a different device, or from a different client) discards earlier selections; nothing removes a disconnected non-owner's bits (`removeClientMasks` `WindowTable.cpp:593-609` only touches `client_masks`) | **Critical** | Electron (multi-connection), Electron + portal, any two clients touching one window |
+| 2 | Per-window delivery to multiple clients | XI2: `GetClientsForDelivery` → `inputClients` list `xorg/dix/events.c:2210-2217`; `DeliverEventToInputClients` tries every client `:2247-2282`; core: owner then `otherClients` `:2342-2383` | `sendEvent32`/`sendEventVariable` route to `wv->owner_fd` only: `src/Transport/XProtoTransport.cpp:644-663, 683-693`; cross-client path also keyed on `owner_fd`: `src/Transport/XProtoDaemon.cpp:234-237, 281-284`. `sendEventToSelectors` (`:260-277`) exists but is used only for Structure/Substructure/Property broadcast (callers in `WindowOps.cpp`, `PropOps.cpp:56`, `WindowAttrOps.cpp:562`, `EventOps.cpp:361`) | Exactly one client per event; non-owner selectors never receive input events; owner receives XI2 events selected by someone else | **High** | Electron + portal, any non-owner selection |
+| 3 | Global `xi2_root_mask` | Root is an ordinary window with its own `InputClients`; reached only as the *last* step of the climb `xorg/dix/events.c:2865-2900` | Set: `ExtensionOps.cpp:1340-1341`; read as `eff_mask = xi2_mask \| xi2_root_mask` in `EventOps.cpp:704, 758, 809, 847, 894`; raw gate `:924`; never cleared in `XProtoDaemon.cpp:546-685` | (a) last-writer-wins across clients; (b) stale after disconnect; (c) a root bit "lights up" the sender on *every* window and the event goes to that window's *owner*, not the root selector; (d) focus sender (`:890-920`) has no `own` guard so a root FocusIn bit sends XI2 FocusIn to every focused window's owner; (e) `own` guard does keep core flowing (verified) | **High** | xeyes vs Electron/GDK root selections; Java AWT windows receiving stray GenericEvents |
+| 4 | Raw event fan-out | `DeliverRawEvent`: grab owner, then every `InputClients` on every root `xorg/dix/events.c:2459-2488`; XI 2.0 clients filtered under grab `:2413-2433` | `sendXI2RawMotionEvent(ctx, host_xid)` `src/XProtoNotifyBridge.cpp:94-95`; needs a window and routes through its owner `EventOps.cpp:926-927, 954`; `host_xid` = `activeXid` = last host view that saw motion `SwiftX11/UI/Windows/X11WindowHost.swift:1053`, `SwiftX11/Core/GlobalPointerTracker.swift:27-30, 69-85` | Raw events go to one client chosen by pointer history, not to the selectors | **High** | xeyes |
+| 5 | Motion target selection | `EventIsDeliverable` checks XI2 union *and* core `xorg/dix/events.c:2747-2750, 2767-2773`; walk in `DeliverDeviceEvents` `:2865-2900` | `pick_motion_target` climbs on `vw.event_mask & motionMask` only `src/XProtoNotifyBridge.cpp:466-483`; drag path `wantsMotionAt` also core-only `:290-293`; drop on 0 `:315-318` | XI2-only windows get motion only when an active grab with a core mask routes it (`XIGrabDevice` installs a broad core mask `ExtensionOps.cpp:1595-1600`) | **High** (verify with trace) | GTK3 portal dialogs, Chromium windows without grab |
+| 6 | `XIGetSelectedEvents` | Returns the *calling client's* masks, one entry per device with non-zero mask `xorg/Xi/xiselectev.c:368-418` | Returns the window's single mask as `deviceid=0` regardless of caller `ExtensionOps.cpp:1690-1709`; root (XID 1) is not in `WindowTable` so `snapshot` fails → always empty `:1690-1698` even though `xi2_root_mask` may be set | Wrong client, wrong device id, root always empty | Medium | GTK3 (uses XIGetSelectedEvents) |
+| 7 | `deviceid` in `XISelectEvents` | `XIAllDevices`/`XIAllMasterDevices`/specific device are separate slots `xorg/Xi/xiselectev.c:305-322`; match rule `xi2mask_isset` `xorg/dix/inpututils.c:1153-1165` | `deviceid` discarded `ExtensionOps.cpp:1328-1330`; only word 0 kept `:1332-1335` | A client that selects on slave 6/7 only would in xorg never see master (2/3) events; ours delivers. A request `{XIAllMasterDevices: A}` followed later by `{6: B}` loses A | Medium | Chromium (selects with device-specific masks) |
+| 8 | Focus-based key delivery | `DeliverFocusedEvent`: PointerRoot → walk from pointer window `xorg/dix/events.c:4239-4242`; focus is/ancestor of pointer window → walk from pointer window with `stopAt=focus` `:4243-4246`; otherwise deliver to focus window only, XI2→XI→core, **no propagation above focus** `:4248-4299` | Key handler: target = `focus_xid` if on this host else host `src/XProtoServerBridge.cpp:1097-1103`; climbs from focus up to host `:1109-1123`; pointer position ignored | No pointer-window rule; keys propagate above the focus window | Medium | Xt apps (widget under pointer inside focused shell), any app setting focus on a non-selecting child |
+| 9 | Crossing events: level independence | `DoEnterLeaveEvents` sends core **and** XI2 `xorg/dix/enterleave.c:596-608`; each gated only by its own mask: `CoreEnterLeaveEvent` `xorg/dix/events.c:4722, 4745-4751`, `DeviceEnterLeaveEvent` `:4842-4845` | Core crossing suppressed when XI2 delivered: `XProtoServerBridge.cpp:543-549, 572-578`, `XProtoNotifyBridge.cpp:173-183` | XI2-first "break" wrongly applied to crossings (it applies only to `DeliverDeviceEvents`) | Medium | Electron (selects both core and XI2 on its windows) |
+| 10 | Buttons under an active grab | `DeliverOneGrabbedEvent` filters by the *grab's* mask (`grab->xi2mask` `:4332`, `grab->eventMask` `:4347`), not the grab window's selection `xorg/dix/events.c:4309-4375`; `ownerEvents` → `DeliverDeviceEvents` with grab `:4399-4425` | `owner_events=False` sets `under = grabWindow` `XProtoServerBridge.cpp:762-765` but delivery still requires `wantsBtn(deliver)` (window's own mask) `:860-896`; `XIGrabDevice` discards the request's XI2 mask `ExtensionOps.cpp:1591-1593` and substitutes a fixed core mask `:1595-1600` | Grab mask ignored for buttons; XI2 grab mask never stored | Medium | Chromium/GTK menus via `XIGrabDevice` |
+| 11 | `XISelectEvents` validation | `num_masks==0` → BadValue `xorg/Xi/xiselectev.c:160-161`; HierarchyChanged only on XIAllDevices `:188-195`; raw bits on non-root → BadValue `:197-212` | None of these checks `ExtensionOps.cpp:1319-1346`; raw bits on a non-root window are stored in `xi2_mask` but never consulted (`sendXI2RawMotionEvent` reads only the root mask `EventOps.cpp:924`) | Silent acceptance instead of BadValue | Low | Conformance |
+| 12 | Wheel (ScrollTicks) propagation | Same `DeliverDeviceEvents` walk as any button | Target = deepest window, no `wants*` check, no climb `XProtoServerBridge.cpp:976-977, 1007-1030`; core `sendButtonEvent` has no mask check `EventOps.cpp:429-472` | Wheel goes to a non-selecting deepest window instead of propagating | Low | Nested-widget apps |
+| 13 | Core `ButtonPress` exclusivity | `AtMostOneClient` `xorg/dix/events.c:4496-4497`; BadAccess `:4592-4603` | `setClientEventMask` upserts unconditionally `WindowTable.cpp:553-577`; no BadAccess in `WindowAttrOps.cpp` | Two clients can both select ButtonPress on one window | Low | Conformance |
+| 14 | `child` field on motion/crossing | `child` updated each climb step `xorg/dix/events.c:2898`; virtual crossings carry `child` `xorg/dix/enterleave.c:229-340` | Motion `child=0` always `EventOps.cpp:419, 727`; crossing `child=0` `:557, 872`; only Button computes child `XProtoServerBridge.cpp:910-922` | Wrong `child` when motion/crossing propagates up | Low | Toolkits using `subwindow` (rare) |
+
+### Details
+
+#### 1. Per-(window, client, device) XI2 masks (Critical)
+
+xorg mechanism. `ProcXISelectEvents` iterates the request's masks and calls `XISetEventMask(dev, win, client, ...)` for each (`xorg/Xi/xiselectev.c:305-322`). `XISetEventMask` (`xorg/Xi/exevents.c:3313-3348`) looks up the caller's own `InputClients` entry via `SameClient` (`:3321-3327`), zeroes only the slot for `dev->id` (`:3324, 3337`), copies the new mask into that slot (`:3341-3343`) and recomputes the window union (`RecalculateDeviceDeliverableEvents`, `:2784-2821`, `xi2mask_merge` at `:2799`). Other clients' entries and the same client's other-device slots are untouched. On client exit the entry is freed via the resource system (`InputClientGone`, `:2824-2854`).
+
+What we do. `ExtensionOps.cpp:1326-1344` folds all `num_masks` entries into one `combined_mask` (device id discarded at `:1330`) and stores it with `setXI2Mask` (`WindowTable.cpp:611-618`: `st->xi2_mask = xi2_mask`), or into `ctx.input().xi2_root_mask` for XID 1. There is no per-fd record, so nothing can be removed on disconnect (`removeClientMasks` at `WindowTable.cpp:593-609` handles only the core `client_masks`).
+
+Why it matters. Connection A (e.g. Chromium's XCB connection in the Electron browser process) selects `XI_ButtonPress|Release|Motion|Enter|Leave|Key*` on its window W. If any second connection later calls `XISelectEvents(W, ...)` with a different mask (a plausible candidate is a foreign-window selection from GDK-in-process or the portal's transient-for handling; the exact pair should be confirmed with the `[WIRE]` trace), W's mask becomes B's mask: A stops receiving XI2 clicks, and because A's core `ButtonPressMask` is still set, A now receives *core* clicks it had stopped expecting. The reverse case is worse: if B selects XI2 buttons on W and A never selected core buttons, then A (the owner) receives the XI2 events via `sendEventVariable` owner routing and B receives nothing.
+
+Minimal fix (data-structure only; delivery walk unchanged). In `WindowTable::WindowState` replace `uint32_t xi2_mask` with `std::vector<XI2ClientMask>` where `XI2ClientMask { int fd; uint16_t deviceid; uint32_t mask; }` and keep a derived `xi2_union` (may keep the name `xi2_mask` for the existing gate sites). Add `setClientXI2Mask(xid, fd, deviceid, mask)` mirroring `XISetEventMask`: find (fd, deviceid) entry, replace (erase when `mask==0`, i.e. `mask_len==0`), recompute union. Extend `removeClientMasks(fd)` to purge XI2 entries too. Handle root by giving `InputState` the same vector (or, cleaner, insert a synthetic root `WindowState` so root selections use the same code and `XIGetSelectedEvents(root)` works). Rewrite `XIGetSelectedEvents` to iterate the caller's entries and emit one `xXIEventMask` per device (mirror `xorg/Xi/xiselectev.c:389-418`). Match rule for a given event on device D: entry matches if `deviceid == 0` (XIAllDevices) or `deviceid == D` or (`deviceid == 1` and D is a master, which all our emitted events are) — mirror `xi2mask_isset` (`xorg/dix/inpututils.c:1153-1165`).
+
+#### 2. Delivery to every selecting client at a window (High)
+
+xorg mechanism. At each window in the climb, `DeliverEventsToWindow` (`xorg/dix/events.c:2332-2402`) first tries the owner for core events (`:2342-2362`, `DeliverToWindowOwner` `:2170-2193`), then `DeliverEventToWindowMask` → `GetClientsForDelivery` (`:2203-2231`), which for XI2 hands back the whole `inputClients` list (`:2210-2217`) and for core the `otherClients` list (`:2208-2209`). `DeliverEventToInputClients` (`:2238-2285`) loops over all of them, computing each client's own mask via `GetEventMask` (`:485-497`) and delivering with `TryClientEvents` (`:2013-2117`). The `deliveries > 0` result of that whole loop is what makes `DeliverDeviceEvents` break (`:2871-2872`).
+
+What we do. Each sender ends with `ctx.transport().sendEventVariable(wid, ...)` / `sendEvent32(wid, ...)` (`EventOps.cpp:745, 798, 834, 886, 919, 954`; core `:425, 471, 529, 600`). Both transports resolve exactly one destination: the window's `owner_fd` (`XProtoTransport.cpp:650-658, 685-690`; `XProtoDaemon.cpp:234-237, 281-284`). The per-client `client_masks` and `selectorsOf` (`WindowTable.cpp:580-590`) are only consulted for structure/property broadcasts.
+
+Why it matters. Beyond the scenarios in #1: with per-client masks in place, delivery must fan out or the fix is incomplete. For core, a non-owner that selects `PointerMotionMask` on another client's window (legal in X11) never sees motion today.
+
+Minimal fix. Add `XProtoDaemon::sendEventToFds(const std::vector<int>&, const uint8_t*, size_t)` (generalise `sendEventToSelectors` `XProtoDaemon.cpp:260-277` to variable length, keep the per-target sequence restamp at `:269-273`). In each `sendXI2*`, compute `fds = windows().xi2SelectorsOf(wid, evtype, deviceid)` and deliver to all; return `!fds.empty()` (this is xorg's `deliveries > 0`), which then replaces the `own` flag once #3 is removed. For core, in `sendButtonEvent`/`sendMotionNotify`/`sendKeyEvent`/`sendCrossingEvent`, deliver to `selectorsOf(wid, bit)` (owner first) instead of owner only. Enforce `AtMostOneClient` BadAccess in `setClientEventMask` (mirror `xorg/dix/events.c:4592-4603`) so ButtonPress stays single-client.
+
+#### 3. `xi2_root_mask` blast radius (High)
+
+Consulted sites: set at `ExtensionOps.cpp:1340-1341`; read at `EventOps.cpp:704` (motion), `:758` (button), `:809` (key), `:847` (crossing), `:894` (focus, no `own` guard), `:924` (raw gate). Never cleared: `removeClient` `XProtoDaemon.cpp:546-685` clears grabs, selections, XFIXES subscriptions and core masks, not XI2.
+
+What breaks with several clients:
+- Client A (xeyes) selects `RawMotion` on root; client B (GDK or Chromium, both of which select on root for hierarchy/device events) later selects on root → `xi2_root_mask` becomes B's mask, `RawMotion` bit gone (`:1341`), xeyes stops. Order reversed: B's root selection is discarded, harmless today only because we never emit HierarchyChanged.
+- Any root bit in the Motion/Button/Key/Enter/Leave range makes the corresponding sender fire on *every* window of *every* client (`eff_mask` includes the root mask); the GenericEvent is written to the window owner's transport. The `own` guard (`:703/746, 757/799, 808/835, 846/887`) correctly keeps core flowing, so a core-only owner (Java AWT) still works but receives unsolicited GenericEvents. The focus sender (`:890-920`) has no `own`/return, so a root `FocusIn`/`FocusOut` bit causes XI2 focus events to be sent to every focused window's owner (`XProtoServerBridge.cpp:613, 663, 683`).
+- In xorg the root window is the *last* stop of the climb (`xorg/dix/events.c:2865-2900`), reached only if no window below delivered; ours applies the root selection at the *first* window, i.e. the opposite priority. Our climb also stops at `effectiveHost` (`XProtoServerBridge.cpp:863`) and never reaches root at all.
+- After xeyes exits, `RawMotion` stays set forever; `sendXI2RawMotionEvent` keeps emitting 68-byte GenericEvents at up to 30 Hz to whichever client owns the last active host.
+
+Minimal fix. Delete `xi2_root_mask`; store root selections in the same per-(client, device) structure as #1 (synthetic root entry). Raw events then read the root entry list only; other senders never consult root except as the final climb step (if you want root-level XI2 delivery at all, append root to the walk in the Button/Key/Motion climbs).
+
+#### 4. Raw event delivery target (High)
+
+xorg mechanism. `ProcessOtherEvent` routes raw events to `DeliverRawEvent` (`xorg/Xi/exevents.c:1982-1991`), which, after the grab owner, loops over every screen's root `inputClients` and delivers to each with its own mask (`xorg/dix/events.c:2464-2488`), applying `FilterRawEvents` (`:2413-2433`) for XI 2.0 clients under a grab (we report 2.2, `ExtensionOps.cpp:1353-1356`, so the 2.1+ rule applies: always deliver).
+
+What we do. `postMotion` calls `sendXI2RawMotionEvent(*ctx, host_xid)` before the deliver gate (`XProtoNotifyBridge.cpp:94-95`, correct placement). The sender requires `ctx.window(wid)` (`EventOps.cpp:926-927`) and sends via `sendEventVariable(wid, ...)` (`:954`), i.e. to the owner of `host_xid`. `host_xid` comes from Swift: `X11WindowHost.sendMotion` updates `activeXid` to the host whose NSView received the motion (`X11WindowHost.swift:1053`), and the global tracker reuses it for out-of-window ticks (`GlobalPointerTracker.swift:27-30, 69-85`).
+
+Why it matters. xeyes gets RawMotion only while `activeXid` is one of xeyes's own windows. Move the pointer over an xterm/Vivado window and back to the desktop: `activeXid` is now the xterm host, every RawMotion goes to xterm's client (unsolicited, discarded by Xlib), xeyes freezes until the pointer re-enters an xeyes window. Multiple xeyes instances: only one gets events.
+
+Minimal fix. With #1/#3 in place, `sendXI2RawMotionEvent` iterates root entries with `RawMotion` (device match per `xi2mask_isset`) and writes the event to each fd directly (needs the fd-addressed daemon send from #2; the event has no `event` window field, so no window lookup is needed — `FixUpEventFromWindow` returns early for raw types, `xorg/dix/events.c:2676-2689`). Drop the `ctx.window(wid)` requirement.
+
+#### 5. Motion walk ignores the XI2 mask (High, verify first)
+
+xorg mechanism. Motion goes through the same `DeliverDeviceEvents` walk as buttons; `EventIsDeliverable` sets `EVENT_XI2_MASK` from the window's XI2 union (`xorg/dix/events.c:2747-2750`) independent of the core mask (`:2767-2773`). XI2 has only `XI_Motion`; there is no ButtonMotion/Button1-5Motion filtering at the XI2 level (the core filter families are core-only).
+
+What we do. `pick_motion_target` picks the deepest mapped window geometrically (`XProtoNotifyBridge.cpp:441-461`, equivalent to xorg's sprite window) then climbs while `vw.event_mask & motionMask` is false (`:466-483`). `xi2_mask` is never read. For a window tree whose core masks contain none of PointerMotion/ButtonMotion/ButtonN-Motion (GDK under XI2 selects motion only through `XISelectEvents`), the loop reaches `parent_xid == 1`, `snapshot(1)` fails, returns 0, and `postMotion` drops the event at `:315-318` (`dropped("no_target")`). The implicit-drag path has the same core-only test (`wantsMotionAt`, `:290-293`). Motion reaches XI2-only windows today only when an active grab supplies a core mask (`XIGrabDevice` installs `PointerMotion|ButtonMotion|...` at `ExtensionOps.cpp:1595-1600`, and `grabWantsMotion` routes on it, `XProtoNotifyBridge.cpp:255-261`).
+
+Caveat. The Button-handler comment (`XProtoServerBridge.cpp:833-838`) says a GTK dialog "got XI2 motion but no clicks", which contradicts the code path above unless GDK also set a core motion bit or a grab was active. Check the `[DRAG]`/`[WIRE]` trace for `no_target` drops while hovering a portal dialog before changing anything.
+
+Minimal fix. In the climb at `:477-483`: `if ((vw.event_mask & motionMask) || (xi2_union(vw) & xi2::kMotionMask)) return cur;` (and the same in `wantsMotionAt` `:290-293`), mirroring `EventIsDeliverable`. With #2 the sender then fans out to all XI2 selectors and falls back to core selectors.
+
+### Verified-correct list
+
+- **XI2-first, then core, break on delivery at one window.** `XProtoServerBridge.cpp:942-954` (Button), `:1136-1144` (Key), `XProtoNotifyBridge.cpp:344-346` (Motion) match `DeliverDeviceEvents` `xorg/dix/events.c:2868-2888` for the single-client-per-window case.
+- **`return own` semantics.** A delivery that happened only via the root mask returns false (`EventOps.cpp:703/746, 757/799, 808/835, 846/887`), so core is still sent; this is the right call given the root hack (xorg has no equivalent because root is a normal last-stop window). Once #1-#3 land, `own` should become "delivered to at least one client at this window".
+- **XI2 on an ancestor, core on the child.** Ours delivers core at the child and stops (`wantsBtn(under)` true via core, sender checks only `under`'s own XI2 bits); xorg does the same (`:2865-2888`, core at the first window that is deliverable, then break).
+- **Deliverability = XI2 OR core** for Button (`XProtoServerBridge.cpp:839-850`) and Key (`:1063-1074`) matches `EventIsDeliverable` (`xorg/dix/events.c:2740-2781`).
+- **Bottom-up, first-match walk from the deepest mapped window.** `pickDeepestMappedWindowAtHostPoint` (`src/Core/InputRouting.cpp:17-81`) is a pure geometric pick like xorg's sprite window, and the climb (`XProtoServerBridge.cpp:860-877`, `:1109-1123`) stops at the first selecting ancestor, like `:2865-2900`.
+- **Core `do_not_propagate` fences the entire climb, including XI2.** Ours: `:866-869` (Button), `:1116` (Key), `XProtoNotifyBridge.cpp:301` (drag motion). xorg: `EventIsDeliverable` sets `EVENT_DONT_PROPAGATE_MASK` from the *core* dnp mask (`xorg/dix/events.c:2775-2777`) and `DeliverDeviceEvents` breaks on it regardless of level (`:2892-2896`). The task brief's premise that XI2 escapes dnp is not what xorg does; there is simply no XI2-specific dnp mask.
+- **event_x/event_y and child recomputed for the delivery window.** `computeEventXYFromHostLocal`/`computeEventXYFromRoot` (`EventOps.cpp:70-131`) reproduce `FixUpXI2DeviceEventFromWindow` (`xorg/dix/events.c:2591-2617`); Button's `child` = immediate child of the delivery window on the path (`XProtoServerBridge.cpp:910-922`) matches xorg's climb-updated `child` (`:2898`).
+- **Implicit grab owner = delivery window.** `drag_xid` retargeted to `deliver` (`:903-905`) matches `ActivateImplicitGrab` being invoked on the window that delivered (`xorg/dix/events.c:2390-2392`).
+- **RawMotion emitted before the pointer-in-window gate** (`XProtoNotifyBridge.cpp:94-108`) matches raw events being independent of the sprite window (`xorg/Xi/exevents.c:1982-1991`); only the fan-out target is wrong (#4).
+- **Key delivery order XI2 → core with break** (`XProtoServerBridge.cpp:1136-1144`) matches the direct-to-focus branch of `DeliverFocusedEvent` (`xorg/dix/events.c:4251-4299`).
+- **Focus events sent at both levels** (`XProtoServerBridge.cpp:612-613, 662-663, 682-683`) matches `DoFocusEvents` (`xorg/dix/enterleave.c:1568-1569`).
+- **Grab-activation crossings sent at both levels with mode Grab/Ungrab** (`ExtensionOps.cpp:1613-1616, 1632-1635`) matches `DoEnterLeaveEvents` (`xorg/dix/enterleave.c:605-607`).
+- **Core masks are already per-client** (`WindowTable.hpp:217-222`, `setClientEventMask` `WindowTable.cpp:553-577`, purge on disconnect `:593-609` called from `XProtoDaemon.cpp:678`) and mirror `EventSelectForWindow` (`xorg/dix/events.c:4604-4633`) — this is the pattern #1 should copy for XI2.
+
+
+# Appendix B — Grabs
+
+## Grabs
+
+Path abbreviations (absolute roots):
+- `X/` = `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/`
+- `S/` = `/Users/lkg/Documents/Vivado/SwiftX11/.claude/worktrees/clipboard-and-vlm-fixes/macos/X11LowLevel/cpp/X11Protocol/`
+
+Worktree HEAD at time of reading: `caf91b3` (v1.20.0.11-dbg).
+
+### Summary
+
+- **No grab-level event filtering exists.** xorg delivers every event during an active grab through `DeliverGrabbedEvent` → `DeliverOneGrabbedEvent`, which filters by the *grab's* mask (`grab->xi2mask` for XI2, `grab->eventMask` for core) and sends to the *grabbing client* (`X/dix/events.c:4326-4366`). We never store the client's XI2 mask from `XIGrabDevice` (`S/src/Ops/ExtensionOps.cpp:1592-1593`), and every sender filters by the target *window's* `xi2_mask` (`S/src/Ops/EventOps.cpp:703-705, 757-759, 808-810, 846-848`). Works for Electron only because its grab window happens to select the same events it grabs.
+- **`owner_events=True` is not restricted to the grabbing client.** xorg's owner_events path (`X/dix/events.c:4399-4425` → `DeliverDeviceEvents` → `TryClientEvents:2039-2044` returns −1 for any other client, stopping propagation at `:2892`) means "another client's window under the pointer" gets nothing and the event falls to the grab window. Our Button handler ignores the grab entirely when `ownerEvents` is set (`S/src/XProtoServerBridge.cpp:762-773`), so a click on Vivado/xterm while a GTK popup holds an owner_events grab goes to Vivado/xterm, not to GTK. This is the "click outside a GTK combo/menu to dismiss it" case.
+- **`deviceid` is ignored; a keyboard `XIGrabDevice` becomes a pointer grab.** xorg picks the device and routes to `ActivateKeyboardGrab` (with `DoFocusEvents(NotifyGrab)`) for keyboard devices (`X/Xi/xigrabdev.c:81-95`, `X/dix/events.c:1708-1747`). GTK3's `gdk_seat_grab` issues two `XIGrabDevice` calls (master pointer id 2, master keyboard id 3); our second call overwrites the pointer grab record (`S/src/Core/GrabTable.cpp:65-80`), no keyboard grab is installed, and `XIUngrabDevice(deviceid=3)` releases the pointer grab (`S/src/Ops/ExtensionOps.cpp:1623-1640` never reads deviceid).
+- **Implicit grab is emulated as `drag_xid` at the wrong level and with no mask.** xorg's `ActivateImplicitGrab` records the delivery level (CORE vs XI2) and the window's mask at that level (`X/dix/events.c:2120-2164`) and deactivates with `NotifyUngrab` crossings on the last release (`X/Xi/exevents.c:1927-1930`, `X/dix/events.c:1688-1689`). Ours retargets `drag_xid` correctly (`S/src/XProtoServerBridge.cpp:903-905`) but re-decides XI2-vs-core per event from the window mask, suppresses all crossings during the drag (`S/src/XProtoNotifyBridge.cpp:165`), and never sends Ungrab-mode crossings.
+- **Sync grabs / `XIAllowEvents` are safe to leave as no-ops** for the named clients (GDK3, Chromium, AWT, Xt all pass `GrabModeAsync`/`GrabModeAsync` — from memory of their sources, not verified here). A sync grab would leave the device frozen in xorg (`X/dix/events.c:4435-4441, 1300-1307`) while we keep streaming; low risk.
+- **Passive XI2 grabs (`XIPassiveGrabDevice`) are not needed by GTK3/Chromium/AWT/Xt**; the current `BadRequest` reply keeps sequences aligned but would kill any Xlib client with the default error handler that ever called it. Cheap to turn into a success stub.
+
+### Findings table
+
+| # | Aspect | xorg (file:line) | SwiftX11 (file:line) | Gap | Severity | Affects |
+|---|--------|------------------|----------------------|-----|----------|---------|
+| 1 | Grab XI2 mask stored & used for grab-time delivery | `GrabDevice` merges `mask->xi2mask` into the grab (`X/dix/events.c:5280-5285`); `DeliverOneGrabbedEvent` filters by `GetXI2MaskByte(grab->xi2mask, dev, evtype)` and sends to `rClient(grab)` (`X/dix/events.c:4326-4334, 4363-4366`) | Mask skipped (`S/src/Ops/ExtensionOps.cpp:1592-1593`); fixed core mask (`:1595-1600`); `PointerGrab` has no xi2 field (`S/include/Core/GrabTable.hpp:27-34`); senders filter by window `xi2_mask` (`S/src/Ops/EventOps.cpp:703-705, 757-759, 846-848`) | Event the grab asked for but window didn't select → dropped; event window selected but grab didn't ask for → delivered anyway | High | GTK3 popups (grab window ≠ menu content in transfer-window phase); any client grabbing with a mask broader than its selection |
+| 2 | XI2 grab delivers XI2 *only* (no core fallback to grab window) | `DeliverGrabbedEvent:4429-4430` calls `DeliverOneGrabbedEvent(…, grab->grabtype)`; `:4322-4323` returns 0 for other levels | Button/Key/Motion: XI2 first, core if window `xi2_mask` lacks the bit (`S/src/XProtoServerBridge.cpp:942-954`, `S/src/XProtoNotifyBridge.cpp:344-346`); `sendMotionNotify` / `sendButtonEvent` have no mask check at all (`S/src/Ops/EventOps.cpp:386-426, 429-472`) | Under an XI2 grab, a window that selected via XI2 only may get *core* events GDK will ignore | Medium | GTK3 (GDK-XI2 drops core pointer events), Chromium |
+| 3 | `owner_events=True`: only the grabbing client's windows are eligible, else grab window | `DeliverGrabbedEvent:4399-4425` → `DeliverDeviceEvents` with `grab`; `TryClientEvents:2039-2044` returns −1 for foreign clients; `DeliverDeviceEvents:2892-2896` stops propagation on −1 | Button: grab ignored when `ownerEvents` (`S/src/XProtoServerBridge.cpp:762-773`); Motion: `pick_motion_target` on current host with no owner check (`S/src/XProtoNotifyBridge.cpp:232-254`, `:365-486`); Crossing: window mask only | Click/motion outside popup goes to another client; popup never sees "click outside" | High | GTK3 portal dialogs (combo/menu dismiss), Chromium when another client's window is under the pointer |
+| 4 | `deviceid` selects pointer vs keyboard grab | `dixLookupDevice` + `IsKeyboardDevice` mode mapping (`X/Xi/xigrabdev.c:81-95`); `ActivateKeyboardGrab` → `DoFocusEvents(NotifyGrab)` (`X/dix/events.c:1732-1735`) | `deviceid` read then discarded (`S/src/Ops/ExtensionOps.cpp:1586, 1593`); always `tryPointerGrab` (`:1599-1600`) | GTK keyboard grab (id 3) overwrites pointer grab record; no keyboard grab; no FocusOut/FocusIn(NotifyGrab) | High | GTK3 menus/combos (`gdk_seat_grab` = pointer+keyboard) |
+| 5 | `XIUngrabDevice` honours `deviceid`, `time`, same-client, `grabtype==XI2` | `X/Xi/xigrabdev.c:159-169` | Skips whole body (`S/src/Ops/ExtensionOps.cpp:1624`); releases pointer grab if same fd (`:1638`) | Keyboard ungrab releases pointer grab; XI2 ungrab releases a core grab | Medium | GTK3 (ungrabs keyboard+pointer together, so usually masked); mixed core/XI2 clients |
+| 6 | Grab-activation crossings: skip when from==to; Leave old grab window + Enter new | `ActivatePointerGrab:1609-1611` → `DoEnterLeaveEvents` (`X/dix/enterleave.c:602-603` returns if `fromWin == toWin`); `DeactivatePointerGrab:1688-1689` Leave(grab win) **and** Enter(sprite win) | Unconditional Enter(Grab) to grab window (`S/src/Ops/ExtensionOps.cpp:1610-1618`); unconditional Leave(Ungrab), no Enter to the window now under pointer (`:1627-1637`) | Spurious Enter(Grab) on every Chromium click (pointer already in grab window); missing Enter(Ungrab) after ungrab | Medium | Chromium (grabs on every press), GTK3 |
+| 7 | Implicit grab records level + mask at delivery; deactivated on last release with NotifyUngrab | `ActivateImplicitGrab:2128-2135, 2145, 2153-2158`; `ProcessDeviceEvent` (`X/Xi/exevents.c:1927-1930, 1949-1950`); `DeactivatePointerGrab:1688-1689` | `drag_xid` only (`S/include/Core/InputState.hpp:32, 146-150`); retarget (`S/src/XProtoServerBridge.cpp:903-905`); crossings suppressed while dragging (`S/src/XProtoNotifyBridge.cpp:165`); level re-decided per event (`:344-346`) | No Ungrab-mode crossing after release; Leave/Enter during drag not delivered to the grab window even if it selected them (xorg `CoreEnterLeaveEvent:4716-4720` delivers with grab mask) | Medium | Xt/Xaw hover after drag, GTK drag feedback |
+| 8 | Passive grab check order: root → child (ancestor wins) | `CheckDeviceGrabs:4199-4206` walks `spriteTrace[0..]` from root | Walks child → host, deepest wins (`S/src/XProtoServerBridge.cpp:788-798`) | Wrong winner if both an ancestor and a descendant have matching `GrabButton` | Low | Xt (no such nesting in xterm) |
+| 9 | Activated passive grab becomes an active grab with its own mask/owner_events/modes, released on last button up | `ActivatePassiveGrab:3854-3863`; `ActivateGrabNoDelivery:3878-3888`; `ProcessDeviceEvent:1927-1930` | Match sets `under = pg.grabWindow` and hence `drag_xid` (`S/src/XProtoServerBridge.cpp:789-792, 811`); `pg.eventMask`/`ownerEvents` never installed (`haveActiveGrab` stays false); motion filtered by window mask (`S/src/XProtoNotifyBridge.cpp:287-307`) | Passive grab's mask/owner_events ignored | Medium | Xt/Xaw `XtGrabButton` menus (works today by luck of matching window masks) |
+| 10 | `XIPassiveGrabDevice` / `XIPassiveUngrabDevice` | Full impl., reply lists failed modifiers (`X/Xi/xipassivegrab.c:79-258, 297-395`) | `BadRequest` (`S/src/Ops/ExtensionOps.cpp:1648-1652`); ungrab no-op (`:1644-1646`) | Any caller gets an X error (Xlib default handler exits) | Low (no target client calls it) | mutter/gnome-shell style keybinding clients only |
+| 11 | Sync grab modes + `XIAllowEvents` / core `AllowEvents` | `GrabDevice` validates modes (`X/dix/events.c:5207-5214`); `CheckGrabForSyncs:1422-1449`; freeze after delivery (`:4435-4441, 4447-4472`); `AllowSome:1793-1904`; `ProcXIAllowEvents` (`X/Xi/xiallowev.c:95-137`) | Modes read and discarded (`S/src/Ops/ExtensionOps.cpp:1587-1588, 1593`; `S/src/Ops/GrabOps.cpp:78-80`); AllowEvents no-ops (`:322-324`; `S/src/Ops/ExtensionOps.cpp:1643-1646`) | Sync grabs behave as async; never frozen, never replayed | Low | None of GDK3/Chromium/AWT/Xt use sync (from memory) |
+| 12 | Status codes: `GrabNotViewable`, `GrabInvalidTime`, `GrabFrozen`, `AlreadyGrabbed` on grabtype mismatch; `BadWindow`/`BadValue` errors | `GrabDevice:5207-5266` | Only `AlreadyGrabbed` for other-fd (`S/src/Core/GrabTable.cpp:69-72`); `XIGrabDevice` does not validate the window at all (`S/src/Ops/ExtensionOps.cpp:1583-1600`); core `GrabPointer` validates window but not viewability/time/mask (`S/src/Ops/GrabOps.cpp:88-101`) | Unmapped/invalid grab window accepted; stale-time grabs accepted | Low | GTK3 grabs on not-yet-viewable windows would succeed here and fail on xorg (GTK retries on xorg) |
+| 13 | Time-gated ungrab / ChangeActivePointerGrab same-client | `ProcUngrabPointer:5166-5170`; `ProcChangeActivePointerGrab:5132-5138`; `ProcUngrabKeyboard:5356-5360` | Ungrab ignores time (`S/src/Ops/GrabOps.cpp:121`); `updatePointerGrabEventMask` updates any client's grab (`S/src/Core/GrabTable.cpp:97-102`) | Foreign client can alter the active grab's mask | Low | Multi-client (Vitis: Electron + portal) |
+| 14 | Keyboard grab `owner_events` | `DeliverGrabbedEvent:4399-4425` (focus-window path for keyboard) | `handleGrabKeyboard` ignores ownerEvents (`S/src/Ops/GrabOps.cpp:219`); Key handler always routes to grab window (`S/src/XProtoServerBridge.cpp:1082-1094`) | Keys go to grab window even when focus is in another window of the same client | Low | AWT (works per review §2.2) |
+| 15 | Grab-mode focus events filtered by window mask, full detail hierarchy | `DoFocusEvents:1560-1570` → `CoreFocusEvent:4862-4863` (mask via `DeliverEventsToWindow`), `DeviceFocusEvent` (`X/dix/enterleave.c:825-826`) | Core FocusOut/FocusIn(NotifyGrab) sent unconditionally, detail=Nonlinear (`S/src/Ops/GrabOps.cpp:248-268`); XI2 focus sender has no mode param (`S/src/Ops/EventOps.cpp:890-920`, mode=0 at `:906`) | No XI_FocusIn/Out(mode=Grab/Ungrab) at all | Medium (needed for #4) | GTK3 keyboard grabs |
+| 16 | Crossing events during another client's grab | `CoreEnterLeaveEvent:4716-4723` (mask = grab mask on grab window, plus grabbing client's own mask if owner_events, else 0); `DeviceEnterLeaveEvent:4834-4840` | `PointerEnter/Leave` and motion crossings use window masks only (`S/src/XProtoServerBridge.cpp:543-549, 572-578`; `S/src/XProtoNotifyBridge.cpp:172-183`) | Foreign windows get hover Enter/Leave while a popup holds the grab | Low | Electron hover effects while GTK popup open |
+| 17 | Wheel buttons (4/5) under grab / passive grabs | Wheel is `ButtonPress` → same `CheckDeviceGrabs` / `DeliverGrabbedEvent` path (`X/Xi/exevents.c:1913-1930`) | `ScrollTicks` picks deepest under pointer, no grab or passive check (`S/src/XProtoServerBridge.cpp:976-977`) | Scroll over another client while grabbed goes to that client | Low | GTK3 popup open + scroll elsewhere |
+| 18 | Root-window grab delivery to grabbing client | `TryClientEvents(rClient(grab)…)` (`X/dix/events.c:4364-4365`) | `owner_fd` stored (`S/include/Core/GrabTable.hpp:32`) but delivery still resolves the *window's* owner (`S/src/Transport/XProtoTransport.cpp:644-659`); root (XID 1) has no WindowView → drop; drag_xid fallback (`S/src/XProtoNotifyBridge.cpp:271-273`) | Root-grab events only reach the client while a drag is in progress | Medium | AWT XDND (works via fallback) |
+| 19 | `XIGrabDevice` cursor / `ChangeActivePointerGrab` cursor | `GrabDevice:5233-5243, 5287`; `PostNewCursor` (`:1620`) | Ignored (`S/src/Ops/ExtensionOps.cpp:1585`; `S/src/Ops/GrabOps.cpp:83, 342`) | Grab cursor never shown | Low (note only) | Chromium window-move loops, GTK DnD |
+
+### Details
+
+#### 1 + 2 + 3 — Grab-time delivery: grab mask, level, and owner_events client restriction (High)
+
+**xorg mechanism.** Once `dev->deviceGrab.grab` is set, `ProcessDeviceEvent` sends every pointer/key event to `DeliverGrabbedEvent` (`X/Xi/exevents.c:1937-1940`). That function has two stages:
+
+```c
+/* X/dix/events.c:4399-4434 */
+if (grab->ownerEvents) { ... deliveries = DeliverDeviceEvents(pSprite->win, event, grab, NullWindow, thisDev); }
+if (!deliveries) {
+    if ((sendCore && grab->grabtype == CORE) || grab->grabtype != CORE)
+        deliveries = DeliverOneGrabbedEvent(event, thisDev, grab->grabtype);
+```
+
+Stage 1 walks the window tree from the sprite window but `TryClientEvents` returns −1 for any client other than `rClient(grab)` (`:2039-2044`), and `DeliverDeviceEvents` stops propagating on −1 (`:2892-2896`). Stage 2 delivers to the grab window at *exactly* the grab's level; for XI2 the mask is `GetXI2MaskByte(grab->xi2mask, dev, evtype)` (`:4332`), for core `grab->eventMask` (`:4347`), and the recipient is `rClient(grab)` (`:4364`). The window's own selection is never consulted in stage 2.
+
+**What we do.** `XIGrabDevice` skips the mask and installs a fixed core mask (`S/src/Ops/ExtensionOps.cpp:1592-1600`). The Button handler consults the grab only for `owner_events=False` (`S/src/XProtoServerBridge.cpp:762-765`); with `owner_events=True` it picks the deepest window on the Cocoa host (`:770-773`), climbs by *window* mask (`:860-877`), and sends XI2-or-core by *window* `xi2_mask` (`:942-954`). `postMotion` does the same (`S/src/XProtoNotifyBridge.cpp:232-254`) with `grabWantsMotion(activeGrab.eventMask)` (`:208-217`) — always true given the fixed mask. `sendMotionNotify`/`sendButtonEvent` have no mask check (`S/src/Ops/EventOps.cpp:386-426, 429-472`), so a window that selected via XI2 only can receive core events under a grab.
+
+**Why it matters.** GTK3's portal file dialog opens combos/menus as `GtkMenu`, which does `gdk_seat_grab(…, owner_events=TRUE, …)` → `XIGrabDevice` (from memory of `gtkmenu.c`/`gdkdevice-xi2.c`; GDK hard-codes `XIGrabModeAsync` for both modes and passes the translated `GdkEventMask` as the XI mask). A click on the Electron window (a different client) while the popup is open should reach GTK's grab window as XI_ButtonPress (so it pops down) and *not* reach Electron; we do the opposite. Chromium passes `owner_events=true` too (user's trace; matches `ui/base/x/x11_util.cc GrabPointer` from memory, mask ≈ ButtonPress|ButtonRelease|Motion), and only escapes this because its grab window is its own toplevel which already selects those events.
+
+**Minimal fix.**
+1. `S/include/Core/GrabTable.hpp` `PointerGrab`: add `bool is_xi2 = false; uint32_t xi2mask = 0; uint8_t pointer_mode = 1, keyboard_mode = 1; uint32_t cursor = 0;`. Extend `tryPointerGrab(..., bool is_xi2, uint32_t xi2mask)`.
+2. `XIGrabDevice` (`S/src/Ops/ExtensionOps.cpp:1574`): read mask word 0 the same way `XISelectEvents` does (`:1327-1337`), pass `is_xi2=true, xi2mask`.
+3. Add one helper (e.g. `Utils/GrabRoute.hpp`) mirroring `DeliverGrabbedEvent`:
+   ```cpp
+   // returns final target; sets useGrab=true when the grab mask must be used
+   uint32_t grabRoute(ctx, const PointerGrab& g, uint32_t candidate, bool& useGrab) {
+     if (g.ownerEvents && ownerFd(candidate) == g.owner_fd) { useGrab = false; return candidate; } // stage 1
+     useGrab = true; return g.grabWindow;                                                        // stage 2
+   }
+   ```
+   Call it in the Button handler after `deliver` is chosen (`S/src/XProtoServerBridge.cpp:852-877`), in `postMotion` (`S/src/XProtoNotifyBridge.cpp:221-261`), in `ScrollTicks` (`:976-977`), and for crossings.
+4. Senders (`sendXI2ButtonEvent/Motion/Crossing/Key`): add an optional `const PointerGrab*` (or `uint32_t maskOverride`) parameter; when `useGrab`, test `g.xi2mask & bit` instead of `wv->xi2_mask | root`, and return `true` even if the window didn't select, so the core fallback is suppressed (xorg `:4322-4323, 4429-4430`). When `useGrab && !g.is_xi2`, test `g.eventMask` in the core senders and skip XI2.
+
+#### 4 + 5 + 15 — Keyboard-device `XIGrabDevice` / `XIUngrabDevice` (High)
+
+**xorg mechanism.** `ProcXIGrabDevice` looks up the device (`X/Xi/xigrabdev.c:81`), forces `paired_device_mode=Async` for slaves (`:85-86`), swaps `grab_mode`/`paired_device_mode` into keyboard/pointer modes by `IsKeyboardDevice` (`:88-95`), and `GrabDevice` calls `grabInfo->ActivateGrab` (`X/dix/events.c:5290`) which is `ActivateKeyboardGrab` for keyboards: it computes the old focus window and emits `DoFocusEvents(keybd, oldWin, grab->window, NotifyGrab)` (`:1720-1735`), i.e. core FocusOut/FocusIn *and* XI_FocusOut/XI_FocusIn with mode=1. `DeactivateKeyboardGrab` emits the NotifyUngrab pair back to the focus window (`:1772-1782`). `ProcXIUngrabDevice` checks time, `SameClient`, and `grab->grabtype == XI2` (`X/Xi/xigrabdev.c:165-169`).
+
+**What we do.** Every `XIGrabDevice` becomes `tryPointerGrab` regardless of `deviceid` (`S/src/Ops/ExtensionOps.cpp:1586, 1593, 1599-1600`), so GTK3's second grab (master keyboard, id 3, per our `XIQueryDevice` ids in `S/include/Core/XI2EventMask.hpp:50-51`) overwrites the pointer grab's `ownerEvents`/mask/window and installs no keyboard grab. `XIUngrabDevice` releases the pointer grab without reading `deviceid` (`:1624, 1638`). Key routing falls back to focus (`S/src/XProtoServerBridge.cpp:1096-1103`) — tolerable today only because GTK's own `gtk_grab_add` redirects keys within the same process.
+
+**Minimal fix.**
+1. Replace `keyboard_grab_window_/keyboard_grab_fd_` (`S/include/Core/GrabTable.hpp:81-82`) with a `KeyboardGrab { active, grabWindow, owner_fd, ownerEvents, is_xi2, xi2mask }` struct; `tryKeyboardGrab(win, fd, ownerEvents, is_xi2, xi2mask)`; keep `getKeyboardGrab()` returning the window for existing callers.
+2. In `XIGrabDevice`: `switch (deviceid)` — `2,4,6` → pointer path; `3,5,7` → keyboard path (`tryKeyboardGrab`, then the same FocusOut/FocusIn(NotifyGrab) block as `handleGrabKeyboard` at `S/src/Ops/GrabOps.cpp:248-268`, plus `sendXI2FocusEvent(ctx, wid, is_in, mode)` — add the `mode` parameter, currently hard-coded 0 at `S/src/Ops/EventOps.cpp:906`); other ids → XI `BadDevice` error (first_error + 0) mirroring `dixLookupDevice` failure at `X/Xi/xigrabdev.c:81-83`.
+3. In `XIUngrabDevice`: parse `time` (4) + `deviceid` (2); route by device class; only release when `is_xi2 && owner_fd == clientFd` (mirrors `:166-169`). Emit NotifyUngrab focus events for keyboard (reuse `handleUngrabKeyboard` body, `S/src/Ops/GrabOps.cpp:283-308`) and crossings for pointer.
+4. Key handler (`S/src/XProtoServerBridge.cpp:1082-1094`): when the keyboard grab `is_xi2`, filter by its `xi2mask` and do not fall back to core (same rule as Detail 1).
+
+#### 7 + 9 — Implicit and activated-passive grabs (Medium)
+
+**xorg mechanism.** `ActivateImplicitGrab` chooses `grabtype` from the level at which the press was delivered (`X/dix/events.c:2128-2135`), copies `deliveryMask` (core) and the window's XI2 mask (`:2145, 2153-2158`), sets `ownerEvents` from `OwnerGrabButtonMask` (`:2144`) and activates async (`:2146-2147, 2160-2161`). A matched passive grab is activated with *its* record (mask, owner_events, modes, cursor) and the press is delivered straight to the grab client (`:3854-3863`). Both are deactivated on the last button release *after* delivering that release (`X/Xi/exevents.c:1927-1930, 1937-1950`), and deactivation emits Leave(grab window)/Enter(sprite window) with `NotifyUngrab` (`X/dix/events.c:1688-1689`). Crossings *during* the grab still happen, filtered by the grab mask (`:4716-4720`).
+
+**What we do.** `drag_xid` (`S/include/Core/InputState.hpp:146-150`) is retargeted to the delivered window (`S/src/XProtoServerBridge.cpp:903-905`) and the release goes to it because `under` is captured before `button()` clears it (`:766-768, 811`) — that part matches. But: the level is re-derived per event from the window mask (`:942-954`; `S/src/XProtoNotifyBridge.cpp:344-346`); a matched passive grab only sets `drag_xid` (`S/src/XProtoServerBridge.cpp:789-792`) and its `eventMask`/`ownerEvents` are never used; all crossings are suppressed during a drag without an explicit grab (`S/src/XProtoNotifyBridge.cpp:165`); and there is no NotifyUngrab crossing when `buttons` reaches 0.
+
+**Minimal fix.**
+- Record the implicit grab as a real `PointerGrab` with `from_passive=true` (add `bool implicit`): in the Button handler after a successful press delivery, `tryPointerGrab(deliver, ownerEvents=(vw->event_mask & OwnerGrabButton), coreMask=vw->event_mask, fd=vw->owner_fd, time, is_xi2=xi2Sent, xi2mask=vw->xi2_mask)`; for a matched `PassiveGrab` use `pg.eventMask/pg.ownerEvents` instead (mirrors `ActivatePassiveGrab`). Only do this when no explicit grab is active (`X/dix/events.c:2390`).
+- On release with `buttons == 0` and `grab.implicit`: deliver the release first, then `clearPointerGrab` and send Leave(grab window, mode=2) + Enter(window under pointer, mode=2) — mirrors `DeactivatePointerGrab:1688-1689`. This also removes the need for the separate `drag_xid` routing branch in `postMotion` (`:274-308`) since the grab-route helper from Detail 1 covers it.
+- Drop the `drag_xid == 0` condition at `S/src/XProtoNotifyBridge.cpp:165` once crossings are routed through the grab mask.
+
+#### 6 — Grab/Ungrab crossing choreography (Medium; verifying the landed fix)
+
+The landed change correctly sends both core and XI2 crossings with mode=1/2 (xorg sends both: `X/dix/enterleave.c:605-607`) and correctly uses the window mask for a fresh grab (at `ActivatePointerGrab:1611` `grabinfo->grab` is still the *old* grab, so `CoreEnterLeaveEvent:4716-4723` uses the window mask). Residual gaps: (a) xorg skips entirely when the pointer window already is the grab window (`ActivatePointerGrab:1609-1611`; `DoEnterLeaveEvents:602-603`) — we emit Enter(Grab) on every Chromium press; (b) xorg emits Leave from the old window (`sprite->win` or the previous grab window) — we only emit Enter; (c) on ungrab xorg emits Leave(grab window) *and* Enter(sprite window) (`:1688-1689`) — we emit only the Leave, and unconditionally. Fix: compute `from = pointer_xid ? pointer_xid : host`, `to = grabWindow`; if `from == to` do nothing; else Leave(from) + Enter(to) with the mode; same on ungrab with the roles swapped.
+
+#### 18 — Root-grab delivery to `owner_fd` (Medium)
+
+xorg always sends grab-window events to `rClient(grab)` (`X/dix/events.c:4364`). Ours resolves the recipient from the window's `owner_fd` (`S/src/Transport/XProtoTransport.cpp:644-659`), and root has no `WindowView`, so `grabWindow == 1` delivers nothing except via the `drag_xid` fallback (`S/src/XProtoNotifyBridge.cpp:271-273`). Fix: give `sendEvent32/sendEventVariable` an explicit-fd overload used by the grab-route helper (`PointerGrab.owner_fd` already exists, `S/include/Core/GrabTable.hpp:32`).
+
+#### 10 + 11 — Passive XI2 grabs and sync/AllowEvents (Low)
+
+`ProcXIPassiveGrabDevice` (`X/Xi/xipassivegrab.c:79-258`) accepts Button/Keycode/Enter/FocusIn/TouchBegin types, one grab per modifier value, replies with the list of failed modifiers; ungrab deletes per modifier (`:297-395`). GTK3 uses `XIGrabDevice` for popups (`gdk_seat_grab`), Chromium uses core `XGrabKey` for global shortcuts (our `GrabKey` stub already swallows it, `S/src/Ops/GrabOps.cpp:312-314`), AWT and Xt use core requests only — so nothing in scope needs minor 54. Replace the `BadRequest` (`S/src/Ops/ExtensionOps.cpp:1648-1652`) with a reply of `num_modifiers=0` (all succeeded), optionally storing Button-type grabs into `passive_` with an `is_xi2/xi2mask` tag; keep 55 a no-op.
+
+Sync: `GrabDevice` freezes via `CheckGrabForSyncs` (`X/dix/events.c:1423-1449`) and `FreezeThisEventIfNeededForSyncGrab` (`:4447-4472`), thawed/replayed by `AllowSome` (`:1793-1904`). GDK3 (`gdkdevice-xi2.c`), Chromium (`x11_util.cc`), AWT (`XlibWrapper.XGrabPointer/XGrabKeyboard` with `GrabModeAsync`), and Xt spring-loaded popups all use async modes (from memory; the user's Electron trace confirms async for Chromium). Leaving `XIAllowEvents`/`AllowEvents` as no-ops is acceptable; parse and log `grab_mode`/`paired_device_mode` so a future sync user is visible in the wire trace.
+
+### Verified-correct list
+
+- `XIGrabDevice` request layout parse (grab_window, time, cursor, deviceid, grab_mode, paired_device_mode, owner_events, pad, mask_len) — `S/src/Ops/ExtensionOps.cpp:1583-1591` matches `xXIGrabDeviceReq` as consumed at `X/Xi/xigrabdev.c:79-116`.
+- `XIGrabDevice` reply: status at byte 8, length 0 (`S/src/Ops/ExtensionOps.cpp:1602-1605`) matches `xXIGrabDeviceReply` (`X/Xi/xigrabdev.c:123-131`); XI2 status values 0/1 match `XI2.h` (`XIGrabSuccess=0`, `XIAlreadyGrabbed=1`).
+- `AlreadyGrabbed` when another client holds the pointer/keyboard grab; same client may re-grab (`S/src/Core/GrabTable.cpp:69-72, 106-109`) — mirrors `GrabDevice:5255-5256`.
+- Ungrab only releases the caller's own grab (`S/src/Core/GrabTable.cpp:84-87, 117-120`) — mirrors `SameClient` checks at `X/dix/events.c:5169, 5359` and `X/Xi/xigrabdev.c:168`.
+- Active grabs released on client disconnect (`S/src/Transport/XProtoDaemon.cpp:661` → `clearOwnedBy`) — mirrors `ReleaseActiveGrabs:1963-1981`; released when the grab window is destroyed (`S/src/Core/GrabTable.cpp:140-161`).
+- Active grab takes precedence over `drag_xid` for motion routing (`S/src/XProtoNotifyBridge.cpp:221`) — matches `ProcessDeviceEvent:1938-1940` (grab checked before normal delivery).
+- Motion delivered to the grab window even when the pointer is outside all X windows (`S/src/XProtoNotifyBridge.cpp:102-108`).
+- Grab motion-mask families (PointerMotion | ButtonMotion | Button1-5Motion) (`S/src/XProtoNotifyBridge.cpp:208-217`) — consistent with the core filter semantics applied by `TryClientEvents` mask/filter (`X/dix/events.c:2032-2037`).
+- Passive grab lookup only on press and only when no active grab exists (`S/src/XProtoServerBridge.cpp:780`) — mirrors `CheckDeviceGrabs:4165-4172`; second button during a drag does not re-check (`:766-768`) which matches `buttonsDown != 1` at `:4168-4169`.
+- Passive grab matching: exact button or `AnyButton`, exact modifiers or `AnyModifier`, most-specific wins (`S/src/Core/GrabTable.cpp:38-63`) — consistent with `GrabMatchesSecond`/`DetailSupersedesSecond` (`X/dix/grabs.c:434-487`) for the single-list case.
+- Implicit grab targets the window the press was *delivered* to (`S/src/XProtoServerBridge.cpp:903-905`) — matches `ActivateImplicitGrab(…, win = pWin, …)` (`X/dix/events.c:2143, 2391`); ButtonRelease goes to that window even if the pointer left it (`:766-768, 811`).
+- Core `GrabKeyboard` emits FocusOut(old focus, NotifyGrab) + FocusIn(grab window, NotifyGrab); `UngrabKeyboard` emits the NotifyUngrab pair (`S/src/Ops/GrabOps.cpp:248-268, 283-308`) — mirrors `ActivateKeyboardGrab:1732-1735` / `DeactivateKeyboardGrab:1782` (modulo detail/mask filtering, see #15).
+- Core `GrabKeyboard` delivers keys to the grab window regardless of its selection (`S/src/XProtoServerBridge.cpp:1082-1094`) — matches the fixed `KeyPressMask | KeyReleaseMask` grab mask at `ProcGrabKeyboard:5317`.
+- `ChangeActivePointerGrab` updates the active grab's core event mask (`S/src/Ops/GrabOps.cpp:344-349`) — matches `:5144` (minus the same-client and time checks).
+- Grab/ungrab crossings carry mode 1/2 in both core (`S/src/Ops/EventOps.cpp:574`) and XI2 (`:868`) events, and both levels are sent on activation (`S/src/Ops/ExtensionOps.cpp:1613-1616`) — matches `DoEnterLeaveEvents:605-607`.
+- Passive-grab activation is delivered to the grab window's owner, which is the grabbing client (`S/src/Transport/XProtoTransport.cpp:644-659` cross-client routing) — equivalent to `TryClientEvents(rClient(grab)…)` at `X/dix/events.c:3860-3862` for non-root grab windows.
+
+
+# Appendix C — Crossing, focus and device-hierarchy events
+
+## Crossing, Focus & Device-Hierarchy Events
+
+Scope: xorg-server `dix/enterleave.c`, `dix/events.c`, `Xi/xisetdevfocus.c`, `Xi/xichangehierarchy.c`, `Xi/exevents.c`, `dix/eventconvert.c`, `dix/getevents.c`, `Xi/xiproperty.c` vs. SwiftX11 worktree `src/Ops/EventOps.cpp`, `src/XProtoNotifyBridge.cpp`, `src/XProtoServerBridge.cpp`, `src/Ops/QueryOps.cpp`, `src/Ops/ExtensionOps.cpp`, `src/Ops/GrabOps.cpp`, `src/Ops/WindowOps.cpp`, `src/Transport/XProtoTransport.cpp`, `src/Transport/XProtoDaemon.cpp`, `include/Core/InputState.hpp`, `include/Core/XI2EventMask.hpp`. All line numbers below were read directly. Client-toolkit behaviour (GDK3, Chromium, AWT) is from memory — no local sources exist — and is marked **[recollection]** with a confidence note where it drives a severity.
+
+One correction to the brief before the findings: in xorg, `NotifyWhileGrabbed` is a **focus-only** mode. Pointer crossings generated by motion during an active grab still carry `NotifyNormal` (`CheckMotion` passes `NotifyNormal` unconditionally, events.c:3219-3220); the grab only changes *who receives* the crossing (events.c:4716-4720, 4834-4839). `NotifyWhileGrabbed` appears only in `SetInputFocus` (events.c:4943), focus revert on unmap (events.c:5909-5910) and the Xi equivalent (Xi/exevents.c:3041).
+
+### Summary
+
+- **XI2 FocusIn/FocusOut detail is hard-coded `NotifyAncestor` (0)** (`EventOps.cpp:907`) for every transition, including toplevel→toplevel and →None. xorg emits `NotifyNonlinear` (3) for unrelated toplevels (`enterleave.c:1468, 1498, 1536, 1543`). GDK's focus state machine **[recollection, high confidence]** treats `FocusOut(NotifyAncestor)` with the pointer inside as "focus moved to my ancestor, I still get keys via pointer focus" → the portal-GTK dialog never registers focus loss. GDK ignores core FocusIn/Out under XI2, so the correct-detail core twin (`sendFocusEventDirect`, detail 3) does not rescue it. Cheapest high-value fix in this area.
+- **`XIGrabDevice`/`XIUngrabDevice` ignore `deviceid`** (`ExtensionOps.cpp:1586, 1593`) — a GTK keyboard grab (menus, combos, popovers inside the portal dialog) becomes a *pointer* grab plus a spurious `Enter(NotifyGrab)`; xorg would run `ActivateKeyboardGrab → DoFocusEvents(NotifyGrab)` (events.c:1732-1735) and route keys to the grab window. No `XI_FocusIn/Out(NotifyGrab)` is ever produced.
+- **SetInputFocus / focus-revert / GrabKeyboard paths emit only core focus events** (`QueryOps.cpp:946-972`, `WindowOps.cpp:64-73, 661-671, 1278-1288`, `GrabOps.cpp:248-308`); xorg always emits the XI2 twin (`enterleave.c:1568-1569`). A client that focuses its own window via `XSetInputFocus` (Chromium's `Activate()` fallback without `_NET_ACTIVE_WINDOW`, AWT focus proxies) leaves the previously focused GTK toplevel with no XI2 `FocusOut`.
+- **Crossing detail is always `NotifyAncestor`, no common-ancestor walk, no Virtual/NonlinearVirtual events, `child` always None** (`EventOps.cpp:551, 557, 869, 872`; `XProtoNotifyBridge.cpp:170-185`). For GTK3/Chromium (one X window per toplevel) the missing virtual events are theoretical; what matters to them is `detail != NotifyInferior`, which we satisfy by accident. For Xt/AWT (real nested windows) `Inferior`/`Ancestor`/`Nonlinear` are wrong but tolerated today.
+- **Core crossing and focus senders bypass the window's core event mask** (`EventOps.cpp:532-601` has no `EnterWindow/LeaveWindow` check; `sendFocusEventDirect` 634-662 and `handleSetInputFocus` deliberately skip `FocusChange`). xorg gates both (`events.c:4722, 4745`; `2174-2176`). The code comment "the server always delivers FocusIn/FocusOut to the focus target" (`EventOps.cpp:641-642`) is not what xorg does.
+- **Device hierarchy / DeviceChanged / PropertyEvent are never emitted** — acceptable for our static 6-device tree; the single `DeviceChanged(SlaveSwitch)` xorg would send on first input carries classes we already advertise identically on master 2 and slave 6. Low.
+
+### Findings table
+
+| # | Aspect | xorg (file:line) | SwiftX11 (file:line) | Gap | Severity | Affects |
+|---|---|---|---|---|---|---|
+| 1 | XI2 focus detail | `DeviceFocusEvents` chooses Nonlinear/Ancestor/Inferior/Pointer/… by from/to relation: enterleave.c:1428-1550 (`1468,1498,1504,1506,1524,1526,1536,1543`) | `sendXI2FocusEvent` detail=0 always: EventOps.cpp:907; mode=0: 906 | Toplevel↔toplevel and →None transitions sent as `NotifyAncestor` | **High** | GTK3 (portal dialogs): focus-out never registered while pointer is over the dialog **[recollection]** |
+| 2 | XIGrabDevice on keyboard device | `ProcXIGrabDevice` grabs the named device; keyboard grab → `ActivateKeyboardGrab` → `DoFocusEvents(…, NotifyGrab)`: events.c:1708-1747 (1732-1735); ungrab → `DoFocusEvents(grab->window, focusWin, NotifyUngrab)`: 1753-1790 (1782) | deviceid read then discarded, always `tryPointerGrab`: ExtensionOps.cpp:1586, 1593, 1599-1600; emits `Enter(Grab)` instead: 1610-1618; ungrab emits `Leave(Ungrab)`: 1632-1636; keyboard-grab routing in Key handler only consults `getKeyboardGrab()`: XProtoServerBridge.cpp:1082-1094 | Keyboard grabs become pointer grabs; no `XI_FocusIn/Out(NotifyGrab/Ungrab)`; keys not routed to grab window; ungrab of the "keyboard" tears down the client's real pointer grab early | **High** | GTK3 (GtkMenu/combo/popover inside portal dialog) |
+| 3 | XI2 twins on SetInputFocus / revert / GrabKeyboard | `DoFocusEvents` always runs `CoreFocusEvents` + `DeviceFocusEvents`: enterleave.c:1560-1570; called from SetInputFocus events.c:4946/4950, keyboard grab 1735/1782, unmap revert 5914/5935/5941 | Core only: QueryOps.cpp:946-972; WindowOps.cpp:64-73, 661-671, 1278-1288; GrabOps.cpp:248-268, 283-308. `sendXI2FocusEvent` is called only from the Cocoa Focus HostCmd: XProtoServerBridge.cpp:613, 663, 683 | GTK toplevel gets no XI2 FocusOut when another client `XSetInputFocus`es its own window, or when focus reverts after unmap/destroy | **Medium–High** | GTK3 (cross-client with Electron/AWT) |
+| 4 | Core SetInputFocus details | `CoreFocusEvents` dispatch: enterleave.c:1403-1425; ToDescendant `Out(Inferior)`/`In(Ancestor)`: 1200, 1231; ToAncestor `Out(Ancestor)`/`In(Inferior)`: 1155, 1173; NonLinear `Out/In(Nonlinear)`: 1070, 1115; From/To PointerRoot/None: 1252-1400 | `FocusOut(old)` detail 0, mode 0: QueryOps.cpp:947-953; `FocusIn(new)` detail 0: 965-971; revert `FocusIn` detail 0: WindowOps.cpp:65-72; destroy/unmap `FocusOut` detail 0: 662-669, 1279-1286; mode never `WhileGrabbed` | Wrong detail for shell→child (Xt) and toplevel→toplevel (AWT, Chromium `XSetInputFocus`) transitions; no `NotifyPointer`, `PointerRoot`, `DetailNone`; no virtual events | Medium | Xt/Xaw, AWT (works today by tolerance) |
+| 5 | Crossing detail / virtual events | Core: enterleave.c:538-553 → 487-535 (ToDescendant: `Leave(Inferior)`, `Enter(Virtual)`×n, `Enter(Ancestor)`), 431-481 (ToAncestor), 347-425 (NonLinear via `CommonAncestor` 216-222). XI2: 556-586 | Single `Leave(prev)`+`Enter(under)`, detail 0: XProtoNotifyBridge.cpp:170-185; EventOps.cpp:551 (core), 869 (XI2); `child` None: 557, 872 | No intermediate events; detail never Inferior/Nonlinear/Virtual | Medium (theoretical for GTK3/Chromium single-X-window toplevels; real for Xt/AWT nesting) | Xt, AWT; GTK/Chromium only need `!= Inferior` |
+| 6 | Core mask gating of crossings | `mask = pWin->eventMask \| wOtherEventMasks(pWin)` (grab: grab mask / owner mask): events.c:4716-4723; deliver only `if (mask & GetEventFilter)`: 4745 | `sendCrossingEvent` has no mask check: EventOps.cpp:532-601; `sendEvent32` has none: XProtoTransport.cpp:601-664 | Unsolicited EnterNotify/LeaveNotify to every window owner | Medium | All core clients (extra traffic; spec violation) |
+| 7 | Core mask gating of focus | `CoreFocusEvent` → `DeliverEventsToWindow(filter=FocusChangeMask)`: events.c:4862-4863; owner path drops if mask not selected: 2174-2176 | `sendFocusEventDirect` skips mask by design: EventOps.cpp:634-662 (comment 641-644 claims xorg behaviour it does not have); `sendFocusEvent` (mask-gated, 605-631) has no callers; SetInputFocus/GrabKeyboard/revert paths use raw `sendEvent32` | Unsolicited FocusIn/Out | Medium (correctness); Low (practical — every target selects FocusChange) | All |
+| 8 | Two-NSWindow crossing (A→B) | `NonLinear`: `Leave(Nonlinear)` A, `Leave(NonlinearVirtual)` A..root, `Enter(NonlinearVirtual)` root..B, `Enter(Nonlinear)` B: enterleave.c:371-424 (core), 573-585 (XI2) | `PointerLeave` → Leave on `drag_xid`/`pointer_xid`/host: XProtoServerBridge.cpp:560-578; `PointerEnter` picks child with **stale** `ctx.input().win_x_u/y_u` and stale `root_x_u/y_u` instead of `c.win_x_u`: 531-533, 544, 547. Both delivered to their owners cross-client: XProtoTransport.cpp:650-658 → XProtoDaemon.cpp:232-255, 279-293 | Both clients do get events; detail 0 not 3; Enter on B may target the wrong child and carry A's coordinates; if Cocoa delivers `mouseEntered(B)` before `mouseExited(A)`, the Leave goes to B's window (`pointer_xid` no longer under host A) and A never gets one | Medium | Electron main ↔ GTK dialog, any multi-window client |
+| 9 | Grab-activation crossings | `ActivatePointerGrab` → `DoEnterLeaveEvents(oldWin, grab->window, NotifyGrab)` only when windows differ: events.c:1609-1611 + enterleave.c:602-603; `DeactivatePointerGrab` → `(grab->window, sprite->win, NotifyUngrab)`: 1688-1689 | XIGrabDevice: `Enter(Grab)` to grab window unconditionally, no `Leave` on previous window: ExtensionOps.cpp:1610-1618; XIUngrabDevice: `Leave(Ungrab)` on grab window only, no `Enter` on window under pointer: 1632-1636; core GrabPointer/UngrabPointer/GrabButton activation/implicit grab emit nothing: GrabOps.cpp:73-128; XProtoServerBridge.cpp:780-811 | Spurious Enter when pointer already inside; missing paired event; nothing for core grabs | Low–Medium | GTK3/Chromium (XI2 path), Xt/AWT (core path, but AWT ignores non-Normal crossings **[recollection]**) |
+| 10 | Crossings during grabs | Generated by `CheckMotion` on every sprite-window change (events.c:3205-3227); delivered only to grab client via grab mask / ownerEvents mask: 4716-4720; XI2 grab uses `grab->xi2mask`: 4834-4839; `HasPointer` returns FALSE while grabbed: enterleave.c:96-97 | Skipped entirely during an implicit drag in the same host (`drag_xid && !haveGrab && !hostCorrected`): XProtoNotifyBridge.cpp:165; during active grab delivered to window owners, not the grab client | Xaw/GTK widgets pressed-and-dragged-out never see Leave; unrelated clients receive crossings during another client's grab | Low–Medium | Xt/Xaw, GTK3, Chromium |
+| 11 | Crossings on restructure (map/unmap/configure under stationary pointer) | `WindowsRestructured` → `CheckMotion(NULL)` → `DoEnterLeaveEvents` with `sourceid = pDev->id`: events.c:3210-3213, 3237 | `pointer_xid` only updated on motion (XProtoNotifyBridge.cpp:184) or NSWindow enter/leave | Popup appearing under cursor gets no Enter; underlying window gets no Leave/Enter when popup vanishes | Low | GTK combos/menus (recover on first motion) |
+| 12 | XI2 crossing `focus` flag | `event->focus = (pWin == focus \|\| focus == PointerRoot \|\| IsParent(focus, pWin))`: events.c:4824-4827 | XI2: hard 0: EventOps.cpp:878. Core: computed correctly: 580-591 | XI2 crossings claim focus=False | Low | Chromium/GDK "no-WM pointer focus" heuristics only if they select XI_Enter **[recollection: Chromium does not]** |
+| 13 | XI2 focus event fields | `deviceid = sourceid = dev->id` (master kbd): enterleave.c:800-801; buttons/mods/group filled: 806-819; root/event coords via `FixUpEventFromWindow`: 822-823 | `sourceid = kRealKeyboard (7)`: EventOps.cpp:905; mods 0: 915; coords 0: 911; `focus=1`: 913 (xorg leaves 0) | Field mismatches | Low | GDK looks up source device by id 7 (exists) — harmless |
+| 14 | Per-client fan-out | Core: owner + each `OtherClients` entry by its mask: events.c:2341-2383; XI2: each `InputClients` entry by its own `xi2mask`: 2203-2231, 2247-2263 | Owner only: XProtoTransport.cpp:644-663, 678-694; single `xi2_mask` per window, last `XISelectEvents` wins: WindowView.hpp:29, WindowTable.cpp:611-616; root mask **replaced** not merged: ExtensionOps.cpp:1340-1341 | A second client's Enter/Leave selection on a window is ignored; any client's root `XI_Enter/Leave` selection turns on XI2 twins for every window | Low (crossing-specific; no target cross-selects Enter/Leave) | — |
+| 15 | XISetFocus / XIGetFocus | `ProcXISetFocus` → `SetInputFocus(RevertToParent, followOK)`: xisetdevfocus.c:70-86; `ProcXIGetFocus` returns real focus/None/PointerRoot/FollowKeyboard: 89-122 | XISetFocus no-op: ExtensionOps.cpp:1554-1556; XIGetFocus always PointerRoot: 1559-1566 | Not implemented | Low | GDK3 uses core `XSetInputFocus` (fallback when `_NET_ACTIVE_WINDOW` unsupported) **[recollection]**; nobody calls XISetFocus |
+| 16 | PointerRoot vs root XID | `PointerRoot (1)` is a sentinel distinct from the root window; keys go to the sprite window: events.c:4239-4242; `NotifyPointer` runs: enterleave.c:965-1029 | `kRootXid = 1`: XConstants.hpp:12; `SetInputFocus(1)` → `focus_xid = kRootXid`: QueryOps.cpp:942; revert-to-PointerRoot → root: WindowOps.cpp:61 | PointerRoot indistinguishable from root window; no `NotifyPointer`/`PointerRoot`/`DetailNone` | Low | AWT sets `RevertToPointerRoot` — revert lands on root, keys still reach the key host |
+| 17 | KeymapNotify after FocusIn / EnterNotify | events.c:4864-4877 (focus), 4754-4771 (enter), only if `KeymapStateMask` | Never sent (no `KeymapNotify` in tree) | Missing | Low | None of the targets select `KeymapStateMask` **[recollection]** |
+| 18 | XI_HierarchyChanged | `XISendDeviceHierarchyEvent` to all windows with the mask: xichangehierarchy.c:61-121; emitted on enable/disable/add/remove: devices.c:420, 519, 589, 1205; and by `XIChangeHierarchy`: xichangehierarchy.c:508 | Never; `XIChangeHierarchy` void stub: ExtensionOps.cpp:1302-1307 | Missing | Low (static devices) | Chromium `X11HotplugEventHandler`, GDK: re-enumerate only on this event — nothing to re-enumerate |
+| 19 | XI_DeviceChanged | `UpdateFromMaster` creates DCE when `master->last.slave != dev`: getevents.c:697-699; `ChangeMasterDeviceClasses` copies slave classes into master and sends: Xi/exevents.c:762-793, 868-870; also on grab deactivation 1949-1964 and scroll-valuator setup 2426-2435; wire: eventconvert.c:571-645 (reason 612-613) | Never | xorg would send exactly one `DeviceChanged(SlaveSwitch, deviceid=2, sourceid=6)` on first input | Low | See Details §3 |
+| 20 | XI_PropertyEvent | `send_property_event`: xiproperty.c:185-210 | Never; property requests are stubs: ExtensionOps.cpp:1665-1668 | Missing, and nothing can change | Low | — |
+| 21 | XI1 vs XI2 device list | Same device set in both | `ListInputDevices` lists 4 devices: ExtensionOps.cpp:1077-1083; `XIQueryDevice` lists 6: 1388-1398 | Ids 6/7 absent from XI1 list | Low | Chromium calls both (comment 1063) — align to avoid a classification mismatch |
+| 22 | `XIKeyRepeat` flag | eventconvert.c:714-715 | flags=0: EventOps.cpp:828 | Held keys look like fresh presses | Low (other track) | Chromium `EF_IS_REPEAT` **[recollection]** |
+
+### Details
+
+#### 1. XI2 focus detail (High)
+
+**xorg.** `DeviceFocusEvents` (enterleave.c:1428-1550) chooses the detail from the window relation exactly as core does: unrelated windows → `FocusOut(NotifyNonlinear)` on `from` (1536) + `NonlinearVirtual` on its ancestors (1538) + `NonlinearVirtual` on `to`'s ancestors (1541) + `FocusIn(NotifyNonlinear)` on `to` (1543); to None/PointerRoot → `Out(Nonlinear)` on `from` (1468) then `In(DetailNone|PointerRoot)` on the root(s) (1474-1476); from None → `Out(DetailNone)` on roots, `In(Nonlinear)` on `to` (1492-1498). `Ancestor`/`Inferior` only appear when `IsParent(to, from)` / `IsParent(from, to)` (1503-1527).
+
+**Ours.** `sendXI2FocusEvent` (EventOps.cpp:890-920) writes `buf[19] = 0 // detail = Ancestor` (907) and `buf[18] = 0 // mode` (906) for every caller. All three call sites are Cocoa-driven toplevel transitions (XProtoServerBridge.cpp:613, 663, 683) — the case where xorg would use `NotifyNonlinear`.
+
+**Why it matters.** GDK's `_gdk_device_manager_core_handle_focus` (gdkdevicemanager-core-x11.c, also reached from the XI2 `XI_FocusIn/Out` path) **[recollection, high confidence — this logic has been stable since GTK 2]**: for `NotifyAncestor`/`NotifyVirtual` it first does `if (toplevel->has_pointer && mode != Grab/Ungrab) has_pointer_focus = !focus_in`, then falls through to set `has_focus_window = focus_in`; `HAS_FOCUS = has_focus_window || has_pointer_focus`. So a `FocusOut(NotifyAncestor)` arriving while the pointer is inside the dialog sets `has_pointer_focus = TRUE` and the toplevel stays "focused" — no `GDK_FOCUS_CHANGE` is generated, IM/caret state stays active, and the subsequent `FocusIn(NotifyAncestor)` produces no event either. With `NotifyNonlinear` the ancestor branch is skipped and the state flips cleanly. Trigger scenarios: Cmd+Tab away with the pointer over the dialog; focus moving to the Electron main window by keyboard/AppKit while the pointer remains over the dialog. The core `sendFocusEventDirect` uses detail 3 (EventOps.cpp:648) — correct — but under XI2 GDK only accepts synthetic core key events and ignores core focus/crossing events **[recollection]**, so it does not help.
+
+**Fix.** Give `sendXI2FocusEvent` `mode`/`detail` parameters (like `sendCrossingEvent` already has) and add a small `focusDetail(from, to)` helper mirroring the branch structure of `DeviceFocusEvents`: `IsParent(to,from)` → `Ancestor`/`Inferior`; `IsParent(from,to)` → `Inferior`/`Ancestor`; else `Nonlinear`; `to == 0` → `Nonlinear` on `from`. For the three Cocoa call sites pass `Nonlinear` (3). Reuse the same helper in #4 for the core events.
+
+#### 2. XIGrabDevice on the keyboard device (High)
+
+**xorg.** `ProcXIGrabDevice` grabs the device named in the request; for a keyboard it calls `ActivateKeyboardGrab` (events.c:1708-1747), which emits `DoFocusEvents(oldWin, grab->window, NotifyGrab)` (1732-1735) and then routes key events to the grab window (`ProcessDeviceEvent` → `DeliverGrabbedEvent`, Xi/exevents.c:1938-1940). `XIUngrabDevice` → `DeactivateKeyboardGrab` → `DoFocusEvents(grab->window, focusWin, NotifyUngrab)` (1782).
+
+**Ours.** ExtensionOps.cpp:1574-1620 reads `deviceid` (1586), discards it (1593) and always calls `tryPointerGrab` (1599-1600), then emits `Enter(Grab)` (1610-1618). XIUngrabDevice (1623-1640) emits `Leave(Ungrab)` and `clearPointerGrab`. The Key handler only honours `ctx.grabs().getKeyboardGrab()` (XProtoServerBridge.cpp:1082-1094), which XIGrabDevice never sets.
+
+**Why it matters.** GDK3 `gdk_seat_grab` for a GtkMenu/GtkComboBox popup/GtkPopover issues `XIGrabDevice` on both master devices (2 then 3) **[recollection, high confidence]**. Today the second call re-installs the pointer grab, sends a spurious `Enter(Grab)`, and the matching `XIUngrabDevice(3)` releases the *pointer* grab while GTK still believes it holds it. No `XI_FocusIn(NotifyGrab)` reaches the menu window, and arrow/Escape keys keep routing by `focus_xid` rather than to the grab window (GTK usually survives this because it re-targets keys to its grab widget client-side, but it is the same class of bug the Swing popup fix in `.17` addressed for core grabs).
+
+**Fix.** In minor 51/52 branch on `deviceid`: `2`/`XIAllMasterDevices`-pointer → existing pointer path; `3`/keyboard → `tryKeyboardGrab(win, fd)` + `FocusOut(old focus, NotifyGrab)`/`FocusIn(win, NotifyGrab)` core **and** XI2 (reuse the GrabOps.cpp:248-268 choreography, adding the XI2 twins), and the inverse on ungrab (`clearKeyboardGrab` + `Ungrab` focus events, GrabOps.cpp:283-308 pattern). Also honour `grab_mode`/`mask_len` only if the selection track decides to; the device split is the load-bearing part.
+
+#### 3. XI2 twins missing on SetInputFocus / revert / GrabKeyboard (Medium–High)
+
+**xorg.** Every focus change goes through `DoFocusEvents` (enterleave.c:1560-1570), which unconditionally runs both `CoreFocusEvents` and `DeviceFocusEvents`. Callers: `SetInputFocus` (events.c:4946, 4950), keyboard grab/ungrab (1735, 1782), unmap/destroy revert (5914, 5935, 5941).
+
+**Ours.** `handleSetInputFocus` (QueryOps.cpp:946-972), `applyFocusRevert` (WindowOps.cpp:64-73), destroy/unmap FocusOut (661-671, 1278-1288) and GrabKeyboard/UngrabKeyboard (GrabOps.cpp:248-268, 283-308) all build raw core events and call `sendEvent32`. Only the Cocoa `HostCmdType::Focus` handler calls `sendXI2FocusEvent`.
+
+**Why it matters.** Cross-client focus loss for a GTK toplevel: Electron's `X11Window::Activate()` falls back to `XSetInputFocus(RevertToParent)` when the server does not advertise `_NET_ACTIVE_WINDOW` **[recollection, moderate confidence]**; AWT always uses `XSetInputFocus` on its focus proxy. Either arrives while `focus_xid` points into the GTK dialog → the dialog gets only a core `FocusOut`, which GDK ignores under XI2 → same stuck-focus symptom as #1. `handleSetInputFocus` also never updates `focus_host`, so the later Cocoa `resignKey` for the dialog host does send an XI2 FocusOut (XProtoServerBridge.cpp:675-684) — but only if AppKit actually changes key window, which a pure X-level focus move does not cause.
+
+**Fix.** Route all four sites through one `EventOps::sendFocusPair(ctx, from, to, mode)` that emits core + XI2 with the #1 detail helper; delete the four hand-built 32-byte arrays. `applyFocusRevert` should pass `mode = WhileGrabbed` when a keyboard grab is active (events.c:5909-5910).
+
+#### 4. Core SetInputFocus detail (Medium)
+
+**xorg.** `CoreFocusEvents` (enterleave.c:1403-1425): `ToDescendant` sends `FocusOut(NotifyInferior)` on the old window (1200) and `FocusIn(NotifyAncestor)` on the new (1231), with `Virtual` FocusIns on intermediates (1203, 886-915); `ToAncestor` the mirror (1155, 1173); `NonLinear` → `Nonlinear` both sides (1070, 1115) plus `NonlinearVirtual` on the paths to the common ancestor (1074, 1087); `NotifyPointer` runs when the pointer window is under the old/new focus (1064-1069, 1112-1117).
+
+**Ours.** QueryOps.cpp:949 and 967 use detail 0 for both FocusOut(old) and FocusIn(new), regardless of relation; mode is never `WhileGrabbed` (xorg: events.c:4943).
+
+**Why it matters (bounded).** Xt's `XtSetKeyboardFocus` propagation (shell → VT widget) and AWT's frame → FocusProxy transfer are `ToDescendant` cases: they should see `Out(Inferior)` on the shell, `In(Ancestor)` on the child. Both toolkits demonstrably tolerate `Ancestor/Ancestor` today, and Chromium **[recollection]** only filters `NotifyInferior` (and grab modes) in `OnFocusEvent`, so `Ancestor` is accepted there too. Listed as Medium because it is the same one-helper fix as #1 and removes a latent trap for any client that does care (GTK2/Motif apps).
+
+**Fix.** Same helper as #1: `detail = focusDetail(oldFocus, newFocus)` per side; add `Virtual`/`NonlinearVirtual` on intermediates only if a client is found to need them (none of the named targets do).
+
+#### 5. Crossing detail / virtual events (Medium; theoretical for GTK3/Chromium)
+
+**xorg.** `CoreEnterLeaveEvents` (enterleave.c:538-553) → three cases (487-535, 431-481, 347-425) with `CommonAncestor` (216-222); intermediate windows get `Virtual`/`NonlinearVirtual` via `CoreEnterNotifies`/`CoreLeaveNotifies` (249-320) with `child` set to the subwindow on the path (279, 316); XI2 mirrors it without MPX suppression (556-586).
+
+**Ours.** `postMotion` (XProtoNotifyBridge.cpp:170-185) emits one Leave and one Enter; detail 0 and child None are hard-coded (EventOps.cpp:551, 557; 869, 872).
+
+**Assessment.** GTK3 and Chromium both put one X window per toplevel and hit-test client-side, so `Virtual`/`NonlinearVirtual` events would only ever be generated between *our* toplevels and the root — and xorg does not send events to the root for a non-linear move anyway (Case 9, 385-392). What they consume is `detail != NotifyInferior` **[recollection]**: GDK treats a `Leave` on the toplevel with `Inferior` as "pointer moved into a native child, still inside" and everything else as a real leave; Chromium's `OnCrossingEvent` returns early on `Inferior` and otherwise updates `has_pointer_`/`has_pointer_focus_` from the crossing's `focus` flag. Our `Ancestor` therefore passes through as a real crossing in both. For Xt/Xaw (xterm, xcalc) and AWT the wrong detail is real but has not shown symptoms; the Vivado hover/highlight paths work.
+
+**Fix (targeted).** In `postMotion` and the two ServerBridge handlers, compute `common = commonAncestor(prev, under)` with a parent walk (`WindowView::parent_xid`), then: if `prev` is an ancestor of `under` → `Leave(Inferior)` on `prev`, `Enter(Ancestor)` on `under`; reverse → `Leave(Ancestor)`/`Enter(Inferior)`; else `Leave(Nonlinear)`/`Enter(Nonlinear)`. Emit `Virtual`/`NonlinearVirtual` on intermediates only when the intermediate selected Enter/LeaveWindow (cheap once #6 exists). Both `sendCrossingEvent` and `sendXI2CrossingEvent` need a `detail` parameter; set `child` on virtual events to the next window down the path.
+
+#### 6/7. Mask gating of core crossings and focus (Medium)
+
+**xorg.** `CoreEnterLeaveEvent` computes `mask` from the window's own mask plus other clients' masks, or from the grab (events.c:4716-4723) and delivers only when `mask & GetEventFilter` (4745). `CoreFocusEvent` delivers through `DeliverEventsToWindow` with `FocusChangeMask` (4862-4863); `DeliverToWindowOwner` skips unselected events (2174-2176). There is no "always deliver to the focus target" rule.
+
+**Ours.** `sendCrossingEvent` (EventOps.cpp:532-601) never looks at `event_mask`; `sendFocusEventDirect` (634-662) skips `FocusChange` on purpose; `handleSetInputFocus`, `applyFocusRevert`, destroy/unmap and GrabKeyboard paths bypass it as well. The mask-checking `sendFocusEvent` (605-631) is dead code.
+
+**Why it matters.** Practically small — Xt, GDK, Chromium and AWT all select `FocusChange` and `EnterWindow|LeaveWindow` on their toplevels — but it produces unsolicited events for clients that deliberately did not select (e.g. AWT's XDND helper windows, xeyes), and it hides selection bugs elsewhere. Note the original motivation in CLAUDE.md ("emulate WM SetInputFocus") is satisfied by mask-gated delivery too: a WM calling `XSetInputFocus` on an xterm shell makes xorg deliver `FocusIn` only because the shell selected `FocusChangeMask`.
+
+**Fix.** Add `if (!(vw->event_mask & (is_enter ? EnterWindow : LeaveWindow))) return;` to `sendCrossingEvent` (constants at XEventMask.hpp:18-19), and collapse `sendFocusEventDirect` into `sendFocusEvent`. If a target is found to depend on the bypass, keep it behind an explicit flag rather than as the default.
+
+#### 8. Two-NSWindow crossing (Medium)
+
+**xorg.** Root is the common ancestor: `Leave(Nonlinear)` on A's sprite window, `NonlinearVirtual` up A's chain, `NonlinearVirtual` down B's chain, `Enter(Nonlinear)` on B's window (enterleave.c:371-424 / 573-585), all to whichever clients selected them per window.
+
+**Ours.** Delivery to both clients works: `sendEvent32`/`sendEventVariable` detect `owner_fd != client_fd_` and hand off to `XProtoDaemon::sendEventCrossClient[Variable]` with per-target sequence restamp (XProtoTransport.cpp:650-658, 685-691; XProtoDaemon.cpp:232-255, 279-293). Two defects remain: (a) `PointerEnter` picks the entered child using `ctx.input().win_x_u/win_y_u` and reports `ctx.input().root_x_u/root_y_u` (XProtoServerBridge.cpp:531-533, 544, 547) — these are the last motion coordinates from window **A**; the HostCmd's own `c.win_x_u/c.win_y_u` (populated by `x11_proto_bridge_post_enter`, 1600-1615) are ignored, so the Enter can target the wrong child of B and carry A-relative `event_x/y` (computeEventXYFromHostLocal fails because `last_xid` is still A and falls back to `win_x_u`, EventOps.cpp:564-567). (b) `PointerLeave` chooses `leaveWin = drag_xid || pointer_xid || host` (560-563) without checking that `pointer_xid` lies under `c.xid`; AppKit does not guarantee `mouseExited(A)` precedes `mouseEntered(B)` for overlapping windows, and when Enter(B) lands first `pointer_xid` already points into B, so the Leave is sent to B's window and A never gets one.
+
+**Fix.** In `PointerEnter` use `c.win_x_u/c.win_y_u` (and translate to root via the host's cached origin, `InputState::getHostOrigin`, InputState.hpp:56-62) and set `last_xid = host` before sending. In `PointerLeave`, if `topLevelAncestorOf(pointer_xid) != host`, derive the leave window from the host's last-known child (or send the Leave to `host` itself) and do not clear a `pointer_xid` that belongs to another host. Use detail `Nonlinear` (3) on both.
+
+#### 9/10. Grab-activation and during-grab crossings (Low–Medium)
+
+`ActivatePointerGrab` emits the crossing pair only when the sprite window differs from the grab window (events.c:1609-1611 and the `fromWin == toWin` early return at enterleave.c:602-603); `DeactivatePointerGrab` pairs `Leave(Ungrab)` on the grab window with `Enter(Ungrab)` on the window actually under the pointer (1688-1689). Ours sends `Enter(Grab)` unconditionally and only to the grab window (ExtensionOps.cpp:1610-1618), and `Leave(Ungrab)` only to the grab window (1632-1636). Minimal fix: compare `grab window` with `pointer_xid` and skip when equal; on ungrab, if `pointer_xid != grabWindow` also send `Enter(Ungrab)` to `pointer_xid`. Core `GrabPointer`/`UngrabPointer` (GrabOps.cpp:73-128) and passive/implicit grab activation (XProtoServerBridge.cpp:780-811) emit nothing; AWT ignores non-`NotifyNormal` crossings **[recollection]** and Xaw menus do not need them, so leave unless a client shows up.
+
+During an implicit drag within one host, `postMotion` skips crossing generation altogether (XProtoNotifyBridge.cpp:165). xorg keeps generating them and, for a grab, delivers to the grab client using the grab window's mask (events.c:4716-4720), so a pressed Xaw Command / GTK button that is dragged out receives `Leave`. Removing the `drag_xid == 0` term and instead restricting delivery to windows in the `drag_xid` client would match xorg.
+
+### Device hierarchy / DeviceChanged / Property (Low — analysis)
+
+**(a) DeviceChanged.** xorg emits `XI_DeviceChanged(reason=XISlaveSwitch)` from `UpdateFromMaster` whenever `master->last.slave != dev` (getevents.c:697-699) — i.e. once at first input, and again only when a *different* slave delivers. The event carries the slave's classes copied into the master (`ChangeMasterDeviceClasses`, Xi/exevents.c:790-792; wire in eventconvert.c:618-641) and is fanned out to every window selecting `XI_DeviceChangedMask` (744-759, `SendEventToAllWindows` 3289-3302). We advertise the identical ButtonClass + two ValuatorClass entries on master 2 and slave 6 with `sourceid = dev->id` (ExtensionOps.cpp:1440-1503, 1452/1466/1484), and sourceid is fixed at 6 (EventOps.cpp:734, 788, 867, 941). Chromium's `DeviceDataManagerX11` builds `valuator_lookup_` for every device id from `XIQueryDevice(XIAllDevices)` at startup and indexes it by the event's `sourceid` **[recollection, moderate-high confidence — the code comments on the master's classes tracking the last slave]**; GDK's `XI_DeviceChanged` handler re-translates classes for `deviceid` and resets scroll valuators, and looks up the source device by `sourceid` in its id table (7/6 exist). Since nothing ever changes, the absence is harmless. It becomes relevant only if we ever add a ScrollClass (smooth scrolling) or a second slave.
+
+**(b) HierarchyChanged.** Only emitted on device enable/disable/add/remove (devices.c:420, 519, 589, 1205) and in response to `XIChangeHierarchy` (xichangehierarchy.c:508). Our tree is static and `XIChangeHierarchy` is a void stub (ExtensionOps.cpp:1302-1307). Low; if the stub ever honours a request it must also emit the event.
+
+**(c) PropertyEvent.** `send_property_event` (xiproperty.c:185-210) fires on property change/delete. We expose no properties and stub the change requests (1665-1668), so nothing can change. Low.
+
+**(d) Consistency.** `ListInputDevices` returns 4 devices (1077-1083) while `XIQueryDevice` returns 6 (1388-1398); Chromium queries both (1063). Worth aligning so ids 6/7 classify consistently.
+
+**(e) KeyRepeat / XKB state (brief).** `XIKeyRepeat` is set from `key_repeat` (eventconvert.c:714-715); ours sends `flags = 0` (EventOps.cpp:828). macOS provides `NSEvent.isARepeat`, so a one-bit HostCmd field would fill it. Modifier/group state on crossings: xorg sets base/latched/locked (and, oddly, not effective) on XI Enter (events.c:4814-4822) and all four on focus (enterleave.c:810-819); ours sets base+effective on crossings (683-689) and zero on focus (915). Locked/latched are always 0 here (no XKB), which is consistent with our XKB-less key track.
+
+### Root-window and cross-client fan-out (crossing-specific consequence)
+
+xorg delivers a crossing to the owner and to every other client that selected it on that window (events.c:2341-2383), and an XI2 crossing to every `InputClients` entry using that client's own `xi2mask` (2203-2231, 2247-2263). Ours delivers to the owner only (XProtoTransport.cpp:644-663, 678-694) and keeps one `xi2_mask` per window that the last `XISelectEvents` overwrites (WindowTable.cpp:611-616), plus one global `xi2_root_mask` that is replaced, not merged (ExtensionOps.cpp:1340-1341). For crossings specifically this is Low: none of Electron, portal-GTK, AWT or xeyes selects Enter/Leave on a window it does not own, and no toolkit selects `XI_Enter/Leave` on root (GDK selects Hierarchy|DeviceChanged|Property on root, Chromium Hierarchy, xeyes RawMotion **[recollection]**). The replace-not-merge root mask does mean that opening a GTK dialog after xeyes wipes xeyes' `RawMotion` selection (and vice versa) — that belongs to the selection-storage track.
+
+### Verified-correct list
+
+- Crossing/focus **mode** values: `Normal=0/Grab=1/Ungrab=2` on core and XI2 (XI2.h:49-52); XIGrabDevice/XIUngrabDevice pass 1/2 (ExtensionOps.cpp:1614-1616, 1633-1635); GrabKeyboard/UngrabKeyboard focus events use `NotifyGrab`/`NotifyUngrab` (GrabOps.cpp:255, 265, 293, 305) matching events.c:1735/1782.
+- Core crossing flags byte: `bit0 = focus`, `bit1 = same_screen` (EventOps.cpp:576-591) matches `ELFlagFocus`/`ELFlagSameScreen` (events.c:4732-4743); the `focus` computation "event window is the focus window or an inferior" (580-591) mirrors `pWin == focus || IsParent(focus, pWin)` (4741-4742), including the root/PointerRoot case.
+- XI2 Enter/Leave wire layout: offsets 16 sourceid, 18 mode, 19 detail, 20/24/28 root/event/child, 32-44 FP16.16 coords, 48 same_screen, 49 focus, 50 buttons_len, 52 mods, 68 group (EventOps.cpp:862-884) match `xXIEnterEvent` (XI2proto.h:1013-1039); `buttons_len = 8` with a 32-byte trailing mask (XI2EventMask.hpp:69, 81-83) matches `bits_to_bytes(numButtons)` for `MAX_BUTTONS=256`; button bit numbering (bit N = button N, `xi2ButtonMask` 673-680) matches events.c:4809-4811.
+- XI2 crossing `deviceid = 2` (master pointer), `sourceid = 6` (real slave) (EventOps.cpp:865, 867) matches `mouse->id` / motion `sourceid` (events.c:4803-4804, 3214-3215); `xXIFocusInEvent` reuses the Enter layout (XI2proto.h:1042-1043) as ours does (EventOps.cpp:897-919).
+- XI2 crossing `event_x/event_y` relative to the event window and `child = None` for the leaf event (EventOps.cpp:851-857, 872) match `FixUpXI2DeviceEventFromWindow` (events.c:2602-2605) and the `None` child in `DeviceEnterLeaveEvents` (enterleave.c:560-584).
+- XI2 crossings gated by the window's XI2 selection (EventOps.cpp:843-848) mirrors `WindowXI2MaskIsset` (events.c:4842-4843), and XI2 delivery suppressing the core twin mirrors `DeliverDeviceEvents` ordering (documented at EventOps.hpp:126-134).  [SYNTHESIS NOTE: this last clause CONFLICTS with the delivery track's finding #9 — to be settled by reading DoEnterLeaveEvents directly.]
+- `from == to` short-circuit: `DoEnterLeaveEvents` returns early (enterleave.c:602-603); `postMotion` only emits when `under != prev` (XProtoNotifyBridge.cpp:171).
+- WM-initiated toplevel focus: `FocusIn/FocusOut(detail=NotifyNonlinear, mode=Normal)` from `sendFocusEventDirect` (EventOps.cpp:648-649) is the leaf event xorg generates for unrelated toplevels (`CoreFocusNonLinear`, enterleave.c:1070/1115); FocusOut to the previous holder precedes FocusIn to the new one (XProtoServerBridge.cpp:611-614 before 662-663), as in `CoreFocusNonLinear`.
+- Cross-client focus/crossing delivery reaches the other connection with a restamped sequence (XProtoDaemon.cpp:232-255, 279-293), so Vitis main ↔ GTK dialog transitions produce a FocusOut on one client and a FocusIn on the other, with XI2 twins on the Cocoa path (XProtoServerBridge.cpp:613, 663, 683).
+- Keyboard-grab focus choreography (leaf events): `FocusOut(old, Grab)` + `FocusIn(grab, Grab)` on GrabKeyboard, `FocusOut(grab, Ungrab)` + `FocusIn(focus, Ungrab)` on UngrabKeyboard (GrabOps.cpp:248-268, 283-308) match `ActivateKeyboardGrab`/`DeactivateKeyboardGrab` (events.c:1732-1735, 1772-1782) minus the XI2 twins (#3).
+- Focus revert honours the stored revert-to on destroy/unmap (WindowOps.cpp:47-74, 661-671, 1278-1288; `focus_revert_to` stored at QueryOps.cpp:976) in the same spirit as events.c:5912-5946 (parent walk to the nearest mapped ancestor, revert-to reset to None after a parent revert at 5937 / WindowOps.cpp:59).
+- No `DeviceChanged` is required for correctness given identical, static master/slave classes and a constant `sourceid` (analysis above); `HierarchyChanged`/`PropertyEvent` cannot be triggered by anything we implement.
+
+
+# Appendix D — Event wire formats
+
+## Event Wire Formats
+
+**Path key** (all line numbers below were read in this pass):
+
+| Key | File |
+|---|---|
+| `EO` | `/Users/lkg/Documents/Vivado/SwiftX11/.claude/worktrees/clipboard-and-vlm-fixes/macos/X11LowLevel/cpp/X11Protocol/src/Ops/EventOps.cpp` |
+| `XM` | `…/X11Protocol/include/Core/XI2EventMask.hpp` |
+| `MOD` | `…/X11Protocol/include/Core/X11Modifiers.hpp` |
+| `IS` | `…/X11Protocol/include/Core/InputState.hpp` |
+| `SB` | `…/X11Protocol/src/XProtoServerBridge.cpp` |
+| `NB` | `…/X11Protocol/src/XProtoNotifyBridge.cpp` |
+| `XT` | `…/X11Protocol/src/Transport/XProtoTransport.cpp` |
+| `XD` | `…/X11Protocol/src/Transport/XProtoDaemon.cpp` |
+| `XO` | `…/X11Protocol/src/Ops/ExtensionOps.cpp` |
+| `QO` | `…/X11Protocol/src/Ops/QueryOps.cpp` |
+| `WH` | `…/macos/SwiftX11/UI/Windows/X11WindowHost.swift` |
+| `GPT` | `…/macos/SwiftX11/Core/GlobalPointerTracker.swift` |
+| `ec` | `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/dix/eventconvert.c` |
+| `ev` | `xorg-server/dix/events.c` |
+| `el` | `xorg-server/dix/enterleave.c` |
+| `ge` | `xorg-server/dix/getevents.c` |
+| `iu` | `xorg-server/dix/inpututils.c` |
+| `xe` | `xorg-server/Xi/exevents.c` |
+| `mq` | `xorg-server/mi/mieq.c` |
+| `dp` | `xorg-server/dix/dispatch.c` |
+| `xa` | `xorg-server/xkb/xkbActions.c` |
+| `P` | `/opt/X11/include/X11/extensions/XI2proto.h` |
+| `H` | `/opt/X11/include/X11/extensions/XI2.h` |
+
+Client-side facts (Chromium `main`, GTK `gtk-3-24`) were fetched from the public repos on 2026-09-04 and are marked *(fetched)*; they are summaries, not line-cited.
+
+### Summary
+
+- **The byte layouts are correct.** Every field offset, the four sizes/`length` values (136/26, 120/22, 104/18, 68/9), `type=35`, `extension=141` (= advertised major, `QO:638`), `buttons_len=8`, `valuators_len=2`, FP1616/FP3232 encodings, the button-mask bit numbering (bit N = button N) and the *state-before-event* button semantics all match `ec:665-745` / `ev:4775-4850` / `el:776-829`. No Critical wire-format defect was found; nothing here explains an Electron crash on its own.
+- **Highest-impact delivery gap: RawMotion is routed to the owner of `GlobalPointerTracker.activeXid`, not to the clients that selected `XI_RawMotion` on root** (`EO:922-955` → `XT:685-691` → `XD:279-293`; `GPT:22-30,85`). xorg delivers raw events to every root selector (`ev:2464-2488`). With xterm active and xeyes running, xeyes starves and xterm receives unsolicited GenericEvents.
+- **State fed to motion during active pointer grabs is wrong**: `GlobalPointerTracker` ticks at 30 Hz with `buttons=0, mods=0` and *stale* window-local coords (`GPT:83-85`), and `postMotion` lets them through whenever a `GrabPointer` is active (`NB:102-108`). XI2 button mask / `mods` / `event_x` then alternate between correct and empty at 30 Hz.
+- **Flags never set**: `XIKeyRepeat` is never set on autorepeat `KeyPress` (`EO:828`; Swift posts every macOS repeat as a fresh press, `WH:1228-1235`); xorg sets it (`ec:714-715`, `xa:924-925`) and Chromium derives `is_repeat` from it *(fetched)*.
+- **Semantic fields we hard-code**: crossing/focus `detail` always `NotifyAncestor` (`EO:869,907`) vs xorg's computed Ancestor/Inferior/Nonlinear/Virtual (`el:556-586`, `el:1428-1550`); XI2 crossing `focus` always 0 while the core sender computes it (`EO:878` vs `EO:580-591`); XI2 focus `sourceid=7` where xorg uses the keyboard's own id (`el:801`); key events carry no button mask / coords (`EO:831-832`) where xorg does (`iu:784-786`, `xe:1860-1862`).
+- **Never emitted**: `XI_DeviceChanged`, `XI_HierarchyChanged`, `XI_PropertyEvent`, `RawKey*`, `RawButton*`. Chromium selects Hierarchy+DeviceChanged and GTK3 selects Hierarchy+DeviceChanged+Property on root *(fetched)*; with a static 2-master/2-slave topology this is a spec gap, not a functional one today.
+
+### Per-event field diff tables
+
+#### 1. `xXIDeviceEvent` — XI_Motion / XI_ButtonPress / XI_ButtonRelease (`P:959-984`)
+
+| Field (offset) | xorg value/semantics | SwiftX11 value | Match? | Severity |
+|---|---|---|---|---|
+| type (0) | `GenericEvent` (`ec:687`) | 35 (`EO:717,771`) | ✓ | — |
+| extension (1) | `IReqCode` = XI major (`ec:688`) | `ext::kXInput2`=141 (`EO:718,772`), same value QueryExtension advertises (`QO:637-638`) | ✓ | — |
+| sequenceNumber (2) | `pClient->sequence` = seq of last request read from *that* client (`ev:6082-6084`, `dp:522`) | `transport().lastSeq()` (`EO:719,773`), set per dispatched request (`XD:846-847`, `XT:67-74`); restamped with target's `lastSeq()` on cross-client send (`XD:288-292`) | ✓ | — |
+| length (4) | `bytes_to_int32(len-32)`; len = 80+32+8+2×8 = 136 → 26 (`ec:677-683,691`) | 26 (`XM:74-75`, `EO:720,774`) | ✓ | — |
+| evtype (8) | `GetXI2Type` 6/4/5 (`ec:1001-1009`) | 6/4/5 (`XM:17-19`, `EO:721,775`) | ✓ | — |
+| deviceid (10) | Master copy: master id (`mq:322,423-424`); slave copy: slave id. Client selecting `XIAllMasterDevices` gets only the master copy (`iu:1153-1165`); a client selecting `XIAllDevices` or the slave's id also gets the slave copy (`mq:502-508`) | always 2 (`EO:722,776`). `XISelectEvents` discards `deviceid` and merges all masks (`XO:1328-1336`) | ✓ for XIAllMasterDevices selectors (GTK3, Chromium pointer/key *(fetched)*); ✗ for slave-id / XIAllDevices selectors | Low |
+| time (12) | `ev->time` (ms) (`ec:690`) | `x11_now_ms_monotonic()` (`EO:723,777`) | ✓ | — |
+| detail (16) | 0 for motion (`ge:1469`); mapped button `b->map[key]` (`xe:1916,1926`) | 0 / `button` (`EO:724,778`) | ✓ (identity map) | — |
+| root (20) | root id (`ev:2594`) | 1 (`EO:725,779`) | ✓ | — |
+| event (24) | `pWin` (`ev:2595`) | `wid` (`EO:726,780`) | ✓ | — |
+| child (28) | immediate child of `event` on the propagation path (`ev:2898`, `ev:2826`, `ev:2605`; `FindChildForEvent` `ev:2563-2588`) | Button: computed exactly that way in the bridge (`SB:910-922`, passed `EO:781`). **Motion: always 0** (`EO:727`) | Button ✓ / Motion ✗ | Low |
+| root_x/root_y (32/36) | `double_to_fp1616(root_x+frac)` = pixman fixed (`ec:702-703`, `iu:1044-1046`); per-screen coords (`ge:1484`) | `(uint32_t)(root_x << 16)` (`EO:728-729,782-783`). Arithmetically correct incl. negatives (two's complement ×65536) but left-shifting a negative `int32_t` is UB pre-C++20 | ✓ (nit) | Low |
+| event_x/event_y (40/44) | `root_x − fp1616(window.x)` (`ev:2603-2604`) | host-local walk / root walk → `<<16` (`EO:709-714,730-731`) | ✓ | — |
+| buttons_len (48) | `bytes_to_int32(bits_to_bytes(256))` = 8 (`ec:677,698`) | 8 (`XM:69`, `EO:732,786`) | ✓ | — |
+| valuators_len (50) | `bytes_to_int32(bits_to_bytes(36))` = 2 (`ec:682,699`) | 2 (`XM:70`, `EO:733,787`) | ✓ | — |
+| sourceid (52) | originating slave id (`ec:701`; `iu:744-745`) | 6 (`EO:734,788`); 6 is advertised as SlavePointer attached to 2 with Button+Valuator(0,1) classes (`XO:1396,1424,1441-1495`) — Chromium indexes `valuator_lookup_[sourceid]` *(fetched)* | ✓ | — |
+| flags (56) | `ev->flags` (`XIPointerEmulated` only for scroll-valuator-emulated buttons `ge:1486-1487,1691`) \| `XIKeyRepeat` (`ec:712-715`) | 0 (`EO:736,789`) | ✓ (no smooth-scroll axes advertised, so button 4/5 are genuine) | — |
+| mods.base/latched/locked/effective (60-75) | XKB `state` (`iu:798-803`); pointer events use *current* state; `effective = mods` | `fillXI2Mods`: base=effective=`toX11State(0,mods)&0xFF`, latched=locked=0 (`EO:683-689`). CapsLock lands in base instead of locked (`MOD:28`) | ✓ functionally (GTK/Chromium read `effective` only *(fetched)*) | Low |
+| group (76-79) | XKB group state (`iu:805-808`) | 0,0,0,0 (`EO:692-694`) | ✓ (single-group keymap) | — |
+| button mask (80, 32 B) | bit i set for every button i with `down` bit set (`iu:784-786`, `ec:729-732`), where `down[button]` indexes by button number (`ge:93-96`). Filled by `event_set_state` **before** `UpdateDeviceState` (`xe:1841-1843`) → press excludes the pressed button, release includes it | `xi2ButtonMask`: internal bit (n−1) → wire bit n (`EO:673-680`). Fed `buttonsBefore` for press/release (`SB:807,946`); scroll press `input().buttons`, release `buttons\|wheelMask` (`SB:1010,1019-1023`); motion fed Swift's live mask (`NB:344`, `WH:1056`) | ✓ | — |
+| button mask, buttons 6-7 | included when held | `xi2ButtonMask`/`toX11State` loop only buttons 1-5 (`EO:675`, `MOD:35`) | ✗ | Low |
+| valuator mask (112, 8 B) | bit per set axis (`ec:736-738`) | 0x03 (`EO:741,794`) | ✓ | — |
+| axisvalues (120, FP3232×2) | `double_to_fp3232(data[i])` (`ec:739`, `iu:1050-1064`); values are in device coords (relative delta for a relative device, `ge:1445-1446`) | integral=root_x/root_y, frac=0 (`EO:742-743,795-796`); consistent with the *Absolute* [0,screen] axes we advertise (`XO:1471-1476`) | ✓ (self-consistent) | Low (root_x can be <0 on multi-monitor while advertised min=0) |
+
+#### 2. `xXIDeviceEvent` — XI_KeyPress / XI_KeyRelease
+
+| Field (offset) | xorg value/semantics | SwiftX11 value | Match? | Severity |
+|---|---|---|---|---|
+| header/length/evtype | 80+32+8 = 120 → 22 (`ec:668-683`; key events set no valuators) | 120/22 (`XM:78-79`, `EO:812-817`) | ✓ | — |
+| deviceid (10) | master keyboard for XIAllMasterDevices selectors (`mq:406-408,423-424`) | 3 (`EO:818`) | ✓ | — |
+| detail (16) | keycode | keycode (`EO:820`) | ✓ | — |
+| child (28) | sprite child relative to focus window (via `FixUpEventFromWindow`, not read in detail) | 0 (`EO:823`) | ✗ | Low |
+| root_x/y, event_x/y (32-47) | sprite position at key time (`xe:1860-1862`, `ev:2603-2604`) | 0 (`EO:824`) | ✗ | Low |
+| buttons_len / valuators_len | 8 / 2 | 8 / 2 (`EO:825-826`) | ✓ | — |
+| sourceid (52) | slave keyboard | 7 (`EO:827`), advertised with KeyClass (`XO:1397,1506-1519`) | ✓ | — |
+| flags (56) | `XIKeyRepeat` when `ev->key_repeat` (`ec:714-715`; set by XKB autorepeat `xa:924-925`) | always 0 (`EO:828`); Swift re-posts every macOS repeat as a press with no repeat marker (`WH:1228-1235`; no `isARepeat` use in file) | ✗ | **Medium** (Chromium reads `flags & KeyRepeat` → `is_repeat` *(fetched)*; GTK3 ignores it *(fetched)*) |
+| mods (60-75) | **`prev_state`** for key events — state *before* the key (`iu:794-796`) | `c.modsMask` = macOS flags *after* the change (`SB:1058,1087,1139`; `WH:1224` uses `mods(newFlags)`) → Shift press carries Shift set, Shift release carries it clear | ✗ | Medium |
+| button mask (80) | paired master pointer's held buttons (`iu:784-786`; `mouse = GetMaster(...)` `xe:1834`) | all zero (`EO:831-832`) | ✗ | Low |
+| valuator mask (112) | empty | empty (`EO:831`) | ✓ | — |
+
+#### 3. `xXIEnterEvent` — XI_Enter / XI_Leave (`P:1013-1039`; xorg builder `ev:4775-4850`)
+
+| Field (offset) | xorg value/semantics | SwiftX11 value | Match? | Severity |
+|---|---|---|---|---|
+| length (4) | `(72 + btlen*4 − 32)/4` with `btlen = bytes_to_int32(bits_to_bytes(numButtons))` — typically **1** → length 11 (`ev:4791-4793,4799`) | 18 with buttons_len 8 (`XM:82-83`, `EO:863`) | ✗ (protocol-valid: libXi walks `buttons_len`) | Low |
+| deviceid (10) | `mouse->id` = master pointer (`ev:4803`) | 2 (`EO:865`) | ✓ | — |
+| sourceid (16) | originating slave (`ev:4804`; from `ev:3212-3215`) | 6 (`EO:867`) | ✓ | — |
+| mode (18) | Normal/Grab/Ungrab/WhileGrabbed/PassiveGrab/PassiveUngrab (`H:49-54`); Leave suppressed on PassiveGrab, Enter on PassiveUngrab (`ev:4787-4789`) | 0/1/2 passed from callers (`EO:868`) | ✓ (never emits 3-5) | Low |
+| detail (19) | computed: Ancestor/Inferior/Nonlinear + Virtual/NonlinearVirtual on intermediates (`el:556-586`, `H:57-64`) | always 0 = Ancestor (`EO:869`) | ✗ (correct only for root→toplevel entry; wrong for sibling↔sibling, child↔parent) | Medium |
+| root/event/child (20-31) | root; pWin; **child always None** (`ev:4829-4830` passes `None`, no later assignment) | 1 / wid / 0 (`EO:870-872`) | ✓ | — |
+| root_x/y (32/36) | fp1616(sprite hot) (`ev:4806-4807`) | `root_x<<16` (`EO:873-874`) | ✓ | — |
+| event_x/y (40/44) | `root − window.x` (`ev:2603-2604`) | walk (`EO:851-857,875-876`) | ✓ | — |
+| same_screen (48) | `hot.pScreen == pWin.pScreen` (`ev:2613-2616`) | 1 (`EO:877`) | ✓ | — |
+| focus (49) | TRUE if pWin is focus, focus==PointerRoot, or focus is ancestor of pWin (`ev:4824-4827`) | 0 (`EO:878`). Core sender computes it (`EO:580-591`) | ✗ (core/XI2 inconsistent; GTK copies `xev->focus` *(fetched)*) | Low |
+| buttons_len (50) | typically 1 (`ev:4791-4792`) | 8 (`EO:879`) | ✗ | Low |
+| mods (52-67) | base/latched/locked from master kbd XKB state; **effective left 0** (`ev:4815-4817`) | base=effective=mods, others 0 (`EO:880`) | differs, harmless (ours is arguably better for GTK, which reads `effective` *(fetched)*) | Low |
+| group (68-71) | base/latched/locked; effective 0 (`ev:4819-4821`) | 0 (`EO:881`) | ✓ | — |
+| button mask (72) | current `mouse->button->down` bits (`ev:4809-4811`) | `input().buttons` / Swift live mask (`EO:884`; `SB:545,574`; `NB:174,180`) | ✓ | — |
+
+#### 4. `xXIEnterEvent` — XI_FocusIn / XI_FocusOut (xorg builder `el:776-845`)
+
+| Field (offset) | xorg value/semantics | SwiftX11 value | Match? | Severity |
+|---|---|---|---|---|
+| length (4) | `sizeof + btlen*4` with `btlen` from paired pointer's `numButtons` (`el:788-790,796`) → typically 11 | 18 (`EO:901`) | ✗ (valid) | Low |
+| deviceid (10) | `dev->id` = keyboard (`el:800`) | 3 (`EO:903`) | ✓ | — |
+| sourceid (16) | **`dev->id`** — "a device doesn't change focus by itself" (`el:801`) | 7 (`EO:905`) | ✗ | Low |
+| mode (18) | from `DoFocusEvents` (Normal/Grab/Ungrab/WhileGrabbed) (`el:1428-1550`, `el:1559-1566`) | 0 (`EO:906`) | ✗ | Medium |
+| detail (19) | Nonlinear for unrelated windows, Ancestor/Inferior/Virtual/Pointer/PointerRoot/DetailNone per `el:1447-1549` | 0 = Ancestor (`EO:907`); **core focus sender says 3 = Nonlinear** (`EO:618,648`) | ✗, and core/XI2 disagree | Medium |
+| root_x/y (32/36) | paired pointer sprite (`el:803-804`) | 0 (`EO:911`) | ✗ | Low |
+| event_x/y (40/44) | via `FixUpEventFromWindow` (`el:822-823`) | 0 | ✗ | Low |
+| child (28) | None (`el:822-823`) | 0 (`EO:910`) | ✓ | — |
+| same_screen (48) | computed (`ev:2613-2616`) | 1 (`EO:912`) | ✓ | — |
+| focus (49) | **not set** (calloc → 0) (`el:792`, no assignment) | 1 (`EO:913`) | ✗ | Low |
+| buttons_len (50) | typically 1 | 8 (`EO:914`) | ✗ (valid) | Low |
+| mods (52-67) | keyboard XKB state incl. effective (`el:811-814`) | all 0 (`EO:915`) | ✗ | Low |
+| group (68-71) | XKB group (`el:816-819`) | 0 | ✓ (single group) | — |
+| button mask (72) | paired pointer held buttons, via `map[]` (`el:806-808`) | all 0 (`EO:917`) | ✗ | Low |
+
+#### 5. `xXIRawEvent` — XI_RawMotion (`P:992-1007`; xorg builder `ec:768-810`)
+
+| Field (offset) | xorg value/semantics | SwiftX11 value | Match? | Severity |
+|---|---|---|---|---|
+| length (4) | 32 + `valuators_len*4` + nvals×8×2; with valuators_len 2 and 2 axes → 72 → **10** (`ec:777-781,789`) | 68 → 9 with valuators_len 1 (`XM:92-93`, `EO:936,942`) | ✗ (protocol-valid) | Low |
+| evtype (8) | 17 (`ec:1040-1041`) | 17 (`EO:937`) | ✓ | — |
+| deviceid (10) | slave copy = slave id, master copy = master id, both processed (`mq:331-339`, `mq:502-508`) | 2 (`EO:938`) = master copy | ✓ for XIAllMasterDevices root selectors; XIAllDevices selectors would get two events in xorg | Low |
+| time/detail (12/16) | ms; `detail.button` = 0 for motion (`ge:207`, `ec:790`) | ms / 0 (`EO:939-940`) | ✓ | — |
+| sourceid (20) | slave (`ec:792`) | 6 (`EO:941`) | ✓ | — |
+| valuators_len (22) | 2 (`ec:780,793`) | 1 (`EO:942`) | ✗ | Low |
+| flags (24) | `XIPointerEmulated` only for emulated scroll (`ge:1390-1391`) | 0 (`EO:943`) | ✓ | — |
+| valuator mask (32) | set bits (`ec:799-801`) | 0x03 (`EO:947`) | ✓ | — |
+| values then raw_values | **order: `values` (accelerated) first, then `raw_values` (unaccelerated)** (`ec:797-798,802-803`); relative device → deltas (`ge:1393,1410,1418`; `ge:211-232`) | all zero; the comment labels the first block `raw_values` (`EO:948-951`) — reversed relative to xorg | ✗ (no wire effect while zero; the comment will mislead the fix) | Low |
+| Delivery | every client selecting on any root, plus grab owner (`ev:2459-2488`); never to non-root windows (`ev:2676-2689`) | gated by global `xi2_root_mask` (`EO:924`) but **sent to the owner of `wid` = `GlobalPointerTracker.activeXid`** (`NB:94-95`; `GPT:22-30,85`; `XT:683-691`; `XD:279-293`) | ✗ | **High** |
+
+#### 6. Events xorg emits that SwiftX11 never sends
+
+| Event | xorg | SwiftX11 | Severity | Who cares |
+|---|---|---|---|---|
+| XI_RawButtonPress/Release, XI_RawKeyPress/Release | `ge:1383-1394` (raw event per pointer event), `ec:290-298` | never | Low | Chromium root selection is Hierarchy+DeviceChanged only; GTK3 selects no raw events; xeyes selects RawMotion *(fetched)* |
+| XI_DeviceChanged (`P:914-930`) | `ec:570-646`; emitted on slave switch via `UpdateFromMaster` (`ge:1641-1642`, `ge:253-275`) | never | Low today (one permanent slave per master; classes never change) | Chromium re-reads valuator classes from it; GTK3 selects it *(fetched)* |
+| XI_HierarchyChanged (`P:892-909`) | on device add/remove | never (static topology) | Low | Chromium/GTK3 select it *(fetched)* |
+| XI_PropertyEvent (`P:1049-1066`) | on device property change | never | Low | GTK3 selects it *(fetched)* |
+
+### Findings table (consolidated gaps)
+
+| # | Aspect | xorg | SwiftX11 | Gap | Severity | Affects |
+|---|---|---|---|---|---|---|
+| 1 | RawMotion delivery target | all root selectors, any client (`ev:2464-2488`) | owner of `activeXid` via cross-client send (`EO:922-955`, `NB:94-95`, `GPT:85`, `XT:685-691`, `XD:279-293`) | wrong client receives it; selecting client starves | High | xeyes (+ any non-XI2 client gets stray GenericEvents) |
+| 2 | Motion state during active grab | button/mod state and coords come from the device at event time (`xe:1840-1841,1860-1862`) | `GlobalPointerTracker` ticks pass `buttons=0, mods=0`, stale `winX/winY` (`GPT:83-85`); admitted by `NB:102-108` when a `GrabPointer` is active; feed `EO:698-747` and `IS:88` | XI2 button mask/mods and event_x flip-flop at 30 Hz during grabbed drags | High (only while a pointer grab is active) | GTK3 menus/combos, any grab-driven drag |
+| 3 | `XIKeyRepeat` | set on autorepeat (`ec:714-715`, `xa:924-925`) | never (`EO:828`; repeats posted as plain presses `WH:1228-1235`) | repeat undetectable via flags | Medium | Chromium/Electron (`is_repeat` *(fetched)*) |
+| 4 | Key-event `mods` timing | `prev_state` (before) (`iu:794-796`) | after-state from macOS (`WH:1224,1233,1239`; `SB:1058`) | Shift press carries Shift; Shift release doesn't | Medium | Chromium normalises modifier keys itself; GTK3 sees off-by-one state on modifier keys |
+| 5 | Crossing `detail` | computed (`el:556-586`) | always Ancestor (`EO:869`; core `EO:551` same) | sibling crossings should be Nonlinear, child→parent Ancestor/Inferior | Medium | GTK3 widget hover logic keys on `NotifyInferior`; scroll-valuator reset gated on `detail != Inferior` *(fetched)* |
+| 6 | Focus `mode`/`detail` | computed (`el:1428-1550`) | XI2 0/Ancestor (`EO:906-907`), core 0/Nonlinear (`EO:618,648`) — inconsistent | GTK's core focus handler branches on detail; ours never emits Grab/Ungrab modes | Medium | GTK3 dialogs (benign today because HAS_FOCUS ORs the flags *(fetched)*) |
+| 7 | XI2 Focus also gets core FocusIn regardless of mask | core FocusIn only to `FocusChangeMask` selectors; XI2 to XI2 selectors (`el:825-826`, `el:605-607` pattern) | `sendXI2FocusEvent` has no "own" return; `sendFocusEventDirect` always sent too (`SB:612-613,662-663,682-683`) | double focus events to XI2-only clients | Low | GTK3 (idempotent) |
+| 8 | XISelectEvents ignores `deviceid` and client identity | per-device, per-client masks (`iu:1153-1165`) | merged mask per window, root mask global (`XO:1326-1344`, `IS:45`) | slave-id selectors get `deviceid=2`; XIAllDevices selectors get one copy not two; second client's XISelectEvents clobbers the first | Low (wire) / Medium (delivery) | multi-client XI2 |
+| 9 | Key events: button mask & coords | paired pointer buttons (`iu:784-786`), sprite coords (`xe:1860-1862`) | zeros (`EO:824,831-832`) | state incomplete | Low | GTK3 key `state` loses button bits |
+| 10 | XI2 Motion `child` | propagation child (`ev:2898,2605`) | 0 (`EO:727`) | — | Low | toolkits rarely use it |
+| 11 | Focus `sourceid` | keyboard id (`el:801`) | 7 (`EO:905`) | — | Low | none known |
+| 12 | Enter/Focus `buttons_len` | `bits_to_bytes(numButtons)` → 1 (`ev:4791-4792`, `el:788-789`) | 8 (`EO:879,914`) | valid but 28 B larger than xorg | Low | none |
+| 13 | Raw event `valuators_len` / values order / zero deltas | 2; values then raw; real deltas (`ec:780,797-803`) | 1; comment reversed; zeros (`EO:942,948-951`) | fine while xeyes only uses it as a trigger | Low | delta-consuming raw clients |
+| 14 | Enter `focus` flag | computed (`ev:4824-4827`) | 0 (`EO:878`); core computes (`EO:580-591`) | core/XI2 inconsistent | Low | GTK copies it *(fetched)* |
+| 15 | CapsLock placement | locked_mods (XKB) | base_mods (`MOD:28`, `EO:684-688`) | effective identical | Low | none |
+| 16 | Buttons 6/7 in masks | included | dropped (`EO:675`, `MOD:35`) | — | Low | horizontal-scroll state |
+| 17 | FP1616 shift on negative `int32_t` | `pixman_double_to_fixed` (`iu:1044-1046`) | `root_x << 16` (`EO:728-729`) | UB pre-C++20, value correct | Low | — |
+| 18 | DeviceChanged/Hierarchy/Property/RawKey/RawButton | emitted (`ec:570-646`, `ge:1383-1394`) | never | spec gap | Low | none functionally today |
+
+### Details
+
+**#1 RawMotion delivery.** xorg: `DeliverRawEvent` converts once, then for each screen root calls `GetClientsForDelivery(device, root, …)` and delivers to every `InputClients` entry that selected the raw type on root (`ev:2464-2488`), independent of which window is under the pointer. Ours: `sendXI2RawMotionEvent(ctx, host_xid)` checks the (global) root mask then hands the buffer to `sendEventVariable(wid=host_xid)` (`EO:924-954`), which routes to the *owner of that window* (`XT:683-691` → `XD:279-293`). `host_xid` here is `GlobalPointerTracker.activeXid` (`NB:94-95`, `GPT:85`) — a single "active" top-level, not the selecting client. Consequence: xeyes only receives RawMotion while its own window is `activeXid`; whoever else is active gets GenericEvents it never selected (Xlib drops them when no cookie handler is registered, but it is a misroute, not a spec-gap). Minimal fix: give `XI2 root` selections per-client storage (a `fd → root xi2 mask` map alongside `IS:45`), and add `XProtoDaemon::sendRawEventToRootSelectors(buf,len)` that iterates clients whose root mask has `kRawMotionMask`, restamping seq per target exactly as `sendEventToSelectors` does (`XD:260-277`). Mirror `DeliverRawEvent` (`ev:2445-2492`).
+
+**#2 Motion state during active grabs.** xorg fills `buttons`/`mods` from the device immediately before delivery (`xe:1840-1841`) and root coords from the sprite (`xe:1860-1862`). Ours: `GlobalPointerTracker.tickGlobalPointer` posts `x11_post_pointer_move2(activeXid, winX, winY, rootX, rootY, deliver=0, 0, 0)` with `lastWinXY` cached from some earlier event (`GPT:83-85`). `postMotion` returns early for `deliver=0` **unless** an active `GrabPointer` exists (`NB:102-108`); in that case it proceeds to `sendXI2MotionEvent(…, buttons=0, mods=0)` (`NB:344`) — so during a grab the XI2 button mask/`mods.effective` are empty on every 30 Hz tick, interleaved with correct events from `X11WindowHost.mouseDragged` (`WH:1056`), and `event_x/event_y` are derived from the stale `win_x_u` while `root_x` is fresh. (`updateMotion` also overwrites `mods` with 0, `IS:88`.) Minimal fix: in `postMotion` (or the bridge `SB:515-521`), when `deliver==0` substitute `ctx.input().buttons` / `ctx.input().mods` for the zeros and recompute `win_x/win_y` from `root − hostOrigins[host]` (`IS:52-62`) before calling the senders; or have `GPT` pass `UInt32.max` sentinel values that the bridge resolves.
+
+**#3 XIKeyRepeat.** xorg sets `xde->flags |= XIKeyRepeat` when the internal event carries `key_repeat` (`ec:714-715`), which XKB autorepeat sets (`xa:924-925`). Chromium computes `is_repeat = flags & KeyRepeat` *(fetched)*. We always write 0 (`EO:828`) and Swift posts every macOS repeat as a fresh press (`WH:1228-1235`). Minimal fix: add an `is_repeat` parameter to `x11_post_key_event` (from `NSEvent.isARepeat`), carry it in the host command, and in `sendXI2KeyEvent` write `wire::wr32_le(buf+56, is_repeat ? (1u<<16) : 0)` (`XIKeyRepeat` = `H:159`). The core path should then also mirror xorg's detectable-autorepeat behaviour (`ev:2068-2078`), but that is core-side.
+
+**#5/#6 Crossing and focus detail/mode.** xorg derives `detail` from the from/to relationship (`el:559-585`: Inferior/Virtual/Ancestor when nested, Nonlinear/NonlinearVirtual otherwise) and passes the real `mode`; focus follows the same shape (`el:1447-1549`), with `NotifyGrab/Ungrab` for grabs. We hard-code Ancestor for XI2 crossing and focus (`EO:869,907`) while the core focus sender hard-codes Nonlinear (`EO:618,648`), so a client selecting both core and XI2 focus sees contradictory details. GTK3's core focus handler branches on detail and ignores Grab/Ungrab/WhileGrabbed modes *(fetched)*; with Ancestor it also toggles `has_pointer_focus` when the pointer is inside. Minimal fix: compute `detail` once in the caller from the (prev, next) pair using the parent-chain snapshots already available (`IsParent`-style walk as in `EO:580-591`): `prev` ancestor of `next` → Leave(Inferior)/Enter(Ancestor); reverse → Leave(Ancestor)/Enter(Inferior); else Nonlinear on both; pass the same value to core and XI2 senders. Add a `detail` argument to `sendXI2FocusEvent`/`sendFocusEventDirect` and use Nonlinear for host-to-host focus changes, mirroring `DeviceFocusEvent(dev, type, mode, detail, pWin)` (`el:777`).
+
+### Verified-correct list
+
+- GenericEvent header for all four senders: `type=35`, `extension=141` = advertised major (`EO:717-718`, `QO:637-638`, `ec:687-688`); sequence = last request seq of the receiving client, restamped on cross-client sends (`EO:719`, `XD:288-292` ↔ `ev:6084`, `dp:522`).
+- `length` arithmetic for every size: 136→26, 120→22, 104→18, 68→9 (`XM:74-93`) — each equals `(size−32)/4` and the device/key sizes equal xorg's 80+32+8(+16) (`ec:677-683`).
+- The monotonic sequence floor does not touch GenericEvent tails: a whole event goes through one `sendAll`, bytes 2-3 are only rewritten on the 32-byte header and the tail is sent verbatim (`XT:286-317`); payload tracking is reply-only (`XT:319-325,334-339`).
+- `evtype` values 2-10, 13-17 and mask bits `1<<type` (`XM:15-47` ↔ `H`, `ec:1001-1057`).
+- `deviceid` = master (2/3) with `sourceid` = real slave (6/7) is exactly xorg's master copy (`mq:422-424`, `iu:744-745`), which is what XIAllMasterDevices selectors (GTK3 per-window, Chromium pointer/key *(fetched)*) receive; 6/7 are advertised in XIQueryDevice with Button+Valuator / Key classes (`XO:1396-1397,1441-1519`).
+- `detail`: 0 for motion, button number for buttons, keycode for keys (`EO:724,778,820` ↔ `ge:1469`, `xe:1916`).
+- Button `child` computed as the immediate child of the event window on the propagation path (`SB:910-922` ↔ `ev:2563-2588,2898`); XI2 crossing `child` = None in both (`EO:872` ↔ `ev:4829-4830`).
+- FP1616 `root_x/root_y/event_x/event_y` including negative multi-monitor coordinates; `event_x = root_x − window abs x` via the hierarchy walk (`EO:70-131,728-731` ↔ `ev:2603-2604`, `iu:1044-1046`).
+- `buttons_len=8`, `valuators_len=2`, valuator mask 0x03, FP3232 layout (integral, frac) for device events (`EO:732-733,741-743` ↔ `ec:677-683,735-741`, `P:112-115`).
+- Button-mask bit numbering (bit N = button N, `EO:673-680` ↔ `iu:784-786`, `ge:93-96`; GTK iterates from bit 1, Chromium `IsXinputMaskSet(i)` *(fetched)*) and the *state-before-event* rule on press/release (`SB:807,946` ↔ `xe:1841-1843`), including scroll press/release masks (`SB:1010,1019-1023`).
+- `mods.effective == base|latched|locked` (`EO:685-688` ↔ `iu:800-803`); group all-zero for a single-group keymap.
+- `flags=0` on pointer events is right for a device without scroll valuators (xorg only marks `XIPointerEmulated` for valuator-derived button 4-7, `ge:1684-1691,1486-1487`).
+- Enter/Leave: `mode` values 0/1/2 (`EO:868` ↔ `H:49-51`), `same_screen=1` (`ev:2615-2616`), button mask = current state (`EO:884` ↔ `ev:4809-4811`).
+- RawMotion: `detail=0`, `flags=0`, layout `mask → values → raw` structurally (`EO:932-947` ↔ `ec:768-807`), gated on the root selection mask (`EO:924` ↔ `ev:2464`).
+- Delivery ladder for motion/button/key: XI2 first, core only if the window's own XI2 selection did not consume (`NB:344-346`, `SB:942-954,1084-1092,1136-1144` ↔ `ev:2866-2888`).
+- Core ↔ XI2 parity: core `state` (`toX11State`, `MOD:23-43`) and XI2 `mods.effective` + button mask derive from the same `buttons/mods` inputs at every call site, so a client selecting both (Electron) sees consistent modifier/button state; core `detail` and button `child` equal the XI2 values.
+
+
+# Appendix E — Requests and replies
+
+## Requests & Replies
+
+**Path legend** (all citations below use these short names):
+- `ExtensionOps.cpp` = `/Users/lkg/Documents/Vivado/SwiftX11/.claude/worktrees/clipboard-and-vlm-fixes/macos/X11LowLevel/cpp/X11Protocol/src/Ops/ExtensionOps.cpp`
+- `QueryOps.cpp`, `src/Core/GrabTable.cpp`, `src/Core/WindowTable.cpp`, `src/Transport/XProtoTransport.cpp` — same root `.../X11Protocol/`
+- `InputState.hpp`, `WindowTable.hpp`, `GrabTable.hpp`, `XI2EventMask.hpp`, `X11ExtOpcodes.hpp` = `.../X11Protocol/include/Core/`; `ReplyWriter.hpp` = `.../include/Ops/`; `WireErrors.hpp` = `.../include/Utils/`
+- xorg = `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/` (`Xi/…`, `dix/…`, `Xext/xtest.c`)
+- `XI2proto.h`, `XIproto.h`, `XI.h`, `XI2.h` = `/opt/X11/include/X11/extensions/`
+
+Client-behaviour statements about GDK/Chromium come from knowledge of those codebases (not present in this tree) and are marked "(client source not in tree)".
+
+### Summary
+
+1. **XIGetClientPointer (45) reply is mis-laid-out** — `set` is written to byte 1 and `deviceid` to byte 8 (`ExtensionOps.cpp:1310-1314`); per `XI2proto.h:536-549` `set` is byte 8 and `deviceid` bytes 10-11. Clients read `set=2, deviceid=0`. GDK resolves its client pointer with this call; device 0 doesn't exist → NULL seat/pointer. **High**, one-line fix.
+2. **XIChangeCursor (42) is a silent no-op** (`ExtensionOps.cpp:1302-1307`). GTK3 sets every window cursor via `XIDefineCursor` when XI2 is present (client source not in tree), so cursors never change in portal-GTK dialogs. xorg routes it to `ChangeWindowDeviceCursor` (`Xi/xichangecursor.c:105`). **High**.
+3. **XISelectEvents (46) root selection is a single global that is overwritten, not merged** (`ExtensionOps.cpp:1340-1341`, `InputState.hpp:45`). xorg keeps per-(client, window, device) masks (`Xi/xiselectev.c:305-322`). GTK3 selects Hierarchy/DeviceChanged/Property on root at startup, which clobbers xeyes' RawMotion selection (and vice-versa). **High** for xeyes when any GTK/Chromium client is up.
+4. **XIGrabDevice/XIUngrabDevice (51/52) ignore `deviceid`** — a grab on the master *keyboard* (id 3) becomes a pointer grab and its ungrab releases the pointer grab (`ExtensionOps.cpp:1586-1600, 1627-1638`); xorg grabs the named device (`Xi/xigrabdev.c:81-116`, `dix/events.c:5193+`). No GrabNotViewable/GrabInvalidTime/GrabFrozen, no BadDevice/BadWindow. GTK3 grabs pointer and keyboard separately per popup. **High**.
+5. **The XI1 minor-opcode block (3–39) is numbered against the wrong table.** 13 reply-bearing XI1 requests are consumed silently (9, 11, 12, 13, 26, 27, 28, 29, 33, 34, 35, 36, 39 — `ExtensionOps.cpp:1204-1219`), which desyncs XCB; 5 void requests get a spurious BadRequest; minor 10 gets a wrong-shaped reply. No target client issues these, so **Medium** (latent desync class), but it is exactly the failure mode the dispatcher's own comment (`:1718-1720`) warns about.
+6. **XIQueryVersion (47) always answers 2.2** and stores nothing per client (`ExtensionOps.cpp:1349-1359`); xorg returns min(client, server), persists it, and errors on regressions (`Xi/xiqueryversion.c:66-115`). XInputExtension is also advertised with `first_error=0` (`QueryOps.cpp:604, 637-639`), so BadDevice cannot be expressed at all (xorg: `Xi/extinit.c:1065-1069, 1324`). **Medium**.
+
+### Coverage table
+
+Status key: **impl** = implemented, **partial** = implemented with semantic gaps, **stub** = consumed silently, **BadReq** = replies BadRequest, **wrong** = reply sent but wrong shape/semantics. "Reply OK?" refers to wire framing of the reply/error, not semantics.
+
+| minor | Request | xorg Proc (file:line) | SwiftX11 status | SwiftX11 (file:line) | Reply/error correct? | Severity | Affects |
+|---|---|---|---|---|---|---|---|
+| 1 | GetExtensionVersion | `Xi/getvers.c:90` | impl | `ExtensionOps.cpp:1046-1058` | Layout ✓ (`XIproto.h:185-198`); reports 2.0 while minor 47 reports 2.2 — xorg returns `XIVersion` from both (`getvers.c:106-107`, `xiqueryversion.c:78-79`) | Low | libXi clients (GTK3, xeyes) |
+| 2 | ListInputDevices | `Xi/listdev.c:331` | partial | `ExtensionOps.cpp:1061-1134` | Framing ✓ (`listdev.c:378-403`). `use` for XTEST slaves swapped (ours 3=ptr/4=kbd at `:1080-1081`; `XI.h:192-193` says IsXExtensionKeyboard=3, IsXExtensionPointer=4; `listdev.c:178-181`). Only 4 devices — real slaves 6/7 (advertised by minor 48) omitted; xorg lists every slave (`listdev.c:308-318`). Valuator class reports 0 axes vs 2 (`listdev.c:227-267`) | Low | Chromium caches both lists (client source not in tree) |
+| 3 | OpenDevice (reply) | `Xi/opendev.c:91` | BadReq | `ExtensionOps.cpp:1188-1201` (mislabelled "GetDeviceDontPropagateList") | Error keeps seq in sync ✓ | Low | none |
+| 4 | CloseDevice (void) | `Xi/closedev.c:136` | BadReq | `:1189` | Spurious error for a void request | Low | none |
+| 5 | SetDeviceMode (reply) | `Xi/setmode.c:86` | BadReq | `:1190` | ✓ in sync | Low | none |
+| 6 | SelectExtensionEvent (void) | `Xi/selectev.c` | BadReq | `:1191` | Spurious error | Low | none |
+| 7 | GetSelectedExtensionEvents (reply) | `Xi/getselev.c:91` | wrong (accidentally valid) | `:1137-1152` (labelled "GrabDevice") | 32-byte reply with byte 8 = 0 → decodes as this_client_count=0, all_clients_count=0 (`XIproto.h:405-416`) — harmless by coincidence | Low | none |
+| 8 | ChangeDeviceDontPropagateList (void) | `Xi/chgprop.c` | stub | `:1204` | ✓ | Low | none |
+| 9 | GetDeviceDontPropagateList (**reply**) | `Xi/getprop.c:92` | **stub → desync** | `:1205` | No reply, no error | Medium | none today |
+| 10 | GetDeviceMotionEvents (reply) | `Xi/gtmotion.c:89` | wrong | `:1155-1170` (labelled "GetDeviceFocus") | Writes focus XID at byte 8 → decodes as `nEvents` (`XIproto.h:480-490`) with length 0 — client expects nEvents×event data | Medium | none today |
+| 11 | ChangeKeyboardDevice (**reply**) | `Xi/chgkbd.c:92` | **stub → desync** | `:1206` | none | Medium | none |
+| 12 | ChangePointerDevice (**reply**) | `Xi/chgptr.c:93` | **stub → desync** | `:1207` | none | Medium | none |
+| 13 | GrabDevice (**reply**) | `Xi/grabdev.c:101` | **stub → desync** | `:1208` | none | Medium | none |
+| 14 | UngrabDevice (void) | `Xi/ungrdev.c` | BadReq | `:1192` | Spurious error | Low | none |
+| 15–17 | GrabDeviceKey / UngrabDeviceKey / GrabDeviceButton (void) | `Xi/grabdevk.c:95`, `ungrdevk.c`, `grabdevb.c:97` | stub | `:1209-1211` | ✓ | Low | none |
+| 18 | UngrabDeviceButton (void) | `Xi/ungrdevb.c` | BadReq | `:1193` | Spurious error | Low | none |
+| 19 | AllowDeviceEvents (void) | `Xi/allowev.c` | stub | `:1212` | ✓ | Low | none |
+| 20 | GetDeviceFocus (reply) | `Xi/getfocus.c:86` | BadReq | `:1194` | ✓ in sync | Low | none |
+| 21 | SetDeviceFocus (void) | `Xi/setfocus.c` | stub | `:1213` | ✓ | Low | none |
+| 22 | GetFeedbackControl (reply) | `Xi/getfctl.c:278` | BadReq | `:1195` | ✓ | Low | none |
+| 23 | ChangeFeedbackControl (void) | `Xi/chgfctl.c` | stub | `:1214` | ✓ | Low | none |
+| 24 | GetDeviceKeyMapping (reply) | `Xi/getkmap.c:89` | wrong (accidentally valid) | `:1173-1185` (labelled "QueryDeviceState") | byte 8 = 0 → keySymsPerKeyCode=0, length 0 (`XIproto.h:990-998`) | Low | none |
+| 25 | ChangeDeviceKeyMapping (void) | `Xi/chgkmap.c` | stub | `:1215` | ✓ | Low | none |
+| 26 | GetDeviceModifierMapping (**reply**) | `Xi/getmmap.c:86` | **stub → desync** | `:1216` | none | Medium | none |
+| 27 | SetDeviceModifierMapping (**reply**) | `Xi/setmmap.c:88` | **stub → desync** | `:1216` | none | Medium | none |
+| 28 | GetDeviceButtonMapping (**reply**) | `Xi/getbmap.c:85` | **stub → desync** | `:1216` | none | Medium | none |
+| 29 | SetDeviceButtonMapping (**reply**) | `Xi/setbmap.c:86` | **stub → desync** | `:1216` | none | Medium | none |
+| 30 | QueryDeviceState (reply) | `Xi/queryst.c:71` | BadReq | `:1196` (labelled "GetSelectedExtensionEvents") | ✓ in sync | Low | none |
+| 31 | SendExtensionEvent (void) | `Xi/sendexev.c` | BadReq | `:1197` | Spurious error | Low | none |
+| 32 | DeviceBell (void) | `Xi/devbell.c` | stub | `:1217` | ✓ | Low | none |
+| 33 | SetDeviceValuators (**reply**) | `Xi/setdval.c:86` | **stub → desync** | `:1217` | none | Medium | none |
+| 34 | GetDeviceControl (**reply**) | `Xi/getdctl.c:171` | **stub → desync** | `:1217` | none | Medium | none |
+| 35 | ChangeDeviceControl (**reply**) | `Xi/chgdctl.c:106` | **stub → desync** | `:1217` | none | Medium | none |
+| 36 | ListDeviceProperties (**reply**) | `Xi/xiproperty.c:851` | **stub → desync** | `:1217` | none | Medium | none |
+| 37 | ChangeDeviceProperty (void) | `Xi/xiproperty.c:888` | stub | `:1217` | ✓ | Low | none |
+| 38 | DeleteDeviceProperty (void) | `Xi/xiproperty.c:921` | stub | `:1217` | ✓ | Low | none |
+| 39 | GetDeviceProperty (**reply**) | `Xi/xiproperty.c:943` | **stub → desync** | `:1217` | none | Medium | none |
+| 40 | XIQueryPointer | `Xi/xiquerypointer.c:75` | partial | `:1225-1299` | Layout ✓ (`XI2proto.h:387-404`), length 7 = 6 + buttons_len 1 ✓ (`:131, 152-154`). Gaps: `deviceid` ignored (xorg BadDevice for keyboards/attached slaves `:106-109`); `win=0` treated as root (xorg BadWindow `:111-115`); mods always 0 (xorg base/latched/locked `:138-146`); `same_screen=0` when pointer is over another top-level or no X window (`:1273-1275`) — xorg single-screen always True with relative win coords (`:170-173`) | Medium | GTK3 (polls this constantly) |
+| 41 | XIWarpPointer (void) | `Xi/xiwarppointer.c:75` | stub | `:1302-1307` | ✓ framing | Low | GDK `gdk_device_warp` |
+| 42 | XIChangeCursor (void) | `Xi/xichangecursor.c:69` | **stub** | `:1302-1307` | ✓ framing; semantic no-op | **High** | GTK3 portal dialogs |
+| 43 | XIChangeHierarchy (void) | `Xi/xichangehierarchy.c:413` | stub | `:1302-1307` | ✓ | Low | none |
+| 44 | XISetClientPointer (void) | `Xi/xisetclientpointer.c:63` | stub | `:1302-1307` | ✓ | Low | none |
+| 45 | XIGetClientPointer | `Xi/xigetclientpointer.c:61` | **wrong** | `:1308-1316` | Field offsets wrong: `set`→byte 1, `deviceid`→byte 8 vs `XI2proto.h:536-549` (`set`@8, `deviceid`@10) | **High** | GTK3 |
+| 46 | XISelectEvents (void) | `Xi/xiselectev.c:147` | partial | `:1319-1346` | Void ✓. Per-window single mask (`WindowTable.hpp:214`, `WindowTable.cpp:611-618`) not per-(client,device) (`xiselectev.c:305-322`); root mask global + overwritten (`:1340-1341`); no BadValue/BadWindow/BadDevice validation (`xiselectev.c:160-165, 178-185, 188-212, 291-293`) | **High** (root clobber) / Low (validation) | xeyes, GTK3, Chromium |
+| 47 | XIQueryVersion | `Xi/xiqueryversion.c:56` | partial | `:1349-1359` | Layout ✓ (`XI2proto.h:289-302`). Always 2.2; xorg min(client,server) `:73-80`, per-client store `:82-115`, BadValue if major<2 `:66-69` | Medium | all XI2 clients |
+| 48 | XIQueryDevice | `Xi/xiquerydevice.c:69` | partial | `:1362-1550` | Framing ✓ (see verified list). Unknown id → `num_devices=0` Success instead of BadDevice (`:81-87`). Classes differ from reference VCP (see Findings #7) | Medium | Chromium, GTK3 |
+| 49 | XISetFocus (void) | `Xi/xisetdevfocus.c:70` | stub | `:1554-1556` | ✓ framing | Low | none (targets use core SetInputFocus) |
+| 50 | XIGetFocus | `Xi/xisetdevfocus.c:89` | partial | `:1559-1566` | Layout ✓ (`XI2proto.h:578-590`); always PointerRoot, xorg returns the device focus window (`:111-118`) | Low | none |
+| 51 | XIGrabDevice | `Xi/xigrabdev.c:67` | partial | `:1574-1620` | Layout ✓ status@8 (`XI2proto.h:622-636`). `deviceid`/mask/cursor ignored; only Success/AlreadyGrabbed (`GrabTable.cpp:65-80`) vs GrabNotViewable/InvalidTime/Frozen (`dix/events.c:5253-5266`); no BadDevice/BadWindow/BadValue | **High** | GTK3 (keyboard grabs), Chromium |
+| 52 | XIUngrabDevice (void) | `Xi/xigrabdev.c:149` | partial | `:1623-1640` | Ignores deviceid, time, grabtype (`:159-169`) | Medium | GTK3 |
+| 53 | XIAllowEvents (void) | `Xi/xiallowev.c:68` | stub | `:1643-1646` | ✓ framing; we never freeze so no-op is consistent | Low | none (targets use Async) |
+| 54 | XIPassiveGrabDevice | `Xi/xipassivegrab.c:79` | BadReq | `:1648-1652` | ✓ in sync | Medium | libXi `XIGrabButton/Keycode` callers |
+| 55 | XIPassiveUngrabDevice (void) | `Xi/xipassivegrab.c:297` | stub | `:1643-1646` | ✓ | Low | none |
+| 56 | XIListProperties | `Xi/xiproperty.c:1092` | partial | `:1655-1662` | Layout ✓ (`XI2proto.h:751-764`); 0 props vs "Device Enabled"+"Coordinate Transformation Matrix" on every device (`dix/devices.c:308-325`), "XTEST Device" on XTEST slaves (`Xext/xtest.c:621-634`); no BadDevice | Low | xinput tooling |
+| 57 | XIChangeProperty (void) | `Xi/xiproperty.c:1129` | stub | `:1665-1668` | ✓ | Low | none |
+| 58 | XIDeleteProperty (void) | `Xi/xiproperty.c:1162` | stub | `:1665-1668` | ✓ | Low | none |
+| 59 | XIGetProperty | `Xi/xiproperty.c:1185` | partial | `:1671-1682` | Layout ✓ (`XI2proto.h:816-830`) and matches xorg's non-existent-property path exactly (`get_property` `:266-273`: Success, type None, format 0, 0 items). Missing BadDevice (`:1198-1201`) and BadAtom (`:248-251`) | Low | GTK3/Chromium ("Device Node", "Device Product ID" lookups get None — fine) |
+| 60 | XIGetSelectedEvents | `Xi/xiselectev.c:342` | partial | `:1685-1713` | Framing ✓ (`XI2proto.h:356-370`, `xiselectev.c:403-406`); two-write reply safe (transport `payload_remaining_`, `XProtoTransport.cpp:334-340`). Returns window union as XIAllDevices regardless of caller (`xiselectev.c:368-381`); root window → empty (`:1690-1692`); invalid window → empty instead of BadWindow (`:356-358`) | Medium | GTK3/Chromium (per caller) |
+| 61 | XIBarrierReleasePointer (void) | `Xi/xibarriers.c:862` | BadReq (default) | `:1715-1724` | Spurious error, no desync | Low | none |
+| ≥62 | — | `Xi/extinit.c:386-387` BadRequest | BadReq | `:1715-1724` | ✓ matches | — | — |
+
+### Findings table
+
+| # | Aspect | xorg (file:line) | SwiftX11 (file:line) | Gap | Severity | Affects |
+|---|---|---|---|---|---|---|
+| 1 | XIGetClientPointer reply layout | `Xi/xigetclientpointer.c:79-88`; `XI2proto.h:536-549` | `ExtensionOps.cpp:1310-1314` | `set` written to byte 1 (RepType slot), `deviceid` to byte 8 (the `set` slot). Wire decodes as set=2, deviceid=0 | High | GTK3 |
+| 2 | XIChangeCursor no-op | `Xi/xichangecursor.c:79-105` (BadDevice unless master pointer; `ChangeWindowDeviceCursor`) | `ExtensionOps.cpp:1302-1307` | Cursor never applied; window `cursor_xid` (`WindowTable.hpp:209`) untouched | High | GTK3 |
+| 3 | XISelectEvents on root: global, overwritten | `Xi/xiselectev.c:305-322` (per client+device via `XISetEventMask`) | `ExtensionOps.cpp:1340-1341`; `InputState.hpp:42-45` | Last client to select on root wins; GTK's root selection erases xeyes' RawMotion | High | xeyes, GTK3, Chromium |
+| 4 | XISelectEvents per-window mask not per-client | `Xi/xiselectev.c:315-316` | `WindowTable.cpp:611-618`; `WindowTable.hpp:214` | One `xi2_mask` per window; a second client's selection replaces the first's | Medium | multi-client only |
+| 5 | XIGrabDevice ignores deviceid → keyboard grabs become pointer grabs | `Xi/xigrabdev.c:81-95, 110-116`; `dix/events.c:5193-5266` | `ExtensionOps.cpp:1586-1600` | Grab on id 3/5/7 calls `tryPointerGrab`; same-fd re-grab silently replaces (`GrabTable.cpp:65-80`); NotifyGrab crossing emitted twice for a pointer+keyboard pair (`:1610-1618`) | High | GTK3 |
+| 6 | XIUngrabDevice ignores deviceid/time/grabtype | `Xi/xigrabdev.c:165-169` | `ExtensionOps.cpp:1627-1638` | Ungrab of keyboard device releases the pointer grab; core GrabPointer by same client also released | Medium | GTK3 |
+| 7 | XIGrabDevice status codes / errors | `dix/events.c:5257-5266` (GrabNotViewable, GrabInvalidTime, GrabFrozen); `xigrabdev.c:81-83, 97-99` (BadDevice, BadValue) | `GrabTable.cpp:65-80` (only AlreadyGrabbed); `GrabTable.hpp:37-38` | Unmapped grab window returns Success; invalid device/window/mask bits never error | Medium | Chromium (grabs before map would "succeed") |
+| 8 | XIQueryVersion negotiation | `Xi/xiqueryversion.c:66-69, 73-80, 82-115` | `ExtensionOps.cpp:1351-1357` | Request body not read; always 2.2; no per-client store; no BadValue | Medium | all XI2 clients |
+| 9 | GetExtensionVersion vs XIQueryVersion disagree | `Xi/getvers.c:106-107` & `xiqueryversion.c:78-79` both return `XIVersion` (`getvers.c:65`) | `ExtensionOps.cpp:1053-1054` (2.0) vs `:1355-1356` (2.2) | libXi records the minor-1 result before issuing XI2 requests (our own comment `:1047`) | Low | libXi clients |
+| 10 | No XI error base | `Xi/extinit.c:1065-1069, 1324` (IERRORS; BadDevice = errorBase+0) | `QueryOps.cpp:604, 637-639, 679` (`first_error=0`); `X11ExtOpcodes.hpp:42-47` (no XInput first_error) | BadDevice/BadMode/DeviceBusy/BadClass cannot be sent; every "device" error would be code 0 (which GDK error traps read as *no error*) | Medium | GTK3, xinput |
+| 11 | XIQueryDevice unknown id | `Xi/xiquerydevice.c:81-87` (BadDevice) | `ExtensionOps.cpp:1401-1409` → empty reply | Success with 0 devices | Medium | any client probing an id |
+| 12 | XIQueryDevice VCP/XTEST class content | `dix/devices.c:644-671` (10 buttons, labels BTN_LEFT…HWHEEL_RIGHT, axes "Rel X"/"Rel Y"); `:1594-1607` + `:1318-1365` (Relative, min=max=NO_AXIS_LIMITS=-1 per `include/input.h:123`, resolution 0); `Xext/xtest.c:605-640` (XTEST pair uses same procs) | `ExtensionOps.cpp:1444-1457` (5 buttons, labels None), `:1464-1494` (Absolute, 0..screen, resolution 1, label None) | Reference reports 10 buttons with atom labels and relative unlimited axes; we report an absolute 0..screen device. Buttons 6/7 (h-wheel) not advertised | Medium | Chromium/GTK (label lookups miss; h-scroll buttons absent) |
+| 13 | XIQueryDevice diagnostic hex dump | — | `ExtensionOps.cpp:1539-1547` | Unconditional `fprintf(stderr)` of the full reply in all builds | Low | perf/noise |
+| 14 | Per-request `[XInput2]` log | — | `ExtensionOps.cpp:1041-1042` | `x11_ui_push_log` on every XI request; GTK issues XIQueryPointer at high rate (our comment `:1223-1224`) | Low | perf (GTK3) |
+| 15 | XIQueryPointer `same_screen`/child when pointer is elsewhere | `Xi/xiquerypointer.c:170-184` (same screen ⇒ True, win coords relative even outside) | `ExtensionOps.cpp:1253-1275` | Returns same_screen=0, child=0, win=(0,0) if pointer over another host or outside all X windows; libXi returns `rep.same_screen` as the function result, so GDK treats it as failure (client source not in tree) | Medium | GTK3 |
+| 16 | XIQueryPointer mods / deviceid / win=None | `xiquerypointer.c:100-109` (BadDevice), `:111-115` (BadWindow), `:138-146` (mods) | `ExtensionOps.cpp:1229, 1232, 1295` | mods block always 0; keyboard id accepted; win 0 treated as root | Low | GTK3 (modifier-dependent hit tests) |
+| 17 | XI1 dispatch numbering | `Xi/extinit.c:186-227` | `ExtensionOps.cpp:1136-1219` | Case labels/comments use a table shifted from extinit.c: 13 reply-bearing minors consumed (desync), 5 void minors error, minor 10 wrong-shaped reply, minors 7/24 valid only by coincidence | Medium | any libXi XI1 caller (xinput, GTK2) |
+| 18 | XI1 ListInputDevices `use` codes & device set | `Xi/listdev.c:174-183`; `XI.h:189-193`; `listdev.c:308-318` | `ExtensionOps.cpp:1077-1082` | XTEST pointer `use`=3 (IsXExtensionKeyboard), keyboard `use`=4 (IsXExtensionPointer); real slaves 6/7 omitted; XI1 table (4 devices) disagrees with XI2 table (6 devices, `:1388-1398`) | Low | Chromium (uses XI1 list for touch `type` only; client source not in tree) |
+| 19 | XIGetSelectedEvents semantics | `Xi/xiselectev.c:356-358, 368-381, 389-419` | `ExtensionOps.cpp:1687-1711` | Reports union of all clients' selections as XIAllDevices; root window (XID 1) not in `WindowTable` → empty; bad window → empty not BadWindow | Medium | GTK3/Chromium |
+| 20 | XIGetFocus value | `Xi/xisetdevfocus.c:111-118` | `ExtensionOps.cpp:1563` | Always PointerRoot; `InputState.focus_xid` (`InputState.hpp:29`) ignored | Low | none |
+| 21 | XIPassiveGrabDevice | `Xi/xipassivegrab.c:79-258` | `ExtensionOps.cpp:1648-1652` | BadRequest (in sync). xorg reply: `num_modifiers`@8 + failed-modifier list (`XI2proto.h:707-720`) | Medium | libXi passive-grab callers |
+| 22 | XIListProperties / XIGetProperty device validation | `xiproperty.c:1103-1105, 1198-1201` (BadDevice); `:248-251` (BadAtom) | `ExtensionOps.cpp:1656, 1672` | Request body not parsed; any id/atom succeeds | Low | none |
+| 23 | XIBarrierReleasePointer | `Xi/xibarriers.c:862-912` (void) | default `ExtensionOps.cpp:1715-1724` | BadRequest for a void request (spurious error event) | Low | none |
+| 24 | RepType byte in XI2 replies | e.g. `xiquerypointer.c:129`, `xiquerydevice.c:116` (RepType = minor) | `ReplyWriter.hpp:54-69` leaves byte 1 = 0; `ExtensionOps.cpp:1532` | Byte 1 always 0 | Low | none (no client reads it) |
+| 25 | Error packet minor opcode | xorg errors carry the minor opcode | `WireErrors.hpp:38-44` (`minorCode=0`) via `XProtoTransport.cpp` `sendErrorCore` | All XI errors report minor 0 | Low | error-trap diagnostics |
+
+### Details
+
+**#1 XIGetClientPointer offsets (High — GTK3).** xorg fills `set` and `deviceid` (`Xi/xigetclientpointer.c:84-85`) into `xXIGetClientPointerReply` whose layout is `repType, RepType, seq(2), length(4), set(1)@8, pad(1)@9, deviceid(2)@10` (`XI2proto.h:536-549`). Ours:
+```cpp
+// ExtensionOps.cpp:1310-1314
+wire::wr32_le(rep.data() + 4, 0); // length
+rep[1] = 1;                         // set = True   <-- lands in RepType
+wire::wr16_le(rep.data() + 8, 2);  // deviceid     <-- lands in `set`
+```
+The client sees `set=2` (non-zero, so "true") and `deviceid=0`. GDK's device manager resolves the client pointer through this reply and looks the id up in its device table (client source not in tree); id 0 is not a device, so the default seat/pointer resolves to NULL, which is a plausible contributor to the "dialog clicks don't register" symptom recorded in `QueryOps.cpp:629-632`. Fix: `rep[8] = 1; wire::wr16_le(rep.data() + 10, xi2::kVirtualCorePointer);` (constant at `XI2EventMask.hpp:50`). Optionally honour `win != None` → BadWindow for unknown client as at `xigetclientpointer.c:70-75`.
+
+**#2 XIChangeCursor no-op (High — GTK3).** xorg validates the device is a master pointer (`Xi/xichangecursor.c:79-84`), looks up the window and cursor (`:86-103`) and calls `ChangeWindowDeviceCursor(pWin, pDev, pCursor)` (`:105`), which is the per-device equivalent of core `ChangeWindowAttributes(CWCursor)`. We `br.skip` it (`ExtensionOps.cpp:1302-1307`). GTK3 uses `XIDefineCursor` for every `gdk_window_set_cursor` once XI2 is available (client source not in tree), so text-entry I-beams, resize cursors and busy cursors in xdg-desktop-portal-gtk dialogs never appear. Fix: parse `win(4) cursor(4) deviceid(2)` (`XI2proto.h:431-440`), ignore deviceid (single pointer), and invoke the same code path as the core `CWCursor` branch in the ChangeWindowAttributes handler that sets `WindowState::cursor_xid` (`WindowTable.hpp:209`) and triggers cursor re-application (`XProtoNotifyBridge.cpp` cursor path per CLAUDE.md). Return BadDevice for ids other than 2 once an error base exists (#10).
+
+**#3 XISelectEvents root mask clobber (High — xeyes).** xorg stores masks per client, per window, per device (`Xi/xiselectev.c:305-322`, `XISetEventMask(dev, win, client, …)`), and root-window selections are just another window entry. We special-case root into a single `InputState::xi2_root_mask` and *assign* it (`ExtensionOps.cpp:1340-1341`):
+```cpp
+if (window == 1) {
+  ctx.input().xi2_root_mask = combined_mask;   // last writer wins
+```
+GTK3's XI2 device manager selects Hierarchy|DeviceChanged|Property on the root window at construction, and Chromium selects HierarchyChanged on root (client sources not in tree). Whichever of those runs after xeyes replaces xeyes' RawMotion bit; the RawMotion sender then bails at `EventOps.cpp:924` (`if (!(xi2_root_mask & kRawMotionMask)) return;`) and the eyes freeze. Conversely xeyes started later erases GTK's bits (harmless today since we never emit hierarchy/property events). Minimal fix: keep a per-client map (`std::unordered_map<int /*fd*/, uint32_t>` keyed by `ctx.transport().clientFd()`) in `InputState` or `XClient`, set the caller's entry here, erase on disconnect, and expose `rootMaskUnion()` for the existing gating sites (`EventOps.cpp:704, 758, 809, 847, 894, 924`). Per-client *delivery* of root-selected events is an events-side follow-up; the union at least stops the clobber. Also note the same `eff_mask = wv->xi2_mask | xi2_root_mask` fallback (`EventOps.cpp:704`) means a root selection by one client currently enables XI2 delivery on every window of every client — a consequence of the same global.
+
+**#5/#6 XIGrabDevice / XIUngrabDevice ignore the device (High — GTK3).** xorg looks up the requested device (`Xi/xigrabdev.c:81-83`), derives keyboard/pointer modes from whether it is a keyboard (`:88-95`) and calls `GrabDevice(client, dev, …)` on *that* device (`:110-116`); ungrab only deactivates if the grab is XI2, same client and time is valid (`:165-169`). Ours discards `deviceid` (`ExtensionOps.cpp:1586, 1593`) and always calls `ctx.grabs().tryPointerGrab(...)` (`:1599-1600`), and XIUngrabDevice always `clearPointerGrab` (`:1638`). GTK3's default seat grabs the pointer (id 2) and keyboard (id 3) as two separate XIGrabDevice calls, and ungrabs them separately (client source not in tree). With ours: the keyboard grab re-issues the pointer grab (same fd → replaced, `GrabTable.cpp:69-71`), emits a second NotifyGrab Enter (`:1610-1618`), and the keyboard *ungrab* drops the pointer grab while GTK believes it still holds it — clicks outside the popup are then delivered to whatever window is under the pointer instead of the grab window. Keyboard-only grabs (any GTK `GDK_SEAT_CAPABILITY_KEYBOARD` grab) install a pointer grab on a window that never asked for one. Minimal fix in `case 51`: if `deviceid` is 3/5/7 (`XI2EventMask.hpp:51,53,60`) → `tryKeyboardGrab(win, fd)` (`GrabTable.hpp:61`) and *no* pointer crossing; if 2/4/6 → pointer grab; else BadDevice. Mirror `dix/events.c:5257-5263`: return GrabNotViewable (3) when the window is unmapped and GrabInvalidTime (2) when `time` is older than the current grab's `grab_time` (`GrabTable.hpp:33`). In `case 52` dispatch by device likewise (`clearKeyboardGrab(fd)` at `GrabTable.hpp:62`), and only release a grab that was taken via XI2 (add a `grabtype` flag to `PointerGrab`, `GrabTable.hpp:27-34`).
+
+**#17 XI1 minors consumed silently (Medium, latent desync).** The XI1 case labels in `ExtensionOps.cpp:1136-1219` follow a numbering that does not match `Xi/extinit.c:186-227` (e.g. `case 7` is commented "GrabDevice" but 7 is GetSelectedExtensionEvents; GrabDevice is 13, which sits in the void list at `:1208`). Cross-checking each entry against extinit.c: reply-bearing minors 9, 11, 12, 13, 26, 27, 28, 29, 33, 34, 35, 36, 39 fall in the `br.skip; return;` group (`:1204-1219`) — precisely the "reply-bearing minor we haven't implemented would leave XCB hanging" case the dispatcher's own default comment describes (`:1718-1720`). Minor 10 (GetDeviceMotionEvents) receives a reply whose byte 8 is our focus XID, which the client decodes as `nEvents` (`XIproto.h:480-490`) with `length=0`, so libXi will attempt to read a non-zero event array from a zero-length reply. No target client uses XI1 beyond minors 1/2, so this is Medium, but the fix is mechanical: rebuild the two case lists from extinit.c — reply-bearing {3,5,7,9,10,11,12,13,20,22,24,26,27,28,29,30,33,34,35,36,39} → BadRequest (or the trivial 32-byte replies already written for 7/24, moved to the right numbers), void {4,6,8,14,15,16,17,18,19,21,23,25,31,32,37,38} → consume.
+
+**#8/#9/#10 Version negotiation and error base (Medium).** xorg rejects `major_version < 2` with BadValue (`Xi/xiqueryversion.c:66-69`), returns the lower of client and server versions (`:73-80`), persists the negotiated version per client (`:113-114`) and uses it later (e.g. `xiquerypointer.c:95-98`, `xiallowev.c:78-84`). We don't read the request (`ExtensionOps.cpp:1351`) and answer 2.2 to everyone. A 2.0 client that is told 2.2 may enable touch-era parsing it never asked for. Fix: read the two CARD16s, reply `min(req, {2,2})`, store in `XClient`. Separately, our minor-1 reply says 2.0 (`:1053-1054`); xorg returns the same `XIVersion` from both (`getvers.c:106-107`, `xiqueryversion.c:78-79`) — make minor 1 report 2.2 too. For errors: XInputExtension is advertised with `first_error=0` (`QueryOps.cpp:604` initialised to 0, never set in the XInput branch `:637-639`, written at `:679`), whereas xorg allocates five error codes and defines `BadDevice = errorBase + 0` (`Xi/extinit.c:1065-1069, 1324`). Add `kXInput_FirstError` to `X11ExtOpcodes.hpp:42-47` (any unused value ≥128, e.g. 150), return it in QueryExtension, and use `sendErrorCore(kXInput_FirstError + 0, seq, deviceid, kXInput2)` for the device-lookup failures listed above (#11, #16, #22).
+
+**#12 XIQueryDevice class content (Medium).** The reference VCP (and both XTEST slaves, created through the same `CorePointerProc`/`CoreKeyboardProc` via `AllocDevicePair`, `Xext/xtest.c:616-618`) advertises 10 buttons with atom labels Left/Middle/Right/WheelUp/WheelDown/HWheelLeft/HWheelRight (`dix/devices.c:646, 659-665`, written by `ListButtonInfo` `xiquerydevice.c:287`) and two *Relative* axes labelled "Rel X"/"Rel Y" with min=max=-1 and resolution 0 (`dix/devices.c:668-669`; `InitPointerDeviceStruct` passes `Relative` at `:1603-1605`; `InitValuatorClassDeviceStruct` uses `NO_AXIS_LIMITS` per `include/input.h:123`; `ListValuatorInfo` `xiquerydevice.c:363-374`). We advertise 5 unlabelled buttons (`ExtensionOps.cpp:1444-1457`) and Absolute 0..screen axes with resolution 1 and label None (`:1464-1494`). Consequences: buttons 6/7 (horizontal scroll) are not part of the advertised device although core delivers them; label-driven client logic (GDK axis classification, Chromium valuator lookup — client sources not in tree) sees no known labels, which degrades to "ignore" in both and is therefore not fatal. Fix: intern the label atoms (names in `xserver-properties.h`, e.g. "Button Left", "Rel X") in the AtomTable at startup, emit 10 buttons with those labels, and emit axes as Relative/-1/-1/0 with "Rel X"/"Rel Y". If the Absolute encoding is deliberately kept because device events carry root coordinates as valuators (`XI2EventMask.hpp:62-75`), keep it consistent but still add the labels and the 10-button set.
+
+**#15 XIQueryPointer `same_screen` (Medium — GTK3).** xorg sets `same_screen=True` whenever sprite and window share a screen — always, on a single-screen server — and reports `win_x/win_y` relative to the queried window even when the pointer is outside it (`Xi/xiquerypointer.c:170-173`), with `child=None` if no direct child is on the sprite path (`:174-178`). We return `same_screen=0, child=0, win=(0,0)` whenever the queried window's host is not the pointer's current host, including when the pointer is outside every X window (`ExtensionOps.cpp:1253-1275`, `host = in.last_xid` at `:1243`). libXi's `XIQueryPointer` returns `rep.same_screen` as its Bool result, so GDK's `query_state` sees a failure and keeps stale coordinates/modifiers (client source not in tree). Fix: always set `same_screen=1`; compute `win_x/win_y = root - (window's screen origin)` using `InputState::getHostOrigin` (`InputState.hpp:56-62`, already used by core QueryPointer for the same case) plus the qwin→host offset walk at `:1266-1272`. Also fill `mods.base_mods` from `toX11State(0, in.mods)` (`:1295`) and reject `qwin==0` with BadWindow.
+
+### Verified-correct list
+
+- Dispatch: unknown minors ≥62 → BadRequest on both sides (`Xi/extinit.c:386-387`; `ExtensionOps.cpp:1715-1724`). XI1 void minors 8, 15, 16, 17, 19, 21, 23, 25, 32, 37, 38 correctly consumed without reply.
+- GetExtensionVersion reply layout: major@8, minor@10, present@12 (`XIproto.h:185-198`; `ExtensionOps.cpp:1052-1055`).
+- ListInputDevices framing: `ndevices`@8, length in words, sections in order xDeviceInfo[] / class infos / STR names / pad (`Xi/listdev.c:378-403`, `CopyDeviceName` `:122-135`; ours `:1091-1131`). xDeviceInfo 8-byte layout (`XIproto.h:239-245`), xKeyInfo/xButtonInfo/xValuatorInfo lengths 8/4/8 (`XIproto.h:249-286`; `listdev.c:150, 204, 242`). Per-device class order Key→Button→Valuator (`listdev.c:273-284`) — ours emits Button,Valuator for pointers and Key for keyboards, which is consistent since pointers have no key class.
+- XIQueryPointer: reply is 60 bytes with `length=7` = 6 + `buttons_len` 1 (`xiquerypointer.c:131, 152-154` — VCP has 10 buttons → 2 bytes → 1 word; `ExtensionOps.cpp:1285, 1294`); `root=1`; FP1616 via `<<16` (`:1288-1291`) equals `double_to_fp1616` of integer coords; button bitmask sets bit *n* for button *n* (`xiquerypointer.c:160-162`; ours `:1279-1280`); `child` is the direct child of the queried window on the path to the deepest window (`xiquerypointer.c:174-178`; ours `:1258-1264`); BadWindow for unknown non-root window (`:111-115`; ours `:1232-1238`); reply sent as one write (`:1297`).
+- XIQueryVersion reply layout: major@8, minor@10, length 0 (`XI2proto.h:289-302`; `ExtensionOps.cpp:1354-1356`).
+- XIQueryDevice: `num_devices`@8 and single-buffer write (`xiquerydevice.c:114-120, 154-155`; ours `:1530-1549`); XIAllDevices/XIAllMasterDevices/specific-id filtering (`ShouldSkipDevice` `:176-187`; ours `:1401-1409`); 12-byte xXIDeviceInfo with name padded to 4 (`:546-557`; ours `:1428-1438`); `enabled=1`; `use`/`attachment` per `GetDeviceUse` (`:514-533`: master ptr↔kbd pairing 2↔3, slaves attach to their master; ours `:1389-1397`); ButtonClass `length = 2 + num_buttons + mask_words` (`ListButtonInfo` `:276-277`; ours 8 = 2+5+1 at `:1447-1448`); KeyClass `length = 2 + num_keycodes` with keycodes min..max (`ListKeyInfo` `:324-330`; ours 250 = 2+248, keycodes 8..255 `:1509-1518`); ValuatorClass 44 bytes = 11 words with field order type/length/sourceid/number/label/min/max/value/resolution/mode/pad (`XI2proto.h:179-192`; ours `:1464-1479`); `num_classes` = Button + one per axis + Key (`ListDeviceClasses` `:580-599`; ours `:1423-1425`); no ScrollClass unless a scroll axis exists (`:601-607`; ours `:1496-1502`).
+- XIGrabDevice reply: `status`@8, length 0 (`XI2proto.h:622-636`; `xigrabdev.c:123-131`; ours `:1602-1605`); Success/AlreadyGrabbed values match core (0/1). Request parsing order win/time/cursor/deviceid/grab_mode/paired/owner_events/pad/mask_len matches `XI2proto.h:596-610` (`:1583-1591`).
+- XIGetFocus reply `focus`@8 (`XI2proto.h:578-590`; ours `:1563`). XIListProperties `num_properties`@8 (`XI2proto.h:751-764`; ours `:1659`). XIGetProperty type@8/bytes_after@12/num_items@16/format@20 (`XI2proto.h:816-830`; ours `:1677-1679`), and the empty reply is byte-identical to xorg's not-found path (`get_property` `:266-273` → `ProcXIGetProperty` `:1210-1219`).
+- XIGetSelectedEvents: `num_masks`@8, trailing `{deviceid u16, mask_len u16, mask}` with `length = 1 + mask_len` (`XI2proto.h:238-241, 356-370`; `xiselectev.c:403-406`; ours `:1701-1710`). The header/payload split across two `sendAll` calls is safe because the transport tracks `payload_remaining_` from the reply length and skips sequence-floor rewriting for payload bytes (`XProtoTransport.cpp:217-222, 334-340`).
+- XISelectEvents request parsing (win, num_masks, per-entry deviceid/mask_len/words) matches `XI2proto.h:335-343, 238-241` (`ExtensionOps.cpp:1323-1335`); only mask word 0 is consulted, which covers every event type ≤31 that we emit (`XI2EventMask.hpp:15-47`).
+- Device ids used by the event senders agree with the XIQueryDevice table: `deviceid=2` master pointer / `3` master keyboard, `sourceid=6/7` real slaves (`EventOps.cpp:722, 734, 818, 827, 865-867, 903-905, 938-941`; `XI2EventMask.hpp:50-60`; table `ExtensionOps.cpp:1388-1398`).
+- `sendReply32` pre-fills byte 0 = 1 and the sequence at bytes 2-3, leaving the rest zero (`ReplyWriter.hpp:54-69`), so all the 32-byte XI replies above have the correct `repType`/sequence.
+
+
+# Appendix F — Cross-track resolutions (verified from the xorg source)
+
+
+## R1 — Core-suppression on Enter/Leave is a v1.20.0.10 REGRESSION (confirmed)
+
+Conflict: delivery track finding #9 said xorg sends core AND XI2 crossings
+independently (so our v.10 suppression is wrong for crossings); the crossing
+track's verified-correct list said the suppression "mirrors DeliverDeviceEvents
+ordering".
+
+Resolution: read `xorg-server/dix/enterleave.c:595-608` directly:
+
+```c
+void DoEnterLeaveEvents(DeviceIntPtr pDev, int sourceid,
+                        WindowPtr fromWin, WindowPtr toWin, int mode)
+{
+    if (!IsPointerDevice(pDev)) return;
+    if (fromWin == toWin)       return;
+    if (mode != XINotifyPassiveGrab && mode != XINotifyPassiveUngrab)
+        CoreEnterLeaveEvents(pDev, fromWin, toWin, mode);
+    DeviceEnterLeaveEvents(pDev, sourceid, fromWin, toWin, mode);
+}
+```
+
+Both are called unconditionally; there is no `deliveries > 0 → break` between
+them. Each is gated only by its own selection (core: `CoreEnterLeaveEvent`
+events.c:4716-4723/4745; XI2: `DeviceEnterLeaveEvent` events.c:4842-4845).
+The XI2-first/break rule exists ONLY in `DeliverDeviceEvents`
+(events.c:2865-2900) — i.e. for device events (button/motion/key), where the
+core event is a *conversion* of the same InternalEvent to a client that already
+consumed it at XI2 level.
+
+Therefore: v1.20.0.10's `if (!sendXI2CrossingEvent(...)) sendCrossingEvent(...)`
+pattern at XProtoServerBridge.cpp (PointerEnter/PointerLeave) and
+XProtoNotifyBridge.cpp (child<->child crossings) is WRONG. A client selecting
+both core EnterWindow/LeaveWindow and XI_Enter/XI_Leave (Electron does) now
+loses the core crossing. Modification: restore unconditional
+`sendCrossingEvent(...)` + `sendXI2CrossingEvent(...)` at those four sites; the
+sender-level `own` return value may remain (harmless) but must not gate core.
+KEEP the suppression for button, scroll-wheel buttons, key, and motion (those
+match DeliverDeviceEvents exactly).
+
+Note also (crossing track, correct): NotifyWhileGrabbed is focus-only in xorg;
+pointer crossings during a grab keep NotifyNormal (events.c:3219-3220).
+
+## R2 — `pick_motion_target` core-only walk: real gap, LATENT for current targets (downgrade High → Medium)
+
+Delivery track finding #5 (High, "verify with trace") predicted motion is
+dropped (`no_target`) for XI2-only windows because `pick_motion_target`
+(XProtoNotifyBridge.cpp:476-485) climbs on `vw.event_mask & motionMask` only and
+returns 0 off the top; the drag path `wantsMotionAt` (:290-293) is core-only too.
+Code reading confirms this exactly.
+
+But the v1.20.0.9 wire trace (before core suppression) shows the GTK portal
+connection (fd=18) receiving BOTH `type=6` core MotionNotify AND the `type=35`
+XI2 twin for the same seq (e.g. seq=2045, 2048, 2156, 2381, 2391...), while it
+never received a single `type=4` core ButtonPress all session. Therefore this
+GDK3 build DOES select core PointerMotionMask on its toplevel (motion routed via
+the core walk, XI2 twin fired from the window's xi2_mask) and relies on XI2 only
+for buttons/keys. Chromium (fd=7) likewise received core `type=6` + XI2 motion,
+so it also sets core motion.
+
+Conclusion: no current target loses motion; the gap bites only a client that
+selects XI_Motion WITHOUT core PointerMotionMask. Still worth fixing (one-line
+mirror of EventIsDeliverable in the climb at :481 and in `wantsMotionAt`
+:290-293: `|| (xi2_mask & xi2::kMotionMask)`), same shape as the v.11 wantsBtn /
+wantsKey fix — but severity is Medium (latent), not High. The v.11 Button/Key fix
+was the one that mattered because GDK omits the core Button/Key bits.
