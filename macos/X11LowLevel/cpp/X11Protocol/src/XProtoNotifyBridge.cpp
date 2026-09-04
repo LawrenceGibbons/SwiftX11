@@ -16,6 +16,7 @@
 #include "Core/XEventMask.hpp"
 #include "Core/XI2EventMask.hpp"   // xi2::kMotionMask — XI2|core deliverability (M10)
 #include "Core/XConstants.hpp"
+#include "Utils/GrabRoute.hpp"      // Phase B2: grab-time routing (xorg DeliverGrabbedEvent)
 #include "Utils/DragTrace.hpp"
 
 #include <atomic>
@@ -170,47 +171,42 @@ void postMotion(uint32_t host_xid,
   x11::PointerGrab activeGrab{};
   const bool haveGrab = ctx->grabs().getPointerGrab(activeGrab) && activeGrab.active;
 
-  // ---- Child-to-child crossing events ----
-  // Pick the deepest mapped child under the pointer and generate
-  // EnterNotify/LeaveNotify if the pointer moved to a different window.
-  // Xaw Command widgets rely on these for hover highlighting.
-  //
-  // Generate crossing events when:
-  //   - No drag is active (normal mouse movement), OR
-  //   - An active GrabPointer exists (X11 spec: crossing events still
-  //     generated during grabs — needed for menu item highlighting), OR
-  //   - The host was corrected (pointer moved to a different top-level
-  //     window, e.g., from xterm to popup menu during button drag)
-  if (ctx->input().drag_xid == 0 || haveGrab || hostCorrected) {
-    uint32_t under = pickDeepestMappedWindowAtHostPoint(*ctx, host_xid,
-                                                        win_x, win_y);
+  // ---- Crossing events ----
+  // xorg CheckMotion (dix/events.c:3205-3227) generates Enter/Leave on every
+  // sprite-window change, grab or not; during a grab CoreEnterLeaveEvent /
+  // DeviceEnterLeaveEvent deliver them only per the grab (:4716-4723,
+  // 4834-4840) — the grab window with the grab mask, or the grabbing client's
+  // own windows when owner_events.  The old gate skipped crossings entirely
+  // during an implicit drag, so a pressed widget dragged out never saw its
+  // Leave (G-7 / C-10).  Otherwise both levels, each gated only by its own
+  // mask (DoEnterLeaveEvents, dix/enterleave.c:595-608 — R1).
+  {
+    uint32_t under = pickDeepestMappedWindowAtHostPoint(*ctx, host_xid, win_x, win_y);
     if (!under) under = host_xid;
 
     const uint32_t prev = ctx->input().pointer_xid;
     if (under != prev) {
-      // xorg DoEnterLeaveEvents (dix/enterleave.c:595-608): core AND XI2
-      // crossings, each gated only by its own mask.  The XI2-first/break rule
-      // is DeliverDeviceEvents-only; applying it here (v1.20.0.10) cost
-      // Electron its core Enter/Leave — R1 in docs/XI2_XORG_COMPARISON.md.
-      if (prev != 0) {
-        ev->sendCrossingEvent(*ctx, prev, /*is_enter=*/false,
-                              root_x, root_y, buttons, mods);
-        (void)ev->sendXI2CrossingEvent(*ctx, prev, /*is_enter=*/false,
-                                       root_x, root_y, buttons, mods);
-      }
-      ev->sendCrossingEvent(*ctx, under, /*is_enter=*/true,
-                            root_x, root_y, buttons, mods);
-      (void)ev->sendXI2CrossingEvent(*ctx, under, /*is_enter=*/true,
-                                     root_x, root_y, buttons, mods);
+      auto emitCrossing = [&](uint32_t w, bool is_enter) {
+        if (!w) return;
+        if (haveGrab) {
+          const auto cd = x11::grabroute::crossingUnderGrab(*ctx, activeGrab, w, is_enter);
+          if (cd.coreOk) ev->sendCrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods, 0, cd.toFd);
+          if (cd.xi2Ok)  (void)ev->sendXI2CrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods, 0, /*force=*/true, cd.toFd);
+          return;
+        }
+        ev->sendCrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods);
+        (void)ev->sendXI2CrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods);
+      };
+      emitCrossing(prev,  /*is_enter=*/false);
+      emitCrossing(under, /*is_enter=*/true);
       ctx->input().pointer_xid = under;
     }
   }
 
-  // Route motion: active grab takes priority over drag_xid.
-  // X11 spec: GrabPointer controls ALL event routing while active.
-  // drag_xid is our internal button-drag tracker; it must NOT override
-  // an active grab (e.g., popup menu's GrabPointer with ownerEvents=True
-  // needs to route to SimpleMenu child, not the original click target).
+  // Route motion: an active grab decides delivery (xorg ProcessDeviceEvent
+  // consults the grab before normal delivery, Xi/exevents.c:1938-1940).
+  // drag_xid is our internal button-drag tracker; since v1.20.0.18 a press
+  // also records a real implicit grab, so the grab branch handles drags.
   x11::drag_trace::route(ctx->input().drag_xid, haveGrab, hostCorrected,
                          activeGrab.grabWindow, activeGrab.eventMask,
                          activeGrab.ownerEvents);
@@ -238,60 +234,35 @@ void postMotion(uint32_t host_xid,
   };
   const uint32_t heldButtons = ctx->input().buttons;
 
-  uint32_t target = 0;  // EXPLICITLY initialise — must never be undefined
+  uint32_t target  = 0;  // EXPLICITLY initialise — must never be undefined
+  bool     viaGrab = false;
+  int      toFd    = -1;
   if (haveGrab) {
-    // Active pointer grab (GrabPointer / activated passive grab).
-    //
-    // X11 spec for owner_events:
-    //   True  → events go to the window they'd normally go to (if that
-    //           window selected the event). Only fall back to grab window
-    //           if no normal target wants the event.
-    //   False → all events go to the grab window filtered by eventMask.
-    //
-    // Xt popup menus use owner_events=True so that MotionNotify reaches
-    // the SimpleMenu child (which needs coords for item highlighting).
+    // xorg DeliverGrabbedEvent (dix/events.c:4399-4434): with owner_events,
+    // normal delivery — but only to the grabbing client's windows (Xt popup
+    // menus use owner_events=True so MotionNotify reaches the SimpleMenu
+    // child); otherwise, or when that finds nobody, the grab window at the
+    // grab's level with the grab's mask, addressed to the grabbing client —
+    // which is how a root-window grab (AWT's XDND) reaches AWT without the
+    // old drag_xid fallback.
+    uint32_t normal = 0;
     if (activeGrab.ownerEvents) {
-      // Try normal routing within the current host first
-      target = pick_motion_target(*ctx, host_xid, win_x, win_y);
-      if (!target && activeGrab.grabWindow != host_xid) {
-        // Current host didn't contain the event target. This happens when
-        // macOS routes drag events to the original mouseDown window (xterm)
-        // while the pointer is actually over the popup menu (different host).
-        // Try picking within the grab window's subtree using root coords
-        // translated to the grab window's local coordinate space.
+      normal = pick_motion_target(*ctx, host_xid, win_x, win_y);
+      if (!normal && activeGrab.grabWindow != host_xid) {
+        // macOS routes drag events to the original mouseDown window while
+        // the pointer is over the popup (a different host): retry within the
+        // grab window's subtree using root coords translated to its space.
         x11::WindowView gv{};
         if (ctx->windows().snapshot(activeGrab.grabWindow, gv)) {
-          // For a top-level OR window, x/y are root-relative
-          int32_t grabLocalX = root_x - gv.x;
-          int32_t grabLocalY = root_y - gv.y;
-          target = pick_motion_target(*ctx, activeGrab.grabWindow,
-                                     grabLocalX, grabLocalY);
+          normal = pick_motion_target(*ctx, activeGrab.grabWindow,
+                                      root_x - gv.x, root_y - gv.y);
         }
       }
-      if (!target) {
-        // Still nothing → fall back to grab window if it wants motion
-        if (grabWantsMotion(activeGrab.eventMask, heldButtons))
-          target = activeGrab.grabWindow;
-      }
-    } else {
-      // owner_events=False: route directly to grab window
-      if (grabWantsMotion(activeGrab.eventMask, heldButtons))
-        target = activeGrab.grabWindow;
-      else
-        target = 0;
     }
-    // Root-window grab delivery (XDND pattern): AWT's drag-and-drop code
-    // calls XGrabPointer(grab_window=root, owner_events=False, mask=
-    // ButtonPress|ButtonRelease|ButtonMotion).  In real X11 the events
-    // would be sent to the GRABBING CLIENT (AWT), filtered by mask, with
-    // coordinates relative to root.  We don't currently track which
-    // client installed the grab, so root-target events would deliver to
-    // nobody.  As a pragmatic fallback during an active drag, route to
-    // drag_xid (which is owned by the same client that installed the
-    // root grab — the click that started the drag also picked drag_xid).
-    if (target == x11::kRootXid && ctx->input().drag_xid != 0) {
-      target = ctx->input().drag_xid;
-    }
+    const auto d = x11::grabroute::route(*ctx, activeGrab, normal);
+    target  = d.target;
+    viaGrab = d.viaGrab;
+    if (viaGrab) toFd = activeGrab.owner_fd;
   } else if (ctx->input().drag_xid && !hostCorrected) {
     // No active grab, but button drag in progress AND pointer is still
     // over the same host (e.g., scrollbar drag within xterm).
@@ -361,6 +332,19 @@ void postMotion(uint32_t host_xid,
   // Button1Mask is set; the hw_ila drag fails despite plenty of
   // motion events arriving, so this is the next thing to verify.
   x11::drag_trace::motion(target, root_x, root_y, buttons, mods);
+
+  if (viaGrab) {
+    // DeliverOneGrabbedEvent (dix/events.c:4322-4350): the grab's level only,
+    // filtered by the grab's own mask — XI_Motion for an XI2 grab, the core
+    // motion families for the held buttons for a core grab.
+    if (activeGrab.is_xi2) {
+      if (activeGrab.xi2mask & x11::xi2::kMotionMask)
+        (void)ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods, /*force=*/true, toFd);
+    } else if (grabWantsMotion(activeGrab.eventMask, heldButtons)) {
+      ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods, toFd);
+    }
+    return;
+  }
 
   // Send MotionNotify with ROOT coords (root_x/root_y).
   // xorg DeliverDeviceEvents: XI2 first; if the window's own selection consumes

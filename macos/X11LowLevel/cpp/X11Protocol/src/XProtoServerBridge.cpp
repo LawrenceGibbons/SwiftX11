@@ -17,7 +17,32 @@
 
 #include "XProtoServerBridge.h"
 #include "Core/XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
-#include "Core/XI2EventMask.hpp"   // xi2::kButtonPress/Release/Key masks for deliverability
+#include "Core/XI2EventMask.hpp"
+#include "Core/XConstants.hpp"
+#include "Ops/EventOps.hpp"
+#include "Utils/GrabRoute.hpp"        // Phase B2: grab-time routing (xorg DeliverGrabbedEvent)
+#include "Utils/GrabChoreography.hpp" // implicit-grab activation / release crossings
+
+namespace {
+// Enter/Leave for window `w`: during a pointer grab only per the grab (xorg
+// CoreEnterLeaveEvent / DeviceEnterLeaveEvent, dix/events.c:4716-4723,
+// 4834-4840 — grab window with the grab mask, or the grabbing client's own
+// windows when owner_events), otherwise both levels, each gated by its own
+// mask (DoEnterLeaveEvents, dix/enterleave.c:595-608).
+void emitCrossingSB(x11::XProtoContext& ctx, x11::EventOps& ev, uint32_t w, bool is_enter,
+                    int32_t rx, int32_t ry, uint32_t buttons, uint32_t mods) {
+  if (!w) return;
+  x11::PointerGrab g{};
+  if (ctx.grabs().getPointerGrab(g) && g.active) {
+    const auto cd = x11::grabroute::crossingUnderGrab(ctx, g, w, is_enter);
+    if (cd.coreOk) ev.sendCrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods, 0, cd.toFd);
+    if (cd.xi2Ok)  (void)ev.sendXI2CrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods, 0, /*force=*/true, cd.toFd);
+    return;
+  }
+  ev.sendCrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods);
+  (void)ev.sendXI2CrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods);
+}
+} // namespace   // xi2::kButtonPress/Release/Key masks for deliverability
 #include "Ops/QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 #include "Core/WindowTable.hpp"
 #include "Core/XProtoModules.hpp"
@@ -527,10 +552,21 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
           if (!host) break;
 
-          // Find what we're entering *within* this host, using existing host-local coords.
+          // M16: use THIS command's host-local coordinates.  The previous code
+          // read the last motion's, which belong to the window just LEFT, so
+          // the Enter could target the wrong child of the new host and carry
+          // the old host's event coordinates.  Root coords come from the new
+          // host's cached origin when known.
+          int32_t rx = ctx.input().root_x_u, ry = ctx.input().root_y_u;
+          {
+            int32_t ox = 0, oy = 0;
+            if (ctx.input().getHostOrigin(host, ox, oy)) { rx = ox + c.win_x_u; ry = oy + c.win_y_u; }
+          }
+          ctx.input().updateMotion(host, c.win_x_u, c.win_y_u, rx, ry,
+                                   ctx.input().buttons, c.modsMask);
+
           uint32_t under = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
-                                                                  ctx.input().win_x_u,
-                                                                  ctx.input().win_y_u);
+                                                                  c.win_x_u, c.win_y_u);
           if (!under) under = host;
 
           // Pointer ownership should be the window under the pointer, not the host.
@@ -540,18 +576,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t cursorTarget = ctx.input().routePointer(under);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          // xorg DoEnterLeaveEvents (dix/enterleave.c:595-608) sends the core
-          // AND the XI2 crossing, each gated only by its own mask; the
-          // XI2-first/break rule belongs to DeliverDeviceEvents (button/
-          // motion/key) only.  v1.20.0.10 suppressed the core crossing when
-          // XI2 delivered and Electron (which selects both) lost its core
-          // Enter/Leave — R1 in docs/XI2_XORG_COMPARISON.md.
-          srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/true,
-                                            ctx.input().root_x_u, ctx.input().root_y_u,
-                                            ctx.input().buttons, c.modsMask);
-          (void)srv->eventOps().sendXI2CrossingEvent(ctx, under, /*is_enter=*/true,
-                                                     ctx.input().root_x_u, ctx.input().root_y_u,
-                                                     ctx.input().buttons, c.modsMask);
+          // Both levels, each gated by its own mask (R1); during a grab, only
+          // per the grab (emitCrossingSB).
+          emitCrossingSB(ctx, srv->eventOps(), under, /*is_enter=*/true,
+                         rx, ry, ctx.input().buttons, c.modsMask);
           break;
         }
 
@@ -561,26 +589,28 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
           if (!host) break;
 
-          // Window that currently "has" the pointer (drag wins).
+          // Window that currently "has" the pointer (drag wins) — but only if
+          // it lives in THIS host (M16): AppKit does not order mouseExited(A)
+          // before mouseEntered(B) for overlapping windows, and when the Enter
+          // for B landed first pointer_xid already points into B, so the Leave
+          // went to B's window and A never got one.
           uint32_t leaveWin = 0;
-          if (ctx.input().drag_xid)       leaveWin = ctx.input().drag_xid;
-          else if (ctx.input().pointer_xid) leaveWin = ctx.input().pointer_xid;
-          else                             leaveWin = host;
+          const uint32_t dx = ctx.input().drag_xid;
+          const uint32_t px = ctx.input().pointer_xid;
+          if (dx && ctx.windows().topLevelAncestorOf(dx) == host)      leaveWin = dx;
+          else if (px && ctx.windows().topLevelAncestorOf(px) == host) leaveWin = px;
+          else                                                          leaveWin = host;
 
-          // Update pointer ownership state.
+          // Update pointer ownership state (clears pointer_xid only if it is leaveWin).
           ctx.input().leave(leaveWin);
 
           // After leaving, cursor should usually fall back (focus/host/inherit).
           const uint32_t cursorTarget = ctx.input().routePointer(host);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          // Core AND XI2 (see PointerEnter — xorg DoEnterLeaveEvents).
-          srv->eventOps().sendCrossingEvent(ctx, leaveWin, /*is_enter=*/false,
-                                            ctx.input().root_x_u, ctx.input().root_y_u,
-                                            ctx.input().buttons, c.modsMask);
-          (void)srv->eventOps().sendXI2CrossingEvent(ctx, leaveWin, /*is_enter=*/false,
-                                                     ctx.input().root_x_u, ctx.input().root_y_u,
-                                                     ctx.input().buttons, c.modsMask);
+          emitCrossingSB(ctx, srv->eventOps(), leaveWin, /*is_enter=*/false,
+                         ctx.input().root_x_u, ctx.input().root_y_u,
+                         ctx.input().buttons, c.modsMask);
           break;
         }
 
@@ -753,54 +783,45 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             }
           }
 
-          // ---- Check for active pointer grab (GrabPointer) ----
+          // ---- Active pointer grab: explicit (GrabPointer / XIGrabDevice) or
+          // press-activated (implicit / passive — real grab records since
+          // v1.20.0.18, xorg ActivateImplicitGrab / ActivatePassiveGrab).
           x11::PointerGrab activeGrab{};
           const bool haveActiveGrab = ctx.grabs().getPointerGrab(activeGrab) && activeGrab.active;
 
           // ---- STEP 1: Pick the deepest window BEFORE updating drag state ----
-          // This is critical: InputState::button() sets drag_xid on the
-          // 0→nonzero button transition. We must pick the child under the
-          // pointer first, so drag_xid gets set to the correct child window
-          // (not the host).
-          uint32_t under = 0;
+          // xorg always starts from the sprite window (the window under the
+          // pointer); a grab only changes WHO the event is delivered to
+          // (DeliverGrabbedEvent), decided below.  Picking first also lets
+          // InputState::button() set drag_xid to the correct child.
+          uint32_t under = x11::pickDeepestMappedWindowAtHostPoint(ctx, effectiveHost,
+                                                                  effectiveWinX,
+                                                                  effectiveWinY);
+          if (!under) under = effectiveHost;
 
-          if (haveActiveGrab && !activeGrab.ownerEvents) {
-            // Active GrabPointer with owner_events=False:
-            // All button events go to the grab window, filtered by grab eventMask.
-            under = activeGrab.grabWindow;
-          } else if (ctx.input().drag_xid && !hostCorrected) {
-            // Already in an active grab/drag, pointer still over same host
-            under = ctx.input().drag_xid;
-          } else {
-            under = x11::pickDeepestMappedWindowAtHostPoint(ctx, effectiveHost,
-                                                            effectiveWinX,
-                                                            effectiveWinY);
-            if (!under) under = effectiveHost;
-
-            // ---- STEP 2: Check passive grabs (GrabButton) on press ----
-            // Walk from the deepest window up to the host checking each
-            // ancestor for a matching passive grab. If found, the grab
-            // window becomes the button event target and the implicit
-            // pointer grab owner (via drag_xid).
-            if (c.isDown && !haveActiveGrab) {
-              x11::PassiveGrab pg{};
-              uint32_t checkWin = under;
-              bool foundGrab = false;
-              int safety = 0;
-              // GrabButton stores modifiers in X11 wire format (ControlMask=bit2).
-              // c.modsMask uses internal format (Ctrl=bit1). Convert to X11.
-              const uint16_t x11Mods = x11::input::toX11State(0, c.modsMask) & 0xFF;
-              while (checkWin && safety++ < 64) {
-                if (ctx.grabs().match(checkWin, c.button, x11Mods, pg)) {
-                  foundGrab = true;
-                  under = pg.grabWindow;
-                  break;
-                }
-                if (checkWin == host) break;
-                x11::WindowView vw{};
-                if (!ctx.windows().snapshot(checkWin, vw)) break;
-                checkWin = vw.parent_xid;
+          // ---- STEP 2: Passive grabs (GrabButton) on press — only while no
+          // grab is active (xorg ProcessDeviceEvent: CheckDeviceGrabs runs
+          // iff !grab, Xi/exevents.c:1917).  A match makes the grab window
+          // the target; the passive record becomes the active grab below
+          // (ActivatePassiveGrab).
+          bool passiveMatched = false;
+          x11::PassiveGrab pg{};
+          if (c.isDown && !haveActiveGrab) {
+            uint32_t checkWin = under;
+            int safety = 0;
+            // GrabButton stores modifiers in X11 wire format (ControlMask=bit2).
+            // c.modsMask uses internal format (Ctrl=bit1). Convert to X11.
+            const uint16_t x11Mods = x11::input::toX11State(0, c.modsMask) & 0xFF;
+            while (checkWin && safety++ < 64) {
+              if (ctx.grabs().match(checkWin, c.button, x11Mods, pg)) {
+                passiveMatched = true;
+                under = pg.grabWindow;
+                break;
               }
+              if (checkWin == host) break;
+              x11::WindowView vw{};
+              if (!ctx.windows().snapshot(checkWin, vw)) break;
+              checkWin = vw.parent_xid;
             }
           }
 
@@ -881,8 +902,24 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 !wantsBtn(deliver) && wantsBtn(effectiveHost)) deliver = effectiveHost;
           }
 
-          // If nobody wants it, drop.
-          if (!wantsBtn(deliver)) {
+          const bool normalWants = wantsBtn(deliver);
+
+          // ---- Grab routing: xorg DeliverGrabbedEvent (dix/events.c:4399-4434) ----
+          // owner_events: normal delivery, but only within the grabbing
+          // client's windows (TryClientEvents returns -1 for anyone else and
+          // the walk stops, :2039-2044, :2892-2896); otherwise the grab window
+          // at the grab's level with the grab's mask, addressed to the
+          // grabbing client.  A click on Electron while a GTK popup holds an
+          // owner_events grab therefore reaches the popup, not Electron (G-3).
+          uint32_t target  = deliver;
+          bool     viaGrab = false;
+          int      toFd    = -1;
+          if (haveActiveGrab) {
+            const auto d = x11::grabroute::route(ctx, activeGrab, normalWants ? deliver : 0);
+            target  = d.target;
+            viaGrab = d.viaGrab;
+            if (viaGrab) toFd = activeGrab.owner_fd;
+          } else if (!normalWants) {
             // Diagnostic: log why the click was dropped
             const x11::WindowView* dbgUnder = ctx.window(under);
             const x11::WindowView* dbgHost  = ctx.window(effectiveHost);
@@ -905,22 +942,24 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // to, not the pre-propagation pick.  InputState::button() above
           // set drag_xid = under; retarget to deliver so drag motion
           // routes to the window that actually received the ButtonPress.
-          if (c.isDown && ctx.input().drag_xid == under && deliver != under) {
+          if (!haveActiveGrab && c.isDown && ctx.input().drag_xid == under && deliver != under) {
             ctx.input().drag_xid = deliver;
           }
 
           // child field: per X11 spec, "child is set to the child of the
           // event window that is the ancestor of (or is) the source window."
-          // This means the IMMEDIATE child of deliver, not the deepest descendant.
+          // This means the IMMEDIATE child of the event window, not the
+          // deepest descendant.  Grabbed delivery carries child=None (xorg
+          // FixUpEventFromWindow(grab->window, None), dix/events.c:4357).
           uint32_t child = 0;
-          if (deliver != under) {
-            // Walk from 'under' up toward 'deliver' to find the immediate child
+          if (!viaGrab && target != under) {
+            // Walk from 'under' up toward 'target' to find the immediate child
             uint32_t cur = under;
             int csafety = 0;
-            while (cur && cur != deliver && ++csafety < 64) {
+            while (cur && cur != target && ++csafety < 64) {
               x11::WindowView cwv{};
               if (!ctx.windows().snapshot(cur, cwv)) break;
-              if (cwv.parent_xid == deliver) { child = cur; break; }
+              if (cwv.parent_xid == target) { child = cur; break; }
               cur = cwv.parent_xid;
             }
             if (child == 0) child = under; // fallback if walk fails
@@ -929,33 +968,90 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
 #ifndef NDEBUG
           {
-            const x11::WindowView* dbgDel = ctx.window(deliver);
+            const x11::WindowView* dbgDel = ctx.window(target);
             TS_FPRINTF("[BTN_SEND] host=0x%08X under=0x%08X deliver=0x%08X "
                        "del_fd=%d del_mask=0x%08X child=0x%08X "
-                       "pos=(%d,%d) btn=%d %s\n",
+                       "pos=(%d,%d) btn=%d %s%s\n",
                        (unsigned)effectiveHost, (unsigned)under,
-                       (unsigned)deliver,
+                       (unsigned)target,
                        dbgDel ? dbgDel->owner_fd : -1,
                        dbgDel ? dbgDel->event_mask : 0u,
                        (unsigned)child,
                        (int)effectiveWinX, (int)effectiveWinY,
-                       (int)c.button, c.isDown ? "DOWN" : "UP");
+                       (int)c.button, c.isDown ? "DOWN" : "UP",
+                       viaGrab ? " via-grab" : "");
           }
 #endif
-          // xorg DeliverDeviceEvents: XI2 first; if it delivers via the window's
-          // own selection, the core event is suppressed (no double-processing).
-          const bool xi2Sent =
-            srv->eventOps().sendXI2ButtonEvent(ctx, deliver,
-                                               c.isDown != 0, c.button,
-                                               ctx.input().root_x_u, ctx.input().root_y_u,
-                                               buttonsBefore, c.modsMask,
-                                               child);
-          if (!xi2Sent) {
-            srv->eventOps().sendButtonEvent(ctx, deliver,
-                                            c.isDown != 0, c.button,
-                                            ctx.input().root_x_u, ctx.input().root_y_u,
-                                            buttonsBefore, c.modsMask,
-                                            child);
+          const int32_t rx = ctx.input().root_x_u, ry = ctx.input().root_y_u;
+          if (viaGrab) {
+            // DeliverOneGrabbedEvent (dix/events.c:4322-4366): the grab's level
+            // only, filtered by the grab's own mask, to the grabbing client.
+            const uint32_t xi2bit  = c.isDown ? x11::xi2::kButtonPressMask : x11::xi2::kButtonReleaseMask;
+            const uint32_t corebit = c.isDown ? x11::mask::ButtonPress      : x11::mask::ButtonRelease;
+            if (x11::grabroute::grabWantsXI2(activeGrab, xi2bit)) {
+              (void)srv->eventOps().sendXI2ButtonEvent(ctx, target, c.isDown != 0, c.button,
+                                                       rx, ry, buttonsBefore, c.modsMask,
+                                                       /*child=*/0, /*force=*/true, toFd);
+            } else if (x11::grabroute::grabWantsCore(activeGrab, corebit)) {
+              srv->eventOps().sendButtonEvent(ctx, target, c.isDown != 0, c.button,
+                                              rx, ry, buttonsBefore, c.modsMask,
+                                              /*child=*/0, toFd);
+            }
+          } else {
+            // xorg DeliverDeviceEvents: XI2 first; if it delivers via the window's
+            // own selection, the core event is suppressed (no double-processing).
+            const bool xi2Sent =
+              srv->eventOps().sendXI2ButtonEvent(ctx, target,
+                                                 c.isDown != 0, c.button,
+                                                 rx, ry, buttonsBefore, c.modsMask,
+                                                 child);
+            if (!xi2Sent) {
+              srv->eventOps().sendButtonEvent(ctx, target,
+                                              c.isDown != 0, c.button,
+                                              rx, ry, buttonsBefore, c.modsMask,
+                                              child);
+            }
+
+            // xorg ActivateImplicitGrab (dix/events.c:2119-2164) /
+            // ActivatePassiveGrab (:3854-3863): a delivered press with no grab
+            // active starts a grab on the delivery window, at the level the
+            // press was delivered, with that window's mask (owner_events from
+            // OwnerGrabButtonMask) — or with the matched passive record — and
+            // ActivatePointerGrab sends Leave(sprite)/Enter(grab window) with
+            // NotifyGrab when they differ (M17).
+            if (c.isDown && !haveActiveGrab) {
+              const x11::WindowView* dv = ctx.window(target);
+              x11::PointerGrab ig{};
+              if (passiveMatched) {
+                ig.grabWindow  = pg.grabWindow;
+                ig.ownerEvents = pg.ownerEvents;
+                ig.eventMask   = pg.eventMask;
+                ig.owner_fd    = dv ? dv->owner_fd : -1;
+                ig.is_xi2      = false;
+              } else if (dv) {
+                ig.grabWindow  = target;
+                ig.ownerEvents = (dv->event_mask & x11::mask::OwnerGrabButton) != 0;
+                ig.eventMask   = (uint16_t)dv->event_mask;
+                ig.owner_fd    = dv->owner_fd;
+                ig.is_xi2      = xi2Sent;
+                ig.xi2mask     = dv->xi2_mask;
+              }
+              ig.grab_time = x11_now_ms_monotonic();
+              ig.implicit  = true;
+              if (ig.grabWindow && ig.owner_fd >= 0 &&
+                  ctx.grabs().tryPointerGrab(ig) == x11::kGrabSuccess) {
+                x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), under, ig.grabWindow, /*NotifyGrab*/1);
+              }
+            }
+          }
+
+          // xorg ProcessDeviceEvent (Xi/exevents.c:1927-1930, 1949-1950): a
+          // press-activated grab is released on the last button-up, AFTER the
+          // release is delivered; DeactivatePointerGrab then sends
+          // Leave(grab window)/Enter(sprite window) with NotifyUngrab.
+          if (!c.isDown && haveActiveGrab && activeGrab.implicit && ctx.input().buttons == 0) {
+            ctx.grabs().clearPointerGrab(-1);
+            x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), activeGrab.grabWindow, under, /*NotifyUngrab*/2);
           }
           break;
         }
@@ -996,43 +1092,53 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           const int nClamped = (n > 64) ? 64 : n;
 
+          // Wheel buttons are ButtonPress/Release and take the same grab
+          // routing as any button (xorg Xi/exevents.c:1913-1930 → DeliverGrabbedEvent).
+          x11::PointerGrab sGrab{};
+          const bool haveSGrab = ctx.grabs().getPointerGrab(sGrab) && sGrab.active;
+          uint32_t sTarget = target;
+          bool     sViaGrab = false;
+          int      sToFd = -1;
+          if (haveSGrab) {
+            const auto d = x11::grabroute::route(ctx, sGrab, target);
+            sTarget = d.target; sViaGrab = d.viaGrab;
+            if (sViaGrab) sToFd = sGrab.owner_fd;
+          }
+          auto sendWheel = [&](bool press, uint8_t btn, uint32_t btnState) {
+            if (sViaGrab) {
+              const uint32_t xi2bit  = press ? x11::xi2::kButtonPressMask : x11::xi2::kButtonReleaseMask;
+              const uint32_t corebit = press ? x11::mask::ButtonPress      : x11::mask::ButtonRelease;
+              if (x11::grabroute::grabWantsXI2(sGrab, xi2bit))
+                (void)srv->eventOps().sendXI2ButtonEvent(ctx, sTarget, press, btn, rx, ry,
+                                                         btnState, c.modsMask, 0, /*force=*/true, sToFd);
+              else if (x11::grabroute::grabWantsCore(sGrab, corebit))
+                srv->eventOps().sendButtonEvent(ctx, sTarget, press, btn, rx, ry,
+                                                btnState, c.modsMask, 0, sToFd);
+              return;
+            }
+            if (!srv->eventOps().sendXI2ButtonEvent(ctx, sTarget, press, btn, rx, ry,
+                                                    btnState, c.modsMask, /*child_xid=*/0)) {
+              srv->eventOps().sendButtonEvent(ctx, sTarget, press, btn, rx, ry,
+                                              btnState, c.modsMask, /*child_xid=*/0);
+            }
+          };
+
           for (int i = 0; i < nClamped; i++) {
             const uint8_t btn = wheelButton(c.axis, (int16_t)dir);
 
         #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
                     "[SCROLL] host=0x%08X target=0x%08X axis=%u ticks=%d btn=%u win=(%d,%d) root=(%d,%d) t=%u\n",
-                    (unsigned)host, (unsigned)target,
+                    (unsigned)host, (unsigned)sTarget,
                     (unsigned)c.axis, (int)ticks, (unsigned)btn,
                     (int)c.win_x_u, (int)c.win_y_u,
                     (int)rx, (int)ry,
                     (unsigned)x11_now_ms_monotonic());
         #endif
 
-            if (!srv->eventOps().sendXI2ButtonEvent(ctx, target,
-                                                    /*is_press=*/true, btn,
-                                                    rx, ry,
-                                                    ctx.input().buttons, c.modsMask,
-                                                    /*child_xid=*/0)) {
-              srv->eventOps().sendButtonEvent(ctx, target,
-                                              /*is_press=*/true, btn,
-                                              rx, ry,
-                                              ctx.input().buttons, c.modsMask,
-                                              /*child_xid=*/0);
-            }
-
+            sendWheel(true, btn, ctx.input().buttons);
             const uint32_t wheelMask = (btn >= 1 && btn <= 31) ? (1u << (btn - 1u)) : 0;
-            if (!srv->eventOps().sendXI2ButtonEvent(ctx, target,
-                                                    /*is_press=*/false, btn,
-                                                    rx, ry,
-                                                    (ctx.input().buttons | wheelMask), c.modsMask,
-                                                    /*child_xid=*/0)) {
-              srv->eventOps().sendButtonEvent(ctx, target,
-                                              /*is_press=*/false, btn,
-                                              rx, ry,
-                                              (ctx.input().buttons | wheelMask), c.modsMask,
-                                              /*child_xid=*/0);
-            }
+            sendWheel(false, btn, ctx.input().buttons | wheelMask);
           }
 
           // NOTE: Do NOT send Expose after scroll events. xterm handles
@@ -1078,27 +1184,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             return coreWant || xi2Want;
           };
 
-          // Active keyboard grab takes precedence over focus routing
-          // (review 2026-08-31 §2.2 — Swing popup menus/combos grab the
-          // keyboard for arrow/Escape navigation; routing purely by focus
-          // sent those keys to the frame instead).  Grabbed keys are
-          // delivered regardless of the grab window's event mask, per the
-          // spec's active-grab semantics.
-          const uint32_t kbGrab = ctx.grabs().getKeyboardGrab();
-          if (kbGrab != 0 && ctx.window(kbGrab)) {
-            if (!srv->eventOps().sendXI2KeyEvent(ctx, kbGrab,
-                                                 c.isDown != 0,
-                                                 x11_kc,
-                                                 ctx.input().buttons, c.modsMask)) {
-              srv->eventOps().sendKeyEvent(ctx, kbGrab,
-                                           c.isDown != 0,
-                                           x11_kc,
-                                           ctx.input().buttons, c.modsMask);
-            }
-            break;
-          }
-
-          // Primary: keyboard focus (only if it belongs to this host)
+          // Ungrabbed target: keyboard focus (only if it belongs to this host),
+          // climbing the parent chain by selection; also stage 1 of an
+          // owner_events keyboard grab.
           uint32_t target = 0;
           const uint32_t focus = ctx.input().focus_xid;
           if (focus != 0) {
@@ -1124,7 +1212,40 @@ static void processOneHostCmd(x11::XProtoServer* srv,
               if (++safety > 64) break;
             }
             if (!fenced && !wantsKey(target) && wantsKey(host)) target = host;
-            if (!wantsKey(target)) break; // nobody wants it (or fenced)
+          }
+          const bool normalWants = wantsKey(target);
+
+          // ---- Active keyboard grab (GrabKeyboard / XIGrabDevice on the
+          // keyboard) — xorg DeliverGrabbedEvent: with owner_events the
+          // focus-based target if it belongs to the grabbing client, otherwise
+          // the grab window at the grab's level (a core GrabKeyboard's mask is
+          // KeyPress|KeyRelease, dix/events.c:5317; an XI2 grab uses its
+          // xi2mask), addressed to the grabbing client.  Swing popups/combos
+          // and GTK menus grab the keyboard for arrow/Escape navigation.
+          x11::KeyboardGrab kg{};
+          if (ctx.grabs().getKeyboardGrabInfo(kg) && kg.active &&
+              (kg.grabWindow == x11::kRootXid || ctx.window(kg.grabWindow))) {
+            bool viaGrab = true;
+            if (kg.ownerEvents && normalWants) {
+              const x11::WindowView* tv = ctx.window(target);
+              if (tv && tv->owner_fd == kg.owner_fd) viaGrab = false;
+            }
+            if (viaGrab) {
+              const uint32_t xi2bit = c.isDown ? x11::xi2::kKeyPressMask : x11::xi2::kKeyReleaseMask;
+              if (kg.is_xi2) {
+                if (kg.xi2mask & xi2bit)
+                  (void)srv->eventOps().sendXI2KeyEvent(ctx, kg.grabWindow, c.isDown != 0, x11_kc,
+                                                        ctx.input().buttons, c.modsMask,
+                                                        /*force=*/true, kg.owner_fd);
+              } else {
+                srv->eventOps().sendKeyEvent(ctx, kg.grabWindow, c.isDown != 0, x11_kc,
+                                             ctx.input().buttons, c.modsMask, kg.owner_fd);
+              }
+              break;
+            }
+            // owner_events within the grabbing client: normal delivery at `target`.
+          } else if (!normalWants) {
+            break; // nobody wants it (or fenced)
           }
 
         #ifdef X11_TRACE_VERBOSE

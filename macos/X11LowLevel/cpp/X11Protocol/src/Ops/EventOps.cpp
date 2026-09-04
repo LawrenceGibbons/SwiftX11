@@ -131,6 +131,18 @@ static bool computeEventXYFromRoot(x11::XProtoContext& ctx,
 }  
   
 
+// Final write of an event: to an explicit client (grab-window delivery goes
+// to the grabbing client, xorg dix/events.c:4364 — also the only way to reach
+// a root-window grab, which has no owner) or to the window's owner.
+static inline void emit32(x11::XProtoContext& ctx, uint32_t wid, const uint8_t ev[32], int toFd) {
+  if (toFd >= 0) (void)ctx.transport().sendEventToFd(toFd, ev, 32);
+  else           (void)ctx.transport().sendEvent32(wid, ev);
+}
+static inline void emitVar(x11::XProtoContext& ctx, uint32_t wid, const uint8_t* ev, size_t len, int toFd) {
+  if (toFd >= 0) (void)ctx.transport().sendEventToFd(toFd, ev, len);
+  else           (void)ctx.transport().sendEventVariable(wid, ev, len);
+}
+
 static void buildButtonEvent32(uint8_t ev[32],
                                uint8_t type,            // 4 press, 5 release
                                uint16_t seqField,        // "last request seq" is OK here
@@ -386,7 +398,8 @@ void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
 void EventOps::sendMotionNotify(XProtoContext& ctx,
                                 uint32_t wid,
                                 int32_t root_x, int32_t root_y,
-                                uint32_t buttons, uint32_t mods)
+                                uint32_t buttons, uint32_t mods,
+                                int toFd)
 {
   // event-local coords
   int16_t ex = 0, ey = 0;
@@ -422,7 +435,7 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
                      rootW, rootH,
                      abs);
 
-  ctx.transport().sendEvent32(wid, ev);
+  emit32(ctx, wid, ev, toFd);
 }
 
 
@@ -432,7 +445,8 @@ void EventOps::sendButtonEvent(XProtoContext& ctx,
                                uint8_t button,
                                int32_t root_x, int32_t root_y,
                                uint32_t buttons, uint32_t mods,
-                               uint32_t child_xid)
+                               uint32_t child_xid,
+                               int toFd)
 {
   // event-local coords
   int16_t ex = 0, ey = 0;
@@ -468,15 +482,16 @@ void EventOps::sendButtonEvent(XProtoContext& ctx,
                      rootW, rootH,
                      abs);
 
-  ctx.transport().sendEvent32(wid, ev);
+  emit32(ctx, wid, ev, toFd);
 }
-  
+
 
 void EventOps::sendKeyEvent(XProtoContext& ctx,
                             uint32_t wid,
                             bool is_press,
                             uint8_t keycode,
-                            uint32_t buttons, uint32_t mods)
+                            uint32_t buttons, uint32_t mods,
+                            int toFd)
 {
   uint8_t ev[32] = {0};
 
@@ -526,7 +541,7 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
              (unsigned)ctx.transport().lastSeq());
 #endif
 
-  ctx.transport().sendEvent32(wid, ev);
+  emit32(ctx, wid, ev, toFd);
 }
 
 void EventOps::sendCrossingEvent(XProtoContext& ctx,
@@ -534,7 +549,8 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
                                 bool is_enter,
                                 int32_t root_x, int32_t root_y,
                                 uint32_t buttons, uint32_t mods,
-                                uint8_t mode)
+                                uint8_t mode,
+                                int toFd)
 {
   auto clamp16 = [](int32_t v) -> int16_t {
     if (v < -32768) return -32768;
@@ -597,8 +613,8 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
           (int)rx, (int)ry, (int)ex, (int)ey, (unsigned)st);
 #endif
 
-  ctx.transport().sendEvent32(wid, ev);
-}  
+  emit32(ctx, wid, ev, toFd);
+}
   
   
   
@@ -697,12 +713,16 @@ static void fillXI2Group(uint8_t* buf) {
 
 bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
                                   int32_t root_x, int32_t root_y,
-                                  uint32_t buttons, uint32_t mods) {
+                                  uint32_t buttons, uint32_t mods,
+                                  bool force, int toFd) {
   const WindowView* wv = ctx.window(wid);
-  if (!wv) return false;
-  const bool own = (wv->xi2_mask & xi2::kMotionMask) != 0;  // per-window selection → suppress core
-  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
-  if (!(eff_mask & xi2::kMotionMask)) return false;
+  if (!force && !wv) return false;
+  // per-window selection → suppress core; a grab-forced delivery counts as consumed
+  const bool own = force || (wv->xi2_mask & xi2::kMotionMask) != 0;
+  if (!force) {
+    uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+    if (!(eff_mask & xi2::kMotionMask)) return false;
+  }
 
   // Compute event-local coords using proper hierarchy walk (same as core events)
   int16_t ex = 0, ey = 0;
@@ -742,7 +762,7 @@ bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 120, (uint32_t)root_x);            // valuator 0 = x (FP3232 integral)
   wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
-  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+  emitVar(ctx, wid, buf, sizeof(buf), toFd);
   return own;
 }
 
@@ -750,13 +770,16 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
                                   bool is_press, uint8_t button,
                                   int32_t root_x, int32_t root_y,
                                   uint32_t buttons, uint32_t mods,
-                                  uint32_t child_xid) {
+                                  uint32_t child_xid,
+                                  bool force, int toFd) {
   uint32_t mask_bit = is_press ? xi2::kButtonPressMask : xi2::kButtonReleaseMask;
   const WindowView* wv = ctx.window(wid);
-  if (!wv) return false;
-  const bool own = (wv->xi2_mask & mask_bit) != 0;  // per-window selection → suppress core
-  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
-  if (!(eff_mask & mask_bit)) return false;
+  if (!force && !wv) return false;
+  const bool own = force || (wv->xi2_mask & mask_bit) != 0;  // per-window selection → suppress core
+  if (!force) {
+    uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+    if (!(eff_mask & mask_bit)) return false;
+  }
 
   // Compute event-local coords using proper hierarchy walk (same as core events)
   int16_t ex = 0, ey = 0;
@@ -795,19 +818,22 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 120, (uint32_t)root_x);            // valuator 0 = x (FP3232 integral)
   wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
-  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+  emitVar(ctx, wid, buf, sizeof(buf), toFd);
   return own;
 }
 
 bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
                                bool is_press, uint8_t keycode,
-                               uint32_t buttons, uint32_t mods) {
+                               uint32_t buttons, uint32_t mods,
+                               bool force, int toFd) {
   uint32_t mask_bit = is_press ? xi2::kKeyPressMask : xi2::kKeyReleaseMask;
   const WindowView* wv = ctx.window(wid);
-  if (!wv) return false;
-  const bool own = (wv->xi2_mask & mask_bit) != 0;  // per-window selection → suppress core
-  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
-  if (!(eff_mask & mask_bit)) return false;
+  if (!force && !wv) return false;
+  const bool own = force || (wv->xi2_mask & mask_bit) != 0;  // per-window selection → suppress core
+  if (!force) {
+    uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+    if (!(eff_mask & mask_bit)) return false;
+  }
 
   uint8_t buf[xi2::kKeyEventSize] = {};
   buf[0] = 35;
@@ -831,7 +857,7 @@ bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   // Trailing: 32B button mask (all zero) + 8B valuator mask (all zero, no axes).
   // (keys carry no valuators, so no FP3232 axisvalues follow the mask.)
 
-  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+  emitVar(ctx, wid, buf, sizeof(buf), toFd);
   return own;
 }
 
@@ -839,13 +865,16 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                                     bool is_enter,
                                     int32_t root_x, int32_t root_y,
                                     uint32_t buttons, uint32_t mods,
-                                    uint8_t mode) {
+                                    uint8_t mode,
+                                    bool force, int toFd) {
   uint32_t mask_bit = is_enter ? xi2::kEnterMask : xi2::kLeaveMask;
   const WindowView* wv = ctx.window(wid);
-  if (!wv) return false;
-  const bool own = (wv->xi2_mask & mask_bit) != 0;  // per-window selection → suppress core
-  uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
-  if (!(eff_mask & mask_bit)) return false;
+  if (!force && !wv) return false;
+  const bool own = force || (wv->xi2_mask & mask_bit) != 0;  // per-window selection → suppress core
+  if (!force) {
+    uint32_t eff_mask = wv->xi2_mask | ctx.input().xi2_root_mask;
+    if (!(eff_mask & mask_bit)) return false;
+  }
 
   // Compute event-local coords using proper hierarchy walk (same as core events)
   int16_t ex = 0, ey = 0;
@@ -883,7 +912,7 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   // xXIEnterEvent has no valuators.
   wire::wr32_le(buf + 72, xi2ButtonMask(buttons));        // button mask, word 0
 
-  ctx.transport().sendEventVariable(wid, buf, sizeof(buf));
+  emitVar(ctx, wid, buf, sizeof(buf), toFd);
   return own;
 }
 

@@ -1676,12 +1676,9 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           x11::PointerGrab req{};
           req.grabWindow    = win;
           req.ownerEvents   = (owner_ev != 0);
-          // Core-level motion routing still consults eventMask until Phase B2
-          // switches grab-time delivery to the XI2 mask; keep the broad mask
-          // so XI2 grabs keep receiving motion in the meantime.
-          req.eventMask     = (uint16_t)(x11::mask::ButtonPress | x11::mask::ButtonRelease |
-                                         x11::mask::PointerMotion | x11::mask::ButtonMotion |
-                                         x11::mask::EnterWindow | x11::mask::LeaveWindow);
+          // An XI2 grab delivers at the XI2 level only, filtered by xi2mask
+          // (DeliverOneGrabbedEvent); the core mask plays no part.
+          req.eventMask     = 0;
           req.owner_fd      = fd;
           req.grab_time     = time ? time : now;
           req.is_xi2        = true;

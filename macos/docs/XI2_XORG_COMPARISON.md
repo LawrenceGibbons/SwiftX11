@@ -8,7 +8,7 @@ Comparison of the complete SwiftX11 XInput 2 implementation against the xorg-ser
 | **Reference** | xorg-server source at `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/`; protocol headers at `/opt/X11/include/X11/extensions/` (`XI2proto.h`, `XIproto.h`, `XI.h`, `XI2.h`) |
 | **Date** | 2026-09-04 |
 | **Method** | Five independent, line-cited audit tracks (requests/replies, wire formats, delivery/selection, grabs, crossing/focus/hierarchy) plus lead cross-checks against the xorg source wherever two tracks disagreed |
-| **Status** | Findings. **Phase A** (M1, M2, M6, M8, M10, L10 and the minimal form of M4 — per-client root selections with a union) landed in **v1.20.0.12-dbg**; test 2026-09-04: xeyes now survives Vitis launch (clobber fixed) but froze while the pointer was over Vitis — the predicted `activeXid` misroute. **v1.20.0.13-dbg** adds the M5 RawMotion fan-out (window-free delivery to every root selector via `sendEventToFd`), awaiting test. |
+| **Status** | Findings. **Phase A** (M1, M2, M6, M8, M10, L10 and the minimal form of M4 — per-client root selections with a union) landed in **v1.20.0.12-dbg**; test 2026-09-04: xeyes now survives Vitis launch (clobber fixed) but froze while the pointer was over Vitis — the predicted `activeXid` misroute. **v1.20.0.13-dbg** adds the M5 RawMotion fan-out (window-free delivery to every root selector via `sendEventToFd`) — confirmed. **Phase B** landed as **v1.20.0.17** (B1: M3, M22, grab records and activation choreography — `Utils/GrabChoreography.hpp`) and **v1.20.0.18** (B2: M7 routing via `Utils/GrabRoute.hpp`, M16, M17 implicit/passive grabs as real records), awaiting test. Phase A checkpoint branch: `xi2-phase-a-checkpoint`. |
 
 ## 0. How to read this document
 

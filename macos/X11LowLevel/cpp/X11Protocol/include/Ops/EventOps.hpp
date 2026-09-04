@@ -84,12 +84,17 @@ namespace x11 {
     // seq is the sequence number Transport decided to stamp on the event.
     void flushPendingNotify(const PendingNotify& pn, uint16_t seq);
         
-    // mouse handling
+    // Core senders.  `toFd` (Phase B2): when >= 0 the event is written to that
+    // client instead of the window's owner — xorg delivers grab-window events
+    // to rClient(grab) (dix/events.c:4364), which also covers a root-window
+    // grab where no owner exists.  These senders apply no mask of their own;
+    // the caller has already decided deliverability.
     void sendMotionNotify(XProtoContext& ctx,
                           uint32_t wid,
                           int32_t root_x, int32_t root_y,
-                          uint32_t buttons, uint32_t mods);
-    
+                          uint32_t buttons, uint32_t mods,
+                          int toFd = -1);
+
     // mouse buttons
     void sendButtonEvent(XProtoContext& ctx,
                                    uint32_t wid,
@@ -97,21 +102,24 @@ namespace x11 {
                                    uint8_t button,
                                    int32_t root_x, int32_t root_y,
                                    uint32_t buttons, uint32_t mods,
-                                   uint32_t child_xid /* = 0 */);
+                                   uint32_t child_xid /* = 0 */,
+                                   int toFd = -1);
     // keyboard events
     void sendKeyEvent(XProtoContext& ctx,
                       uint32_t wid,
                       bool is_press,
                       uint8_t keycode,
-                      uint32_t buttons, uint32_t mods);
-    
-    
+                      uint32_t buttons, uint32_t mods,
+                      int toFd = -1);
+
+
     void sendCrossingEvent(XProtoContext& ctx,
                            uint32_t wid,
                            bool is_enter,
                            int32_t root_x, int32_t root_y,
                            uint32_t buttons, uint32_t mods,
-                           uint8_t mode = 0);  // 0=Normal, 1=Grab, 2=Ungrab
+                           uint8_t mode = 0,   // 0=Normal, 1=Grab, 2=Ungrab
+                           int toFd = -1);
     
     
     void sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
@@ -139,25 +147,34 @@ namespace x11 {
     // sendXI2CrossingEvent's return value to suppress the core EnterNotify/
     // LeaveNotify (v1.20.0.10 did; reverted in v1.20.0.12 — R1 in
     // docs/XI2_XORG_COMPARISON.md).
+    //
+    // `force` (Phase B2): the caller has already tested the GRAB's XI2 mask
+    // (DeliverOneGrabbedEvent, dix/events.c:4326-4334) — skip the window's
+    // own selection and report delivered.  `toFd`: write to that client
+    // (the grabbing client) instead of the window's owner.
     bool sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
                             int32_t root_x, int32_t root_y,
-                            uint32_t buttons, uint32_t mods);
+                            uint32_t buttons, uint32_t mods,
+                            bool force = false, int toFd = -1);
 
     bool sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
                             bool is_press, uint8_t button,
                             int32_t root_x, int32_t root_y,
                             uint32_t buttons, uint32_t mods,
-                            uint32_t child_xid);
+                            uint32_t child_xid,
+                            bool force = false, int toFd = -1);
 
     bool sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
                          bool is_press, uint8_t keycode,
-                         uint32_t buttons, uint32_t mods);
+                         uint32_t buttons, uint32_t mods,
+                         bool force = false, int toFd = -1);
 
     bool sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                               bool is_enter,
                               int32_t root_x, int32_t root_y,
                               uint32_t buttons, uint32_t mods,
-                              uint8_t mode = 0);  // 0=Normal, 1=Grab, 2=Ungrab
+                              uint8_t mode = 0,   // 0=Normal, 1=Grab, 2=Ungrab
+                              bool force = false, int toFd = -1);
 
     // mode: 0=Normal, 1=Grab, 2=Ungrab, 3=WhileGrabbed.  detail defaults to
     // NotifyNonlinear (3), the value for the toplevel↔toplevel transitions
