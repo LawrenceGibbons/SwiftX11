@@ -295,8 +295,20 @@ final class WindowRegistry {
       forName: NSWindow.didResignKeyNotification,
       object: window,
       queue: .main
-    ) { _ in
+    ) { note in
       MainActor.assumeIsolated {
+        #if DEBUG
+        // Who took key?  A resign with no X11 successor (app deactivated, or
+        // key moved to a non-X11 window) is what killed Chromium tooltips
+        // ~15 ms after their forced show; record the successor here.
+        let resigned = note.object as? NSWindow
+        let key = NSApp.keyWindow
+        fputs(String(format: "[FOCUS_NS] resignKey xid=0x%08X appActive=%d style=0x%lx level=%ld -> newKey=%@ (%@)\n",
+                     xid, NSApp.isActive ? 1 : 0,
+                     resigned?.styleMask.rawValue ?? 0, resigned?.level.rawValue ?? 0,
+                     key.map { String(format: "%p", Unmanaged.passUnretained($0).toOpaque()) } ?? "nil",
+                     key?.title ?? "-"), stderr)
+        #endif
         x11_post_focus_event(xid, false)
       }
     }
@@ -400,6 +412,9 @@ final class WindowRegistry {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
           guard let self else { return }
           if self.pendingORShow.remove(hostCopy) != nil {
+            #if DEBUG
+            fputs(String(format: "[OR_SHOW] forced after 150ms xid=0x%08X (no content-bearing present)\n", hostCopy), stderr)
+            #endif
             self.windows[hostCopy]?.window?.orderFront(nil)
           }
         }
@@ -828,23 +843,30 @@ final class WindowRegistry {
   private func showPendingORWindowIfNeeded(xid: UInt32, data: Data, width: Int, height: Int, bytesPerRow: Int) {
     guard pendingORShow.contains(xid) else { return }
 
-    // Quick scan: check a few sample locations for non-white pixels.
-    // White = 0xFFFFFFFF (BGRA opaque white). If ALL samples are white,
-    // the client likely hasn't drawn yet — keep the window hidden.
-    let hasContent: Bool = data.withUnsafeBytes { raw in
-      let p = raw.bindMemory(to: UInt32.self)
+    // Full scan (early exit) for any non-white pixel.  White = 0xFFFFFFFF
+    // (BGRA opaque white) is the surface's initial fill, so any other value
+    // means the client has drawn.  The previous nine-point sample never
+    // matched a Chromium tooltip — one line of dark text on white — so the
+    // window was never revealed by content and only the 150 ms fallback
+    // showed it (v1.20.0.14).  Rows are compared 64 bits at a time; the
+    // surface stride is 64-byte aligned so each row start is 8-byte aligned.
+    let hasContent: Bool = data.withUnsafeBytes { raw -> Bool in
       let stride = bytesPerRow / 4
-      guard stride > 0, height > 0 else { return false }
-      // Sample center, quarters, and a few more locations
-      let sampleYs = [height / 4, height / 2, (height * 3) / 4]
-      let sampleXs = [width / 4, width / 2, (width * 3) / 4]
-      for sy in sampleYs {
-        for sx in sampleXs {
-          let idx = sy * stride + sx
-          if idx < p.count && p[idx] != 0xFFFFFFFF {
-            return true
-          }
+      guard stride > 0, height > 0, width > 0,
+            let base = raw.baseAddress else { return false }
+      let p = raw.bindMemory(to: UInt32.self)
+      let whitePair: UInt64 = 0xFFFF_FFFF_FFFF_FFFF
+      let pairs = width / 2
+      for y in 0..<height {
+        let rowStart = y * stride
+        guard rowStart + width <= p.count else { break }
+        let row = base + rowStart * 4
+        var i = 0
+        while i < pairs {
+          if row.load(fromByteOffset: i * 8, as: UInt64.self) != whitePair { return true }
+          i += 1
         }
+        if (width & 1) == 1 && p[rowStart + width - 1] != 0xFFFFFFFF { return true }
       }
       return false
     }
@@ -1453,7 +1475,20 @@ final class WindowRegistry {
       }
       return
     }
+    // Override-redirect windows (menus, tooltips, drag icons) are never
+    // WM-managed: nothing below may give them a title bar or drop them to
+    // normal level.  Chromium sets _MOTIF_WM_HINTS (decor=0) on EVERY window
+    // it creates — its tooltips included, with an empty title — and the
+    // "undecorated main window" branch below was turning a 209×25 tooltip
+    // into a titled, resizable, normal-level NSWindow (v1.20.0.14).
+    let isOverrideRedirect = infoByXid[host]?.overrideRedirect == true
+
     if typeAtom == 0x80000003 {
+      if isOverrideRedirect {
+        win.styleMask = [.borderless]
+        win.level = .floating
+        return
+      }
       // MOTIF undecorated: check if this is a known popup pattern.
       // Empty title is NOT enough — Electron/Vitis sets MOTIF hints before
       // the title property, so the title is empty at this point.
@@ -1488,6 +1523,13 @@ final class WindowRegistry {
     let typeMenu:    UInt32 = 86
     let typeTooltip: UInt32 = 87
     let typeSplash:  UInt32 = 88
+
+    // Decorated types never apply to an override-redirect window.
+    if isOverrideRedirect &&
+       (typeAtom == typeNormal || typeAtom == typeDialog ||
+        typeAtom == typeToolbar || typeAtom == typeUtility) {
+      return
+    }
 
     switch typeAtom {
     case typeDialog:
