@@ -416,6 +416,9 @@ final class WindowRegistry {
             fputs(String(format: "[OR_SHOW] forced after 150ms xid=0x%08X (no content-bearing present)\n", hostCopy), stderr)
             #endif
             self.windows[hostCopy]?.window?.orderFront(nil)
+            DispatchQueue.main.async { [weak self] in
+              self?.windows[hostCopy]?.x11View?.redrawIfDeferred()
+            }
           }
         }
       } else {
@@ -872,6 +875,11 @@ final class WindowRegistry {
       #if DEBUG
       #endif
       windows[xid]?.window?.orderFront(nil)
+      // The display pass that follows the reveal may be refused while AppKit
+      // has not yet reported the window visible; ask again next turn.
+      DispatchQueue.main.async { [weak self] in
+        self?.windows[xid]?.x11View?.redrawIfDeferred()
+      }
     } else {
       #if DEBUG
       #endif

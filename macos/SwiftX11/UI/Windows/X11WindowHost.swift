@@ -68,6 +68,21 @@ final class X11View: NSView {
   private var device: MTLDevice?
   private weak var trackingHost: NSView?
   private var renderer: X11MetalRenderer?
+
+  /// Set by X11Renderer.draw(in:) when a display pass was skipped because the
+  /// window was not yet visible — AppKit reports occlusion asynchronously
+  /// after orderFront, so the pass that follows the reveal of a pending
+  /// override-redirect window can be refused.  needsDisplay is consumed by
+  /// that pass, so a static window (a tooltip) would otherwise keep the
+  /// layer's initial white forever (v1.20.0.16).  Cleared on the next
+  /// successful draw.
+  fileprivate var drawDeferredWhileHidden = false
+
+  /// Re-request a display pass if one was skipped while hidden.
+  func redrawIfDeferred() {
+    guard drawDeferredWhileHidden, let mv = mtkView else { return }
+    mv.setNeedsDisplay(mv.bounds)
+  }
   private var mtkDelegate: X11Renderer?
   // Avoid triggering MTKView delegate callbacks during NSView.layout (can cause layout recursion).
   private var pendingDrawableSize: CGSize?
@@ -1355,14 +1370,40 @@ final class X11Renderer: NSObject, MTKViewDelegate {
     // Skip drawing when app is backgrounded or window not visible —
     // CAMetalLayer.nextDrawable can crash (stack buffer overflow in
     // CAMetalLayerPrivateNextDrawableLocked) when the app is inactive.
+    // Every skip is remembered on the owner so the pass can be re-requested
+    // once the window is actually visible (windowDidChangeOcclusionState /
+    // the OR reveal sites); a consumed needsDisplay left static windows
+    // showing the layer's initial white (v1.20.0.16).
     guard let window = view.window, window.isVisible,
-          window.occlusionState.contains(.visible) else { return }
+          window.occlusionState.contains(.visible) else {
+      owner?.drawDeferredWhileHidden = true
+      return
+    }
     let ds = view.drawableSize
-    guard ds.width >= 1, ds.height >= 1 else { return }
-    guard view.currentDrawable != nil else { return }
-    guard owner?.hasMetalTexture == true else { return }
+    guard ds.width >= 1, ds.height >= 1 else {
+      owner?.drawDeferredWhileHidden = true
+      return
+    }
+    guard view.currentDrawable != nil else {
+      // Visible but no drawable yet (first pass after reveal): retry a few
+      // frames later rather than dropping the only paint a tooltip gets.
+      owner?.drawDeferredWhileHidden = true
+      if drawableRetries < 10 {
+        drawableRetries += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak view] in
+          guard let view else { return }
+          view.setNeedsDisplay(view.bounds)
+        }
+      }
+      return
+    }
+    guard owner?.hasMetalTexture == true else { return }   // a present will follow
+    drawableRetries = 0
+    owner?.drawDeferredWhileHidden = false
     owner?.metalDraw(in: view)
   }
+
+  private var drawableRetries = 0
   
   private var pendingSize: (w: Int32, h: Int32)? = nil
   private var resizeFlushScheduled: Bool = false  

@@ -332,6 +332,14 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
     //
     // We can optionally pause rendering when fully occluded (future
     // optimization), but we must never unmap/orderOut the window.
+    //
+    // Becoming visible: if X11Renderer.draw(in:) skipped a display pass
+    // while the window was hidden/occluded, re-request it now — otherwise a
+    // static window (tooltip) revealed via orderFront keeps the layer's
+    // initial white (v1.20.0.16).
+    if let win = window, win.isVisible, win.occlusionState.contains(.visible) {
+      x11View?.redrawIfDeferred()
+    }
   }
   
   
