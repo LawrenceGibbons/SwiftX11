@@ -62,21 +62,30 @@ bool GrabTable::match(uint32_t grabWindow, uint8_t button, uint16_t modifiers, P
   return true;
 }
 
+uint8_t GrabTable::tryPointerGrab(const PointerGrab& req) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (pointer_.active) {
+    // xorg GrabDevice (dix/events.c:5253-5256): a grab of the other level
+    // (CORE vs XI2) or held by another client → AlreadyGrabbed.
+    if (pointer_.is_xi2 != req.is_xi2) return kAlreadyGrabbed;
+    if (pointer_.owner_fd >= 0 && pointer_.owner_fd != req.owner_fd) return kAlreadyGrabbed;
+  }
+  pointer_ = req;
+  pointer_.active = true;
+  return kGrabSuccess;
+}
+
 uint8_t GrabTable::tryPointerGrab(uint32_t grabWindow, bool ownerEvents,
                                   uint16_t eventMask, int owner_fd,
                                   uint32_t time) {
-  std::lock_guard<std::mutex> lock(mu_);
-  if (pointer_.active && pointer_.owner_fd >= 0 &&
-      pointer_.owner_fd != owner_fd) {
-    return kAlreadyGrabbed;
-  }
-  pointer_.active = true;
-  pointer_.grabWindow = grabWindow;
-  pointer_.ownerEvents = ownerEvents;
-  pointer_.eventMask = eventMask;
-  pointer_.owner_fd = owner_fd;
-  pointer_.grab_time = time;
-  return kGrabSuccess;
+  PointerGrab req{};
+  req.grabWindow  = grabWindow;
+  req.ownerEvents = ownerEvents;
+  req.eventMask   = eventMask;
+  req.owner_fd    = owner_fd;
+  req.grab_time   = time;
+  req.is_xi2      = false;
+  return tryPointerGrab(req);
 }
 
 void GrabTable::clearPointerGrab(int owner_fd) {
@@ -101,40 +110,52 @@ void GrabTable::updatePointerGrabEventMask(uint16_t eventMask) {
   }
 }
 
-uint8_t GrabTable::tryKeyboardGrab(uint32_t grabWindow, int owner_fd) {
+uint8_t GrabTable::tryKeyboardGrab(const KeyboardGrab& req) {
   std::lock_guard<std::mutex> lock(mu_);
-  if (keyboard_grab_window_ != 0 && keyboard_grab_fd_ >= 0 &&
-      keyboard_grab_fd_ != owner_fd) {
-    return kAlreadyGrabbed;
+  if (keyboard_.active) {
+    if (keyboard_.is_xi2 != req.is_xi2) return kAlreadyGrabbed;
+    if (keyboard_.owner_fd >= 0 && keyboard_.owner_fd != req.owner_fd) return kAlreadyGrabbed;
   }
-  keyboard_grab_window_ = grabWindow;
-  keyboard_grab_fd_ = owner_fd;
+  keyboard_ = req;
+  keyboard_.active = true;
   return kGrabSuccess;
+}
+
+uint8_t GrabTable::tryKeyboardGrab(uint32_t grabWindow, int owner_fd) {
+  KeyboardGrab req{};
+  req.grabWindow = grabWindow;
+  req.owner_fd   = owner_fd;
+  req.is_xi2     = false;
+  return tryKeyboardGrab(req);
 }
 
 uint32_t GrabTable::clearKeyboardGrab(int owner_fd) {
   std::lock_guard<std::mutex> lock(mu_);
-  if (owner_fd >= 0 && keyboard_grab_window_ != 0 &&
-      keyboard_grab_fd_ >= 0 && keyboard_grab_fd_ != owner_fd) {
+  if (owner_fd >= 0 && keyboard_.active &&
+      keyboard_.owner_fd >= 0 && keyboard_.owner_fd != owner_fd) {
     return 0; // another client's grab
   }
-  uint32_t prev = keyboard_grab_window_;
-  keyboard_grab_window_ = 0;
-  keyboard_grab_fd_ = -1;
+  const uint32_t prev = keyboard_.active ? keyboard_.grabWindow : 0;
+  keyboard_ = KeyboardGrab{};
   return prev;
 }
 
 uint32_t GrabTable::getKeyboardGrab() const {
   std::lock_guard<std::mutex> lock(mu_);
-  return keyboard_grab_window_;
+  return keyboard_.active ? keyboard_.grabWindow : 0;
+}
+
+bool GrabTable::getKeyboardGrabInfo(KeyboardGrab& out) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  out = keyboard_;
+  return out.active;
 }
 
 void GrabTable::clearAll() {
   std::lock_guard<std::mutex> lock(mu_);
   passive_.clear();
   pointer_ = PointerGrab{};
-  keyboard_grab_window_ = 0;
-  keyboard_grab_fd_ = -1;
+  keyboard_ = KeyboardGrab{};
 }
 
 void GrabTable::removeForWindows(const std::vector<uint32_t>& xids) {
@@ -153,10 +174,9 @@ void GrabTable::removeForWindows(const std::vector<uint32_t>& xids) {
   }
   // Same for the keyboard grab (was missed — a destroyed grab window left
   // the keyboard grabbed forever; review §6.5)
-  if (keyboard_grab_window_ != 0 &&
-      std::find(xids.begin(), xids.end(), keyboard_grab_window_) != xids.end()) {
-    keyboard_grab_window_ = 0;
-    keyboard_grab_fd_ = -1;
+  if (keyboard_.active &&
+      std::find(xids.begin(), xids.end(), keyboard_.grabWindow) != xids.end()) {
+    keyboard_ = KeyboardGrab{};
   }
 }
 
@@ -166,9 +186,8 @@ void GrabTable::clearOwnedBy(int owner_fd) {
   if (pointer_.active && pointer_.owner_fd == owner_fd) {
     pointer_ = PointerGrab{};
   }
-  if (keyboard_grab_window_ != 0 && keyboard_grab_fd_ == owner_fd) {
-    keyboard_grab_window_ = 0;
-    keyboard_grab_fd_ = -1;
+  if (keyboard_.active && keyboard_.owner_fd == owner_fd) {
+    keyboard_ = KeyboardGrab{};
   }
 }
 

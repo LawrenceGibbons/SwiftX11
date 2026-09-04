@@ -27,6 +27,9 @@ extern "C" {
 #include "Core/InputRouting.hpp"   // pickDeepestMappedWindowAtHostPoint (XIQueryPointer)
 #include "Core/CursorRouting.hpp"  // maybeApplyCursor (XIChangeCursor)
 #include "Core/GrabTable.hpp"      // tryPointerGrab/clearPointerGrab (XIGrabDevice)
+#include "Core/XI2EventMask.hpp"   // device ids (XIGrabDevice routes by device class)
+#include "Core/timestamp.hpp"      // x11_now_ms_monotonic (grab time checks)
+#include "Utils/GrabChoreography.hpp" // grab activation/deactivation choreography
 #include "Core/XProtoServer.hpp"   // eventOps() for grab-activation crossings
 #include "Ops/EventOps.hpp"
 
@@ -1598,11 +1601,18 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     // ---- minor 51: XIGrabDevice (reply-bearing) ----
-    // Establish a REAL active pointer grab so all pointer events (and their XI2
-    // twins) route to the grab window until XIUngrabDevice.  Electron grabs the
-    // device to show menus/popups; the old stub returned Success but grabbed
-    // nothing, so the popup never received events.  We reuse the core pointer
-    // grab (tryPointerGrab) with a broad pointer mask for routing.
+    // xorg Xi/xigrabdev.c ProcXIGrabDevice → dix/events.c GrabDevice: the
+    // named DEVICE decides whether this is a pointer or a keyboard grab; the
+    // request's XI2 mask is the grab's own mask (grab-time delivery is at the
+    // XI2 level only — DeliverOneGrabbedEvent); status codes AlreadyGrabbed /
+    // GrabNotViewable / GrabInvalidTime; activation sends the NotifyGrab
+    // crossings (pointer) or the NotifyGrab focus pair (keyboard).
+    //
+    // GTK3's gdk_seat_grab issues one call for the master pointer (2) and one
+    // for the master keyboard (3) and ungrabs them separately.  The previous
+    // handler turned BOTH into a pointer grab, so the keyboard grab replaced
+    // the pointer grab's record and the keyboard UNGRAB released the pointer
+    // grab GTK still believed it held (M3 in docs/XI2_XORG_COMPARISON.md).
     case 51: {
       if (br.remaining() < 20) {
         br.skip(br.remaining());
@@ -1614,60 +1624,169 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
       const uint32_t win  = br.readU32();
       const uint32_t time = br.readU32();
-      (void)br.readU32();               // cursor
+      const uint32_t cursor = br.readU32();
       const uint16_t deviceid = br.readU16();
       const uint8_t grab_mode = br.readU8();
       const uint8_t paired    = br.readU8();
       const uint8_t owner_ev  = br.readU8();
       (void)br.readU8();                // pad
       const uint16_t mask_len = br.readU16();
-      br.skip(br.remaining());          // XI2 event mask — we route via core grab
-      (void)deviceid; (void)grab_mode; (void)paired; (void)mask_len;
+      uint32_t xi2mask = 0;             // mask word 0 covers every type we emit (≤31)
+      for (uint16_t j = 0; j < mask_len && br.remaining() >= 4; j++) {
+        const uint32_t w = br.readU32();
+        if (j == 0) xi2mask = w;
+      }
+      br.skip(br.remaining());
 
-      const uint32_t coreMask =
-          x11::mask::ButtonPress | x11::mask::ButtonRelease |
-          x11::mask::PointerMotion | x11::mask::ButtonMotion |
-          x11::mask::EnterWindow | x11::mask::LeaveWindow;
-      const uint8_t gs = ctx.grabs().tryPointerGrab(
-          win, owner_ev != 0, coreMask, ctx.transport().clientFd(), time);
-      // XI2 GrabStatus codes match core (0=Success, 1=AlreadyGrabbed).
+      const bool isKeyboard = (deviceid == x11::xi2::kVirtualCoreKeyboard ||
+                               deviceid == x11::xi2::kXTESTKeyboard ||
+                               deviceid == x11::xi2::kRealKeyboard);
+      const bool isPointer  = (deviceid == x11::xi2::kVirtualCorePointer ||
+                               deviceid == x11::xi2::kXTESTPointer ||
+                               deviceid == x11::xi2::kRealPointer);
+      if (!isKeyboard && !isPointer) {
+        // xorg: dixLookupDevice fails → BadDevice.  We have no XI error base
+        // yet (M13); BadValue keeps the client's sequence aligned.
+        ctx.transport().sendErrorCore(x11::error::BadValue, seq, deviceid, major);
+        return;
+      }
+      if (win != 1) {
+        x11::WindowView wv{};
+        if (!ctx.windows().snapshot(win, wv)) {
+          ctx.transport().sendErrorCore(x11::error::BadWindow, seq, win, major);
+          return;
+        }
+      }
+
+      const int      fd  = ctx.transport().clientFd();
+      const uint32_t now = x11_now_ms_monotonic();
+      auto* srv = x11_proto_bridge_get_server();
+      uint8_t gs = x11::kGrabSuccess;
+
+      if (isPointer) {
+        x11::PointerGrab held{};
+        const bool haveHeld = ctx.grabs().getPointerGrab(held) && held.active;
+        if (haveHeld && (!held.is_xi2 || (held.owner_fd >= 0 && held.owner_fd != fd))) {
+          gs = x11::kAlreadyGrabbed;
+        } else if (!x11::grabchoreo::isViewable(ctx, win)) {
+          gs = x11::kGrabNotViewable;
+        } else if (!x11::grabTimeValid(time, now, haveHeld ? held.grab_time : 0)) {
+          gs = x11::kGrabInvalidTime;
+        } else {
+          x11::PointerGrab req{};
+          req.grabWindow    = win;
+          req.ownerEvents   = (owner_ev != 0);
+          // Core-level motion routing still consults eventMask until Phase B2
+          // switches grab-time delivery to the XI2 mask; keep the broad mask
+          // so XI2 grabs keep receiving motion in the meantime.
+          req.eventMask     = (uint16_t)(x11::mask::ButtonPress | x11::mask::ButtonRelease |
+                                         x11::mask::PointerMotion | x11::mask::ButtonMotion |
+                                         x11::mask::EnterWindow | x11::mask::LeaveWindow);
+          req.owner_fd      = fd;
+          req.grab_time     = time ? time : now;
+          req.is_xi2        = true;
+          req.xi2mask       = xi2mask;
+          req.pointer_mode  = grab_mode;
+          req.keyboard_mode = paired;
+          req.cursor        = cursor;
+          gs = ctx.grabs().tryPointerGrab(req);
+          if (gs == x11::kGrabSuccess && srv) {
+            // xorg ActivatePointerGrab (dix/events.c:1593-1611): Leave(old grab
+            // window, else the sprite window) / Enter(grab window), NotifyGrab,
+            // unless this window was already the grab window.  Chromium grabs
+            // on every press; the old unconditional Enter(Grab) was spurious.
+            const uint32_t from = haveHeld ? held.grabWindow : x11::grabchoreo::spriteWindow(ctx);
+            if (!(haveHeld && held.grabWindow == win))
+              x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), from, win, /*NotifyGrab*/1);
+          }
+        }
+      } else {
+        x11::KeyboardGrab held{};
+        const bool haveHeld = ctx.grabs().getKeyboardGrabInfo(held) && held.active;
+        if (haveHeld && (!held.is_xi2 || (held.owner_fd >= 0 && held.owner_fd != fd))) {
+          gs = x11::kAlreadyGrabbed;
+        } else if (!x11::grabchoreo::isViewable(ctx, win)) {
+          gs = x11::kGrabNotViewable;
+        } else if (!x11::grabTimeValid(time, now, haveHeld ? held.grab_time : 0)) {
+          gs = x11::kGrabInvalidTime;
+        } else {
+          x11::KeyboardGrab req{};
+          req.grabWindow  = win;
+          req.ownerEvents = (owner_ev != 0);
+          req.owner_fd    = fd;
+          req.grab_time   = time ? time : now;
+          req.is_xi2      = true;
+          req.xi2mask     = xi2mask;
+          gs = ctx.grabs().tryKeyboardGrab(req);
+          if (gs == x11::kGrabSuccess && srv) {
+            // xorg ActivateKeyboardGrab (dix/events.c:1720-1735): FocusOut(old
+            // grab window, else focus window) / FocusIn(grab window), NotifyGrab,
+            // core + XI2, unless this window was already the grab window.
+            uint32_t from = haveHeld ? held.grabWindow : ctx.input().focus_xid;
+            if (!from) from = x11::grabchoreo::spriteWindow(ctx);
+            if (!(haveHeld && held.grabWindow == win))
+              x11::grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), from, win, /*NotifyGrab*/1);
+          }
+        }
+      }
+
+      // XI2 GrabStatus codes match core (0..4).
       (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, 0);  // length = 0
         rep[8] = gs;                        // status at byte 8 (xXIGrabDeviceReply)
       });
-
-      // Grab-activation crossing (xorg ActivatePointerGrab -> DoEnterLeaveEvents
-      // NotifyGrab): Chromium/GTK menus rely on the Enter(mode=Grab) to the grab
-      // window to know the grab is live and start driving the popup.
-      if (gs == 0) {
-        if (auto* srv = x11_proto_bridge_get_server()) {
-          const auto& gin = ctx.input();
-          srv->eventOps().sendCrossingEvent(ctx, win, /*is_enter=*/true,
-              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Grab*/1);
-          srv->eventOps().sendXI2CrossingEvent(ctx, win, /*is_enter=*/true,
-              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Grab*/1);
-        }
-      }
       return;
     }
 
-    // ---- minor 52: XIUngrabDevice (void) — release the active grab ----
+    // ---- minor 52: XIUngrabDevice (void) ----
+    // xorg Xi/xigrabdev.c:148-172: the named device selects the grab; release
+    // only an XI2 grab held by this client and only when the request time is
+    // within [grab time, now].  Deactivation sends the NotifyUngrab crossings
+    // (pointer: Leave grab window / Enter sprite window) or focus pair
+    // (keyboard: FocusOut grab window / FocusIn focus window).
     case 52: {
+      uint32_t time = 0; uint16_t deviceid = 0;
+      if (br.remaining() >= 6) { time = br.readU32(); deviceid = br.readU16(); }
       br.skip(br.remaining());
-      // Ungrab crossing (xorg DeactivatePointerGrab NotifyUngrab): Leave the
-      // grab window before releasing so the client sees the grab end.
-      x11::PointerGrab pg{};
-      if (ctx.grabs().getPointerGrab(pg) && pg.grabWindow &&
-          pg.owner_fd == ctx.transport().clientFd()) {
-        if (auto* srv = x11_proto_bridge_get_server()) {
-          const auto& gin = ctx.input();
-          srv->eventOps().sendCrossingEvent(ctx, pg.grabWindow, /*is_enter=*/false,
-              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Ungrab*/2);
-          srv->eventOps().sendXI2CrossingEvent(ctx, pg.grabWindow, /*is_enter=*/false,
-              gin.root_x_u, gin.root_y_u, gin.buttons, gin.mods, /*mode=Ungrab*/2);
+
+      const bool isKeyboard = (deviceid == x11::xi2::kVirtualCoreKeyboard ||
+                               deviceid == x11::xi2::kXTESTKeyboard ||
+                               deviceid == x11::xi2::kRealKeyboard);
+      const bool isPointer  = (deviceid == x11::xi2::kVirtualCorePointer ||
+                               deviceid == x11::xi2::kXTESTPointer ||
+                               deviceid == x11::xi2::kRealPointer);
+      if (!isKeyboard && !isPointer) {
+        ctx.transport().sendErrorCore(x11::error::BadValue, seq, deviceid, major);
+        return;
+      }
+      const int      fd  = ctx.transport().clientFd();
+      const uint32_t now = x11_now_ms_monotonic();
+      auto* srv = x11_proto_bridge_get_server();
+
+      if (isPointer) {
+        x11::PointerGrab held{};
+        if (ctx.grabs().getPointerGrab(held) && held.active && held.is_xi2 &&
+            held.owner_fd == fd && x11::ungrabTimeValid(time, now, held.grab_time)) {
+          ctx.grabs().clearPointerGrab(fd);
+          // xorg DeactivatePointerGrab (dix/events.c:1670, 1688-1689): grab
+          // gone first, then Leave(grab window) / Enter(sprite window).
+          if (srv)
+            x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), held.grabWindow,
+                                                  x11::grabchoreo::spriteWindow(ctx), /*NotifyUngrab*/2);
+        }
+      } else {
+        x11::KeyboardGrab held{};
+        if (ctx.grabs().getKeyboardGrabInfo(held) && held.active && held.is_xi2 &&
+            held.owner_fd == fd && x11::ungrabTimeValid(time, now, held.grab_time)) {
+          ctx.grabs().clearKeyboardGrab(fd);
+          // xorg DeactivateKeyboardGrab (dix/events.c:1772-1782).
+          if (srv) {
+            uint32_t to = ctx.input().focus_xid;
+            if (!to) to = x11::grabchoreo::spriteWindow(ctx);
+            x11::grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), held.grabWindow, to, /*NotifyUngrab*/2);
+          }
         }
       }
-      ctx.grabs().clearPointerGrab(ctx.transport().clientFd());
       return;
     }
 

@@ -159,7 +159,12 @@ namespace x11 {
                               uint32_t buttons, uint32_t mods,
                               uint8_t mode = 0);  // 0=Normal, 1=Grab, 2=Ungrab
 
-    void sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
+    // mode: 0=Normal, 1=Grab, 2=Ungrab, 3=WhileGrabbed.  detail defaults to
+    // NotifyNonlinear (3), the value for the toplevel↔toplevel transitions
+    // every current caller produces and what the core twin already sends;
+    // xorg computes Ancestor/Inferior/Virtual for nested windows (M9).
+    void sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
+                           uint8_t mode = 0, uint8_t detail = 3);
 
     // XI2 RawMotion: window-free.  Delivered to EVERY client whose root
     // XISelectEvents has XI_RawMotion (InputState::xi2_root_masks), each with

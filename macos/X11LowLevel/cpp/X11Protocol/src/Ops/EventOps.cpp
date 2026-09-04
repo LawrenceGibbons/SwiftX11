@@ -887,7 +887,8 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   return own;
 }
 
-void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
+void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
+                                 uint8_t mode, uint8_t detail) {
   uint32_t mask_bit = is_in ? xi2::kFocusInMask : xi2::kFocusOutMask;
   const WindowView* wv = ctx.window(wid);
   if (!wv) return;
@@ -903,8 +904,8 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in) {
   wire::wr16_le(buf + 10, xi2::kVirtualCoreKeyboard);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
   wire::wr16_le(buf + 16, xi2::kRealKeyboard);           // sourceid = real slave keyboard (not XTEST)
-  buf[18] = 0;   // mode = Normal
-  buf[19] = 0;   // detail = Ancestor
+  buf[18] = mode;    // 0=Normal 1=Grab 2=Ungrab 3=WhileGrabbed (xorg DoFocusEvents)
+  buf[19] = detail;  // NotifyNonlinear for toplevel transitions; M9 computes the rest
   wire::wr32_le(buf + 20, 1);   // root
   wire::wr32_le(buf + 24, wid);
   wire::wr32_le(buf + 28, 0);   // child

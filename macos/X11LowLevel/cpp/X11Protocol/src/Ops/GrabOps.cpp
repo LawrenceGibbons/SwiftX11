@@ -15,6 +15,11 @@
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
 #include "Utils/MachTime.hpp"
+#include "Utils/GrabChoreography.hpp"   // Phase B: activation/deactivation choreography
+#include "Core/XProtoServer.hpp"        // eventOps()
+#include "Core/timestamp.hpp"           // x11_now_ms_monotonic
+
+extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
 
 namespace x11 {
 
@@ -77,10 +82,9 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
   const uint16_t eventMask  = br.readU16();
   const uint8_t  pointerMode  = br.readU8();
   const uint8_t  keyboardMode = br.readU8();
-  (void)pointerMode; (void)keyboardMode;
 
-  (void)br.readU32(); // confineTo
-  (void)br.readU32(); // cursor
+  (void)br.readU32(); // confineTo (not honoured)
+  const uint32_t cursor = br.readU32();
   const uint32_t time = br.readU32();
 
   br.skip(br.remaining());
@@ -94,11 +98,47 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
     }
   }
 
-  // Ownership-aware: a grab held by another client returns AlreadyGrabbed
-  // instead of being silently stomped (review §2.5).
-  const uint8_t status = ctx.grabs().tryPointerGrab(
-      grabWindow, ownerEvents != 0, eventMask,
-      ctx.transport().clientFd(), time);
+  // xorg GrabDevice (dix/events.c:5252-5291) status ladder, in its order:
+  // AlreadyGrabbed (held by another client, or at the other level) →
+  // GrabNotViewable (window not realized) → GrabInvalidTime → activate.
+  // Sync modes are accepted but never freeze (G-11: every target client
+  // grabs async).  Ownership-aware since review §2.5: Java's liberal
+  // XUngrabPointer(CurrentTime) must not stomp another client's menu grab.
+  const int      fd  = ctx.transport().clientFd();
+  const uint32_t now = x11_now_ms_monotonic();
+  PointerGrab held{};
+  const bool haveHeld = ctx.grabs().getPointerGrab(held) && held.active;
+
+  uint8_t status = x11::kGrabSuccess;
+  if (haveHeld && (held.is_xi2 || (held.owner_fd >= 0 && held.owner_fd != fd))) {
+    status = x11::kAlreadyGrabbed;
+  } else if (grabWindow != 0 && !grabchoreo::isViewable(ctx, grabWindow)) {
+    status = x11::kGrabNotViewable;
+  } else if (!x11::grabTimeValid(time, now, haveHeld ? held.grab_time : 0)) {
+    status = x11::kGrabInvalidTime;
+  } else {
+    PointerGrab req{};
+    req.grabWindow    = grabWindow;
+    req.ownerEvents   = (ownerEvents != 0);
+    req.eventMask     = eventMask;
+    req.owner_fd      = fd;
+    req.grab_time     = time ? time : now;
+    req.is_xi2        = false;
+    req.pointer_mode  = pointerMode;
+    req.keyboard_mode = keyboardMode;
+    req.cursor        = cursor;
+    status = ctx.grabs().tryPointerGrab(req);
+    if (status == x11::kGrabSuccess) {
+      // xorg ActivatePointerGrab (dix/events.c:1593-1611): Leave the old grab
+      // window (or the sprite window) and Enter the grab window, NotifyGrab,
+      // unless the same window was already the grab window.
+      if (auto* srv = x11_proto_bridge_get_server()) {
+        const uint32_t from = haveHeld ? held.grabWindow : grabchoreo::spriteWindow(ctx);
+        if (!(haveHeld && held.grabWindow == grabWindow))
+          grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), from, grabWindow, /*NotifyGrab*/1);
+      }
+    }
+  }
 
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
     rep[1] = status;
@@ -118,13 +158,28 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
 // Body (4 bytes): CARD32 time
 // -----------------------------
 void GrabOps::handleUngrabPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  if (br.remaining() >= 4) (void)br.readU32(); // time
+  uint32_t time = 0;
+  if (br.remaining() >= 4) time = br.readU32();
   br.skip(br.remaining());
 
-  // Only releases this client's own grab (review §2.5 — Java calls
-  // XUngrabPointer(CurrentTime) liberally; it must not destroy another
-  // client's active menu/drag grab).
-  ctx.grabs().clearPointerGrab(ctx.transport().clientFd());
+  // xorg ProcUngrabPointer (dix/events.c:5164-5170): deactivate only the
+  // caller's own grab (review §2.5 — Java calls XUngrabPointer(CurrentTime)
+  // liberally; it must not destroy another client's menu/drag grab) and
+  // only when the time is within [grab time, now] (M22).
+  PointerGrab held{};
+  if (!(ctx.grabs().getPointerGrab(held) && held.active)) return;
+  const int fd = ctx.transport().clientFd();
+  if (held.owner_fd >= 0 && held.owner_fd != fd) return;
+  if (!x11::ungrabTimeValid(time, x11_now_ms_monotonic(), held.grab_time)) return;
+
+  ctx.grabs().clearPointerGrab(fd);
+
+  // xorg DeactivatePointerGrab (dix/events.c:1670, 1688-1689): the grab is
+  // gone first, then Leave(grab window) / Enter(sprite window), NotifyUngrab.
+  if (auto* srv = x11_proto_bridge_get_server()) {
+    grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), held.grabWindow,
+                                     grabchoreo::spriteWindow(ctx), /*NotifyUngrab*/2);
+  }
 }
 
 // -----------------------------
@@ -216,10 +271,11 @@ void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t seq, uint8_t butto
 // 31 GrabKeyboard (reply: status=GrabSuccess)
 // Body (12 bytes): grabWindow(4), time(4), pointerMode(1), keyboardMode(1), pad(2)
 // -----------------------------
-void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*ownerEvents*/, ByteReader& br) {
+void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br) {
   // Body (12 bytes): grabWindow(4), time(4), pointerMode(1), keyboardMode(1), pad(2)
-  uint32_t grabWindow = 0;
+  uint32_t grabWindow = 0, time = 0;
   if (br.remaining() >= 4) grabWindow = br.readU32();
+  if (br.remaining() >= 4) time = br.readU32();
   br.skip(br.remaining());
 
   // Validate grab window exists (allow root XID 0 and 1)
@@ -231,44 +287,45 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
     }
   }
 
-  // Ownership-aware (review §2.5): refuse if another client holds the
-  // keyboard grab.  Also skip the focus-event choreography on refusal.
-  const uint8_t status = ctx.grabs().tryKeyboardGrab(
-      grabWindow, ctx.transport().clientFd());
-  if (status != x11::kGrabSuccess) {
-    (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-      rep[1] = status;
-    });
-    return;
-  }
+  // xorg GrabDevice status ladder (dix/events.c:5252-5266), as for the
+  // pointer.  Ownership-aware since review §2.5.
+  const int      fd  = ctx.transport().clientFd();
+  const uint32_t now = x11_now_ms_monotonic();
+  KeyboardGrab held{};
+  const bool haveHeld = ctx.grabs().getKeyboardGrabInfo(held) && held.active;
 
-  // X11 spec: When a keyboard grab activates, the server generates
-  // FocusIn(mode=Grab) to the grab window and FocusOut(mode=Grab)
-  // to the old focus window.
-  const uint32_t focusWin = ctx.input().focus_xid;
-  if (focusWin && focusWin != grabWindow) {
-    uint8_t ev[32] = {};
-    ev[0]  = 10; // FocusOut
-    ev[1]  = 3;  // detail = NotifyNonlinear
-    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-    wire::wr32_le(ev + 4, focusWin);
-    ev[8]  = 1;  // mode = NotifyGrab
-    ev[9]  = 1;  // same-screen = true
-    (void)ctx.transport().sendEvent32(focusWin, ev);
-  }
-  if (grabWindow) {
-    uint8_t ev[32] = {};
-    ev[0]  = 9;  // FocusIn
-    ev[1]  = 3;  // detail = NotifyNonlinear
-    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-    wire::wr32_le(ev + 4, grabWindow);
-    ev[8]  = 1;  // mode = NotifyGrab
-    ev[9]  = 1;  // same-screen = true
-    (void)ctx.transport().sendEvent32(grabWindow, ev);
+  uint8_t status = x11::kGrabSuccess;
+  if (haveHeld && (held.is_xi2 || (held.owner_fd >= 0 && held.owner_fd != fd))) {
+    status = x11::kAlreadyGrabbed;
+  } else if (grabWindow != 0 && !grabchoreo::isViewable(ctx, grabWindow)) {
+    status = x11::kGrabNotViewable;
+  } else if (!x11::grabTimeValid(time, now, haveHeld ? held.grab_time : 0)) {
+    status = x11::kGrabInvalidTime;
+  } else {
+    KeyboardGrab req{};
+    req.grabWindow  = grabWindow;
+    req.ownerEvents = (ownerEvents != 0);
+    req.owner_fd    = fd;
+    req.grab_time   = time ? time : now;
+    req.is_xi2      = false;
+    status = ctx.grabs().tryKeyboardGrab(req);
+    if (status == x11::kGrabSuccess) {
+      // xorg ActivateKeyboardGrab (dix/events.c:1720-1735): FocusOut(old
+      // grab window, else the focus window) / FocusIn(grab window) with
+      // NotifyGrab at both levels, unless the same window was already the
+      // grab window.  Java AWT depends on this pair to proceed with
+      // clipboard operations after menu dismissal.
+      if (auto* srv = x11_proto_bridge_get_server()) {
+        uint32_t from = haveHeld ? held.grabWindow : ctx.input().focus_xid;
+        if (!from) from = grabchoreo::spriteWindow(ctx);
+        if (!(haveHeld && held.grabWindow == grabWindow))
+          grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), from, grabWindow, /*NotifyGrab*/1);
+      }
+    }
   }
 
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-    rep[1] = 0; // GrabSuccess
+    rep[1] = status;
   });
 }
 
@@ -278,33 +335,28 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t /*own
 // to the focus window. Java AWT depends on these events to proceed
 // with clipboard operations after menu dismissal.
 void GrabOps::handleUngrabKeyboard(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
+  uint32_t time = 0;
+  if (br.remaining() >= 4) time = br.readU32();
   br.skip(br.remaining());
 
-  const uint32_t grabWin = ctx.grabs().clearKeyboardGrab(ctx.transport().clientFd());
-  const uint32_t focusWin = ctx.input().focus_xid;
+  // xorg ProcUngrabKeyboard (dix/events.c:5356-5360): only the caller's own
+  // grab, only within [grab time, now] (M22).
+  KeyboardGrab held{};
+  if (!(ctx.grabs().getKeyboardGrabInfo(held) && held.active)) return;
+  const int fd = ctx.transport().clientFd();
+  if (held.owner_fd >= 0 && held.owner_fd != fd) return;
+  if (!x11::ungrabTimeValid(time, x11_now_ms_monotonic(), held.grab_time)) return;
 
-  if (grabWin && grabWin != focusWin) {
-    // FocusOut(detail=Nonlinear, mode=Ungrab) to the grab window
-    uint8_t ev[32] = {};
-    ev[0]  = 10; // FocusOut
-    ev[1]  = 3;  // detail = NotifyNonlinear
-    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-    wire::wr32_le(ev + 4, grabWin);
-    ev[8]  = 2;  // mode = NotifyUngrab
-    ev[9]  = 1;  // same-screen = true
-    (void)ctx.transport().sendEvent32(grabWin, ev);
-  }
+  const uint32_t grabWin = ctx.grabs().clearKeyboardGrab(fd);
+  if (!grabWin) return;
 
-  if (focusWin) {
-    // FocusIn(detail=Nonlinear, mode=Ungrab) to the focus window
-    uint8_t ev[32] = {};
-    ev[0]  = 9;  // FocusIn
-    ev[1]  = 3;  // detail = NotifyNonlinear
-    wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-    wire::wr32_le(ev + 4, focusWin);
-    ev[8]  = 2;  // mode = NotifyUngrab
-    ev[9]  = 1;  // same-screen = true
-    (void)ctx.transport().sendEvent32(focusWin, ev);
+  // xorg DeactivateKeyboardGrab (dix/events.c:1772-1782): FocusOut(grab
+  // window) / FocusIn(focus window, else sprite window), NotifyUngrab, at
+  // both levels.
+  if (auto* srv = x11_proto_bridge_get_server()) {
+    uint32_t to = ctx.input().focus_xid;
+    if (!to) to = grabchoreo::spriteWindow(ctx);
+    grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), grabWin, to, /*NotifyUngrab*/2);
   }
 }
 
@@ -339,13 +391,19 @@ void GrabOps::handleUngrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteR
 // -----------------------------
 void GrabOps::handleChangeActivePointerGrab(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   if (br.remaining() < 12) { br.skip(br.remaining()); return; }
-  (void)br.readU32(); // cursor
-  (void)br.readU32(); // time
+  (void)br.readU32(); // cursor (grab cursors are not applied yet — L15)
+  const uint32_t time = br.readU32();
   const uint16_t eventMask = br.readU16();
   (void)br.readU16(); // pad
   br.skip(br.remaining());
 
-  // Update the active pointer grab's event mask if a grab is active
+  // xorg ProcChangeActivePointerGrab (dix/events.c:5127-5145): only the
+  // caller's own grab, only within [grab time, now] (M22 — a foreign client
+  // could previously rewrite the active grab's mask).
+  PointerGrab held{};
+  if (!(ctx.grabs().getPointerGrab(held) && held.active)) return;
+  if (held.owner_fd >= 0 && held.owner_fd != ctx.transport().clientFd()) return;
+  if (!x11::ungrabTimeValid(time, x11_now_ms_monotonic(), held.grab_time)) return;
   ctx.grabs().updatePointerGrabEventMask(eventMask);
 }
 
