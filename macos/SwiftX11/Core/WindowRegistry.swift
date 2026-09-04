@@ -306,7 +306,7 @@ final class WindowRegistry {
         fputs(String(format: "[FOCUS_NS] resignKey xid=0x%08X appActive=%d style=0x%lx level=%ld -> newKey=%@ (%@)\n",
                      xid, NSApp.isActive ? 1 : 0,
                      resigned?.styleMask.rawValue ?? 0, resigned?.level.rawValue ?? 0,
-                     key.map { String(format: "%p", Unmanaged.passUnretained($0).toOpaque()) } ?? "nil",
+                     key.map { String(format: "%p", Int(bitPattern: Unmanaged.passUnretained($0).toOpaque())) } ?? "nil",
                      key?.title ?? "-"), stderr)
         #endif
         x11_post_focus_event(xid, false)
