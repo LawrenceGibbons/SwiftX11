@@ -25,6 +25,7 @@ extern "C" {
 #include "Core/WindowTable.hpp"
 #include "Core/WindowView.hpp"
 #include "Core/InputRouting.hpp"   // pickDeepestMappedWindowAtHostPoint (XIQueryPointer)
+#include "Core/CursorRouting.hpp"  // maybeApplyCursor (XIChangeCursor)
 #include "Core/GrabTable.hpp"      // tryPointerGrab/clearPointerGrab (XIGrabDevice)
 #include "Core/XProtoServer.hpp"   // eventOps() for grab-activation crossings
 #include "Ops/EventOps.hpp"
@@ -1038,8 +1039,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   // XINPUT2 (XInput2) — major opcode 141
   // -------------------------------------------------------------------
   if (major == ext::kXInput2) {
+#ifdef X11_TRACE_VERBOSE
+    // Per-request trace is verbose-only: GTK3 issues XIQueryPointer at a high
+    // rate (L10 in docs/XI2_XORG_COMPARISON.md).
     { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] fd=%d minor=%u seq=%u\n",
         ctx.transport().clientFd(), (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
+#endif
     switch (minor) {
 
     // ---- minor 1: GetExtensionVersion (XI1 legacy — reply-bearing) ----
@@ -1298,19 +1303,55 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    // ---- minor 41-45: XI2 void stubs ----
+    // ---- minor 41, 43, 44: XI2 void stubs ----
     case 41: // XIWarpPointer
-    case 42: // XIChangeCursor
     case 43: // XIChangeHierarchy
     case 44: // XISetClientPointer
       br.skip(br.remaining());
       return;
+
+    // ---- minor 42: XIChangeCursor (void) ----
+    // xorg Xi/xichangecursor.c: look up window and cursor, then
+    // ChangeWindowDeviceCursor() — the per-device twin of
+    // ChangeWindowAttributes(CWCursor).  GTK3 sets every window cursor via
+    // XIDefineCursor once XI2 is present, so the old no-op left portal-GTK
+    // dialogs with a permanent arrow (M6 in docs/XI2_XORG_COMPARISON.md).
+    // One pointer here, so deviceid is not consulted.
+    case 42: {
+      if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+      const uint32_t win    = br.readU32();
+      const uint32_t cursor = br.readU32();   // 0 = None (inherit)
+      br.skip(br.remaining());                 // deviceid(2) + pad(2)
+      if (win == 1) return;                    // root: nothing to route to
+      x11::WindowView wv{};
+      if (!ctx.windows().snapshot(win, wv)) {
+        ctx.transport().sendErrorCore(x11::error::BadWindow, seq, win, major);
+        return;
+      }
+      // Same path as the core CWCursor branch (WindowAttrOps.cpp).
+      ctx.windows().setCursor(win, cursor);
+      const uint32_t host = ctx.windows().topLevelAncestorOf(win);
+      const bool pointerInThisHost = (host != 0) &&
+          (ctx.input().last_xid == host || ctx.input().focus_host == host);
+      if (pointerInThisHost) {
+        uint32_t underNow = x11::pickDeepestMappedWindowAtHostPoint(ctx, host,
+                                                                    ctx.input().win_x_u,
+                                                                    ctx.input().win_y_u);
+        if (!underNow) underNow = host;
+        x11::maybeApplyCursor(ctx, host, ctx.input().routePointer(underNow));
+      }
+      return;
+    }
+
     case 45: { // XIGetClientPointer (reply-bearing)
+      // xXIGetClientPointerReply (XI2proto.h): set @8, pad @9, deviceid @10.
+      // Was written to bytes 1 and 8 (the RepType and `set` slots), so GDK
+      // decoded deviceid=0 (M2 in docs/XI2_XORG_COMPARISON.md).
       br.skip(br.remaining());
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0); // length
-        rep[1] = 1;                         // set = True
-        wire::wr16_le(rep.data() + 8, 2);  // deviceid = virtual core pointer
+        wire::wr32_le(rep.data() + 4, 0);   // length
+        rep[8] = 1;                           // set = True
+        wire::wr16_le(rep.data() + 10, 2);   // deviceid = Virtual core pointer
       });
       return;
     }
@@ -1336,9 +1377,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         combined_mask |= mask;
       }
       br.skip(br.remaining()); // consume any trailing padding
-      // Root window (XID 1) isn't in WindowTable — store in InputState.
+      // Root window (XID 1) isn't in WindowTable — keep the CALLER's root
+      // selection in InputState (per client; the union gates the senders).
+      // Plain assignment was last-writer-wins across clients (M4 minimal).
       if (window == 1) {
-        ctx.input().xi2_root_mask = combined_mask;
+        ctx.input().setRootXI2Mask(ctx.transport().clientFd(), combined_mask);
       } else {
         ctx.windows().setXI2Mask(window, combined_mask);
       }
@@ -1535,17 +1578,6 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       wire::wr16_le(reply.data() + 8, num_devices);
       std::memcpy(reply.data() + 32, payload.data(), payload.size());
 
-      // Full hex dump to stderr for debugging
-      {
-        fprintf(stderr, "[XIQueryDevice] FULL REPLY (%zu bytes):\n", reply.size());
-        for (size_t i = 0; i < reply.size(); i += 16) {
-          fprintf(stderr, "  %04zX: ", i);
-          for (size_t j = i; j < i + 16 && j < reply.size(); j++)
-            fprintf(stderr, "%02X ", reply[j]);
-          fprintf(stderr, "\n");
-        }
-      }
-
       (void)ctx.reply().sendReplyRaw(reply.data(), reply.size());
       return;
     }
@@ -1686,10 +1718,16 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // XIGetSelectedEvents: CARD32 window
       uint32_t window = (br.remaining() >= 4) ? br.readU32() : 0;
       br.skip(br.remaining());
-      // Look up stored XI2 mask for this window
-      x11::WindowView wv;
-      bool found = ctx.windows().snapshot(window, wv);
-      uint32_t mask = found ? wv.xi2_mask : 0;
+      // Look up the stored XI2 mask for this window.  Root (XID 1) lives in
+      // InputState per client — return the CALLER's selection, as xorg does
+      // (Xi/xiselectev.c: the reply is the requesting client's masks).
+      uint32_t mask = 0;
+      if (window == 1) {
+        mask = ctx.input().rootXI2MaskFor(ctx.transport().clientFd());
+      } else {
+        x11::WindowView wv;
+        if (ctx.windows().snapshot(window, wv)) mask = wv.xi2_mask;
+      }
       if (mask == 0) {
         // No XI2 selection — return empty
         (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {

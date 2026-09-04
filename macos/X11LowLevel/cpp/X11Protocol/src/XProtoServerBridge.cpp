@@ -540,13 +540,18 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t cursorTarget = ctx.input().routePointer(under);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          if (!srv->eventOps().sendXI2CrossingEvent(ctx, under, /*is_enter=*/true,
-                                                    ctx.input().root_x_u, ctx.input().root_y_u,
-                                                    ctx.input().buttons, c.modsMask)) {
-            srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/true,
-                                              ctx.input().root_x_u, ctx.input().root_y_u,
-                                              ctx.input().buttons, c.modsMask);
-          }
+          // xorg DoEnterLeaveEvents (dix/enterleave.c:595-608) sends the core
+          // AND the XI2 crossing, each gated only by its own mask; the
+          // XI2-first/break rule belongs to DeliverDeviceEvents (button/
+          // motion/key) only.  v1.20.0.10 suppressed the core crossing when
+          // XI2 delivered and Electron (which selects both) lost its core
+          // Enter/Leave — R1 in docs/XI2_XORG_COMPARISON.md.
+          srv->eventOps().sendCrossingEvent(ctx, under, /*is_enter=*/true,
+                                            ctx.input().root_x_u, ctx.input().root_y_u,
+                                            ctx.input().buttons, c.modsMask);
+          (void)srv->eventOps().sendXI2CrossingEvent(ctx, under, /*is_enter=*/true,
+                                                     ctx.input().root_x_u, ctx.input().root_y_u,
+                                                     ctx.input().buttons, c.modsMask);
           break;
         }
 
@@ -569,13 +574,13 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t cursorTarget = ctx.input().routePointer(host);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          if (!srv->eventOps().sendXI2CrossingEvent(ctx, leaveWin, /*is_enter=*/false,
-                                                    ctx.input().root_x_u, ctx.input().root_y_u,
-                                                    ctx.input().buttons, c.modsMask)) {
-            srv->eventOps().sendCrossingEvent(ctx, leaveWin, /*is_enter=*/false,
-                                              ctx.input().root_x_u, ctx.input().root_y_u,
-                                              ctx.input().buttons, c.modsMask);
-          }
+          // Core AND XI2 (see PointerEnter — xorg DoEnterLeaveEvents).
+          srv->eventOps().sendCrossingEvent(ctx, leaveWin, /*is_enter=*/false,
+                                            ctx.input().root_x_u, ctx.input().root_y_u,
+                                            ctx.input().buttons, c.modsMask);
+          (void)srv->eventOps().sendXI2CrossingEvent(ctx, leaveWin, /*is_enter=*/false,
+                                                     ctx.input().root_x_u, ctx.input().root_y_u,
+                                                     ctx.input().buttons, c.modsMask);
           break;
         }
 

@@ -129,9 +129,16 @@ namespace x11 {
     // (dix/events.c): XI2 is tried first and, once it delivers, the walk breaks and
     // the core event is never sent — so a client selecting XI2 does not also receive
     // the core copy of the same physical event (which double-processed clicks in
-    // Chromium/GTK).  A delivery that happened ONLY via the shared xi2_root_mask
-    // returns FALSE (the root mask is a global hack, not a per-client selection, and
+    // Chromium/GTK).  A delivery that happened ONLY via the root-selection union
+    // (xi2_root_mask) returns FALSE (it is not this window's own selection and
     // must not suppress core delivery to the window's own client).
+    //
+    // Crossing events are the EXCEPTION: xorg's DoEnterLeaveEvents
+    // (dix/enterleave.c:595-608) sends the core AND the XI2 crossing
+    // unconditionally, each gated only by its own mask.  Callers must not use
+    // sendXI2CrossingEvent's return value to suppress the core EnterNotify/
+    // LeaveNotify (v1.20.0.10 did; reverted in v1.20.0.12 — R1 in
+    // docs/XI2_XORG_COMPARISON.md).
     bool sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
                             int32_t root_x, int32_t root_y,
                             uint32_t buttons, uint32_t mods);
@@ -154,8 +161,9 @@ namespace x11 {
 
     void sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
 
-    // XI2 RawMotion: sent to clients that registered for XI_RawMotion on root.
-    // Delivered on any window (uses xi2_root_mask, not per-window mask).
+    // XI2 RawMotion: gated by the per-client root-selection union
+    // (InputState::xi2_root_mask); delivered to the owner of `wid`.  xorg
+    // fans raw events out to every root selector — that is the M5 follow-up.
     void sendXI2RawMotionEvent(XProtoContext& ctx, uint32_t wid);
 
   private:

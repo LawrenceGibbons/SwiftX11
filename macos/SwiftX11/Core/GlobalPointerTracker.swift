@@ -82,7 +82,10 @@ final class GlobalPointerTracker {
     // Window-local coords are also X11 units (points). Keep last-known.
     let (winX, winY) = lastWinXY
 
-    x11_post_pointer_move2(activeXid, winX, winY, rootX, max(0, rootY), deliver, 0, 0)
+    // Buttons/modifiers: UInt32.max means "unknown — use the server's
+    // canonical InputState".  Passing 0 fed empty button masks into
+    // grab-routed XI2 motion at 30 Hz (M8 in docs/XI2_XORG_COMPARISON.md).
+    x11_post_pointer_move2(activeXid, winX, winY, rootX, max(0, rootY), deliver, UInt32.max, UInt32.max)
   }
   
 //  private func tickGlobalPointer(deliver: UInt8) {

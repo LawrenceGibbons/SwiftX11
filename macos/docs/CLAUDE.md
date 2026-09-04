@@ -233,7 +233,7 @@ When `x11_surface_ensure` detects a surface size change (e.g., initial 64×64 �
 - **Vitis fully working**: Native macOS title bar, menus, file dialogs, portal-GTK dialogs all functional.
 - **Menu dropdowns fixed** (v1.19.35.29): Root cause was XI2 — hiding XInputExtension restores full menu functionality. Menus are inline HTML/CSS/JS (not X11 popups), and XI2 GenericEvents interfered with Electron's input handling.
 - **Portal-GTK dialogs fixed** (v1.19.35.29): Same root cause (XI2). File dialogs are now fully interactive.
-- **XInputExtension hidden**: `present=0` in QueryExtension. XI2 causes wire protocol corruption (sequence regression) that crashes Electron on startup. XI2 event format fixes (sourceid, coordinates) are in place but dormant. Global `xi2_root_mask` needs per-client tracking before re-enabling.
+- **XInputExtension**: runtime toggle since v1.20.0.8 (Settings → "XInput2", default OFF). With it ON, Vitis menus and portal-GTK dialogs work as of v1.20.0.11; the earlier "wire corruption" diagnosis was wrong (see "XInput2 Re-enable" below and `docs/XI2_XORG_COMPARISON.md`).
 - **Cross-client event routing** (v1.19.35.23-24): Multi-process apps exchange events across connections via `sendEventCrossClient()`. Seq restamped with target's `lastSeq()`.
 - **Composite/DAMAGE stubs** (v1.19.35.25): Portal-GTK dialogs render with mostly correct colors.
 - **`--disable-gpu`** flag required for Electron in Docker/Rosetta.
@@ -451,9 +451,17 @@ root cause plus one latent CopyArea bug:
 - **Font scanner**: Searches bundle fonts first, system `/opt/X11/` second. Bridge function `x11_set_bundle_resource_path()`.
 - **Startup dialogs**: Metal GPU check (critical, exits) + missing fonts check (warning, continue or quit).
 
+### XInput2 Re-enable (v1.20.0.8–.12)
+XI2 is back behind a runtime toggle (Settings → "XInput2", default OFF, persisted; `x11_set_xi2_advertised()`), verified against the xorg-server source rather than assumptions — the same Vitis/portal-GTK clients work on a real xorg (nxagent), so every divergence is ours. Full line-cited comparison and the prioritized plan: **`docs/XI2_XORG_COMPARISON.md`** (M1–M22, L1–L24, five track reports appended).
+- **v1.20.0.8** — runtime advertisement toggle (QueryExtension `present`, ListExtensions).
+- **v1.20.0.9** — real slave devices 6 ("SwiftX11 pointer") / 7 ("SwiftX11 keyboard") as `sourceid`; `deviceid` stays the master 2/3 (xorg's master copy). XTEST slaves 4/5 are for XTEST-faked input only — `xinput test-xi2 --root` on nxagent was the ground truth.
+- **v1.20.0.10** — XI2-first/core-suppressed delivery for button, scroll, key, motion, per `DeliverDeviceEvents` (`dix/events.c:2865-2900`). Fixed Vitis menus opening-then-closing (Chromium processed the core and XI2 copies of one click).
+- **v1.20.0.11** — delivery target chosen by XI2 **or** core mask (`EventIsDeliverable`); GTK3 under XI2 sets no core Button/Key bits, so every click was dropped at `[BTN_DROP]`. Fixed the portal-GTK folder double-click (confirmed).
+- **v1.20.0.12 — Phase A of the comparison**: M1 core crossings restored alongside XI2 (xorg `DoEnterLeaveEvents` sends both — the .10 suppression was a regression for Electron); M2 `XIGetClientPointer` reply offsets (`set`@8, `deviceid`@10); M6 `XIChangeCursor` routed through the CWCursor path (GTK3 cursors); M8 tracker ticks pass a sentinel and `postMotion` substitutes canonical button/modifier state and host-origin-derived coords (no more empty XI2 masks at 30 Hz under grabs); M10 motion walk accepts an XI2 selection; L10 hex dump and per-request log removed; **minimal M4** — `XISelectEvents` on root is stored per client fd in `InputState::xi2_root_masks` with `xi2_root_mask` as the derived union, purged on disconnect (Chromium's startup root selection was erasing xeyes' RawMotion — reproduced). Remaining Stage 2 work (per-window per-client masks, fan-out delivery M5, grab semantics M3/M7, focus detail M9) is sequenced in the comparison doc §6.
+
 ### Known Issues (v1.19.36)
 - **Ctrl+click regression**: ✅ FIXED in v1.19.36.16 — a later revision had remapped Ctrl+click to button 1+Ctrl for xterm's Ctrl<Btn1> menus and its one-shot right-suppression flag could latch and swallow the next genuine right-click. Button identity is now decided once per physical press (Ctrl→3, Option→2, else 1) with symmetric down/up; rightMouse events AppKit synthesizes for a Ctrl+click are suppressed only within that press.
-- **XI2 wire corruption**: Enabling XI2 crashes Electron. Event format fixed but delivery path has sequence regression. Global xi2_root_mask needs per-client tracking. (LOW — workaround in place)
+- **XI2 wire corruption**: ✅ RESOLVED in v1.20.0.9–.11 — the Electron failures were `sourceid`=XTEST, core+XI2 double delivery, and core-only deliverability, not wire corruption (see "XInput2 Re-enable"). Still behind the runtime toggle; open items are tracked in `docs/XI2_XORG_COMPARISON.md`.
 - **xterm `Ctrl+V` paste**: Not a SwiftX11 bug. xterm's `insert-selection` translation lives on the VT100 widget and only fires when X11 focus is on that widget; xterm doesn't call `XSetInputFocus` to put focus there. Workarounds: middle-click paste (Option+click on Magic Mouse), Shift+Insert, or add `XTerm*translations: #override Ctrl<Key>v: insert-selection(CLIPBOARD,PRIMARY)` to `~/.Xresources`.
 - **License Manager glyphs**: ✅ FIXED in v1.19.36 (ARGB32 component-alpha).
 - **hw_ila drag-and-drop**: ✅ FIXED in v1.19.36 (OR exemption + RetainPermanent + grab motion-mask).
@@ -465,4 +473,4 @@ root cause plus one latent CopyArea bug:
 See `docs/TODO.md` for the comprehensive roadmap. Remaining priorities:
 1. **Ctrl+click regression** — identify which v1.17→v1.19 change broke it
 2. **`PointerGrab::owner_fd`** — track grabbing client fd so root-grab motion routes there directly instead of via the drag_xid fallback (v.62 quick fix)
-3. **XI2 proper fix** — per-client root mask, wire trace diagnosis (LOW)
+3. **XI2 Stage 2** — `docs/XI2_XORG_COMPARISON.md` §6 Phases B–E: grab semantics (M3, M7), per-window per-client masks + fan-out (M4 full, M5), focus/crossing detail (M9, M15), protocol hygiene (M12–M14)

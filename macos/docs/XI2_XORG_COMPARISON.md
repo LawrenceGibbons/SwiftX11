@@ -8,7 +8,7 @@ Comparison of the complete SwiftX11 XInput 2 implementation against the xorg-ser
 | **Reference** | xorg-server source at `/Users/lkg/Documents/Vivado/SwiftX11/xorg-server/`; protocol headers at `/opt/X11/include/X11/extensions/` (`XI2proto.h`, `XIproto.h`, `XI.h`, `XI2.h`) |
 | **Date** | 2026-09-04 |
 | **Method** | Five independent, line-cited audit tracks (requests/replies, wire formats, delivery/selection, grabs, crossing/focus/hierarchy) plus lead cross-checks against the xorg source wherever two tracks disagreed |
-| **Status** | Findings only. No code was changed for this document. |
+| **Status** | Findings. **Phase A** (M1, M2, M6, M8, M10, L10 and the minimal form of M4 — per-client root selections with a union) implemented in **v1.20.0.12-dbg** on 2026-09-04, awaiting test. |
 
 ## 0. How to read this document
 

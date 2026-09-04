@@ -14,6 +14,7 @@
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
 #include "Core/XEventMask.hpp"
+#include "Core/XI2EventMask.hpp"   // xi2::kMotionMask — XI2|core deliverability (M10)
 #include "Core/XConstants.hpp"
 #include "Utils/DragTrace.hpp"
 
@@ -72,6 +73,24 @@ void postMotion(uint32_t host_xid,
   XProtoContext* ctx = g_ctx.load(std::memory_order_acquire);
   EventOps* ev = g_ev.load(std::memory_order_acquire);
   if (!ctx || !ev) return;
+
+  // GlobalPointerTracker ticks (deliver=0) carry no button/modifier state
+  // (sentinel 0xFFFFFFFF) and a cached window-local position.  xorg fills
+  // state from the device at delivery time (Xi/exevents.c:1840-1862); use
+  // the canonical InputState and derive the host-local position from the
+  // cached host origin, so grab-routed XI2 motion no longer alternates
+  // between real and empty state at 30 Hz (M8 in docs/XI2_XORG_COMPARISON.md).
+  // Doing this BEFORE updateMotion also keeps hostOrigins self-consistent.
+  constexpr uint32_t kUnknownState = 0xFFFFFFFFu;
+  if (buttons == kUnknownState) buttons = ctx->input().buttons;
+  if (mods    == kUnknownState) mods    = ctx->input().mods;
+  if (!deliver && host_xid) {
+    int32_t ox = 0, oy = 0;
+    if (ctx->input().getHostOrigin(host_xid, ox, oy)) {
+      win_x = root_x - ox;
+      win_y = root_y - oy;
+    }
+  }
 
   // Always update InputState with global root coords (QueryPointer follows everywhere)
   ctx->input().updateMotion(host_xid,
@@ -169,18 +188,20 @@ void postMotion(uint32_t host_xid,
 
     const uint32_t prev = ctx->input().pointer_xid;
     if (under != prev) {
+      // xorg DoEnterLeaveEvents (dix/enterleave.c:595-608): core AND XI2
+      // crossings, each gated only by its own mask.  The XI2-first/break rule
+      // is DeliverDeviceEvents-only; applying it here (v1.20.0.10) cost
+      // Electron its core Enter/Leave — R1 in docs/XI2_XORG_COMPARISON.md.
       if (prev != 0) {
-        if (!ev->sendXI2CrossingEvent(*ctx, prev, /*is_enter=*/false,
-                                      root_x, root_y, buttons, mods)) {
-          ev->sendCrossingEvent(*ctx, prev, /*is_enter=*/false,
-                                root_x, root_y, buttons, mods);
-        }
-      }
-      if (!ev->sendXI2CrossingEvent(*ctx, under, /*is_enter=*/true,
-                                    root_x, root_y, buttons, mods)) {
-        ev->sendCrossingEvent(*ctx, under, /*is_enter=*/true,
+        ev->sendCrossingEvent(*ctx, prev, /*is_enter=*/false,
                               root_x, root_y, buttons, mods);
+        (void)ev->sendXI2CrossingEvent(*ctx, prev, /*is_enter=*/false,
+                                       root_x, root_y, buttons, mods);
       }
+      ev->sendCrossingEvent(*ctx, under, /*is_enter=*/true,
+                            root_x, root_y, buttons, mods);
+      (void)ev->sendXI2CrossingEvent(*ctx, under, /*is_enter=*/true,
+                                     root_x, root_y, buttons, mods);
       ctx->input().pointer_xid = under;
     }
   }
@@ -289,7 +310,10 @@ void postMotion(uint32_t host_xid,
       const uint32_t held = ctx->input().buttons;
       auto wantsMotionAt = [&](uint32_t xid) -> bool {
         const x11::WindowView* vw = ctx->window(xid);
-        return vw && grabWantsMotion((uint16_t)vw->event_mask, held);
+        // xorg EventIsDeliverable: the window's XI2 selection OR its core
+        // mask (M10 in docs/XI2_XORG_COMPARISON.md).
+        return vw && (grabWantsMotion((uint16_t)vw->event_mask, held) ||
+                      (vw->xi2_mask & x11::xi2::kMotionMask) != 0);
       };
       if (!wantsMotionAt(target)) {
         uint32_t cur = target;
@@ -473,12 +497,16 @@ namespace x11 {
       }
     }
 
-    // Walk up until you find a motion listener.
+    // Walk up until you find a motion listener at EITHER level — xorg
+    // EventIsDeliverable (dix/events.c:2747-2773) accepts the window's XI2
+    // union or its core mask.  XI2 has only XI_Motion (no button-motion
+    // families).  A core-only walk fell off the top for a window tree that
+    // selected motion solely via XISelectEvents (M10).
     uint32_t cur = best;
     while (cur) {
       WindowView vw{};
       if (!ctx.windows().snapshot(cur, vw)) break;
-      if (vw.event_mask & motionMask) return cur;
+      if ((vw.event_mask & motionMask) || (vw.xi2_mask & xi2::kMotionMask)) return cur;
       cur = vw.parent_xid;
     }
 

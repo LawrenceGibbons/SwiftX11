@@ -39,10 +39,34 @@ namespace x11 {
     uint32_t last_cursor_host = 0;
     uint32_t last_cursor_cid  = 0;
 
-    // XI2 event mask registered on the root window (XID 1).
-    // XISelectEvents on root isn't stored in WindowTable (root isn't a real window).
-    // XI2 senders check this when the per-window xi2_mask is 0.
-    uint32_t xi2_root_mask = 0;
+    // XI2 root-window selections (XISelectEvents on XID 1), one entry per
+    // client fd.  xorg keeps an InputClients entry per client per window and
+    // XISetEventMask (Xi/exevents.c) replaces only the caller's slot.  A single
+    // shared word was last-writer-wins: Chromium's startup root selection
+    // (HierarchyChanged) erased xeyes' RawMotion bit (reproduced 2026-09-04).
+    // `xi2_root_mask` is the derived UNION and gates the senders exactly as
+    // before; per-client delivery of root-selected events is the M5 follow-up
+    // (docs/XI2_XORG_COMPARISON.md).
+    std::unordered_map<int, uint32_t> xi2_root_masks;
+    uint32_t xi2_root_mask = 0;   // union of xi2_root_masks — never assign directly
+
+    void setRootXI2Mask(int fd, uint32_t mask) {
+      if (mask) xi2_root_masks[fd] = mask;
+      else      xi2_root_masks.erase(fd);      // all-zero / mask_len==0 = deselect
+      recomputeRootXI2Mask();
+    }
+    void removeClientRootXI2Mask(int fd) {
+      if (xi2_root_masks.erase(fd)) recomputeRootXI2Mask();
+    }
+    uint32_t rootXI2MaskFor(int fd) const {
+      auto it = xi2_root_masks.find(fd);
+      return it == xi2_root_masks.end() ? 0u : it->second;
+    }
+    void recomputeRootXI2Mask() {
+      uint32_t u = 0;
+      for (const auto& kv : xi2_root_masks) u |= kv.second;
+      xi2_root_mask = u;
+    }
 
     // Screen origin cache: maps host XID → (screen_x, screen_y).
     // Updated whenever the pointer moves over a host window.
