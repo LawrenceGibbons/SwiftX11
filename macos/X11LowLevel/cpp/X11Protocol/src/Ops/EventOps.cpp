@@ -399,7 +399,8 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
                                 uint32_t wid,
                                 int32_t root_x, int32_t root_y,
                                 uint32_t buttons, uint32_t mods,
-                                int toFd)
+                                int toFd,
+                                uint32_t child_xid)
 {
   // event-local coords
   int16_t ex = 0, ey = 0;
@@ -429,7 +430,7 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
                      x11_now_ms_monotonic(),
                      1,      // root
                      wid,    // event window
-                     0,      // child
+                     child_xid, // child of the event window on the sprite path
                      (int)ex, (int)ey,
                      st,
                      rootW, rootH,
@@ -714,7 +715,8 @@ static void fillXI2Group(uint8_t* buf) {
 bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
                                   int32_t root_x, int32_t root_y,
                                   uint32_t buttons, uint32_t mods,
-                                  bool force, int toFd) {
+                                  bool force, int toFd,
+                                  uint32_t child_xid) {
   const WindowView* wv = ctx.window(wid);
   if (!force && !wv) return false;
   // per-window selection → suppress core; a grab-forced delivery counts as consumed
@@ -744,7 +746,7 @@ bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 16, 0);                           // detail (0 for motion)
   wire::wr32_le(buf + 20, 1);                           // root window
   wire::wr32_le(buf + 24, wid);                         // event window
-  wire::wr32_le(buf + 28, 0);                           // child
+  wire::wr32_le(buf + 28, child_xid);                   // child (FixUpEventFromWindow)
   wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));    // root_x FP16.16
   wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));    // root_y FP16.16
   wire::wr32_le(buf + 40, (uint32_t)((int32_t)ex << 16)); // event_x FP16.16

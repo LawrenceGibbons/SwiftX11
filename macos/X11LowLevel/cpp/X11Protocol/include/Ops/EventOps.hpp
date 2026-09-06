@@ -93,7 +93,8 @@ namespace x11 {
                           uint32_t wid,
                           int32_t root_x, int32_t root_y,
                           uint32_t buttons, uint32_t mods,
-                          int toFd = -1);
+                          int toFd = -1,
+                          uint32_t child_xid = 0);   // xorg FixUpEventFromWindow child
 
     // mouse buttons
     void sendButtonEvent(XProtoContext& ctx,
@@ -155,7 +156,8 @@ namespace x11 {
     bool sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
                             int32_t root_x, int32_t root_y,
                             uint32_t buttons, uint32_t mods,
-                            bool force = false, int toFd = -1);
+                            bool force = false, int toFd = -1,
+                            uint32_t child_xid = 0);
 
     bool sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
                             bool is_press, uint8_t button,

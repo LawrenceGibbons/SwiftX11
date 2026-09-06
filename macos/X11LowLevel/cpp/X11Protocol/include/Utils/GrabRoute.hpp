@@ -44,6 +44,25 @@ inline Decision route(XProtoContext& ctx, const PointerGrab& g, uint32_t normalT
   return d;
 }
 
+// xorg FixUpEventFromWindow(…, child=None, calcChild=TRUE) (dix/events.c):
+// the `child` field is the child of the EVENT window that is an ancestor of
+// (or is) the sprite window — None when the sprite window is the event
+// window itself or does not lie beneath it.  For a root-window grab this is
+// the toplevel under the pointer, which AWT's XDND reads as the drop-target
+// candidate (`xmotion.subwindow`); v1.20.0.18 sent None and the hw_ila drag
+// never found a target.
+inline uint32_t childOnSpritePath(XProtoContext& ctx, uint32_t eventWin, uint32_t spriteWin) {
+  if (!spriteWin || !eventWin || spriteWin == eventWin) return 0;
+  uint32_t w = spriteWin;
+  for (int i = 0; w && i < 64; i++) {
+    WindowView v{};
+    if (!ctx.windows().snapshot(w, v)) return 0;
+    if (v.parent_xid == eventWin) return w;
+    w = v.parent_xid;
+  }
+  return 0;
+}
+
 // Stage-2 mask tests at the grab's level (DeliverOneGrabbedEvent,
 // dix/events.c:4322-4350): an XI2 grab consults its xi2mask and delivers XI2
 // only; a core grab consults eventMask and delivers core only.

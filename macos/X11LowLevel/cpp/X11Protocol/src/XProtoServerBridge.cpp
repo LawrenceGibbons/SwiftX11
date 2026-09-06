@@ -948,22 +948,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           // child field: per X11 spec, "child is set to the child of the
           // event window that is the ancestor of (or is) the source window."
-          // This means the IMMEDIATE child of the event window, not the
-          // deepest descendant.  Grabbed delivery carries child=None (xorg
-          // FixUpEventFromWindow(grab->window, None), dix/events.c:4357).
-          uint32_t child = 0;
-          if (!viaGrab && target != under) {
-            // Walk from 'under' up toward 'target' to find the immediate child
-            uint32_t cur = under;
-            int csafety = 0;
-            while (cur && cur != target && ++csafety < 64) {
-              x11::WindowView cwv{};
-              if (!ctx.windows().snapshot(cur, cwv)) break;
-              if (cwv.parent_xid == target) { child = cur; break; }
-              cur = cwv.parent_xid;
-            }
-            if (child == 0) child = under; // fallback if walk fails
-          }
+          // xorg computes it for grabbed delivery too — FixUpEventFromWindow
+          // (grab->window, None, calcChild=TRUE), dix/events.c:4357 — so a
+          // root-window grab sees the toplevel under the pointer; AWT's XDND
+          // reads that as the drop-target candidate (v1.20.0.19).
+          const uint32_t child = x11::grabroute::childOnSpritePath(ctx, target, under);
 
 
 #ifndef NDEBUG
@@ -991,11 +980,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             if (x11::grabroute::grabWantsXI2(activeGrab, xi2bit)) {
               (void)srv->eventOps().sendXI2ButtonEvent(ctx, target, c.isDown != 0, c.button,
                                                        rx, ry, buttonsBefore, c.modsMask,
-                                                       /*child=*/0, /*force=*/true, toFd);
+                                                       child, /*force=*/true, toFd);
             } else if (x11::grabroute::grabWantsCore(activeGrab, corebit)) {
               srv->eventOps().sendButtonEvent(ctx, target, c.isDown != 0, c.button,
                                               rx, ry, buttonsBefore, c.modsMask,
-                                              /*child=*/0, toFd);
+                                              child, toFd);
             }
           } else {
             // xorg DeliverDeviceEvents: XI2 first; if it delivers via the window's
@@ -1214,6 +1203,21 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             if (!fenced && !wantsKey(target) && wantsKey(host)) target = host;
           }
           const bool normalWants = wantsKey(target);
+
+#ifndef NDEBUG
+          {
+            x11::KeyboardGrab dbgKg{};
+            const bool dbgHave = ctx.grabs().getKeyboardGrabInfo(dbgKg) && dbgKg.active;
+            const x11::WindowView* dbgT = ctx.window(target);
+            TS_FPRINTF("[KEY_ROUTE] host=0x%08X focus=0x%08X target=0x%08X t_fd=%d t_mask=0x%08X t_xi2=0x%08X "
+                       "wants=%d kc=%u %s mods=0x%X kbgrab=%s win=0x%08X fd=%d xi2=%d owner_ev=%d\n",
+                       (unsigned)host, (unsigned)focus, (unsigned)target,
+                       dbgT ? dbgT->owner_fd : -1, dbgT ? dbgT->event_mask : 0u, dbgT ? dbgT->xi2_mask : 0u,
+                       (int)normalWants, (unsigned)x11_kc, c.isDown ? "DOWN" : "UP", (unsigned)c.modsMask,
+                       dbgHave ? "yes" : "no", (unsigned)dbgKg.grabWindow, dbgKg.owner_fd,
+                       (int)dbgKg.is_xi2, (int)dbgKg.ownerEvents);
+          }
+#endif
 
           // ---- Active keyboard grab (GrabKeyboard / XIGrabDevice on the
           // keyboard) — xorg DeliverGrabbedEvent: with owner_events the

@@ -180,9 +180,14 @@ void postMotion(uint32_t host_xid,
   // during an implicit drag, so a pressed widget dragged out never saw its
   // Leave (G-7 / C-10).  Otherwise both levels, each gated only by its own
   // mask (DoEnterLeaveEvents, dix/enterleave.c:595-608 — R1).
+  // The sprite window (xorg sprite->win): the deepest mapped window under
+  // the pointer on this host.  Used for crossings and for the `child` field
+  // of the motion event (FixUpEventFromWindow).
+  uint32_t spriteWin = pickDeepestMappedWindowAtHostPoint(*ctx, host_xid, win_x, win_y);
+  if (!spriteWin) spriteWin = host_xid;
+
   {
-    uint32_t under = pickDeepestMappedWindowAtHostPoint(*ctx, host_xid, win_x, win_y);
-    if (!under) under = host_xid;
+    const uint32_t under = spriteWin;
 
     const uint32_t prev = ctx->input().pointer_xid;
     if (under != prev) {
@@ -333,15 +338,20 @@ void postMotion(uint32_t host_xid,
   // motion events arriving, so this is the next thing to verify.
   x11::drag_trace::motion(target, root_x, root_y, buttons, mods);
 
+  // child = the child of the event window on the sprite path (xorg
+  // FixUpEventFromWindow, calcChild=TRUE) — for a root-window grab the
+  // toplevel under the pointer, which AWT's XDND reads as `subwindow`.
+  const uint32_t child = x11::grabroute::childOnSpritePath(*ctx, target, spriteWin);
+
   if (viaGrab) {
     // DeliverOneGrabbedEvent (dix/events.c:4322-4350): the grab's level only,
     // filtered by the grab's own mask — XI_Motion for an XI2 grab, the core
     // motion families for the held buttons for a core grab.
     if (activeGrab.is_xi2) {
       if (activeGrab.xi2mask & x11::xi2::kMotionMask)
-        (void)ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods, /*force=*/true, toFd);
+        (void)ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods, /*force=*/true, toFd, child);
     } else if (grabWantsMotion(activeGrab.eventMask, heldButtons)) {
-      ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods, toFd);
+      ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods, toFd, child);
     }
     return;
   }
@@ -349,8 +359,8 @@ void postMotion(uint32_t host_xid,
   // Send MotionNotify with ROOT coords (root_x/root_y).
   // xorg DeliverDeviceEvents: XI2 first; if the window's own selection consumes
   // it, the core MotionNotify is suppressed (no double delivery).
-  if (!ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods)) {
-    ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods);
+  if (!ev->sendXI2MotionEvent(*ctx, target, root_x, root_y, buttons, mods, false, -1, child)) {
+    ev->sendMotionNotify(*ctx, target, root_x, root_y, buttons, mods, -1, child);
   }
 }
   

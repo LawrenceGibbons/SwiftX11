@@ -361,9 +361,24 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
         snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d REPLY seq=%u data=%u lenw=%u\n",
                 client_fd_, ws, h[1], lw);
       } else {
-        uint32_t w = uint32_t(h[4])|(uint32_t(h[5])<<8)|(uint32_t(h[6])<<16)|(uint32_t(h[7])<<24);
-        snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d EVENT type=%u seq=%u detail=%u wid=0x%08X\n",
-                client_fd_, h[0], ws, h[1], w);
+        auto rd32 = [&](int off) -> uint32_t {
+          return uint32_t(h[off])|(uint32_t(h[off+1])<<8)|(uint32_t(h[off+2])<<16)|(uint32_t(h[off+3])<<24);
+        };
+        const uint8_t type = h[0] & 0x7F;
+        if (type >= 2 && type <= 8) {
+          // Key/Button/Motion/Enter/Leave: bytes 4-7 are the TIME; the event
+          // window is at 12-15 and child at 16-19 (v1.20.0.19 — the old line
+          // printed the time as `wid`).
+          snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d EVENT type=%u seq=%u detail=%u win=0x%08X child=0x%08X\n",
+                  client_fd_, h[0], ws, h[1], rd32(12), rd32(16));
+        } else if (type == 35) {
+          // GenericEvent: extension major at 1, length at 4-7, evtype at 8-9.
+          snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d EVENT type=35 seq=%u ext=%u evtype=%u len=%u\n",
+                  client_fd_, ws, h[1], (unsigned)(h[8] | (h[9] << 8)), rd32(4));
+        } else {
+          snprintf(wbuf, sizeof(wbuf), "[WIRE] fd=%d EVENT type=%u seq=%u detail=%u wid=0x%08X\n",
+                  client_fd_, h[0], ws, h[1], rd32(4));
+        }
       }
       TS_FPRINTF("%s", wbuf);
       x11_ui_push_log(1, wbuf);
