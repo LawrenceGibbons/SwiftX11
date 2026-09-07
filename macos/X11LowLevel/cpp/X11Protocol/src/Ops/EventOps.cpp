@@ -82,9 +82,12 @@ static bool computeEventXYFromHostLocal(x11::XProtoContext& ctx,
 {
   if (!outEx || !outEy) return false;
 
-  // Host whose win_x/win_y are defined (last motion host)
-  uint32_t host = ctx.input().last_xid;
-  if (host == 0) host = ctx.windows().topLevelAncestorOf(targetWid);
+  // Host whose win_x/win_y are defined (last motion host).  With no such
+  // host (fresh server, or the last motion was a window-less tracker tick
+  // that left last_xid = 0) the cached local coords describe nothing —
+  // report failure so callers derive coords from the root position instead
+  // of treating (0,0)-relative values as this window's (v1.20.0.33).
+  const uint32_t host = ctx.input().last_xid;
   if (host == 0) return false;
 
   int32_t lx = ctx.input().win_x_u;
@@ -592,9 +595,12 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   // the event window — Phase E, L6.
   int16_t rx = clamp16(ctx.input().root_x_u);
   int16_t ry = clamp16(ctx.input().root_y_u);
+  // Root position minus the window's root origin, exactly as xorg's
+  // FixUpEventFromWindow does; the pointer is usually outside the focus
+  // window's host, so the host-local cache is the wrong reference.
   int16_t ex = 0, ey = 0;
-  if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey) &&
-      !computeEventXYFromRoot(ctx, wid, ctx.input().root_x_u, ctx.input().root_y_u, &ex, &ey)) {
+  if (!computeEventXYFromRoot(ctx, wid, ctx.input().root_x_u, ctx.input().root_y_u, &ex, &ey) &&
+      !computeEventXYFromHostLocal(ctx, wid, &ex, &ey)) {
     ex = 0; ey = 0;
   }
   wire::wr16_le(ev + 20, (uint16_t)rx);
@@ -887,8 +893,8 @@ bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   // Phase E, L6.
   const int32_t root_x = ctx.input().root_x_u, root_y = ctx.input().root_y_u;
   int16_t ex = 0, ey = 0;
-  if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey) &&
-      !computeEventXYFromRoot(ctx, wid, root_x, root_y, &ex, &ey)) {
+  if (!computeEventXYFromRoot(ctx, wid, root_x, root_y, &ex, &ey) &&
+      !computeEventXYFromHostLocal(ctx, wid, &ex, &ey)) {
     ex = 0; ey = 0;
   }
 
@@ -1045,7 +1051,9 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {
   const int32_t dy = in.raw_have ? in.root_y_u - in.raw_last_y : 0;
   const bool first = !in.raw_have;
   in.raw_last_x = in.root_x_u; in.raw_last_y = in.root_y_u; in.raw_have = true;
-  if (!first && dx == 0 && dy == 0) return;
+  // The first position only seeds the delta (no previous position, no
+  // motion to report); xorg sends nothing without motion (v1.20.0.33).
+  if (first || (dx == 0 && dy == 0)) return;
 
   // xXIRawEvent (xorg eventToRawEvent, dix/eventconvert.c:768-808):
   //   32-byte header + valuator mask (valuators_len = 2 words, MAX_VALUATORS

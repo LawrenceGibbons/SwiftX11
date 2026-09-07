@@ -1309,7 +1309,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       int32_t win_x = root_x, win_y = root_y;
       uint32_t child = 0;
       if (qIsRoot) {
-        child = host;   // toplevel under the pointer (0 = over no X window)
+        // Toplevel under the pointer — only while the pointer really is in
+        // it (last_xid lingers after the pointer leaves; the cached local
+        // coords follow the real position, so the pick fails cleanly).
+        child = (host && pickDeepestMappedWindowAtHostPoint(ctx, host, in.win_x_u, in.win_y_u)) ? host : 0;
       } else {
         int32_t ox = 0, oy = 0;
         uint32_t cur = qwin;

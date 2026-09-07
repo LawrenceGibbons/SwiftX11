@@ -24,6 +24,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/X11ExtOpcodes.hpp"
 #include "Core/X11Modifiers.hpp"
+#include "Core/InputRouting.hpp"    // pickDeepestMappedWindowAtHostPoint (QueryPointer child)
 #include "Core/GrabTable.hpp"        // keyboard grab → NotifyWhileGrabbed (SetInputFocus)
 #include "Core/XProtoServer.hpp"     // eventOps() for the focus choreography
 #include "Utils/FocusEvents.hpp"     // Phase D: DoFocusEvents
@@ -110,156 +111,61 @@ namespace x11 {
     }
 
     const auto& in = ctx.input();
-    
-    // Root coords (global, top-left)
+
+    // xorg ProcQueryPointer (dix/events.c): root = the sprite's root position;
+    // one screen, so sameScreen is always True and winX/winY are the sprite
+    // position relative to the queried window's root origin wherever the
+    // pointer is; `child` is the direct child of the queried window on the
+    // sprite path, None otherwise.  The old answer used the last motion
+    // host's local coords and a cached host origin, so a window the pointer
+    // had never entered got (0,0) — xeyes polling its own window looked at
+    // its top-left corner for ever (Phase E pass, v1.20.0.33).
     const int32_t rootx32 = in.root_x_u;
     const int32_t rooty32 = in.root_y_u;
     // Wire-format state: internal button bits 0-4 must map to X11
     // positions 8-12 (raw buttons|mods reported Button1 as ShiftMask —
     // Java drag loops polling XQueryPointer saw "no buttons held").
     const uint16_t mask = x11::input::toX11State(in.buttons, in.mods);
-    
-    // Host-local coords (relative to host_xid view)
-    const uint32_t host = in.last_xid;
-    const int32_t hostx = in.win_x_u;
-    const int32_t hosty = in.win_y_u;
-    
     auto clamp16 = [](int32_t v) -> int16_t {
       if (v < -32768) return -32768;
       if (v >  32767) return  32767;
       return (int16_t)v;
     };
-    
-    const int16_t rootx = clamp16(rootx32);
-    const int16_t rooty = clamp16(rooty32);
-    
-    // Default child/win coords
+    // Host the pointer was last seen in (0 = none); its cached local coords
+    // follow the real position through the tracker (M8), so the pick fails
+    // cleanly once the pointer has left the host.
+    const uint32_t host = in.last_xid;
+    const uint32_t spriteWin = host ? pickDeepestMappedWindowAtHostPoint(ctx, host, in.win_x_u, in.win_y_u) : 0;
+
     uint32_t child = 0;
-    int16_t winx = 0;
-    int16_t winy = 0;
-    
-    // If we don't know host yet, answer root-only.
-    if (host == 0) {
-      (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
-        rep[1] = 1;
-        wire::wr32_le(rep.data() + 8,  kRootXid);
-        wire::wr32_le(rep.data() + 12, 0);
-        wire::wr16_le(rep.data() + 16, (uint16_t)rootx);
-        wire::wr16_le(rep.data() + 18, (uint16_t)rooty);
-        wire::wr16_le(rep.data() + 20, 0);
-        wire::wr16_le(rep.data() + 22, 0);
-        wire::wr16_le(rep.data() + 24, mask);
-      });
-      return;
-    }
-    
-    // --- Helper: find deepest mapped child under pointer (no mask requirement) ---
-    auto pick_deepest_mapped_child = [&](uint32_t host_xid, int32_t x, int32_t y) -> uint32_t {
-      uint32_t best = host_xid;
-      int bestDepth = -1;
-      
-      std::vector<uint32_t> nodes = ctx.windows().descendantsOf(host_xid);
-      nodes.push_back(host_xid);
-      
-      auto contains = [&](uint32_t xid, const WindowView& vw, int32_t& lx, int32_t& ly, int& depth) -> bool {
-        lx = x;
-        ly = y;
-        depth = 0;
-        uint32_t cur = xid;
-        while (cur && cur != host_xid) {
-          WindowView cv{};
-          if (!ctx.windows().snapshot(cur, cv)) return false;
-          lx -= cv.x;
-          ly -= cv.y;
-          cur = cv.parent_xid;
-          depth++;
-          if (depth > 64) return false;
-        }
-        if (xid != host_xid && cur != host_xid) return false;
-        return (lx >= 0 && ly >= 0 && lx < (int32_t)vw.w && ly < (int32_t)vw.h);
-      };
-      
-      for (uint32_t xid : nodes) {
-        WindowView vw{};
-        if (!ctx.windows().snapshot(xid, vw)) continue;
-        if (!vw.mapped) continue;
-        
-        int32_t lx=0, ly=0; int depth=0;
-        if (!contains(xid, vw, lx, ly, depth)) continue;
-        
-        if (depth > bestDepth) {
-          best = xid;
-          bestDepth = depth;
+    int32_t winx32 = rootx32, winy32 = rooty32;
+    if (qwin != kRootXid && qwin != 0) {
+      int32_t ox = 0, oy = 0;
+      uint32_t cur = qwin;
+      for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
+        WindowView cv{};
+        if (!ctx.windows().snapshot(cur, cv)) break;
+        ox += (int32_t)cv.x + (int32_t)cv.border_width;
+        oy += (int32_t)cv.y + (int32_t)cv.border_width;
+        cur = cv.parent_xid;
+      }
+      winx32 = rootx32 - ox;
+      winy32 = rooty32 - oy;
+      if (spriteWin && ctx.windows().topLevelAncestorOf(qwin) == host) {
+        uint32_t t = spriteWin;
+        for (int hop = 0; hop < 64 && t && t != kRootXid; hop++) {
+          WindowView tv{};
+          if (!ctx.windows().snapshot(t, tv)) break;
+          if (tv.parent_xid == qwin) { child = t; break; }
+          t = tv.parent_xid;
         }
       }
-      return best;
-    };
-    
-    // --- Compute winX/winY relative to qwin ---
-    if (qwin == kRootXid) {
-      // When querying the root, window coords are root coords
-      winx = rootx;
-      winy = rooty;
-      // child: direct child of root that pointer is in = the current host
-      child = host;
     } else {
-      // Determine which host tree qwin belongs to
-      const uint32_t qwin_host = ctx.windows().topLevelAncestorOf(qwin);
-
-      if (qwin_host == host) {
-        // Same host as pointer — use host-local coords (fast path)
-        child = pick_deepest_mapped_child(host, hostx, hosty);
-        if (child == host) child = 0;
-
-        int32_t lx = hostx;
-        int32_t ly = hosty;
-
-        uint32_t cur = qwin;
-        int depth = 0;
-        while (cur && cur != host) {
-          WindowView cv{};
-          if (!ctx.windows().snapshot(cur, cv)) { cur = 0; break; }
-          lx -= cv.x;
-          ly -= cv.y;
-          cur = cv.parent_xid;
-          depth++;
-          if (depth > 64) { cur = 0; break; }
-        }
-
-        if (cur == host || qwin == host) {
-          winx = clamp16(lx);
-          winy = clamp16(ly);
-        }
-      } else {
-        // Different host than pointer — use root coords + cached host screen origin.
-        // This handles the cross-host case (e.g. xeyes querying its own window
-        // while the pointer is over xterm's window).
-        child = 0; // pointer is not in qwin's host tree
-
-        const uint32_t lookup_host = (qwin_host != 0) ? qwin_host : qwin;
-        int32_t hox = 0, hoy = 0;
-        if (in.getHostOrigin(lookup_host, hox, hoy)) {
-          // Walk from qwin up to its host to get child offset within host
-          int32_t child_ox = 0, child_oy = 0;
-          if (qwin != lookup_host) {
-            uint32_t cur = qwin;
-            for (int hop = 0; hop < 64 && cur && cur != lookup_host && cur != kRootXid; hop++) {
-              WindowView cv{};
-              if (!ctx.windows().snapshot(cur, cv)) break;
-              child_ox += (int32_t)cv.x;
-              child_oy += (int32_t)cv.y;
-              cur = cv.parent_xid;
-            }
-          }
-          // qwin's screen position = host_screen_origin + child_offset_in_host
-          // window-local coords = root_position - qwin_screen_position
-          winx = clamp16(rootx32 - hox - child_ox);
-          winy = clamp16(rooty32 - hoy - child_oy);
-        }
-        // else: host never visited, winx/winy stay at 0
-      }
+      child = spriteWin ? host : 0;   // root query: the toplevel under the pointer
     }
-    
+
+    const int16_t rootx = clamp16(rootx32), rooty = clamp16(rooty32);
+    const int16_t winx = clamp16(winx32), winy = clamp16(winy32);
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       rep[1] = 1; // sameScreen
       wire::wr32_le(rep.data() + 8,  kRootXid);
@@ -271,8 +177,8 @@ namespace x11 {
       wire::wr16_le(rep.data() + 24, mask);
     });
   }
-  
-  
+
+
   // ---- 15: QueryTree ----
   void QueryOps::handleQueryTree(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     if (br.remaining() < 4) { br.skip(br.remaining()); return; }
