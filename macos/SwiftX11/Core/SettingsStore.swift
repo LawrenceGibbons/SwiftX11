@@ -21,8 +21,10 @@ final class SettingsStore: ObservableObject {
     self.enableUnixSocket = UserDefaults.standard.object(forKey: "enableUnixSocket") as? Bool ?? true
     self.tcpBindAddress = UserDefaults.standard.object(forKey: "tcpBindAddress") as? String ?? "0.0.0.0"
     self.logVerbosity = UserDefaults.standard.object(forKey: "logVerbosity") as? Int ?? 0
-    self.xi2Advertised = UserDefaults.standard.object(forKey: "xi2Advertised") as? Bool ?? false
-    self.xkbAdvertised = UserDefaults.standard.object(forKey: "xkbAdvertised") as? Bool ?? false
+    // Both default ON since v1.20.0.22 (XI2 Phases A–B and XKEYBOARD Phase F
+    // verified 2026-09-07 against xterm, Vivado, Vitis and portal-GTK).
+    self.xi2Advertised = UserDefaults.standard.object(forKey: "xi2Advertised") as? Bool ?? true
+    self.xkbAdvertised = UserDefaults.standard.object(forKey: "xkbAdvertised") as? Bool ?? true
     // Sync initial state to C++ (didSet does NOT fire during init, so apply
     // the persisted values explicitly here).
     x11_set_font_antialiased(self.antialiasedFonts ? 1 : 0)
@@ -55,8 +57,8 @@ final class SettingsStore: ObservableObject {
     }
   }
 
-  // Advertise XInputExtension (XI2). Default OFF for Electron/GTK (Vitis)
-  // compatibility; ON restores XI2 for simple clients like xeyes.
+  // Advertise XInputExtension (XI2). Default ON since v1.20.0.22; OFF is the
+  // escape hatch that keeps Electron/GTK clients on the core input path.
   @Published var xi2Advertised: Bool {
     didSet {
       UserDefaults.standard.set(xi2Advertised, forKey: "xi2Advertised")
@@ -64,8 +66,8 @@ final class SettingsStore: ObservableObject {
     }
   }
 
-  // Advertise XKEYBOARD. Default OFF until the implementation is verified
-  // against every client library; XI2 needs it ON for GTK3 clients (GDK's
+  // Advertise XKEYBOARD. Default ON since v1.20.0.22 (verified against libX11,
+  // GDK3, Java AWT and Chromium); XI2 needs it ON for GTK3 clients (GDK's
   // non-XKB keymap path crashes on the first XI2 key event, M23).
   @Published var xkbAdvertised: Bool {
     didSet {

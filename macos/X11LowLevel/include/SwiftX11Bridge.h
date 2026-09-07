@@ -309,16 +309,16 @@ void x11_set_wire_trace(int enabled);
 int  x11_get_wire_trace(void);
 
 // -------------------------------------------------------------------------------------
-// XInputExtension (XI2) advertisement toggle — default OFF (hidden for Electron/
-// GTK compatibility); ON advertises XI2 for simple clients (xeyes).
+// XInputExtension (XI2) advertisement toggle — default ON since v1.20.0.22; OFF
+// keeps Electron/GTK clients on the core input path.
 // -------------------------------------------------------------------------------------
 void x11_set_xi2_advertised(int enabled);
 int  x11_get_xi2_advertised(void);
 
 // -------------------------------------------------------------------------------------
-// XKEYBOARD advertisement toggle — default OFF until verified against every
-// client library (libX11, GDK3, Java AWT, Chromium).  When ON, QueryExtension
-// reports XKEYBOARD and clients translate keycodes through XkbGetMap.
+// XKEYBOARD advertisement toggle — default ON since v1.20.0.22 (verified against
+// libX11, GDK3, Java AWT, Chromium).  When ON, QueryExtension reports XKEYBOARD
+// and clients translate keycodes through XkbGetMap.
 // -------------------------------------------------------------------------------------
 void x11_set_xkb_advertised(int enabled);
 int  x11_get_xkb_advertised(void);

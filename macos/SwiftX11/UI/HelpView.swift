@@ -101,8 +101,8 @@ struct HelpView: View {
                 helpSection("Known Limitations") {
                     bulletList([
                         "No GLX \u{2014} OpenGL rendering over X11 is not supported",
-                        "XInput2 (XI2) \u{2014} implemented, advertised only when the XInput2 toggle is on (default off)",
-                        "XKEYBOARD \u{2014} client-info surface implemented (GetMap, GetNames, GetState, GetControls, compat, indicators, GetKbdByName), advertised only when the XKEYBOARD toggle is on (default off); no SetMap, no compose sequences or dead keys",
+                        "XInput2 (XI2) \u{2014} advertised by default (toggle in the log window); grabs and delivery follow xorg, per-window per-client selections and focus detail are still simplified",
+                        "XKEYBOARD \u{2014} client-info surface implemented (GetMap, GetNames, GetState, GetControls, compat, indicators, GetKbdByName), advertised by default; no SetMap, no compose sequences or dead keys, no XKB events (the keymap is static)",
                         "Little-endian only \u{2014} big-endian X11 clients are rejected at connection time",
                         "Requires Metal GPU \u{2014} software rendering is not supported",
                         "US keyboard layout assumed \u{2014} non-US layouts may have incorrect keysym mapping"

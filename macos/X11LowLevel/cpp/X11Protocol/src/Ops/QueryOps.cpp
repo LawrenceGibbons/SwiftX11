@@ -465,14 +465,11 @@ namespace x11 {
     } else if (name == "XC-MISC") {
       present = 1; major = ext::kXCMisc;
     } else if (name == "XInputExtension") {
-      // Runtime toggle (Settings → "Advertise XInputExtension"). Default OFF.
-      // XI2 event delivery is xorg-correct (button/motion/crossing/grab, M6
-      // Stage 2), but Electron/GTK route their ENTIRE input model through XI2
-      // when it is advertised and misbehave (menus don't drop, dialog clicks
-      // don't register) — the gap is client-side interpretation, not delivery.
-      // OFF keeps Vitis on the fully-working core input path; ON restores XI2
-      // for simple clients (xeyes) and clears the "XInputExtension missing"
-      // warning.  first_event MUST be >= 64: libXi registers 17 wire-to-event
+      // Runtime toggle (Settings → "XInput2"), default ON since v1.20.0.22 after
+      // Phases A–B (delivery, grabs) and F (XKEYBOARD, which GTK3 needs for keys
+      // over XI2) were verified against xterm, Vivado, Vitis and portal-GTK.
+      // OFF keeps Electron/GTK clients on the core input path if something
+      // misbehaves.  first_event MUST be >= 64: libXi registers 17 wire-to-event
       // handlers from here; 0 would clobber core handlers.
       if (x11_get_xi2_advertised()) {
         present = 1; major = ext::kXInput2;
@@ -485,10 +482,10 @@ namespace x11 {
     } else if (name == "Composite") {
       present = 1; major = ext::kCOMPOSITE;
     } else if (name == "XKEYBOARD") {
-      // Runtime toggle (Settings → "XKEYBOARD"), default OFF (M23 / Phase F).
-      // Once present, libX11/GDK/AWT/Chromium all translate keycodes through
-      // XkbGetMap with no fallback to the core tables, so the extension is
-      // only advertised when the whole client-info surface is served
+      // Runtime toggle (Settings → "XKEYBOARD"), default ON since v1.20.0.22
+      // (M23 / Phase F, verified 2026-09-07).  Once present, libX11/GDK/AWT/
+      // Chromium all translate keycodes through XkbGetMap with no fallback to
+      // the core tables, so the whole client-info surface must stay served
       // (Extensions/XKBOps.cpp).  One event code, one error code.
       if (x11_get_xkb_advertised()) {
         present = 1; major = ext::kXKB;

@@ -386,13 +386,13 @@ extern "C" int x11_get_wire_trace(void)
 // -------------------------------------------------------------------------------------
 // XInputExtension (XI2) advertisement toggle
 // -------------------------------------------------------------------------------------
-// Default OFF (hidden): Electron/GTK route their entire input model through XI2
-// when it is advertised, and our XI2 support is complete for event *delivery*
-// but not for the clients' full grab/interpretation model — so menus/dialogs
-// misbehave under Vitis.  ON restores XI2 for simple clients (xeyes pupil
-// tracking, clearing the "XInputExtension missing" warning).  Consulted live by
-// QueryExtension / ListExtensions.
-static std::atomic<int> g_xi2_advertised{0};
+// Default ON since v1.20.0.22: XI2 Phases A–B (delivery, grabs) plus the
+// XKEYBOARD extension were verified against xterm, Vivado, Vitis and the
+// portal-GTK dialogs on 2026-09-07.  OFF is the escape hatch that keeps
+// Electron/GTK clients on the core input path.  Swift's SettingsStore syncs
+// the persisted value at startup; consulted live by QueryExtension /
+// ListExtensions.
+static std::atomic<int> g_xi2_advertised{1};
 
 extern "C" void x11_set_xi2_advertised(int enabled)
 {
@@ -407,12 +407,14 @@ extern "C" int x11_get_xi2_advertised(void)
 // -------------------------------------------------------------------------------------
 // XKEYBOARD advertisement toggle (v1.20.0.20, Phase F / M23)
 // -------------------------------------------------------------------------------------
-// Default OFF: advertising a partial XKB is worse than none — libX11 switches
-// its keysym translation to XkbGetMap on the first XLookupString, Chromium
-// builds its keymap from GetMap with no core fallback, and Java AWT's key
-// path goes dead if GetMap fails.  ON once verified.  Consulted live by
+// Default ON since v1.20.0.22 (verified 2026-09-07 against libX11, GDK3, Java
+// AWT and Chromium).  Advertising a partial XKB would be worse than none —
+// libX11 switches its keysym translation to XkbGetMap on the first
+// XLookupString, Chromium builds its keymap from GetMap with no core fallback,
+// and Java AWT's key path goes dead if GetMap fails — so the surface in
+// Extensions/XKBOps.cpp must stay complete.  Consulted live by
 // QueryExtension / ListExtensions.
-static std::atomic<int> g_xkb_advertised{0};
+static std::atomic<int> g_xkb_advertised{1};
 
 extern "C" void x11_set_xkb_advertised(int enabled)
 {
