@@ -18,6 +18,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/CursorRouting.hpp"
 #include "Core/InputRouting.hpp"
+#include "XProtoNotifyBridge.hpp"     // windowsRestructured (L17)
 #include "Core/DrawableRW.hpp"
 #include "Core/PixmapTable.hpp"
 #include "Utils/WireEvents.hpp"
@@ -57,7 +58,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
     case x11::opcode::ChangeWindowAttributes: handleChangeWindowAttributes(ctx, dc.seq, dc.br); return;
     case x11::opcode::GetWindowAttributes   : handleGetWindowAttributes(ctx, dc.seq, dc.br); return;
-    case x11::opcode::ConfigureWindow       : handleConfigureWindow(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ConfigureWindow       : handleConfigureWindow(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
     case x11::opcode::GetGeometry           : handleGetGeometry(ctx, dc.seq, dc.br); return;
     default:
       dc.br.skip(dc.br.remaining());
@@ -265,6 +266,27 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // client that has SelectInput'd the same window.  event_mask becomes the
     // union; broadcast events (PropertyNotify, Structure/Substructure, Expose)
     // reach every selector.
+    // xorg EventSelectForWindow (dix/events.c:4574-4600): SubstructureRedirect,
+    // ResizeRedirect and ButtonPress may be selected by at most one client per
+    // window; a second client asking for one of them gets BadAccess (L14).
+    {
+      constexpr uint32_t kAtMostOneClient =
+          x11::mask::SubstructureRedirect | x11::mask::ResizeRedirect | x11::mask::ButtonPress;
+      const uint32_t check = cur_mask & kAtMostOneClient;
+      if (check) {
+        const int me = ctx.transport().clientFd();
+        for (uint32_t bit = 1; bit; bit <<= 1) {
+          if (!(check & bit)) continue;
+          for (int fd : ctx.windows().selectorsOf(wid, bit)) {
+            if (fd != me) {
+              ctx.transport().sendErrorCore(x11::error::BadAccess, seq, 0,
+                                            x11::opcode::ChangeWindowAttributes);
+              return;
+            }
+          }
+        }
+      }
+    }
     ctx.windows().setClientEventMask(wid, ctx.transport().clientFd(), cur_mask);
 
     // Exposure "unstick" (optional; only meaningful when we changed event_mask)

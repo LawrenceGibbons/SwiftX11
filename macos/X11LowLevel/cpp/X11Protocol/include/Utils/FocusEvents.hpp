@@ -26,8 +26,21 @@
 //  event goes out at both levels, each gated by its own selection (M18: the
 //  core FocusIn/FocusOut is delivered only to clients selecting FocusChange,
 //  as DeliverEventsToWindow does; the WM-emulation sites used to bypass the
-//  mask).  NotifyPointer / NotifyPointerRoot / NotifyDetailNone events (the
-//  sprite-window and root variants) are not modelled.
+//  mask).
+//
+//  Phase G (L18): the NotifyPointer runs — FocusOut(NotifyPointer) from the
+//  pointer window P up to (excluding) the window losing focus, FocusIn
+//  (NotifyPointer) from below the window gaining focus down to P — follow
+//  CoreFocusOutNotifyPointerEvents / CoreFocusInNotifyPointerEvents
+//  (:965-1030) exactly where each transition calls them (:1037-1400), in
+//  their classic single-focus form (HasFocus false, no FirstFocusChild).
+//  The root window's own FocusIn/FocusOut (NotifyPointerRoot /
+//  NotifyDetailNone / NonlinearVirtual) have no target here — root has no
+//  WindowView, so no client can select on it — and are skipped by emitOne.
+//  PointerRoot is represented by kRootXid (1), which is also the wire value
+//  of PointerRoot, so GetInputFocus reports what xorg would; a RevertToParent
+//  that reaches the root therefore reads as PointerRoot, whose key routing
+//  (M19) matches a root-window focus anyway.
 //
 
 #pragma once
@@ -49,13 +62,20 @@ inline void emitOne(XProtoContext& ctx, EventOps& ev, uint32_t w, bool is_in,
   ev.sendXI2FocusEvent(ctx, w, is_in, mode, detail);
 }
 
+// xorg PointerWin(): the sprite window, 0 when over no X window (root).
+inline uint32_t pointerWin(XProtoContext& ctx) {
+  const uint32_t p = ctx.input().pointer_xid;
+  return (p && ctx.window(p)) ? p : 0;
+}
+
 // xorg DoFocusEvents(from, to, mode).
 inline void doFocusEvents(XProtoContext& ctx, EventOps& ev, uint32_t from, uint32_t to, uint8_t mode) {
   using namespace notifydetail;
   const bool fromNP = isNoneOrPointerRoot(from);
   const bool toNP   = isNoneOrPointerRoot(to);
   if (from == to && mode != notifymode::kGrab && mode != notifymode::kUngrab) return;
-  if (fromNP && toNP) return;   // only root-window events, which have no target here
+
+  const uint32_t P = pointerWin(ctx);
 
   auto out = [&](uint32_t w, uint8_t d) { emitOne(ctx, ev, w, /*is_in=*/false, mode, d); };
   auto in  = [&](uint32_t w, uint8_t d) { emitOne(ctx, ev, w, /*is_in=*/true,  mode, d); };
@@ -67,35 +87,80 @@ inline void doFocusEvents(XProtoContext& ctx, EventOps& ev, uint32_t from, uint3
     for (size_t i = ws.size(); i-- > 0;) in(ws[i], d);
   };
 
+  // CoreFocusOutNotifyPointerEvents (:965-985): FocusOut(NotifyPointer) from
+  // P up to (excluding) `parent` — or including it when `inclusive` — when P
+  // is below `parent`, unless P is below or above `exclude`.
+  auto outNotifyPointer = [&](uint32_t parent, uint32_t exclude, bool inclusive) {
+    if (!P) return;
+    const uint32_t par = wintree::normRoot(parent);
+    if (!wintree::isAncestor(ctx, par, P) && !(par == P && inclusive)) return;
+    if (!isNoneOrPointerRoot(exclude) &&
+        (wintree::isAncestor(ctx, exclude, P) || wintree::isAncestor(ctx, P, exclude))) return;
+    const uint32_t stopAt = inclusive ? wintree::parentOf(ctx, par) : par;
+    for (uint32_t w = P; w && w != stopAt; w = wintree::parentOf(ctx, w)) out(w, kPointer);
+  };
+  // CoreFocusInNotifyPointerEvents (:1004-1030): FocusIn(NotifyPointer) from
+  // below `parent` (from `parent` itself when `inclusive`) down to P.
+  auto inNotifyPointer = [&](uint32_t parent, uint32_t exclude, bool inclusive) {
+    const uint32_t par = wintree::normRoot(parent);
+    if (!P || P == exclude || (par != P && !wintree::isAncestor(ctx, par, P))) return;
+    if (!isNoneOrPointerRoot(exclude) &&
+        (wintree::isAncestor(ctx, exclude, P) || wintree::isAncestor(ctx, P, exclude))) return;
+    std::vector<uint32_t> chain;   // P upward, stopping at `par` (included when inclusive)
+    for (uint32_t w = P; w; w = wintree::parentOf(ctx, w)) {
+      if (w == par) { if (inclusive) chain.push_back(w); break; }
+      chain.push_back(w);
+    }
+    for (size_t i = chain.size(); i-- > 0;) in(chain[i], kPointer);
+  };
+
+  if (fromNP && toNP) {                              // CoreFocusPointerRootNoneSwitch
+    if (from == kRootXid && to != kRootXid) outNotifyPointer(kRootXid, 0, /*inclusive=*/true);
+    // root: FocusOut(PointerRoot|DetailNone), FocusIn(PointerRoot|DetailNone) — no target here
+    if (to == kRootXid) inNotifyPointer(kRootXid, 0, /*inclusive=*/true);
+    return;
+  }
   if (toNP) {                                        // CoreFocusToPointerRootOrNone
+    outNotifyPointer(from, 0, false);
     out(from, kNonlinear);
     outChain(from, kRootXid, kNonlinearVirtual);
+    // root: FocusIn(PointerRoot | DetailNone) — no target here
+    if (to == kRootXid) inNotifyPointer(kRootXid, 0, /*inclusive=*/true);
     return;
   }
   if (fromNP) {                                      // CoreFocusFromPointerRootOrNone
+    if (from == kRootXid) outNotifyPointer(kRootXid, 0, /*inclusive=*/true);
+    // root: FocusOut(PointerRoot | DetailNone), FocusIn(NonlinearVirtual) — no target here
     inChain(kRootXid, to, kNonlinearVirtual);
     in(to, kNonlinear);
+    inNotifyPointer(to, 0, false);
     return;
   }
-  if (from == to) {                                  // Grab/Ungrab on the focus window itself
+  if (from == to) {                                  // Grab/Ungrab on the focus window: NonLinear(A, A)
+    outNotifyPointer(from, 0, false);
     out(from, kNonlinear);
     in(to, kNonlinear);
+    inNotifyPointer(to, 0, false);
     return;
   }
-  if (wintree::isAncestor(ctx, to, from)) {          // CoreFocusToAncestor
+  if (wintree::isAncestor(ctx, to, from)) {          // CoreFocusToAncestor (:1123-1172)
     out(from, kAncestor);
     outChain(from, to, kVirtual);
     in(to, kInferior);
-  } else if (wintree::isAncestor(ctx, from, to)) {   // CoreFocusToDescendant
+    inNotifyPointer(to, from, false);
+  } else if (wintree::isAncestor(ctx, from, to)) {   // CoreFocusToDescendant (:1177-1225)
+    outNotifyPointer(from, to, false);
     out(from, kInferior);
     inChain(from, to, kVirtual);
     in(to, kAncestor);
-  } else {                                           // CoreFocusNonLinear
+  } else {                                           // CoreFocusNonLinear (:1037-1120)
     const uint32_t common = wintree::commonAncestor(ctx, from, to);
+    outNotifyPointer(from, 0, false);
     out(from, kNonlinear);
     outChain(from, common, kNonlinearVirtual);
     inChain(common, to, kNonlinearVirtual);
     in(to, kNonlinear);
+    inNotifyPointer(to, 0, false);
   }
 }
 

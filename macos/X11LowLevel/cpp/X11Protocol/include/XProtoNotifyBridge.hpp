@@ -19,4 +19,10 @@ void postMotion(uint32_t host_xid,
 
 void postButtonLegacy(uint32_t xid, int is_press, int32_t x_px, int32_t y_px, uint32_t buttons, uint32_t mods);
 
+// xorg WindowsRestructured → CheckMotion (dix/events.c:3205-3245): after a
+// map/unmap/configure/reparent/destroy/circulate the window under a
+// stationary pointer may have changed; re-derive the sprite window and send
+// the crossings (Phase G, L17).
+void windowsRestructured();
+
 } // namespace x11::notify

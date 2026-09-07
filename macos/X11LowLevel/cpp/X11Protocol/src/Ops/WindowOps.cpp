@@ -30,6 +30,7 @@
 #include "XProtoServerBridge.h"
 #include "Core/XProtoServer.hpp"
 #include "Utils/FocusEvents.hpp"   // Phase D: focus revert choreography
+#include "XProtoNotifyBridge.hpp"   // windowsRestructured (L17)
 #include <cstdio>   // snprintf
 
 // WM-emulation state cleanup on unmap/destroy (defined in XProtoServerBridge.cpp).
@@ -395,15 +396,15 @@ void WindowOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 void WindowOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
     case x11::opcode::CreateWindow      :  handleCreateWindow(ctx, dc.seq, dc.minor /*depth*/, dc.br); return;
-    case x11::opcode::DestroyWindow     :  handleDestroyWindow(ctx, dc.seq, dc.br); return;
-    case x11::opcode::DestroySubwindows :  handleDestroySubwindows(ctx, dc.seq, dc.br); return;
-    case x11::opcode::ReparentWindow    :  handleReparentWindow(ctx, dc.seq, dc.br); return;
-    case x11::opcode::MapWindow       :  handleMapWindow(ctx, dc.seq, dc.br); return;
-    case x11::opcode::MapSubwindows   :  handleMapSubwindows(ctx, dc.seq, dc.br); return;
-    case x11::opcode::UnmapWindow     : handleUnmapWindow(ctx, dc.seq, dc.br); return;
-    case x11::opcode::UnmapSubwindows : handleUnmapSubwindows(ctx, dc.seq, dc.br); return;
+    case x11::opcode::DestroyWindow     :  handleDestroyWindow(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
+    case x11::opcode::DestroySubwindows :  handleDestroySubwindows(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
+    case x11::opcode::ReparentWindow    :  handleReparentWindow(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
+    case x11::opcode::MapWindow       :  handleMapWindow(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
+    case x11::opcode::MapSubwindows   :  handleMapSubwindows(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
+    case x11::opcode::UnmapWindow     : handleUnmapWindow(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
+    case x11::opcode::UnmapSubwindows : handleUnmapSubwindows(ctx, dc.seq, dc.br); x11::notify::windowsRestructured(); return;
     case x11::opcode::ChangeSaveSet   : handleChangeSaveSet(ctx, dc.seq, dc.minor, dc.br); return;
-    case x11::opcode::CirculateWindow : handleCirculateWindow(ctx, dc.seq, dc.minor, dc.br); return;
+    case x11::opcode::CirculateWindow : handleCirculateWindow(ctx, dc.seq, dc.minor, dc.br); x11::notify::windowsRestructured(); return;
     default:
       dc.br.skip(dc.br.remaining());
       ctx.tracef("[WindowOps] unexpected major=%u\n", (unsigned)dc.major);

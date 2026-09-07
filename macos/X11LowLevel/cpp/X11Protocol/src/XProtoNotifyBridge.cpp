@@ -505,3 +505,34 @@ namespace x11 {
   }
   
 }
+
+// ---------------------------------------------------------------------------
+// xorg WindowsRestructured → CheckMotion(NULL, dev) (dix/events.c:3205-3245):
+// a window structure change under a stationary pointer changes the sprite
+// window; DoEnterLeaveEvents(prev, new) then PostNewCursor (Phase G, L17).
+// The pick is restricted to the host the pointer was last seen in (X11
+// stacking order is stale for normal toplevels, which Cocoa orders); a
+// window that vanished from under the pointer leaves the sprite on root
+// until the next real motion.
+// ---------------------------------------------------------------------------
+namespace x11::notify {
+
+void windowsRestructured() {
+  XProtoContext* ctx = g_ctx.load(std::memory_order_acquire);
+  EventOps* ev = g_ev.load(std::memory_order_acquire);
+  if (!ctx || !ev) return;
+  const uint32_t host = ctx->input().last_xid;
+  if (!host || !ctx->window(host)) return;
+  uint32_t under = pickDeepestMappedWindowAtHostPoint(*ctx, host,
+                                                      ctx->input().win_x_u, ctx->input().win_y_u);
+  const uint32_t prev = ctx->input().pointer_xid;
+  if (under == prev) return;
+  if (prev && ctx->window(prev) && ctx->windows().topLevelAncestorOf(prev) != host) return; // pointer is elsewhere
+  x11::enterleave::doEnterLeave(*ctx, *ev, prev, under, x11::notifymode::kNormal,
+                                ctx->input().root_x_u, ctx->input().root_y_u,
+                                ctx->input().buttons, ctx->input().mods);
+  ctx->input().pointer_xid = under;
+  maybeApplyCursor(*ctx, host, ctx->input().routePointer(under ? under : host));
+}
+
+} // namespace x11::notify
