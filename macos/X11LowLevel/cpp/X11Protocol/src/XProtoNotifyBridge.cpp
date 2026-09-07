@@ -120,6 +120,10 @@ void postMotion(uint32_t host_xid,
   // The Cocoa "deliver" flag only reflects "pointer inside NSView" — it
   // must not gate X11 grab-routed events.
   if (!deliver) {
+    // A tick with no host window at all (pointer never over an X window
+    // yet, v1.20.0.24) has nothing to route to — RawMotion above was the
+    // whole job.
+    if (host_xid == 0) return;
     x11::PointerGrab earlyGrab{};
     if (!(ctx->grabs().getPointerGrab(earlyGrab) && earlyGrab.active)) {
       x11::drag_trace::dropped("no_deliver_no_grab");

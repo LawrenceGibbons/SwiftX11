@@ -24,6 +24,12 @@ final class GlobalPointerTracker {
   // Cache last known window-local coords so we can send something sensible
   private var lastWinXY: (Int32, Int32) = (0, 0)
 
+  // Last root position posted; a tick that lands on the same X11 point is
+  // dropped.  xorg emits raw events only for actual motion, and the 30 Hz
+  // timer used to stream RawMotion to every root selector while the mouse
+  // sat still (v1.20.0.24).
+  private var lastRootXY: (Int32, Int32)? = nil
+
   func updateActiveWindow(xid: UInt32, lastWinXY: (Int32, Int32)) {
     self.activeXid = xid
     self.lastWinXY = lastWinXY
@@ -67,7 +73,12 @@ final class GlobalPointerTracker {
   }
 
   private func tickGlobalPointer(deliver: UInt8) {
-    guard activeXid != 0 else { return }
+    // No `activeXid != 0` guard any more (v1.20.0.24): XI2 RawMotion is a
+    // root-level event that xorg delivers for every pointer move, whether or
+    // not any X window has ever seen the pointer.  With the guard, xeyes
+    // started on a fresh server got nothing until the pointer had crossed
+    // some X11 window.  The bridge accepts xid 0 for these ticks; the server
+    // sends RawMotion and stops there (no window to route to).
 
     // NSEvent.mouseLocation is in global screen coords in *points*.
     let gp = NSEvent.mouseLocation
@@ -77,7 +88,10 @@ final class GlobalPointerTracker {
 
     // Convert to X11 root coords (top-left origin) in *points* (X11 units).
     let rootX = Int32((gp.x - vminX).rounded(.toNearestOrAwayFromZero))
-    let rootY = Int32((vmaxY - gp.y).rounded(.toNearestOrAwayFromZero)) - 1
+    let rootY = max(0, Int32((vmaxY - gp.y).rounded(.toNearestOrAwayFromZero)) - 1)
+
+    if let last = lastRootXY, last.0 == rootX, last.1 == rootY { return }
+    lastRootXY = (rootX, rootY)
 
     // Window-local coords are also X11 units (points). Keep last-known.
     let (winX, winY) = lastWinXY
@@ -85,7 +99,7 @@ final class GlobalPointerTracker {
     // Buttons/modifiers: UInt32.max means "unknown — use the server's
     // canonical InputState".  Passing 0 fed empty button masks into
     // grab-routed XI2 motion at 30 Hz (M8 in docs/XI2_XORG_COMPARISON.md).
-    x11_post_pointer_move2(activeXid, winX, winY, rootX, max(0, rootY), deliver, UInt32.max, UInt32.max)
+    x11_post_pointer_move2(activeXid, winX, winY, rootX, rootY, deliver, UInt32.max, UInt32.max)
   }
   
 //  private func tickGlobalPointer(deliver: UInt8) {

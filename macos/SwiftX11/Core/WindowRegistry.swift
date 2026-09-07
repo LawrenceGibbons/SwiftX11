@@ -105,12 +105,18 @@ final class WindowRegistry {
     return (NSPoint(x: newX, y: newY), true)
   }
 
-  /// Adjust a non-OR (normal) window origin so it appears on the main screen
-  /// (the screen with the key window / menu bar) when the X11 client used the
-  /// default position (0,0).  Most X11 clients (xterm, xeyes, xcalc) don't
-  /// specify explicit geometry and create windows at (0,0), which maps to the
-  /// top-left of the virtual desktop — often the laptop screen when an external
-  /// monitor is primary.  A real WM would place new windows on the focused screen.
+  /// Adjust a non-OR (normal) window origin so it appears on the primary
+  /// display (the one the user set as "Main display" in System Settings, which
+  /// carries the menu bar) when the X11 client used the default position
+  /// (0,0).  Most X11 clients (xterm, xeyes, xcalc) don't specify explicit
+  /// geometry and create windows at (0,0), which maps to the top-left of the
+  /// virtual desktop — often the laptop screen when an external monitor is
+  /// primary.  A real WM would place new windows on the focused screen.
+  ///
+  /// v1.20.0.24: `NSScreen.screens.first` (the primary display) instead of
+  /// `NSScreen.main`, which is the screen holding the *key window* — with the
+  /// terminal or Xcode focused on the laptop, every new X11 window landed
+  /// there even though the external monitor was set as main.
   ///
   /// Only adjusts when x11x==0 && x11y==0 (default position).  Windows with
   /// explicit positions (e.g. Vivado main window) are left unchanged.
@@ -123,8 +129,8 @@ final class WindowRegistry {
     // Only adjust default-position windows (client didn't specify geometry)
     guard x11x == 0 && x11y == 0 else { return (origin, false) }
 
-    // Use NSScreen.main (screen with key window / menu bar) as target
-    guard let mainScreen = NSScreen.main else { return (origin, false) }
+    // The primary display (menu bar), not the key window's screen.
+    guard let mainScreen = screens.first else { return (origin, false) }
 
     // CENTER on the main screen's visible area (v1.19.36.23).
     // Previously this cascaded to the top-left corner (+40), which left

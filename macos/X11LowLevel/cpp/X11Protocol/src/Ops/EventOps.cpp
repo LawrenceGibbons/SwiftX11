@@ -156,18 +156,23 @@ static constexpr uint32_t kCoreMotionBits =
 // `force` keep their Phase B meaning.  Otherwise: every client whose
 // selection on `wid` carries `bit` for the event's device — xorg
 // DeliverEventToInputClients over the window's InputClients list
-// (dix/events.c:2203-2285) — each with its own sequence.  With no selector on
-// the window, xorg's DeliverDeviceEvents walk would end at root, where a root
-// selector receives the event with event=root and child=the toplevel
-// (FixUpEventFromWindow); mirror that.  Returns xorg's "deliveries > 0",
-// which the callers use to suppress the core twin.
+// (dix/events.c:2203-2285) — each with its own sequence.  For the event
+// types that propagate (button, motion, key — `propagates`), xorg's
+// DeliverDeviceEvents walk ends at root, where a root selector receives the
+// event with event=root and child=the toplevel (FixUpEventFromWindow); mirror
+// that when nobody selected on the window.  Crossing and focus events are
+// delivered to their window only (DeviceEnterLeaveEvent / DeviceFocusEvent →
+// DeliverEventsToWindow, no walk), so they never fall back to root.  Returns
+// xorg's "deliveries > 0", which the callers use to suppress the core twin.
 static bool deliverXI2(x11::XProtoContext& ctx, uint32_t wid, uint8_t* buf, size_t len,
-                       uint32_t bit, uint16_t deviceid, bool force, int toFd) {
+                       uint32_t bit, uint16_t deviceid, bool force, int toFd,
+                       bool propagates) {
   if (toFd >= 0) { (void)ctx.transport().sendEventToFd(toFd, buf, len); return true; }
   if (force)     { (void)ctx.transport().sendEventVariable(wid, buf, len); return true; }
 
   std::vector<int> fds = ctx.windows().xi2SelectorsOf(wid, bit, deviceid);
   if (fds.empty()) {
+    if (!propagates) return false;
     fds = ctx.input().rootXI2SelectorsOf(bit, deviceid);
     if (fds.empty()) return false;
     // Re-address to the root window: xXIDeviceEvent and xXIEnterEvent share
@@ -800,7 +805,7 @@ bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), xi2::kMotionMask,
-                    xi2::kVirtualCorePointer, force, toFd);
+                    xi2::kVirtualCorePointer, force, toFd, /*propagates=*/true);
 }
 
 bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
@@ -853,7 +858,7 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                    xi2::kVirtualCorePointer, force, toFd);
+                    xi2::kVirtualCorePointer, force, toFd, /*propagates=*/true);
 }
 
 bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
@@ -889,7 +894,7 @@ bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   // (keys carry no valuators, so no FP3232 axisvalues follow the mask.)
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                    xi2::kVirtualCoreKeyboard, force, toFd);
+                    xi2::kVirtualCoreKeyboard, force, toFd, /*propagates=*/true);
 }
 
 bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
@@ -941,7 +946,7 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 72, xi2ButtonMask(buttons));        // button mask, word 0
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                    xi2::kVirtualCorePointer, force, toFd);
+                    xi2::kVirtualCorePointer, force, toFd, /*propagates=*/false);
 }
 
 void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
@@ -974,7 +979,8 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
   // Trailing: 32B button mask (all zero for focus events).
 
   (void)deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                   xi2::kVirtualCoreKeyboard, /*force=*/false, /*toFd=*/-1);
+                   xi2::kVirtualCoreKeyboard, /*force=*/false, /*toFd=*/-1,
+                   /*propagates=*/false);
 }
 
 void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {

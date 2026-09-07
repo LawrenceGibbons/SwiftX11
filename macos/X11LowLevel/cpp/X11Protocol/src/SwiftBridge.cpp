@@ -121,7 +121,9 @@ extern "C" void x11_post_pointer_move2(uint32_t xid,
                                         uint32_t buttons,
                                         uint32_t modifiers)
 {
-  if (xid == 0) return;
+  // A tracker tick (deliver == 0) may carry xid 0 before any X window has
+  // seen the pointer: it still feeds XI2 RawMotion (root-level) — v1.20.0.24.
+  if (xid == 0 && deliver) return;
   x11_proto_bridge_post_pointer_move2(xid,
                                       win_x_u, win_y_u,
                                       root_x_u, root_y_u,
