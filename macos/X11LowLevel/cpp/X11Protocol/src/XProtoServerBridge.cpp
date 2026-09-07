@@ -635,7 +635,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // Focus the HOST — let the toolkit propagate to children
             // via SetInputFocus (opcode 42).
             ctx.input().focus_xid = host;
-            if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = host;
+            // pointer_xid is NOT touched (v1.20.0.28): gaining key status
+            // used to claim the pointer for the host silently, so the real
+            // entry that followed found the sprite already there and emitted
+            // no Enter, while a later exit still emitted a Leave.  Crossings
+            // come only from pointer moves (PointerEnter/Leave, motion).
 
             // ICCCM WM_TAKE_FOCUS: if client advertises it in WM_PROTOCOLS,
             // send ClientMessage so the client calls SetInputFocus itself.
