@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "Core/CursorRouting.hpp"
+#include "Core/GrabTable.hpp"        // grab cursor (L15)
 #include "UI/UICommandQueue.hpp"
 #include "Core/X11CursorShape.hpp"   // the enum + mapping above
 #include "Core/CursorTable.hpp" 
@@ -16,8 +17,16 @@
   // Call when you have a host (top-level) and a target (deepest under pointer).
   void x11::maybeApplyCursor(x11::XProtoContext& ctx, uint32_t host, uint32_t target) {
     if (!host) return;
-    
-    const uint32_t cursorXid = x11::resolveEffectiveCursorCid(ctx, target ? target : host);
+
+    // xorg PostNewCursor (dix/events.c): while a pointer grab holds a
+    // cursor, that cursor shows wherever the pointer is (GrabPointer /
+    // XIGrabDevice `cursor`, ChangeActivePointerGrab) — Phase G, L15.
+    uint32_t cursorXid = 0;
+    {
+      x11::PointerGrab g{};
+      if (ctx.grabs().getPointerGrab(g) && g.active && g.cursor != 0) cursorXid = g.cursor;
+    }
+    if (cursorXid == 0) cursorXid = x11::resolveEffectiveCursorCid(ctx, target ? target : host);
     
     if (ctx.input().last_cursor_host == host && ctx.input().last_cursor_cid == cursorXid) {
       return; // unchanged

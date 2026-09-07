@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <chrono>
 
 
@@ -634,6 +635,19 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   emitCore(ctx, wid, ev, is_press ? x11::mask::KeyPress : x11::mask::KeyRelease, toFd);
 }
 
+// xorg CoreFocusEvent / CoreEnterLeaveEvent (dix/events.c:4864-4877,
+// 4754-4771): a FocusIn or EnterNotify to a window whose selection includes
+// KeymapState is followed by a KeymapNotify carrying key->down[1..31], i.e.
+// keycodes 8-255 — Phase G, L19.  KeymapNotify has no sequence number.
+static void sendKeymapNotifyIfSelected(x11::XProtoContext& ctx, uint32_t wid, int toFd) {
+  const x11::WindowView* wv = ctx.window(wid);
+  if (!wv || !(wv->event_mask & x11::mask::KeymapState)) return;
+  uint8_t ev[32] = {0};
+  ev[0] = 11;   // KeymapNotify
+  std::memcpy(ev + 1, ctx.input().getKeymap() + 1, 31);
+  emitCore(ctx, wid, ev, x11::mask::KeymapState, toFd, /*ownerFallback=*/false);
+}
+
 void EventOps::sendCrossingEvent(XProtoContext& ctx,
                                 uint32_t wid,
                                 bool is_enter,
@@ -697,6 +711,7 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   // M18: strictly mask-gated (xorg CoreEnterLeaveEvent, dix/events.c:4722)
   emitCore(ctx, wid, ev, is_enter ? x11::mask::EnterWindow : x11::mask::LeaveWindow, toFd,
            /*ownerFallback=*/false);
+  if (is_enter) sendKeymapNotifyIfSelected(ctx, wid, toFd);   // L19
 }
   
   
@@ -730,6 +745,7 @@ void EventOps::sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
                     same);
 
   emitCore(ctx, wid, ev, x11::mask::FocusChange, -1, /*ownerFallback=*/false);
+  if (is_in) sendKeymapNotifyIfSelected(ctx, wid, -1);   // L19
 }
 
 
@@ -1081,6 +1097,51 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {
   wire::wr32_le(buf + 64, (uint32_t)dy);               // raw_values[1] = Y
 
   for (int fd : fds) (void)ctx.transport().sendEventToFd(fd, buf, sizeof(buf));
+}
+
+// A raw event with no valuators: 32-byte header + the 2-word valuator mask
+// (all zero) = 40 bytes, length 2 (xorg eventToRawEvent with an empty mask,
+// dix/eventconvert.c:768-808).  Root selectors for the master and for the
+// slave that produced it, as for RawMotion.
+static void sendXI2RawSimple(x11::XProtoContext& ctx, uint16_t evtype, uint32_t maskBit,
+                             uint16_t deviceid, uint16_t sourceid, uint32_t detail) {
+  if (!(ctx.input().xi2_root_mask & maskBit)) return;
+  std::vector<int> fds = ctx.input().rootXI2SelectorsOf(maskBit, deviceid);
+  for (int fd : ctx.input().rootXI2SelectorsOf(maskBit, sourceid)) {
+    bool dup = false;
+    for (int f : fds) if (f == fd) { dup = true; break; }
+    if (!dup) fds.push_back(fd);
+  }
+  if (fds.empty()) return;
+
+  uint8_t buf[40] = {};
+  buf[0] = 35;                                         // GenericEvent
+  buf[1] = (uint8_t)x11::ext::kXInput2;
+  x11::wire::wr16_le(buf + 2,  ctx.transport().lastSeq());
+  x11::wire::wr32_le(buf + 4,  2);                     // length: 2 mask words
+  x11::wire::wr16_le(buf + 8,  evtype);
+  x11::wire::wr16_le(buf + 10, deviceid);
+  x11::wire::wr32_le(buf + 12, x11_now_ms_monotonic());
+  x11::wire::wr32_le(buf + 16, detail);                // button / keycode
+  x11::wire::wr16_le(buf + 20, sourceid);
+  x11::wire::wr16_le(buf + 22, x11::xi2::kXIValuatorsLen);
+  x11::wire::wr32_le(buf + 24, 0);                     // flags
+  // buf[28..31] pad, buf[32..39] valuator mask (no axes)
+  for (int fd : fds) (void)ctx.transport().sendEventToFd(fd, buf, sizeof(buf));
+}
+
+void EventOps::sendXI2RawButtonEvent(XProtoContext& ctx, bool is_press, uint8_t button) {
+  sendXI2RawSimple(ctx,
+                   is_press ? xi2::kRawButtonPress : xi2::kRawButtonRelease,
+                   is_press ? xi2::kRawButtonPressMask : xi2::kRawButtonReleaseMask,
+                   xi2::kVirtualCorePointer, xi2::kRealPointer, button);
+}
+
+void EventOps::sendXI2RawKeyEvent(XProtoContext& ctx, bool is_press, uint8_t keycode) {
+  sendXI2RawSimple(ctx,
+                   is_press ? xi2::kRawKeyPress : xi2::kRawKeyRelease,
+                   is_press ? xi2::kRawKeyPressMask : xi2::kRawKeyReleaseMask,
+                   xi2::kVirtualCoreKeyboard, xi2::kRealKeyboard, keycode);
 }
 
 } // namespace x11

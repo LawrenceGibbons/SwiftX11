@@ -202,6 +202,13 @@ namespace x11 {
     // them), so nothing here depends on which window the pointer is over.
     void sendXI2RawMotionEvent(XProtoContext& ctx);
 
+    // XI2 RawButtonPress/Release and RawKeyPress/Release (Phase G, L20):
+    // window-free like RawMotion, to every root selector of the type, with
+    // no valuators (xorg init_raw, dix/getevents.c:173-200; emitted with the
+    // device event by fill_pointer_events :1388 and GetKeyboardEvents :1117).
+    void sendXI2RawButtonEvent(XProtoContext& ctx, bool is_press, uint8_t button);
+    void sendXI2RawKeyEvent(XProtoContext& ctx, bool is_press, uint8_t keycode);
+
   private:
     XProtoContext& ctx_;
   };

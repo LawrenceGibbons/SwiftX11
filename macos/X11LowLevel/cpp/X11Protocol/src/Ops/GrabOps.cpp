@@ -18,10 +18,21 @@
 #include "Utils/GrabChoreography.hpp"   // Phase B: activation/deactivation choreography
 #include "Core/XProtoServer.hpp"        // eventOps()
 #include "Core/timestamp.hpp"           // x11_now_ms_monotonic
+#include "Core/CursorRouting.hpp"       // maybeApplyCursor — grab cursor (L15)
 
 extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
 
 namespace x11 {
+
+// xorg PostNewCursor after a grab is activated, changed or released
+// (dix/events.c:1620, 1690, ProcChangeActivePointerGrab): re-evaluate the
+// cursor for the host the pointer is in — maybeApplyCursor prefers an
+// active grab's cursor (L15).
+static void reapplyPointerCursor(XProtoContext& ctx) {
+  const uint32_t host = ctx.input().last_xid;
+  if (!host) return;
+  maybeApplyCursor(ctx, host, ctx.input().routePointer(ctx.input().pointer_xid));
+}
 
 GrabOps::GrabOps(XProtoRegistrar& reg) {
   reg.registerMajor(x11::opcode::GrabPointer,   &GrabOps::onMajor, this); // 26
@@ -89,6 +100,13 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
 
   br.skip(br.remaining());
 
+#ifndef NDEBUG
+  if (pointerMode == 0 || keyboardMode == 0)   // GrabModeSync — accepted, never frozen (L23)
+    TS_FPRINTF("[GRAB_SYNC] GrabPointer fd=%d win=0x%08X pointer_mode=%u keyboard_mode=%u\n",
+               ctx.transport().clientFd(), (unsigned)grabWindow,
+               (unsigned)pointerMode, (unsigned)keyboardMode);
+#endif
+
   // Validate grab window exists (allow root XID 0 and 1)
   if (grabWindow != 0 && grabWindow != x11::kRootXid) {
     WindowView tmp{};
@@ -137,6 +155,7 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
         if (!(haveHeld && held.grabWindow == grabWindow))
           grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), from, grabWindow, /*NotifyGrab*/1);
       }
+      reapplyPointerCursor(ctx);   // the grab cursor shows at once (L15)
     }
   }
 
@@ -180,6 +199,7 @@ void GrabOps::handleUngrabPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteRead
     grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), held.grabWindow,
                                      grabchoreo::spriteWindow(ctx), /*NotifyUngrab*/2);
   }
+  reapplyPointerCursor(ctx);   // window cursor back (L15)
 }
 
 // -----------------------------
@@ -274,9 +294,17 @@ void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t seq, uint8_t butto
 void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br) {
   // Body (12 bytes): grabWindow(4), time(4), pointerMode(1), keyboardMode(1), pad(2)
   uint32_t grabWindow = 0, time = 0;
+  uint8_t pointerMode = 1, keyboardMode = 1;
   if (br.remaining() >= 4) grabWindow = br.readU32();
   if (br.remaining() >= 4) time = br.readU32();
+  if (br.remaining() >= 2) { pointerMode = br.readU8(); keyboardMode = br.readU8(); }
   br.skip(br.remaining());
+#ifndef NDEBUG
+  if (pointerMode == 0 || keyboardMode == 0)   // GrabModeSync — accepted, never frozen (L23)
+    TS_FPRINTF("[GRAB_SYNC] GrabKeyboard fd=%d win=0x%08X pointer_mode=%u keyboard_mode=%u\n",
+               ctx.transport().clientFd(), (unsigned)grabWindow,
+               (unsigned)pointerMode, (unsigned)keyboardMode);
+#endif
 
   // Validate grab window exists (allow root XID 0 and 1)
   if (grabWindow != 0 && grabWindow != x11::kRootXid) {
@@ -369,9 +397,17 @@ void GrabOps::handleUngrabKey(XProtoContext& /*ctx*/, uint16_t /*seq*/, uint8_t 
   br.skip(br.remaining());
 }
 
-// 35 AllowEvents (void)
-void GrabOps::handleAllowEvents(XProtoContext& /*ctx*/, uint16_t /*seq*/, uint8_t /*mode*/, ByteReader& br) {
+// 35 AllowEvents (void).  Sync grab modes never freeze here (every target
+// client grabs async), so there is nothing to thaw; the mode is logged so a
+// sync user shows up in the trace (L23).
+void GrabOps::handleAllowEvents(XProtoContext& ctx, uint16_t /*seq*/, uint8_t mode, ByteReader& br) {
   br.skip(br.remaining());
+#ifndef NDEBUG
+  TS_FPRINTF("[GRAB_SYNC] AllowEvents fd=%d mode=%u (no frozen device to thaw)\n",
+             ctx.transport().clientFd(), (unsigned)mode);
+#else
+  (void)ctx; (void)mode;
+#endif
 }
 
 // 36 GrabServer (void, no-op for single-process)
@@ -390,7 +426,7 @@ void GrabOps::handleUngrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteR
 // -----------------------------
 void GrabOps::handleChangeActivePointerGrab(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   if (br.remaining() < 12) { br.skip(br.remaining()); return; }
-  (void)br.readU32(); // cursor (grab cursors are not applied yet — L15)
+  const uint32_t cursor = br.readU32();
   const uint32_t time = br.readU32();
   const uint16_t eventMask = br.readU16();
   (void)br.readU16(); // pad
@@ -398,12 +434,15 @@ void GrabOps::handleChangeActivePointerGrab(XProtoContext& ctx, uint16_t /*seq*/
 
   // xorg ProcChangeActivePointerGrab (dix/events.c:5127-5145): only the
   // caller's own grab, only within [grab time, now] (M22 — a foreign client
-  // could previously rewrite the active grab's mask).
+  // could previously rewrite the active grab's mask); the new cursor is
+  // posted at once (PostNewCursor) — L15.
   PointerGrab held{};
   if (!(ctx.grabs().getPointerGrab(held) && held.active)) return;
   if (held.owner_fd >= 0 && held.owner_fd != ctx.transport().clientFd()) return;
   if (!x11::ungrabTimeValid(time, x11_now_ms_monotonic(), held.grab_time)) return;
   ctx.grabs().updatePointerGrabEventMask(eventMask);
+  ctx.grabs().updatePointerGrabCursor(cursor);
+  reapplyPointerCursor(ctx);
 }
 
 } // namespace x11

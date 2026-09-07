@@ -1794,6 +1794,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         xiError(kBadDevice, deviceid);   // dixLookupDevice fails → BadDevice
         return;
       }
+#ifndef NDEBUG
+      if (grab_mode == 0 || paired == 0)   // GrabModeSync — accepted, never frozen (L23)
+        fprintf(stderr, "[GRAB_SYNC] XIGrabDevice fd=%d device=%u win=0x%08X grab_mode=%u paired_mode=%u\n",
+                ctx.transport().clientFd(), (unsigned)deviceid, (unsigned)win,
+                (unsigned)grab_mode, (unsigned)paired);
+#endif
       if (win != 1) {
         x11::WindowView wv{};
         if (!ctx.windows().snapshot(win, wv)) {
@@ -1839,6 +1845,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             const uint32_t from = haveHeld ? held.grabWindow : x11::grabchoreo::spriteWindow(ctx);
             if (!(haveHeld && held.grabWindow == win))
               x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), from, win, /*NotifyGrab*/1);
+            // xorg ActivatePointerGrab → PostNewCursor: the grab cursor shows
+            // at once (L15).
+            if (ctx.input().last_xid)
+              x11::maybeApplyCursor(ctx, ctx.input().last_xid,
+                                    ctx.input().routePointer(ctx.input().pointer_xid));
           }
         }
       } else {
@@ -1911,10 +1922,14 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
             held.owner_fd == fd && x11::ungrabTimeValid(time, now, held.grab_time)) {
           ctx.grabs().clearPointerGrab(fd);
           // xorg DeactivatePointerGrab (dix/events.c:1670, 1688-1689): grab
-          // gone first, then Leave(grab window) / Enter(sprite window).
+          // gone first, then Leave(grab window) / Enter(sprite window), and
+          // PostNewCursor restores the window cursor (L15).
           if (srv)
             x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), held.grabWindow,
                                                   x11::grabchoreo::spriteWindow(ctx), /*NotifyUngrab*/2);
+          if (ctx.input().last_xid)
+            x11::maybeApplyCursor(ctx, ctx.input().last_xid,
+                                  ctx.input().routePointer(ctx.input().pointer_xid));
         }
       } else {
         x11::KeyboardGrab held{};
@@ -1932,8 +1947,21 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    // ---- minor 53/55: XI2 stubs ----
-    case 53: // XIAllowEvents (void)
+    // ---- minor 53: XIAllowEvents (void) ----
+    // Sync grab modes never freeze here (every target client grabs async),
+    // so AllowEvents has nothing to release; log the mode so a sync user
+    // shows up in the trace (L23).  xXIAllowEventsReq: time(4) deviceid(2)
+    // mode(1) pad(1) [touchid(4) grab_window(4) in 2.2].
+    case 53: {
+      uint16_t dev = 0; uint8_t mode = 0;
+      if (br.remaining() >= 8) { (void)br.readU32(); dev = br.readU16(); mode = br.readU8(); }
+      br.skip(br.remaining());
+#ifndef NDEBUG
+      fprintf(stderr, "[GRAB_SYNC] XIAllowEvents fd=%d device=%u mode=%u (no frozen device to thaw)\n",
+              ctx.transport().clientFd(), (unsigned)dev, (unsigned)mode);
+#endif
+      return;
+    }
     case 55: // XIPassiveUngrabDevice (void)
       br.skip(br.remaining());
       return;

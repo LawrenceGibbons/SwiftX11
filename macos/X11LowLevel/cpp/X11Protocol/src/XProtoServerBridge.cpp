@@ -24,6 +24,57 @@
 #include "Utils/GrabChoreography.hpp" // implicit-grab activation / release crossings
 #include "Utils/EnterLeave.hpp"       // Phase D: DoEnterLeaveEvents choreography
 #include "Utils/FocusEvents.hpp"      // Phase D: DoFocusEvents choreography
+
+namespace {
+// xorg CheckDeviceGrabs (dix/events.c:4185-4207): passive grabs are checked
+// along the sprite trace from the ROOT down to the sprite window, so an
+// ancestor's GrabButton wins over a descendant's — Phase G, L9.  (The old
+// walk went child-up.)  `under` is the sprite window, `host` its toplevel.
+bool checkPassiveGrabsRootDown(x11::XProtoContext& ctx, uint32_t under, uint32_t host,
+                               uint8_t button, uint16_t x11Mods, x11::PassiveGrab& out) {
+  std::vector<uint32_t> trace;   // sprite window → toplevel
+  for (uint32_t w = under; w && trace.size() < 64;) {
+    trace.push_back(w);
+    if (w == host) break;
+    x11::WindowView vw{};
+    if (!ctx.windows().snapshot(w, vw)) break;
+    w = vw.parent_xid;
+  }
+  if (ctx.grabs().match(x11::kRootXid, button, x11Mods, out)) return true;   // root first
+  for (size_t i = trace.size(); i-- > 0;)
+    if (ctx.grabs().match(trace[i], button, x11Mods, out)) return true;
+  return false;
+}
+
+// xorg EventIsDeliverable: a window takes a button event if it selected it
+// at either level (core mask or its XI2 selection).
+bool wantsButton(x11::XProtoContext& ctx, uint32_t xid, bool isDown) {
+  if (!xid) return false;
+  const x11::WindowView* vw = ctx.window(xid);
+  if (!vw || vw->owner_fd <= 0) return false;
+  const bool coreWant = isDown ? (vw->event_mask & x11::mask::ButtonPress)   != 0
+                               : (vw->event_mask & x11::mask::ButtonRelease) != 0;
+  const uint32_t xi2bit = isDown ? x11::xi2::kButtonPressMask : x11::xi2::kButtonReleaseMask;
+  return coreWant || (vw->xi2_mask & xi2bit) != 0;
+}
+
+// Normal-delivery target for a button event at `under` (xorg
+// DeliverDeviceEvents): climb by selection up to the toplevel, fenced by
+// do_not_propagate (§2.8).  0 = nobody wants it.
+uint32_t buttonDeliveryWindow(x11::XProtoContext& ctx, uint32_t under, uint32_t host, bool isDown) {
+  if (wantsButton(ctx, under, isDown)) return under;
+  const uint32_t dnpBit = isDown ? x11::mask::ButtonPress : x11::mask::ButtonRelease;
+  uint32_t cur = under;
+  for (int safety = 0; cur && cur != host && safety < 64; safety++) {
+    x11::WindowView vw{};
+    if (!ctx.windows().snapshot(cur, vw)) return 0;
+    if (vw.do_not_propagate_mask & dnpBit) return 0;
+    cur = vw.parent_xid;
+    if (wantsButton(ctx, cur, isDown)) return cur;
+  }
+  return 0;
+}
+} // namespace
 #include "Ops/QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 #include "Core/WindowTable.hpp"
 #include "Core/XProtoModules.hpp"
@@ -798,29 +849,25 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                                                   effectiveWinY);
           if (!under) under = effectiveHost;
 
+          // Raw event first (xorg fill_pointer_events emits the raw event
+          // ahead of the device event, dix/getevents.c:1380-1395) — L20.
+          srv->eventOps().sendXI2RawButtonEvent(ctx, c.isDown != 0, c.button);
+
           // ---- STEP 2: Passive grabs (GrabButton) on press — only while no
           // grab is active (xorg ProcessDeviceEvent: CheckDeviceGrabs runs
-          // iff !grab, Xi/exevents.c:1917).  A match makes the grab window
-          // the target; the passive record becomes the active grab below
+          // iff !grab, Xi/exevents.c:1917), checked root → sprite window so
+          // an ancestor's grab wins (L9).  A match makes the grab window the
+          // target; the passive record becomes the active grab below
           // (ActivatePassiveGrab).
           bool passiveMatched = false;
           x11::PassiveGrab pg{};
           if (c.isDown && !haveActiveGrab) {
-            uint32_t checkWin = under;
-            int safety = 0;
             // GrabButton stores modifiers in X11 wire format (ControlMask=bit2).
             // c.modsMask uses internal format (Ctrl=bit1). Convert to X11.
             const uint16_t x11Mods = x11::input::toX11State(0, c.modsMask) & 0xFF;
-            while (checkWin && safety++ < 64) {
-              if (ctx.grabs().match(checkWin, c.button, x11Mods, pg)) {
-                passiveMatched = true;
-                under = pg.grabWindow;
-                break;
-              }
-              if (checkWin == host) break;
-              x11::WindowView vw{};
-              if (!ctx.windows().snapshot(checkWin, vw)) break;
-              checkWin = vw.parent_xid;
+            if (checkPassiveGrabsRootDown(ctx, under, effectiveHost, c.button, x11Mods, pg)) {
+              passiveMatched = true;
+              under = pg.grabWindow;
             }
           }
 
@@ -1068,8 +1115,8 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t host = c.xid ? c.xid : ctx.input().focus_host;
           if (!host) break;
 
-          // bring-up: ignore horizontal (axis==1) if desired
-          if (c.axis == 1) break;
+          // Horizontal ticks are buttons 6/7, which the core pointer
+          // advertises (dix/devices.c:660-661) — delivered since Phase G.
 
           const int32_t rx = ctx.input().root_x_u;
           const int32_t ry = ctx.input().root_y_u;
@@ -1098,53 +1145,89 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           const int nClamped = (n > 64) ? 64 : n;
 
-          // Wheel buttons are ButtonPress/Release and take the same grab
-          // routing as any button (xorg Xi/exevents.c:1913-1930 → DeliverGrabbedEvent).
+          // Wheel buttons are ButtonPress/Release and take exactly the path
+          // of any button (xorg Xi/exevents.c:1913-1930): an active grab
+          // routes them (DeliverGrabbedEvent); otherwise a passive grab on
+          // the wheel button along the sprite trace activates for the
+          // press/release pair (CheckDeviceGrabs), and normal delivery
+          // climbs by selection from the window under the pointer
+          // (DeliverDeviceEvents).  Before Phase G (L8) the event went to
+          // that window's owner even when nobody had selected it, and
+          // passive GrabButton(4..7) records were never consulted.
           x11::PointerGrab sGrab{};
           const bool haveSGrab = ctx.grabs().getPointerGrab(sGrab) && sGrab.active;
-          uint32_t sTarget = target;
-          bool     sViaGrab = false;
-          int      sToFd = -1;
-          if (haveSGrab) {
-            const auto d = x11::grabroute::route(ctx, sGrab, target);
-            sTarget = d.target; sViaGrab = d.viaGrab;
-            if (sViaGrab) sToFd = sGrab.owner_fd;
-          }
-          auto sendWheel = [&](bool press, uint8_t btn, uint32_t btnState) {
-            if (sViaGrab) {
+          const uint16_t x11ModsW = x11::input::toX11State(0, c.modsMask) & 0xFF;
+
+          // Deliver one wheel press or release to `to`, through `g` when viaGrab.
+          auto sendWheelTo = [&](bool press, uint8_t btn, uint32_t btnState,
+                                 uint32_t to, bool viaGrab, int toFd, const x11::PointerGrab& g,
+                                 uint32_t child) {
+            if (viaGrab) {
               const uint32_t xi2bit  = press ? x11::xi2::kButtonPressMask : x11::xi2::kButtonReleaseMask;
               const uint32_t corebit = press ? x11::mask::ButtonPress      : x11::mask::ButtonRelease;
-              if (x11::grabroute::grabWantsXI2(sGrab, xi2bit))
-                (void)srv->eventOps().sendXI2ButtonEvent(ctx, sTarget, press, btn, rx, ry,
-                                                         btnState, c.modsMask, 0, /*force=*/true, sToFd);
-              else if (x11::grabroute::grabWantsCore(sGrab, corebit))
-                srv->eventOps().sendButtonEvent(ctx, sTarget, press, btn, rx, ry,
-                                                btnState, c.modsMask, 0, sToFd);
+              if (x11::grabroute::grabWantsXI2(g, xi2bit))
+                (void)srv->eventOps().sendXI2ButtonEvent(ctx, to, press, btn, rx, ry,
+                                                         btnState, c.modsMask, child, /*force=*/true, toFd);
+              else if (x11::grabroute::grabWantsCore(g, corebit))
+                srv->eventOps().sendButtonEvent(ctx, to, press, btn, rx, ry,
+                                                btnState, c.modsMask, child, toFd);
               return;
             }
-            if (!srv->eventOps().sendXI2ButtonEvent(ctx, sTarget, press, btn, rx, ry,
-                                                    btnState, c.modsMask, /*child_xid=*/0)) {
-              srv->eventOps().sendButtonEvent(ctx, sTarget, press, btn, rx, ry,
-                                              btnState, c.modsMask, /*child_xid=*/0);
+            if (!srv->eventOps().sendXI2ButtonEvent(ctx, to, press, btn, rx, ry,
+                                                    btnState, c.modsMask, child)) {
+              srv->eventOps().sendButtonEvent(ctx, to, press, btn, rx, ry,
+                                              btnState, c.modsMask, child);
             }
           };
 
           for (int i = 0; i < nClamped; i++) {
             const uint8_t btn = wheelButton(c.axis, (int16_t)dir);
+            const uint32_t wheelMask = (btn >= 1 && btn <= 31) ? (1u << (btn - 1u)) : 0;
+
+            // Raw events precede delivery (L20).
+            srv->eventOps().sendXI2RawButtonEvent(ctx, true, btn);
+
+            uint32_t to = 0; bool viaGrab = false; int toFd = -1;
+            x11::PointerGrab g = sGrab;
+            const uint32_t normal = buttonDeliveryWindow(ctx, under, host, true);
+            if (haveSGrab) {
+              const auto d = x11::grabroute::route(ctx, sGrab, normal);
+              to = d.target; viaGrab = d.viaGrab;
+              if (viaGrab) toFd = sGrab.owner_fd;
+            } else {
+              x11::PassiveGrab pg{};
+              if (checkPassiveGrabsRootDown(ctx, under, host, btn, x11ModsW, pg)) {
+                g = x11::PointerGrab{};
+                g.active = true; g.grabWindow = pg.grabWindow; g.ownerEvents = pg.ownerEvents;
+                g.eventMask = pg.eventMask; g.is_xi2 = false; g.implicit = true;
+                const x11::WindowView* gv = ctx.window(pg.grabWindow);
+                g.owner_fd = gv ? gv->owner_fd : -1;
+                const auto d = x11::grabroute::route(ctx, g, normal);
+                to = d.target; viaGrab = d.viaGrab;
+                if (viaGrab) toFd = g.owner_fd;
+              } else {
+                to = normal;
+              }
+            }
+            if (!to) {
+              srv->eventOps().sendXI2RawButtonEvent(ctx, false, btn);
+              continue;   // nobody selected the wheel button (or fenced)
+            }
+            const uint32_t child = x11::grabroute::childOnSpritePath(ctx, to, under);
 
         #ifdef X11_TRACE_VERBOSE
             fprintf(stderr,
-                    "[SCROLL] host=0x%08X target=0x%08X axis=%u ticks=%d btn=%u win=(%d,%d) root=(%d,%d) t=%u\n",
-                    (unsigned)host, (unsigned)sTarget,
+                    "[SCROLL] host=0x%08X target=0x%08X axis=%u ticks=%d btn=%u win=(%d,%d) root=(%d,%d) grab=%d t=%u\n",
+                    (unsigned)host, (unsigned)to,
                     (unsigned)c.axis, (int)ticks, (unsigned)btn,
                     (int)c.win_x_u, (int)c.win_y_u,
-                    (int)rx, (int)ry,
+                    (int)rx, (int)ry, (int)viaGrab,
                     (unsigned)x11_now_ms_monotonic());
         #endif
 
-            sendWheel(true, btn, ctx.input().buttons);
-            const uint32_t wheelMask = (btn >= 1 && btn <= 31) ? (1u << (btn - 1u)) : 0;
-            sendWheel(false, btn, ctx.input().buttons | wheelMask);
+            sendWheelTo(true, btn, ctx.input().buttons, to, viaGrab, toFd, g, child);
+            srv->eventOps().sendXI2RawButtonEvent(ctx, false, btn);
+            sendWheelTo(false, btn, ctx.input().buttons | wheelMask, to, viaGrab, toFd, g, child);
           }
 
           // NOTE: Do NOT send Expose after scroll events. xterm handles
@@ -1170,6 +1253,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // Track key state for QueryKeymap
           if (c.isDown) ctx.input().keyDown(x11_kc);
           else          ctx.input().keyUp(x11_kc);
+
+          // Raw event first (xorg GetKeyboardEvents, dix/getevents.c:1117) — L20.
+          srv->eventOps().sendXI2RawKeyEvent(ctx, c.isDown != 0, x11_kc);
 
           // xorg event_set_state (dix/inpututils.c:794-796): a key event
           // carries the modifier state BEFORE the key — for a modifier key

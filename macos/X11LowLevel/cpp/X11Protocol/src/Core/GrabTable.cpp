@@ -110,6 +110,13 @@ void GrabTable::updatePointerGrabEventMask(uint16_t eventMask) {
   }
 }
 
+void GrabTable::updatePointerGrabCursor(uint32_t cursor) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (pointer_.active) {
+    pointer_.cursor = cursor;
+  }
+}
+
 uint8_t GrabTable::tryKeyboardGrab(const KeyboardGrab& req) {
   std::lock_guard<std::mutex> lock(mu_);
   if (keyboard_.active) {

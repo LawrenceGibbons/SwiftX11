@@ -107,6 +107,7 @@ public:
   void clearPointerGrab(int owner_fd);   // owner_fd < 0 forces
   bool getPointerGrab(PointerGrab& out) const;
   void updatePointerGrabEventMask(uint16_t eventMask);
+  void updatePointerGrabCursor(uint32_t cursor);   // ChangeActivePointerGrab (L15)
 
   // Active keyboard grab (GrabKeyboard/XIGrabDevice on a keyboard), same
   // ownership and level rules.
