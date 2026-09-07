@@ -222,7 +222,21 @@ private func currentMouseLocationInX11Root() -> (x: Int32, y: Int32) {
   return (max(0, x), max(0, y))
 }
 
+// Is the mouse currently over this window's content view?
+private func mouseIsOverContent() -> Bool {
+  guard let win = window, let content = win.contentView else { return false }
+  let p = content.convert(win.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+  return content.bounds.contains(p)
+}
+
+// Synthetic Enter on becomeKey — only when the pointer really is over the
+// window (v1.20.0.27).  Posted unconditionally it claimed the pointer for a
+// window that had just been shown or focused elsewhere on the screen, with
+// clamped (0,0)-ish local coords, and the real entry later produced no Enter
+// at all (the sprite already "was" there).  xorg generates crossings only
+// from sprite-window changes, never from focus changes.
 private func postSyntheticEnterForCurrentMouseLocation() {
+  guard mouseIsOverContent() else { return }
   let (x, y) = currentMouseLocationInContentUnits()
   let (rx, ry) = currentMouseLocationInX11Root()
   x11_post_pointer_enter(xid, x, y, rx, ry, 0)
@@ -278,7 +292,10 @@ private func postSyntheticLeaveForCurrentMouseLocation() {
 
   func windowDidResignKey(_ notification: Notification) {
       assert(Thread.isMainThread)
-      postSyntheticLeaveForCurrentMouseLocation()
+      // No synthetic Leave here (v1.20.0.27): losing key status is a focus
+      // change, not a pointer move.  When the app deactivates AppKit sends
+      // mouseExited itself; when another window of ours takes key while the
+      // pointer stays over this one, xorg would send no Leave either.
       // Focus-loss event posted by WindowRegistry's didResignKey observer.
   }
 
