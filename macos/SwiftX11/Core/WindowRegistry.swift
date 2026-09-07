@@ -288,10 +288,13 @@ final class WindowRegistry {
           return
         }
         
-        // Cocoa -> X11
+        // Cocoa -> X11.  No raise round trip any more (v1.20.0.35): the
+        // window that became key is already ordered front by AppKit, and
+        // the raise came back through the UI queue late — after Vivado had
+        // mapped its next dialog — so raiseWindow(main) put the main window
+        // over the freshly shown "Open Synthesized Design" dialog.
         DispatchQueue.main.async {
           x11_post_focus_event(xid, true)
-          x11_post_window_raise(xid)
         }
       }
     }
@@ -521,7 +524,12 @@ final class WindowRegistry {
 
     // Borderless windows (MOTIF decor=0, e.g. JidePopup) cannot become key —
     // use orderFront and don't steal focus. Treat like override-redirect popups.
-    let isBorderless = win.styleMask.contains(.borderless)
+    // `styleMask.contains(.borderless)` was the old test: .borderless is the
+    // EMPTY option set, so contains() was true for every window and no mapped
+    // window was ever made key here — the Vivado "Open Synthesized Design"
+    // dialog (and every new xterm) came up unfocused (v1.20.0.35).  Ask
+    // AppKit directly.
+    let isBorderless = !win.canBecomeKey
 
     #if DEBUG
     // Which show path a window takes, and against what: the Vivado
@@ -1112,13 +1120,12 @@ final class WindowRegistry {
                  NSApp.keyWindow?.title ?? "nil", win.title), stderr)
     #endif
 
-    // Already key: just order front.  The only raise producer today is
-    // Cocoa's own didBecomeKey round trip (x11_post_window_raise), so this
-    // is the common case (v1.20.0.29).
-    if win.isKeyWindow {
-      win.orderFront(nil)
-      return
-    }
+    // Already key: nothing to do.  AppKit ordered it front when it became
+    // key; ordering it front again here would put it over a dialog the
+    // client has shown since (the v1.20.0.34 [RAISE_NS] trace).  Since
+    // v1.20.0.35 nothing produces a raise from the Cocoa side, so this only
+    // serves an X11-initiated raise, if one is ever wired up.
+    if win.isKeyWindow { return }
 
     // Suppress the next didBecomeKey only when this call will actually
     // produce one: the app is active and the window is not key yet.  The
