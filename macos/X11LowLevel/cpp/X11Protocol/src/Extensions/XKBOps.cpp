@@ -148,7 +148,12 @@ void ensureRulesNamesProperty() {
   if (s_done) return;
   s_done = true;
   // rules \0 model \0 layout \0 variant \0 options \0
-  static const char rmlvo[] = "swiftx11\0macbook\0us\0\0";
+  // `setxkbmap -query` loads the named rules file from the xkb data dir, so
+  // the rules must be a real file (evdev ships with xkeyboard-config on
+  // every client); the model/layout are the closest stock description of
+  // what we serve.  SetMap is a no-op, so a client compiling a keymap from
+  // these names cannot change anything.
+  static const char rmlvo[] = "evdev\0pc105\0us\0\0";
   const uint32_t atom = AtomTable::instance().intern("_XKB_RULES_NAMES", 16, false);
   PropertyTable::instance().setReplace(kRootXid, atom, /*XA_STRING*/ 31, 8,
                                        reinterpret_cast<const uint8_t*>(rmlvo), sizeof(rmlvo));

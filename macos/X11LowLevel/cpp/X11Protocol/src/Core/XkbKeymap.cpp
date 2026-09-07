@@ -261,6 +261,43 @@ Keymap buildFromCore() {
     }
   }
 
+  // --- Compat sym interprets (subset of compat/basic, compat/caps, compat/misc) ---
+  {
+    auto modAction = [](uint8_t type, uint8_t flags, uint8_t mask, uint8_t realMods, uint16_t vmods) {
+      std::array<uint8_t, 8> a{};
+      a[0] = type; a[1] = flags; a[2] = mask; a[3] = realMods;
+      a[4] = (uint8_t)(vmods >> 8);      // vmods1 = high byte (XkbModActionVMods)
+      a[5] = (uint8_t)(vmods & 0xff);    // vmods2 = low byte
+      return a;
+    };
+    auto add = [&](uint32_t sym, uint8_t mods, uint8_t match, uint8_t vmod, std::array<uint8_t, 8> act) {
+      SymInterpret si; si.sym = sym; si.mods = mods; si.match = match; si.virtualMod = vmod;
+      si.flags = 0; si.act = act;
+      km.symInterprets.push_back(si);
+    };
+    const uint8_t any = 0xff;
+    const uint16_t numLockV = (uint16_t)(1u << kVModNumLock);
+    // interpret Any+AnyOf(all) { action = SetMods(modifiers=modMapMods, clearLocks) }
+    add(XK_NoSymbol, any, kSI_AnyOf, 0xff, modAction(kSA_SetMods, kSA_UseModMapMods | kSA_ClearLocks, 0, 0, 0));
+    // interpret Shift_Lock+AnyOf(Shift+Lock) { action = LockMods(modifiers=Shift) }
+    add(0xFFE6, (uint8_t)(kShiftMask | kLockMask), kSI_AnyOf, 0xff, modAction(kSA_LockMods, 0, kShiftMask, kShiftMask, 0));
+    // interpret Caps_Lock+AnyOfOrNone(all) { action = LockMods(modifiers=Lock) }
+    add(XK_Caps_Lock, any, kSI_AnyOfOrNone, 0xff, modAction(kSA_LockMods, 0, kLockMask, kLockMask, 0));
+    // interpret Num_Lock+AnyOf(all) { action = LockMods(modifiers=NumLock) }
+    add(XK_Num_Lock, any, kSI_AnyOf, kVModNumLock, modAction(kSA_LockMods, 0, kMod2Mask, 0, numLockV));
+    // compat/misc: modifier keysyms bind their virtual modifier, level 1 only
+    struct M { uint32_t sym; uint8_t vmod; };
+    const M misc[] = {
+      {XK_Alt_L, kVModAlt}, {XK_Alt_R, kVModAlt},
+      {XK_Meta_L, kVModMeta}, {XK_Meta_R, kVModMeta},
+      {XK_Super_L, kVModSuper}, {XK_Super_R, kVModSuper},
+      {0xFFED, kVModHyper}, {0xFFEE, kVModHyper},           // Hyper_L/R
+    };
+    for (const M& m : misc)
+      add(m.sym, any, (uint8_t)(kSI_AnyOf | kSI_LevelOneOnly), m.vmod,
+          modAction(kSA_SetMods, kSA_UseModMapMods, 0, 0, 0));
+  }
+
   // --- Component / group names ---
   km.keycodesNameAtom = atom("swiftx11");
   km.symbolsNameAtom  = atom("pc+us");
@@ -486,13 +523,13 @@ bool buildGetMapReply(const Keymap& km, const GetMapRequest& rq, uint16_t seq,
 }
 
 // ---------------------------------------------------------------------------
-// GetCompatMap (ProcXkbGetCompatMap + XkbSendCompatMap) — no sym interprets
+// GetCompatMap (ProcXkbGetCompatMap + XkbSendCompatMap)
 // ---------------------------------------------------------------------------
-bool buildGetCompatMapReply(const Keymap& /*km*/, uint16_t seq, uint8_t deviceID,
+bool buildGetCompatMapReply(const Keymap& km, uint16_t seq, uint8_t deviceID,
                             uint8_t groups, bool getAllSI, uint16_t firstSI, uint16_t nSI,
                             std::vector<uint8_t>& out, uint32_t& errValue)
 {
-  const uint16_t numSI = 0;
+  const uint16_t numSI = (uint16_t)km.symInterprets.size();
   if (getAllSI) { firstSI = 0; nSI = numSI; }
   else if (nSI > 0 && (unsigned)firstSI + nSI - 1 >= numSI) {
     errValue = errCode2(0x05, numSI);
@@ -505,8 +542,13 @@ bool buildGetCompatMapReply(const Keymap& /*km*/, uint16_t seq, uint8_t deviceID
   put16(out, 10, firstSI);
   put16(out, 12, nSI);
   put16(out, 14, numSI);
-  // body: nSI × xkbSymInterpretWireDesc (none) + one xkbModsWireDesc per group bit
+  // body: nSI × xkbSymInterpretWireDesc + one xkbModsWireDesc per group bit
   Writer w{out};
+  for (unsigned i = firstSI; i < (unsigned)firstSI + nSI; i++) {
+    const SymInterpret& si = km.symInterprets[i];
+    w.u32(si.sym); w.u8(si.mods); w.u8(si.match); w.u8(si.virtualMod); w.u8(si.flags);
+    w.bytes(si.act.data(), 8);
+  }
   for (unsigned i = 0; i < kNumKbdGroups; i++) {
     if (grp & (1u << i)) { w.u8(0); w.u8(0); w.u16(0); }
   }

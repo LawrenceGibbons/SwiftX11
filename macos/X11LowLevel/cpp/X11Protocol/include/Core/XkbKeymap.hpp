@@ -243,6 +243,26 @@ struct IndicatorMapDesc {
   uint32_t ctrls = 0;
 };
 
+// Compat sym interpret (xkbSymInterpretWireDesc, 16 bytes).  We serve no key
+// actions, so these only describe how a client compiling its own keymap
+// would derive them — but xkbcomp refuses to write a keymap whose compat
+// section has no interprets at all (XkbWriteXKBCompatMap), so a stock
+// subset of xkeyboard-config's compat/basic + compat/misc is provided.
+struct SymInterpret {
+  uint32_t sym = 0;
+  uint8_t  mods = 0;
+  uint8_t  match = 0;        // XkbSI_* op | LevelOneOnly
+  uint8_t  virtualMod = 0xff; // XkbNoModifier
+  uint8_t  flags = 0;        // XkbSI_AutoRepeat / LockingKey
+  std::array<uint8_t, 8> act{};   // xkbActionWireDesc
+};
+
+// SymInterpret.match ops and action types used here
+constexpr uint8_t kSI_NoneOf = 0, kSI_AnyOfOrNone = 1, kSI_AnyOf = 2, kSI_AllOf = 3, kSI_Exactly = 4;
+constexpr uint8_t kSI_LevelOneOnly = 0x80;
+constexpr uint8_t kSA_NoAction = 0x00, kSA_SetMods = 0x01, kSA_LockMods = 0x03;
+constexpr uint8_t kSA_ClearLocks = 0x01, kSA_UseModMapMods = 0x04;
+
 // Keyboard controls (xkbGetControlsReply); values are xorg's defaults
 // (xkb/xkbInit.c XkbInitControls, xkb/xkbAccessX.c AccessXInit).
 struct Controls {
@@ -295,6 +315,8 @@ public:
   uint32_t physIndicators = 0;
   std::array<uint32_t, kNumIndicators> indicatorNameAtoms{};
   std::array<IndicatorMapDesc, kNumIndicators> indicatorMaps{};
+
+  std::vector<SymInterpret> symInterprets;
 
   uint32_t keycodesNameAtom = 0, geometryNameAtom = 0, symbolsNameAtom = 0,
            physSymbolsNameAtom = 0, typesNameAtom = 0, compatNameAtom = 0;
