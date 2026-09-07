@@ -523,6 +523,22 @@ final class WindowRegistry {
     // use orderFront and don't steal focus. Treat like override-redirect popups.
     let isBorderless = win.styleMask.contains(.borderless)
 
+    #if DEBUG
+    // Which show path a window takes, and against what: the Vivado
+    // "Open Synthesized Design" dialog opens behind its main window
+    // (reported 2026-09-07); this line plus [RAISE_NS] should show who
+    // ordered the main window back on top.
+    do {
+      let path = isBorderless ? "orderFront(borderless)"
+               : (pendingTransientFor[host] != nil ? "makeKey(transient)" : "makeKey(normal)")
+      let parent = pendingTransientFor[host].map { String(format: "0x%08X", $0) } ?? "-"
+      fputs(String(format: "[SHOW_NS] xid=0x%08X path=%@ transientFor=%@ style=0x%lx level=%ld appActive=%d key=%@ size=%dx%d\n",
+                   host, path, parent, win.styleMask.rawValue, win.level.rawValue,
+                   NSApp.isActive ? 1 : 0, NSApp.keyWindow?.title ?? "nil",
+                   Int(newSize.width), Int(newSize.height)), stderr)
+    }
+    #endif
+
     if isBorderless {
       // Undecorated (JidePopup, tooltips): show without focus steal.
       // Borderless NSWindows return NO from canBecomeKeyWindow.
@@ -1089,6 +1105,12 @@ final class WindowRegistry {
     guard let controller = windows[xid], let win = controller.window else { return }
 
     X11View.logIfInLayout("raiseWindow: makeKeyAndOrderFront host=0x\(String(host, radix: 16))", view: controller.x11View)
+
+    #if DEBUG
+    fputs(String(format: "[RAISE_NS] xid=0x%08X isKey=%d appActive=%d key=%@ title=%@\n",
+                 xid, win.isKeyWindow ? 1 : 0, NSApp.isActive ? 1 : 0,
+                 NSApp.keyWindow?.title ?? "nil", win.title), stderr)
+    #endif
 
     // Already key: just order front.  The only raise producer today is
     // Cocoa's own didBecomeKey round trip (x11_post_window_raise), so this
