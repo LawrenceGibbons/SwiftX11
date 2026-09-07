@@ -1747,12 +1747,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           req.xi2mask     = xi2mask;
           gs = ctx.grabs().tryKeyboardGrab(req);
           if (gs == x11::kGrabSuccess && srv) {
-            // xorg ActivateKeyboardGrab (dix/events.c:1720-1735): FocusOut(old
-            // grab window, else focus window) / FocusIn(grab window), NotifyGrab,
-            // core + XI2, unless this window was already the grab window.
-            uint32_t from = haveHeld ? held.grabWindow : ctx.input().focus_xid;
-            if (!from) from = x11::grabchoreo::spriteWindow(ctx);
-            if (!(haveHeld && held.grabWindow == win))
+            // xorg ActivateKeyboardGrab (dix/events.c:1720-1735): DoFocusEvents(
+            // old grab window, else the focus window — None sends nothing —
+            // → grab window, NotifyGrab), core + XI2, unless this window was
+            // already the grab window (:1732-1734).
+            const uint32_t from = haveHeld ? held.grabWindow : ctx.input().focus_xid;
+            if (from && !(haveHeld && held.grabWindow == win))
               x11::grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), from, win, /*NotifyGrab*/1);
           }
         }
@@ -1807,11 +1807,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (ctx.grabs().getKeyboardGrabInfo(held) && held.active && held.is_xi2 &&
             held.owner_fd == fd && x11::ungrabTimeValid(time, now, held.grab_time)) {
           ctx.grabs().clearKeyboardGrab(fd);
-          // xorg DeactivateKeyboardGrab (dix/events.c:1772-1782).
+          // xorg DeactivateKeyboardGrab (dix/events.c:1772-1782): grab window
+          // → focus window (None / PointerRoot: FocusOut side only).
           if (srv) {
-            uint32_t to = ctx.input().focus_xid;
-            if (!to) to = x11::grabchoreo::spriteWindow(ctx);
-            x11::grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), held.grabWindow, to, /*NotifyUngrab*/2);
+            x11::grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), held.grabWindow,
+                                                   ctx.input().focus_xid, /*NotifyUngrab*/2);
           }
         }
       }

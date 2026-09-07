@@ -22,27 +22,8 @@
 #include "Ops/EventOps.hpp"
 #include "Utils/GrabRoute.hpp"        // Phase B2: grab-time routing (xorg DeliverGrabbedEvent)
 #include "Utils/GrabChoreography.hpp" // implicit-grab activation / release crossings
-
-namespace {
-// Enter/Leave for window `w`: during a pointer grab only per the grab (xorg
-// CoreEnterLeaveEvent / DeviceEnterLeaveEvent, dix/events.c:4716-4723,
-// 4834-4840 — grab window with the grab mask, or the grabbing client's own
-// windows when owner_events), otherwise both levels, each gated by its own
-// mask (DoEnterLeaveEvents, dix/enterleave.c:595-608).
-void emitCrossingSB(x11::XProtoContext& ctx, x11::EventOps& ev, uint32_t w, bool is_enter,
-                    int32_t rx, int32_t ry, uint32_t buttons, uint32_t mods) {
-  if (!w) return;
-  x11::PointerGrab g{};
-  if (ctx.grabs().getPointerGrab(g) && g.active) {
-    const auto cd = x11::grabroute::crossingUnderGrab(ctx, g, w, is_enter);
-    if (cd.coreOk) ev.sendCrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods, 0, cd.toFd);
-    if (cd.xi2Ok)  (void)ev.sendXI2CrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods, 0, /*force=*/true, cd.toFd);
-    return;
-  }
-  ev.sendCrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods);
-  (void)ev.sendXI2CrossingEvent(ctx, w, is_enter, rx, ry, buttons, mods);
-}
-} // namespace   // xi2::kButtonPress/Release/Key masks for deliverability
+#include "Utils/EnterLeave.hpp"       // Phase D: DoEnterLeaveEvents choreography
+#include "Utils/FocusEvents.hpp"      // Phase D: DoFocusEvents choreography
 #include "Ops/QueryOps.hpp"   // (and later AtomOps.hpp, WindowOps.hpp, etc.)
 #include "Core/WindowTable.hpp"
 #include "Core/XProtoModules.hpp"
@@ -569,6 +550,13 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                                                   c.win_x_u, c.win_y_u);
           if (!under) under = host;
 
+          // The window the pointer is leaving: xorg's sprite window.  0 =
+          // root (over no X window); a window in ANOTHER host when AppKit
+          // ordered mouseEntered(B) before mouseExited(A) (M16) — then the
+          // Nonlinear Leave(A)/Enter(B) pair goes out here and A's late
+          // PointerLeave finds nothing to leave.
+          const uint32_t prev = ctx.input().drag_xid ? 0 : ctx.input().pointer_xid;
+
           // Pointer ownership should be the window under the pointer, not the host.
           ctx.input().enter(under);
 
@@ -576,10 +564,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t cursorTarget = ctx.input().routePointer(under);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          // Both levels, each gated by its own mask (R1); during a grab, only
-          // per the grab (emitCrossingSB).
-          emitCrossingSB(ctx, srv->eventOps(), under, /*is_enter=*/true,
-                         rx, ry, ctx.input().buttons, c.modsMask);
+          // Phase D (M15/M16): xorg DoEnterLeaveEvents(prev, under) — both
+          // levels, relation-derived detail, Virtual events on the windows
+          // between, the grab filter per delivery.
+          x11::enterleave::doEnterLeave(ctx, srv->eventOps(), prev, under, x11::notifymode::kNormal,
+                                        rx, ry, ctx.input().buttons, c.modsMask);
           break;
         }
 
@@ -599,18 +588,22 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t px = ctx.input().pointer_xid;
           if (dx && ctx.windows().topLevelAncestorOf(dx) == host)      leaveWin = dx;
           else if (px && ctx.windows().topLevelAncestorOf(px) == host) leaveWin = px;
-          else                                                          leaveWin = host;
-
-          // Update pointer ownership state (clears pointer_xid only if it is leaveWin).
-          ctx.input().leave(leaveWin);
+          else if (px == 0)                                             leaveWin = host;  // pointer window unknown (e.g. cleared on focus loss)
+          // px in another host: the Enter there already emitted the Leave
+          // for this one (Phase D) — nothing left to leave.
 
           // After leaving, cursor should usually fall back (focus/host/inherit).
+          if (leaveWin) ctx.input().leave(leaveWin);
           const uint32_t cursorTarget = ctx.input().routePointer(host);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          emitCrossingSB(ctx, srv->eventOps(), leaveWin, /*is_enter=*/false,
-                         ctx.input().root_x_u, ctx.input().root_y_u,
-                         ctx.input().buttons, c.modsMask);
+          // Phase D: xorg DoEnterLeaveEvents(leaveWin, root).
+          if (leaveWin) {
+            x11::enterleave::doEnterLeave(ctx, srv->eventOps(), leaveWin, /*to=root*/0,
+                                          x11::notifymode::kNormal,
+                                          ctx.input().root_x_u, ctx.input().root_y_u,
+                                          ctx.input().buttons, c.modsMask);
+          }
           break;
         }
 
@@ -641,12 +634,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             // via SetInputFocus (opcode 42).
             ctx.input().focus_xid = host;
             if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = host;
-
-            // FocusOut to previous focus window (if different)
-            if (oldFocus && oldFocus != host) {
-              srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
-              srv->eventOps().sendXI2FocusEvent(ctx, oldFocus, /*is_in=*/false);
-            }
 
             // ICCCM WM_TAKE_FOCUS: if client advertises it in WM_PROTOCOLS,
             // send ClientMessage so the client calls SetInputFocus itself.
@@ -691,11 +678,15 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 #endif
             }
 
-            // Always send FocusIn — needed for Stage Manager to group
-            // dialogs with their parent app, and for toolkits that rely
-            // on FocusIn regardless of WM_TAKE_FOCUS.
-            srv->eventOps().sendFocusEventDirect(ctx, host, /*is_in=*/true);
-            srv->eventOps().sendXI2FocusEvent(ctx, host, /*is_in=*/true);
+            // Phase D (M9/M18): the WM's SetInputFocus(old → host) —
+            // FocusOut(old) / FocusIn(host) at both levels with the
+            // relation-derived detail (Nonlinear for two toplevels), each
+            // delivered only to clients selecting FocusChange, exactly as
+            // xorg does for a real WM.  Sent after WM_TAKE_FOCUS so a client
+            // that answers the message with its own SetInputFocus sees the
+            // same order it would under a WM.
+            x11::focusev::doFocusEvents(ctx, srv->eventOps(), oldFocus, host,
+                                        x11::notifymode::kNormal);
 
             // Check if macOS clipboard changed while we were in another app.
             // If so, claim PRIMARY+CLIPBOARD so the next paste serves macOS
@@ -713,10 +704,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
               // detection depends on history surviving across loss/gain pairs.
               // Only button press (user interaction) clears the history.
 
-              if (oldFocus) {
-                srv->eventOps().sendFocusEventDirect(ctx, oldFocus, /*is_in=*/false);
-                srv->eventOps().sendXI2FocusEvent(ctx, oldFocus, /*is_in=*/false);
-              }
+              // Phase D: SetInputFocus(old → None): FocusOut(old, Nonlinear)
+              // plus NonlinearVirtual on its ancestors, core + XI2.
+              x11::focusev::doFocusEvents(ctx, srv->eventOps(), oldFocus, /*to=None*/0,
+                                          x11::notifymode::kNormal);
 
               ctx.input().focus_xid = 0;
               if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
@@ -1191,36 +1182,49 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             return coreWant || xi2Want;
           };
 
-          // Ungrabbed target: keyboard focus (only if it belongs to this host),
-          // climbing the parent chain by selection; also stage 1 of an
-          // owner_events keyboard grab.
-          uint32_t target = 0;
+          // Ungrabbed target — xorg DeliverFocusedEvent (dix/events.c:
+          // 4239-4299), Phase D (M19):
+          //   focus == PointerRoot  → normal delivery walking up from the
+          //                           sprite (pointer) window;
+          //   focus is, or is an ancestor of, the sprite window
+          //                         → walk up from the sprite window,
+          //                           stopping at the focus window;
+          //   otherwise             → the focus window only, no propagation.
+          // Each step climbs by selection (core or XI2), fenced by
+          // do_not_propagate (§2.8).  Deviations kept from the Cocoa focus
+          // model: focus None (xorg drops the key) and a focus that lives in
+          // another host while THIS NSWindow is key deliver to this host.
+          // The result is also stage 1 of an owner_events keyboard grab.
           const uint32_t focus = ctx.input().focus_xid;
-          if (focus != 0) {
-            const uint32_t focusHost = ctx.windows().topLevelAncestorOf(focus);
-            if (focusHost == host) target = focus;
-          }
-          if (!target) target = host; // fallback: host
-
-          // If target doesn't select, climb parent chain until host (simple propagation).
-          // do_not_propagate_mask (§2.8) fences the climb.
+          uint32_t sprite = ctx.input().pointer_xid;
+          if (sprite && !ctx.window(sprite)) sprite = 0;
           const uint32_t keyDnpBit = c.isDown ? x11::mask::KeyPress
                                               : x11::mask::KeyRelease;
-          if (!wantsKey(target)) {
-            uint32_t cur = target;
-            int safety = 0;
-            bool fenced = false;
-            while (cur && cur != host) {
+          uint32_t start = host, stopAt = host;
+          if (focus == x11::kRootXid) {                         // PointerRoot
+            start = sprite ? sprite : host; stopAt = 0;
+          } else if (focus == 0) {
+            start = host; stopAt = host;
+          } else if (focus != host && ctx.windows().topLevelAncestorOf(focus) != host) {
+            start = host; stopAt = host;                        // focus elsewhere; Cocoa says here
+          } else if (sprite && (sprite == focus || x11::wintree::isAncestor(ctx, focus, sprite))) {
+            start = sprite; stopAt = focus;
+          } else {
+            start = focus; stopAt = focus;                      // focus window only
+          }
+          uint32_t target = 0;
+          {
+            uint32_t cur = start;
+            for (int safety = 0; cur && cur != x11::kRootXid && safety < 64; safety++) {
+              if (wantsKey(cur)) { target = cur; break; }
+              if (cur == stopAt) break;
               x11::WindowView vw{};
               if (!ctx.windows().snapshot(cur, vw)) break;
-              if (vw.do_not_propagate_mask & keyDnpBit) { fenced = true; break; }
+              if (vw.do_not_propagate_mask & keyDnpBit) break;
               cur = vw.parent_xid;
-              if (wantsKey(cur)) { target = cur; break; }
-              if (++safety > 64) break;
             }
-            if (!fenced && !wantsKey(target) && wantsKey(host)) target = host;
           }
-          const bool normalWants = wantsKey(target);
+          const bool normalWants = target != 0;
 
 #ifndef NDEBUG
           {

@@ -24,11 +24,15 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/X11ExtOpcodes.hpp"
 #include "Core/X11Modifiers.hpp"
+#include "Core/GrabTable.hpp"        // keyboard grab → NotifyWhileGrabbed (SetInputFocus)
+#include "Core/XProtoServer.hpp"     // eventOps() for the focus choreography
+#include "Utils/FocusEvents.hpp"     // Phase D: DoFocusEvents
 
 extern "C" {
 #include "SwiftX11Bridge.h"
 #include "Utils/MachTime.hpp"
 }
+extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
 
 namespace x11 {
 
@@ -793,16 +797,16 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t rev
   const uint32_t oldFocus = ctx.input().focus_xid;
   const uint32_t newFocus = (focus == 0) ? 0 : (focus == 1) ? kRootXid : focus;
 
-  // Send FocusOut to old focus window
-  const uint16_t evSeq = ctx.transport().lastSeq();
-  if (oldFocus != 0 && oldFocus != newFocus) {
-    uint8_t ev[32] = {};
-    ev[0] = 10; // FocusOut
-    ev[1] = 0;  // detail = Ancestor
-    wire::wr16_le(ev + 2, evSeq);
-    wire::wr32_le(ev + 4, oldFocus);
-    ev[8] = 0; // mode = Normal
-    (void)ctx.transport().sendEvent32(oldFocus, ev);
+  // xorg SetInputFocus (dix/events.c:4899-4990): DoFocusEvents(old, new,
+  // NotifyWhileGrabbed under a keyboard grab, else NotifyNormal) — core and
+  // XI2 FocusOut/FocusIn at every affected window with the detail derived
+  // from the window relation (Phase D, M9; Utils/FocusEvents.hpp).
+  {
+    uint8_t mode = x11::notifymode::kNormal;
+    KeyboardGrab kg{};
+    if (ctx.grabs().getKeyboardGrabInfo(kg) && kg.active) mode = x11::notifymode::kWhileGrabbed;
+    if (auto* srv = x11_proto_bridge_get_server())
+      x11::focusev::doFocusEvents(ctx, srv->eventOps(), oldFocus, newFocus, mode);
   }
 
   // Update X11-level input focus — only focus_xid, NOT focus_host.
@@ -811,17 +815,6 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t rev
   // would desync from Cocoa and defeat the duplicate-focus guard,
   // enabling WM_TAKE_FOCUS bounce loops between dialog and main window.
   ctx.input().focus_xid = newFocus;
-
-  // Send FocusIn to new focus window
-  if (newFocus != 0) {
-    uint8_t ev[32] = {};
-    ev[0] = 9; // FocusIn
-    ev[1] = 0; // detail = Ancestor
-    wire::wr16_le(ev + 2, evSeq);
-    wire::wr32_le(ev + 4, newFocus);
-    ev[8] = 0; // mode = Normal
-    (void)ctx.transport().sendEvent32(newFocus, ev);
-  }
 
   // §2.9: remember revert-to so destroy/unmap of the focus window can
   // revert to Parent/PointerRoot instead of leaving the keyboard dead.

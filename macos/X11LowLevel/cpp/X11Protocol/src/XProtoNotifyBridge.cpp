@@ -16,7 +16,8 @@
 #include "Core/XEventMask.hpp"
 #include "Core/XI2EventMask.hpp"   // xi2::kMotionMask — XI2|core deliverability (M10)
 #include "Core/XConstants.hpp"
-#include "Utils/GrabRoute.hpp"      // Phase B2: grab-time routing (xorg DeliverGrabbedEvent)
+#include "Utils/GrabRoute.hpp"
+#include "Utils/EnterLeave.hpp"   // Phase D crossing choreography      // Phase B2: grab-time routing (xorg DeliverGrabbedEvent)
 #include "Utils/DragTrace.hpp"
 
 #include <atomic>
@@ -195,19 +196,11 @@ void postMotion(uint32_t host_xid,
 
     const uint32_t prev = ctx->input().pointer_xid;
     if (under != prev) {
-      auto emitCrossing = [&](uint32_t w, bool is_enter) {
-        if (!w) return;
-        if (haveGrab) {
-          const auto cd = x11::grabroute::crossingUnderGrab(*ctx, activeGrab, w, is_enter);
-          if (cd.coreOk) ev->sendCrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods, 0, cd.toFd);
-          if (cd.xi2Ok)  (void)ev->sendXI2CrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods, 0, /*force=*/true, cd.toFd);
-          return;
-        }
-        ev->sendCrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods);
-        (void)ev->sendXI2CrossingEvent(*ctx, w, is_enter, root_x, root_y, buttons, mods);
-      };
-      emitCrossing(prev,  /*is_enter=*/false);
-      emitCrossing(under, /*is_enter=*/true);
+      // Phase D (M15): xorg DoEnterLeaveEvents(prev, under) — details from
+      // the window relation, Virtual events on the windows between, the
+      // grab filter applied per delivery (Utils/EnterLeave.hpp).
+      x11::enterleave::doEnterLeave(*ctx, *ev, prev, under, x11::notifymode::kNormal,
+                                    root_x, root_y, buttons, mods);
       ctx->input().pointer_xid = under;
     }
   }

@@ -310,15 +310,15 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t owner
     req.is_xi2      = false;
     status = ctx.grabs().tryKeyboardGrab(req);
     if (status == x11::kGrabSuccess) {
-      // xorg ActivateKeyboardGrab (dix/events.c:1720-1735): FocusOut(old
-      // grab window, else the focus window) / FocusIn(grab window) with
-      // NotifyGrab at both levels, unless the same window was already the
-      // grab window.  Java AWT depends on this pair to proceed with
-      // clipboard operations after menu dismissal.
+      // xorg ActivateKeyboardGrab (dix/events.c:1720-1735): DoFocusEvents(old
+      // grab window, else the focus window — None sends nothing, PointerRoot
+      // is a window here; never the sprite window for a master keyboard —
+      // → grab window, NotifyGrab) at both levels, unless the same window
+      // was already the grab window (:1732-1734).  Java AWT depends on this
+      // pair to proceed with clipboard operations after menu dismissal.
       if (auto* srv = x11_proto_bridge_get_server()) {
-        uint32_t from = haveHeld ? held.grabWindow : ctx.input().focus_xid;
-        if (!from) from = grabchoreo::spriteWindow(ctx);
-        if (!(haveHeld && held.grabWindow == grabWindow))
+        const uint32_t from = haveHeld ? held.grabWindow : ctx.input().focus_xid;
+        if (from && !(haveHeld && held.grabWindow == grabWindow))
           grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), from, grabWindow, /*NotifyGrab*/1);
       }
     }
@@ -350,13 +350,12 @@ void GrabOps::handleUngrabKeyboard(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
   const uint32_t grabWin = ctx.grabs().clearKeyboardGrab(fd);
   if (!grabWin) return;
 
-  // xorg DeactivateKeyboardGrab (dix/events.c:1772-1782): FocusOut(grab
-  // window) / FocusIn(focus window, else sprite window), NotifyUngrab, at
-  // both levels.
+  // xorg DeactivateKeyboardGrab (dix/events.c:1772-1782): DoFocusEvents(grab
+  // window → focus window, NotifyUngrab) at both levels; a None / PointerRoot
+  // focus yields just the FocusOut side (CoreFocusToPointerRootOrNone).
   if (auto* srv = x11_proto_bridge_get_server()) {
-    uint32_t to = ctx.input().focus_xid;
-    if (!to) to = grabchoreo::spriteWindow(ctx);
-    grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), grabWin, to, /*NotifyUngrab*/2);
+    grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), grabWin, ctx.input().focus_xid,
+                                      /*NotifyUngrab*/2);
   }
 }
 

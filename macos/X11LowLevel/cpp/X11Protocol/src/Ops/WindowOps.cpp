@@ -29,6 +29,7 @@
 // bridge
 #include "XProtoServerBridge.h"
 #include "Core/XProtoServer.hpp"
+#include "Utils/FocusEvents.hpp"   // Phase D: focus revert choreography
 #include <cstdio>   // snprintf
 
 // WM-emulation state cleanup on unmap/destroy (defined in XProtoServerBridge.cpp).
@@ -44,7 +45,10 @@ namespace {
 //                           becomes None per spec.
 //   RevertToPointerRoot (1): focus → root (PointerRoot approximation).
 //   RevertToNone (0):        focus → None (old behavior).
-void applyFocusRevert(x11::XProtoContext& ctx, uint32_t parentHint) {
+// Returns the new focus (0 = None, kRootXid = PointerRoot); the caller emits
+// the focus choreography from the old window to it (Phase D: xorg
+// DeleteWindowFromAnyEvents → DoFocusEvents(pWin, newfocus, NotifyNormal)).
+uint32_t applyFocusRevert(x11::XProtoContext& ctx, uint32_t parentHint) {
   auto& in = ctx.input();
   uint32_t next = 0;
   if (in.focus_revert_to == 2) {
@@ -61,16 +65,15 @@ void applyFocusRevert(x11::XProtoContext& ctx, uint32_t parentHint) {
     next = x11::kRootXid;
   }
   in.setFocusXid(next);
-  if (next != 0 && next != x11::kRootXid) {
-    uint8_t ev[32] = {};
-    ev[0] = 9;  // FocusIn
-    ev[1] = 0;  // detail = NotifyAncestor
-    x11::wire::wr16_le(ev + 2, ctx.transport().lastSeq());
-    x11::wire::wr32_le(ev + 4, next);
-    ev[8] = 0;  // mode = NotifyNormal
-    ev[9] = 1;  // same-screen
-    (void)ctx.transport().sendEvent32(next, ev);
-  }
+  return next;
+}
+
+// FocusOut on a window losing focus by destroy/unmap plus FocusIn on the
+// revert target, both levels, relation-derived details (Phase D, M9).
+void revertFocusFrom(x11::XProtoContext& ctx, uint32_t wid, uint32_t parentHint) {
+  const uint32_t next = applyFocusRevert(ctx, parentHint);
+  if (auto* srv = x11_proto_bridge_get_server())
+    x11::focusev::doFocusEvents(ctx, srv->eventOps(), wid, next, x11::notifymode::kNormal);
 }
 
 } // namespace
@@ -657,17 +660,10 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
   const bool hadSnap = ctx.windows().snapshot(wid, dv);
   const uint32_t parentXid = hadSnap ? dv.parent_xid : 0;
 
-  // X11 spec: If this window has focus, send FocusOut and reset focus
+  // X11 spec: If this window has focus, revert it (FocusOut here, FocusIn on
+  // the revert target — Phase D choreography).
   if (ctx.input().focus_xid == wid) {
-    uint8_t fev[32] = {};
-    fev[0]  = 10; // FocusOut
-    fev[1]  = 0;  // detail = NotifyAncestor
-    wire::wr16_le(fev + 2, ctx.transport().lastSeq());
-    wire::wr32_le(fev + 4, wid);
-    fev[8]  = 0;  // mode = NotifyNormal
-    fev[9]  = 1;  // same-screen = true
-    (void)ctx.transport().sendEvent32(wid, fev);
-    applyFocusRevert(ctx, parentXid);
+    revertFocusFrom(ctx, wid, parentXid);
   }
 
   // Clear WM_TAKE_FOCUS bounce tracking if this window was in the history.
@@ -1274,17 +1270,10 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
     }
   }
 
-  // X11 spec: If unmapped window has focus, send FocusOut and reset focus
+  // X11 spec: If unmapped window has focus, revert it (FocusOut here,
+  // FocusIn on the revert target — Phase D choreography).
   if (wasMapped && ctx.input().focus_xid == wid) {
-    uint8_t fev[32] = {};
-    fev[0]  = 10; // FocusOut
-    fev[1]  = 0;  // detail = NotifyAncestor
-    wire::wr16_le(fev + 2, ctx.transport().lastSeq());
-    wire::wr32_le(fev + 4, wid);
-    fev[8]  = 0;  // mode = NotifyNormal
-    fev[9]  = 1;  // same-screen = true
-    (void)ctx.transport().sendEvent32(wid, fev);
-    applyFocusRevert(ctx, cv.parent_xid);
+    revertFocusFrom(ctx, wid, cv.parent_xid);
   }
 
   // 1) Update authoritative table

@@ -17,6 +17,8 @@
 #include "Core/XConstants.hpp"
 #include "Ops/EventOps.hpp"
 #include "Utils/WireLE.hpp"
+#include "Utils/EnterLeave.hpp"    // Phase D: relation-derived crossings
+#include "Utils/FocusEvents.hpp"   // Phase D: relation-derived focus events
 
 namespace x11::grabchoreo {
 
@@ -49,54 +51,27 @@ inline uint32_t spriteWindow(XProtoContext& ctx) {
 // xorg DoEnterLeaveEvents(from, to, mode) as invoked by ActivatePointerGrab
 // (dix/events.c:1609-1611 — NotifyGrab; from = old grab window if one was
 // held, else the sprite window; to = grab window) and DeactivatePointerGrab
-// (:1688-1689 — NotifyUngrab; from = grab window, to = sprite window).  Both
-// the core and the XI2 crossing are sent, each gated only by its own mask
-// (dix/enterleave.c:595-608); nothing when from == to (:602-603).
+// (:1688-1689 — NotifyUngrab; from = grab window, to = sprite window).
+// Phase D: the full relation-derived choreography (Utils/EnterLeave.hpp) —
+// details, Virtual events on intermediate windows, and the grab filter on
+// each delivery; nothing when from == to (dix/enterleave.c:602-603).
 inline void pointerGrabCrossings(XProtoContext& ctx, EventOps& ev,
                                  uint32_t from, uint32_t to, uint8_t mode) {
-  if (from == to) return;
   const auto& in = ctx.input();
-  if (from && ctx.window(from)) {
-    ev.sendCrossingEvent(ctx, from, /*is_enter=*/false,
-                         in.root_x_u, in.root_y_u, in.buttons, in.mods, mode);
-    (void)ev.sendXI2CrossingEvent(ctx, from, /*is_enter=*/false,
-                                  in.root_x_u, in.root_y_u, in.buttons, in.mods, mode);
-  }
-  if (to && ctx.window(to)) {
-    ev.sendCrossingEvent(ctx, to, /*is_enter=*/true,
-                         in.root_x_u, in.root_y_u, in.buttons, in.mods, mode);
-    (void)ev.sendXI2CrossingEvent(ctx, to, /*is_enter=*/true,
-                                  in.root_x_u, in.root_y_u, in.buttons, in.mods, mode);
-  }
+  enterleave::doEnterLeave(ctx, ev, from, to, mode,
+                           in.root_x_u, in.root_y_u, in.buttons, in.mods);
 }
 
 // xorg DoFocusEvents(from, to, mode) as invoked by ActivateKeyboardGrab
 // (dix/events.c:1732-1735 — NotifyGrab; from = old grab window if one was
 // held, else the focus window) and DeactivateKeyboardGrab (:1782 —
-// NotifyUngrab; from = grab window, to = focus window).  Core FocusOut /
-// FocusIn plus the XI2 twins (dix/enterleave.c:1560-1570); nothing when
-// from == to.  Detail is Nonlinear for the toplevel↔toplevel transitions our
-// grabs produce (M9 will compute Ancestor/Inferior for nested windows).
+// NotifyUngrab; from = grab window, to = focus window).  Phase D: the
+// relation-derived choreography (Utils/FocusEvents.hpp), core + XI2 at
+// every window; a Grab/Ungrab on the focus window itself still yields the
+// Nonlinear pair, as DoFocusEvents does (dix/enterleave.c:1565-1566).
 inline void keyboardGrabFocusPair(XProtoContext& ctx, EventOps& ev,
                                   uint32_t from, uint32_t to, uint8_t mode) {
-  if (from == to) return;
-  auto sendCore = [&](uint32_t wid, bool is_in) {
-    uint8_t e[32] = {};
-    e[0] = is_in ? 9 : 10;   // FocusIn / FocusOut
-    e[1] = 3;                // detail = NotifyNonlinear
-    wire::wr16_le(e + 2, ctx.transport().lastSeq());
-    wire::wr32_le(e + 4, wid);
-    e[8] = mode;             // 1 = NotifyGrab, 2 = NotifyUngrab
-    (void)ctx.transport().sendEvent32(wid, e);
-  };
-  if (from && ctx.window(from)) {
-    sendCore(from, false);
-    ev.sendXI2FocusEvent(ctx, from, /*is_in=*/false, mode, /*detail=*/3);
-  }
-  if (to && ctx.window(to)) {
-    sendCore(to, true);
-    ev.sendXI2FocusEvent(ctx, to, /*is_in=*/true, mode, /*detail=*/3);
-  }
+  focusev::doFocusEvents(ctx, ev, from, to, mode);
 }
 
 } // namespace x11::grabchoreo

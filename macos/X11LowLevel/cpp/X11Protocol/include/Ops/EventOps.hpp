@@ -114,20 +114,26 @@ namespace x11 {
                       int toFd = -1);
 
 
+    // Phase D (M15/M18): `detail` and `child` come from the choreography in
+    // Utils/EnterLeave.hpp; delivery is to the clients selecting
+    // EnterWindow/LeaveWindow on `wid` (none → nothing), unless `toFd`.
     void sendCrossingEvent(XProtoContext& ctx,
                            uint32_t wid,
                            bool is_enter,
                            int32_t root_x, int32_t root_y,
                            uint32_t buttons, uint32_t mods,
                            uint8_t mode = 0,   // 0=Normal, 1=Grab, 2=Ungrab
-                           int toFd = -1);
-    
-    
-    void sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in);
+                           int toFd = -1,
+                           uint8_t detail = 0, // NotifyAncestor..NotifyNonlinearVirtual
+                           uint32_t child = 0);
 
-    // WM-initiated focus: bypasses FocusChangeMask check (matches SetInputFocus
-    // behaviour — the focus target always receives the event).
-    void sendFocusEventDirect(XProtoContext& ctx, uint32_t wid, bool is_in);
+    // Phase D (M9/M18): core FocusIn/FocusOut with the given mode and detail,
+    // delivered only to clients selecting FocusChange on `wid` (xorg
+    // DeliverEventsToWindow).  Drive it through Utils/FocusEvents.hpp
+    // doFocusEvents so the detail matches the window relation and the XI2
+    // twin goes out with it.
+    void sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
+                        uint8_t mode = 0, uint8_t detail = 3);
 
     // ---- XI2 (XInput2) GenericEvent senders ----
     // Each checks xi2_mask on the target window; no-op if the appropriate bit is not set.
@@ -176,7 +182,8 @@ namespace x11 {
                               int32_t root_x, int32_t root_y,
                               uint32_t buttons, uint32_t mods,
                               uint8_t mode = 0,   // 0=Normal, 1=Grab, 2=Ungrab
-                              bool force = false, int toFd = -1);
+                              bool force = false, int toFd = -1,
+                              uint8_t detail = 0, uint32_t child = 0);
 
     // mode: 0=Normal, 1=Grab, 2=Ungrab, 3=WhileGrabbed.  detail defaults to
     // NotifyNonlinear (3), the value for the toplevel↔toplevel transitions

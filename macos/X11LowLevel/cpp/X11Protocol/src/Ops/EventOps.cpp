@@ -23,6 +23,7 @@
 #include "Core/X11ExtOpcodes.hpp"
 #include "Core/InputState.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/XConstants.hpp"     // kRootXid (focusFlagFor)
 #include "Core/timestamp.hpp"
 #include "Utils/WireEvents.hpp"
 #include "Utils/MachTime.hpp"
@@ -139,12 +140,35 @@ static bool computeEventXYFromRoot(x11::XProtoContext& ctx,
 // each with its own sequence.  When nobody selected (the WM-emulation focus
 // sites and the callers that decided deliverability by the union), the
 // window's owner receives it as before.
+// `ownerFallback`: motion/button/key callers decide deliverability by the
+// window's union mask, so an empty selector list can only mean an
+// inconsistency and the owner gets it; crossing and focus events (Phase D,
+// M18) are strictly mask-gated, as DeliverEventsToWindow makes them.
 static inline void emitCore(x11::XProtoContext& ctx, uint32_t wid, const uint8_t ev[32],
-                            uint32_t bit, int toFd) {
+                            uint32_t bit, int toFd, bool ownerFallback = true) {
   if (toFd >= 0) { (void)ctx.transport().sendEventToFd(toFd, ev, 32); return; }
   const std::vector<int> fds = ctx.windows().selectorsOf(wid, bit);
-  if (fds.empty()) { (void)ctx.transport().sendEvent32(wid, ev); return; }
+  if (fds.empty()) {
+    if (ownerFallback) (void)ctx.transport().sendEvent32(wid, ev);
+    return;
+  }
   for (int fd : fds) (void)ctx.transport().sendEventToFd(fd, ev, 32);
+}
+
+// Crossing/focus `focus` flag: the event window is the focus window, an
+// inferior of it, or focus is PointerRoot (dix/events.c:4740-4744).
+static inline bool focusFlagFor(x11::XProtoContext& ctx, uint32_t wid) {
+  const uint32_t focusXid = ctx.input().focus_xid;
+  if (focusXid == 0) return false;
+  if (focusXid == x11::kRootXid) return true;   // PointerRoot
+  uint32_t cur = wid;
+  for (int depth = 0; cur != 0 && depth < 64; depth++) {
+    if (cur == focusXid) return true;
+    x11::WindowView v{};
+    if (!ctx.windows().snapshot(cur, v)) break;
+    cur = v.parent_xid;
+  }
+  return false;
 }
 
 // Core mask bits for the motion family: any of these on a window means the
@@ -595,7 +619,9 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
                                 int32_t root_x, int32_t root_y,
                                 uint32_t buttons, uint32_t mods,
                                 uint8_t mode,
-                                int toFd)
+                                int toFd,
+                                uint8_t detail,
+                                uint32_t child)
 {
   auto clamp16 = [](int32_t v) -> int16_t {
     if (v < -32768) return -32768;
@@ -609,13 +635,13 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   uint8_t ev[32] = {0};
 
   ev[0] = is_enter ? 7 : 8;   // EnterNotify=7, LeaveNotify=8
-  ev[1] = 0;                  // detail: NotifyAncestor (0) is fine for bring-up
+  ev[1] = detail;             // from the window relation (Utils/EnterLeave.hpp, M15)
   wire::wr16_le(ev + 2, ctx.transport().lastSeq());
   wire::wr32_le(ev + 4, x11_now_ms_monotonic()); // time
 
   wire::wr32_le(ev + 8, 1);    // root
   wire::wr32_le(ev + 12, wid); // event
-  wire::wr32_le(ev + 16, 0);   // child (we don’t track subwindow crossings yet)
+  wire::wr32_le(ev + 16, child); // child: None on the endpoints, the path window on Virtual events
 
   wire::wr16_le(ev + 20, (uint16_t)rx); // rootX
   wire::wr16_le(ev + 22, (uint16_t)ry); // rootY
@@ -638,47 +664,41 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   // (The old `ev[31] = 1` claimed focus=True + same_screen=False on every
   // crossing — toolkits taking the "different screen" branch ignored the
   // coordinates.)  focus = event window is the focus window or an inferior.
-  uint8_t focusBit = 0;
-  {
-    const uint32_t focusXid = ctx.input().focus_xid;
-    uint32_t cur = wid;
-    for (int depth = 0; cur != 0 && depth < 64; depth++) {
-      if (cur == focusXid) { focusBit = 0x01; break; }
-      WindowView v{};
-      if (!ctx.windows().snapshot(cur, v)) break;
-      cur = v.parent_xid;
-    }
-  }
-  ev[31] = (uint8_t)(0x02 | focusBit); // same_screen=True | focus
+  ev[31] = (uint8_t)(0x02 | (focusFlagFor(ctx, wid) ? 0x01 : 0x00)); // same_screen=True | focus
 
 #ifdef X11_TRACE_VERBOSE
-  TS_FPRINTF("[CROSS] wid=0x%08X %s time=%u root=(%d,%d) event=(%d,%d) state=0x%04X\n",
-          (unsigned)wid, is_enter ? "Enter" : "Leave",
+  TS_FPRINTF("[CROSS] wid=0x%08X %s detail=%u time=%u root=(%d,%d) event=(%d,%d) state=0x%04X\n",
+          (unsigned)wid, is_enter ? "Enter" : "Leave", (unsigned)detail,
           (unsigned)wire::rd32_le(ev + 4),
           (int)rx, (int)ry, (int)ex, (int)ey, (unsigned)st);
 #endif
 
-  emitCore(ctx, wid, ev, is_enter ? x11::mask::EnterWindow : x11::mask::LeaveWindow, toFd);
+  // M18: strictly mask-gated (xorg CoreEnterLeaveEvent, dix/events.c:4722)
+  emitCore(ctx, wid, ev, is_enter ? x11::mask::EnterWindow : x11::mask::LeaveWindow, toFd,
+           /*ownerFallback=*/false);
 }
   
   
   
-void EventOps::sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in)
+void EventOps::sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
+                              uint8_t mode, uint8_t detail)
 {
   if (!wid) return;
 
   const x11::WindowView* vw = ctx.window(wid);
   if (!vw || vw->owner_fd <= 0) return;
 
-  // Only deliver if client selected FocusChangeMask
-  const bool wantFocus = (vw->event_mask & x11::mask::FocusChange) != 0;
-  if (!wantFocus) return;
+  // Cheap gate on the union; emitCore delivers to the selecting clients only
+  // (M18 — xorg CoreFocusEvent → DeliverEventsToWindow, dix/events.c:4862).
+  // The old sendFocusEventDirect bypassed the mask for the WM-emulation
+  // sites; xorg delivers a WM's FocusIn only because the shell selected
+  // FocusChange, and every toolkit we host does (xterm's shell, GTK/Chromium
+  // toplevels, AWT focus proxies — checked 2026-09-07).
+  if (!(vw->event_mask & x11::mask::FocusChange)) return;
 
   uint8_t ev[32];
-  const uint8_t type   = is_in ? 9 : 10;   // FocusIn / FocusOut
-  const uint8_t detail = 3;                // NotifyNonlinear (good bring-up default)
-  const uint8_t mode   = 0;                // NotifyNormal
-  const uint8_t same   = 1;
+  const uint8_t type = is_in ? 9 : 10;   // FocusIn / FocusOut
+  const uint8_t same = 1;
 
   buildFocusEvent32(ev,
                     type,
@@ -688,37 +708,7 @@ void EventOps::sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in)
                     mode,
                     same);
 
-  emitCore(ctx, wid, ev, x11::mask::FocusChange, -1);
-}
-
-
-void EventOps::sendFocusEventDirect(XProtoContext& ctx, uint32_t wid, bool is_in)
-{
-  if (!wid) return;
-
-  const x11::WindowView* vw = ctx.window(wid);
-  if (!vw || vw->owner_fd <= 0) return;
-
-  // NOTE: No FocusChangeMask check — this emulates SetInputFocus behaviour
-  // where the server always delivers FocusIn/FocusOut to the focus target.
-  // Used by our rootless WM (Cocoa focus / click-to-focus) to ensure the
-  // top-level shell widget receives FocusIn so it can propagate to children.
-
-  uint8_t ev[32];
-  const uint8_t type   = is_in ? 9 : 10;   // FocusIn / FocusOut
-  const uint8_t detail = 3;                // NotifyNonlinear
-  const uint8_t mode   = 0;                // NotifyNormal
-  const uint8_t same   = 1;
-
-  buildFocusEvent32(ev,
-                    type,
-                    detail,
-                    ctx.transport().lastSeq(),
-                    wid,
-                    mode,
-                    same);
-
-  emitCore(ctx, wid, ev, x11::mask::FocusChange, -1);
+  emitCore(ctx, wid, ev, x11::mask::FocusChange, -1, /*ownerFallback=*/false);
 }
 
 
@@ -902,7 +892,8 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                                     int32_t root_x, int32_t root_y,
                                     uint32_t buttons, uint32_t mods,
                                     uint8_t mode,
-                                    bool force, int toFd) {
+                                    bool force, int toFd,
+                                    uint8_t detail, uint32_t child) {
   uint32_t mask_bit = is_enter ? xi2::kEnterMask : xi2::kLeaveMask;
   const WindowView* wv = ctx.window(wid);
   if (!force && !wv) return false;
@@ -927,17 +918,17 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
   wire::wr16_le(buf + 16, xi2::kRealPointer);           // sourceid = real slave pointer (not XTEST)
-  buf[18] = mode; // mode: 0=Normal, 1=NotifyGrab, 2=NotifyUngrab
-  buf[19] = 0;   // detail = Ancestor
+  buf[18] = mode;   // mode: 0=Normal, 1=NotifyGrab, 2=NotifyUngrab
+  buf[19] = detail; // from the window relation (Utils/EnterLeave.hpp, M15)
   wire::wr32_le(buf + 20, 1);                            // root
   wire::wr32_le(buf + 24, wid);                          // event
-  wire::wr32_le(buf + 28, 0);                            // child
+  wire::wr32_le(buf + 28, child);                        // child (path window on Virtual events)
   wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));
   wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));
   wire::wr32_le(buf + 40, (uint32_t)((int32_t)ex << 16));
   wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16));
   buf[48] = 1;   // same_screen = True
-  buf[49] = 0;   // focus = False
+  buf[49] = focusFlagFor(ctx, wid) ? 1 : 0;   // focus, as the core sender (enterleave.c DeviceEnterLeaveEvent)
   wire::wr16_le(buf + 50, xi2::kXIButtonsLen);          // buttons_len = 8 (xorg)
   fillXI2Mods(buf + 52, mods);                            // mods (16 bytes)
   fillXI2Group(buf + 68);                                 // group (4 bytes)
