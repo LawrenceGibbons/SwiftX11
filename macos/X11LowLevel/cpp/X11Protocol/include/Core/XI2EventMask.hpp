@@ -59,6 +59,33 @@ constexpr uint16_t kXTESTKeyboard       = 5;  // XTEST slave keyboard (synthetic
 constexpr uint16_t kRealPointer         = 6;  // slave pointer  (sourceid for real pointer events)
 constexpr uint16_t kRealKeyboard        = 7;  // slave keyboard (sourceid for real keyboard events)
 
+// --- Selection device specs (XISelectEvents deviceid) ---
+constexpr uint16_t kAllDevices       = 0;   // XIAllDevices
+constexpr uint16_t kAllMasterDevices = 1;   // XIAllMasterDevices
+constexpr uint16_t kMaxDeviceId      = 7;   // highest id we advertise
+
+inline bool isMasterDevice(uint16_t d) {
+  return d == kVirtualCorePointer || d == kVirtualCoreKeyboard;
+}
+inline bool isKnownDevice(uint16_t d) {
+  return d >= kVirtualCorePointer && d <= kMaxDeviceId;
+}
+
+// xorg xi2mask_isset (dix/inpututils.c:1153-1165): a selection entry matches
+// an event on device D when it was made for XIAllDevices, for D itself, or
+// for XIAllMasterDevices when D is a master.  Phase C (M4).
+inline bool selectionMatchesDevice(uint16_t entryDev, uint16_t eventDev) {
+  return entryDev == kAllDevices || entryDev == eventDev ||
+         (entryDev == kAllMasterDevices && isMasterDevice(eventDev));
+}
+
+// Bits that may only be selected on the root window (Xi/xiselectev.c:197-212)
+// and the HierarchyChanged bit that may only be selected for XIAllDevices
+// (:187-195).
+constexpr uint32_t kHierarchyChangedMask = (1u << 11);
+constexpr uint32_t kRootOnlyMask = (1u << 13) | (1u << 14) | (1u << 15) | (1u << 16) |
+                                   (1u << 17) | (1u << 22) | (1u << 23) | (1u << 24);
+
 // --- Wire format sizes (mirror xorg eventToDeviceEvent / xXIEnterEvent) ---
 // xorg ALWAYS emits buttons_len=8 (MAX_BUTTONS=256 -> 32-byte mask) and, for
 // device events, valuators_len=2 (MAX_VALUATORS=36 -> 8-byte mask) plus one

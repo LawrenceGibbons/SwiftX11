@@ -1024,6 +1024,24 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 ig.owner_fd    = dv->owner_fd;
                 ig.is_xi2      = xi2Sent;
                 ig.xi2mask     = dv->xi2_mask;
+                // Phase C: the grab belongs to the client that RECEIVED the
+                // press (xorg ActivateImplicitGrab records `client` and its
+                // own mask on the window), which with per-client selections
+                // need not be the window's owner.
+                if (xi2Sent) {
+                  int rfd = -1; uint32_t rmask = 0;
+                  if (ctx.windows().firstXI2Selector(target, x11::xi2::kButtonPressMask,
+                                                     x11::xi2::kVirtualCorePointer, rfd, rmask)) {
+                    ig.owner_fd = rfd;
+                    ig.xi2mask  = rmask;
+                  }
+                } else {
+                  const std::vector<int> cfds = ctx.windows().selectorsOf(target, x11::mask::ButtonPress);
+                  if (!cfds.empty() &&
+                      std::find(cfds.begin(), cfds.end(), dv->owner_fd) == cfds.end()) {
+                    ig.owner_fd = cfds.front();
+                  }
+                }
               }
               ig.grab_time = x11_now_ms_monotonic();
               ig.implicit  = true;

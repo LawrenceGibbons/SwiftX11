@@ -24,6 +24,12 @@ public:
   // M6 Stage 1: one client's event selection on a window.
   struct ClientMask { int fd; uint32_t mask; };
 
+  // Phase C (M4): one XI2 selection per (client, device spec) per window —
+  // xorg's InputClients entry with its per-device xi2mask (inputstr.h:120-156).
+  // deviceid is the spec the client gave XISelectEvents: 0 = XIAllDevices,
+  // 1 = XIAllMasterDevices, or a device id.
+  struct XI2ClientMask { int fd; uint16_t deviceid; uint32_t mask; };
+
   // Insert or update a window record.
   void upsert(uint32_t xid, uint32_t parent,
               int16_t x, int16_t y,
@@ -67,11 +73,28 @@ public:
   std::vector<int> selectorsOf(uint32_t xid, uint32_t bit) const;
 
   // M6 Stage 1: drop a disconnecting client's selections from every window and
-  // recompute affected unions.
+  // recompute affected unions.  Phase C: also purges the XI2 entries.
   void removeClientMasks(int fd);
 
-  // Update XI2 event selection mask
-  void setXI2Mask(uint32_t xid, uint32_t xi2_mask);
+  // Phase C (M4): XI2 selection per (client, device spec), mirroring xorg
+  // XISetEventMask (Xi/exevents.c:3313-3348): replaces only the caller's slot
+  // for that device spec, erases it when mask == 0, then recomputes xi2_mask
+  // as the union of every entry (the gate the routing walks test).
+  void setClientXI2Mask(uint32_t xid, int fd, uint16_t deviceid, uint32_t mask);
+
+  // Phase C (M5): fds whose entry on `xid` carries `bit` and matches the
+  // event's device (xi2::selectionMatchesDevice); the owner, if it selected,
+  // comes first (xorg tries the owner before otherClients).  No duplicates.
+  std::vector<int> xi2SelectorsOf(uint32_t xid, uint32_t bit, uint16_t deviceid) const;
+
+  // The receiving client for a press on `xid`: the first selector by the same
+  // order, with the union of that client's masks matching the device — what
+  // xorg's ActivateImplicitGrab records as the grab's client and xi2mask.
+  bool firstXI2Selector(uint32_t xid, uint32_t bit, uint16_t deviceid,
+                        int& fd, uint32_t& mask) const;
+
+  // One client's XI2 entries on a window (XIGetSelectedEvents).
+  std::vector<XI2ClientMask> xi2MasksFor(uint32_t xid, int fd) const;
 
   // Update geometry without reallocating framebuffers
   // (framebuffer resizing is handled elsewhere)
@@ -211,6 +234,8 @@ private:
     // event_mask is the DERIVED UNION of all per-client selections below; it
     // stays authoritative for the ~40 "does any client want this?" gate checks.
     uint32_t event_mask = 0;
+    // xi2_mask is likewise the DERIVED UNION of xi2_client_masks (Phase C);
+    // the routing walks gate on it, delivery iterates the entries.
     uint32_t xi2_mask = 0;    // XI2 event selection mask (bits = 1 << XI2 event type)
     uint32_t do_not_propagate_mask = 0; // CWDontPropagate (bit 12)
 
@@ -220,6 +245,9 @@ private:
     // Structure/Substructure notify, Expose) are delivered to every entry whose
     // mask matches; event_mask above is kept as the OR of these masks.
     std::vector<ClientMask> client_masks;
+
+    // Phase C (M4): per-(window, client, device spec) XI2 selection.
+    std::vector<XI2ClientMask> xi2_client_masks;
 
     // X11 window background pixel (ARGB8888, alpha forced opaque).
     uint32_t background_pixel = 0;

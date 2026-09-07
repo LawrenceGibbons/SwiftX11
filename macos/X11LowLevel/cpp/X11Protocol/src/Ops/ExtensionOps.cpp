@@ -1373,30 +1373,51 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case 46: {
       // XISelectEvents: CARD32 window, CARD16 num_masks, pad16
       //   then per mask: CARD16 deviceid, CARD16 mask_len, mask_len*4 bytes
-      if (br.remaining() < 8) { br.skip(br.remaining()); return; }
-      uint32_t window = br.readU32();
-      uint16_t num_masks = br.readU16();
+      // Phase C (M4): one selection per (client, device spec) per window, as
+      // xorg XISetEventMask; validated whole before anything is applied
+      // (Xi/xiselectev.c:145-322).
+      const uint8_t xiMinor = 46;
+      auto fail = [&](uint8_t code, uint32_t value) {
+        br.skip(br.remaining());
+        (void)ctx.transport().sendErrorExt(code, seq, value, xiMinor, ext::kXInput2);
+      };
+      if (br.remaining() < 8) { fail(x11::error::BadLength, 0); return; }
+      const uint32_t window    = br.readU32();
+      const uint16_t num_masks = br.readU16();
       br.skip(2); // pad
-      uint32_t combined_mask = 0;
-      for (uint16_t i = 0; i < num_masks && br.remaining() >= 4; i++) {
-        uint16_t deviceid = br.readU16();
-        uint16_t mask_len = br.readU16(); // in 4-byte units
-        (void)deviceid;
+      if (num_masks == 0) { fail(x11::error::BadValue, 0); return; }
+      const bool isRoot = (window == x11::kRootXid);
+      if (!isRoot && !ctx.window(window)) { fail(x11::error::BadWindow, window); return; }
+
+      struct Sel { uint16_t dev; uint32_t mask; };
+      std::vector<Sel> sels;
+      for (uint16_t i = 0; i < num_masks; i++) {
+        if (br.remaining() < 4) { fail(x11::error::BadLength, 0); return; }
+        const uint16_t deviceid = br.readU16();
+        const uint16_t mask_len = br.readU16(); // in 4-byte units
+        if (br.remaining() < (size_t)mask_len * 4u) { fail(x11::error::BadLength, 0); return; }
         uint32_t mask = 0;
-        for (uint16_t j = 0; j < mask_len && br.remaining() >= 4; j++) {
-          uint32_t word = br.readU32();
-          if (j == 0) mask = word;  // only first word has event types 0-31
+        for (uint16_t j = 0; j < mask_len; j++) {
+          const uint32_t word = br.readU32();
+          if (j == 0) mask = word;  // event types 0-31 live in word 0
         }
-        combined_mask |= mask;
+        // Device spec: XIAllDevices, XIAllMasterDevices or an id we advertise.
+        // (BadDevice needs the XI error base — M13, Phase E; BadValue until then.)
+        if (deviceid != xi2::kAllDevices && deviceid != xi2::kAllMasterDevices &&
+            !xi2::isKnownDevice(deviceid)) { fail(x11::error::BadValue, deviceid); return; }
+        // HierarchyChanged only for XIAllDevices; raw events only on root.
+        if (deviceid != xi2::kAllDevices && (mask & xi2::kHierarchyChangedMask)) {
+          fail(x11::error::BadValue, 11); return;
+        }
+        if (!isRoot && (mask & xi2::kRootOnlyMask)) { fail(x11::error::BadValue, 13); return; }
+        sels.push_back({deviceid, mask});
       }
-      br.skip(br.remaining()); // consume any trailing padding
-      // Root window (XID 1) isn't in WindowTable — keep the CALLER's root
-      // selection in InputState (per client; the union gates the senders).
-      // Plain assignment was last-writer-wins across clients (M4 minimal).
-      if (window == 1) {
-        ctx.input().setRootXI2Mask(ctx.transport().clientFd(), combined_mask);
-      } else {
-        ctx.windows().setXI2Mask(window, combined_mask);
+      br.skip(br.remaining()); // trailing padding
+
+      const int fd = ctx.transport().clientFd();
+      for (const Sel& s : sels) {
+        if (isRoot) ctx.input().setRootXI2Mask(fd, s.dev, s.mask);
+        else        ctx.windows().setClientXI2Mask(window, fd, s.dev, s.mask);
       }
       return;
     }
@@ -1842,37 +1863,36 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // ---- minor 60: XIGetSelectedEvents (reply-bearing) ----
     case 60: {
       // XIGetSelectedEvents: CARD32 window
+      // Phase C (M4): the CALLER's entries on the window, one xXIEventMask per
+      // device spec in ascending id order (Xi/xiselectev.c:342-428).
       uint32_t window = (br.remaining() >= 4) ? br.readU32() : 0;
       br.skip(br.remaining());
-      // Look up the stored XI2 mask for this window.  Root (XID 1) lives in
-      // InputState per client — return the CALLER's selection, as xorg does
-      // (Xi/xiselectev.c: the reply is the requesting client's masks).
-      uint32_t mask = 0;
-      if (window == 1) {
-        mask = ctx.input().rootXI2MaskFor(ctx.transport().clientFd());
+      const int fd = ctx.transport().clientFd();
+      std::vector<std::pair<uint16_t, uint32_t>> list;
+      if (window == x11::kRootXid) {
+        for (const auto& s : ctx.input().rootXI2MasksFor(fd)) list.push_back({s.deviceid, s.mask});
+      } else if (!ctx.window(window)) {
+        (void)ctx.transport().sendErrorExt(x11::error::BadWindow, seq, window, 60, ext::kXInput2);
+        return;
       } else {
-        x11::WindowView wv;
-        if (ctx.windows().snapshot(window, wv)) mask = wv.xi2_mask;
+        for (const auto& m : ctx.windows().xi2MasksFor(window, fd)) list.push_back({m.deviceid, m.mask});
       }
-      if (mask == 0) {
-        // No XI2 selection — return empty
-        (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-          wire::wr32_le(rep.data() + 4, 0);
-          wire::wr16_le(rep.data() + 8, 0);
-        });
-      } else {
-        // Return one mask entry: 8 bytes (deviceid=0 XIAllDevices, mask_len=1, mask)
-        (void)ctx.reply().sendReply32(seq, [mask](std::array<uint8_t, 32>& rep) {
-          wire::wr32_le(rep.data() + 4, 2);   // length = 2 words (8 bytes extra)
-          wire::wr16_le(rep.data() + 8, 1);   // num_masks = 1
-        });
-        // Send trailing data: deviceid(2) + mask_len(2) + mask(4) = 8 bytes
-        uint8_t extra[8] = {};
-        wire::wr16_le(extra + 0, 0);    // deviceid = XIAllDevices
-        wire::wr16_le(extra + 2, 1);    // mask_len = 1 (one 4-byte word)
-        wire::wr32_le(extra + 4, mask); // the actual mask
-        ctx.transport().sendAll(extra, 8);
+      std::sort(list.begin(), list.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+      std::vector<uint8_t> rep(32 + list.size() * 8, 0);
+      rep[0] = 1;
+      rep[1] = 60;                                            // RepType = minor
+      wire::wr16_le(rep.data() + 2, seq);
+      wire::wr32_le(rep.data() + 4, (uint32_t)(list.size() * 2));   // 2 words per mask
+      wire::wr16_le(rep.data() + 8, (uint16_t)list.size());   // num_masks
+      size_t off = 32;
+      for (const auto& e : list) {
+        wire::wr16_le(rep.data() + off + 0, e.first);   // deviceid
+        wire::wr16_le(rep.data() + off + 2, 1);         // mask_len = 1 word
+        wire::wr32_le(rep.data() + off + 4, e.second);  // mask
+        off += 8;
       }
+      (void)ctx.reply().sendReplyRaw(rep.data(), rep.size());
       return;
     }
 

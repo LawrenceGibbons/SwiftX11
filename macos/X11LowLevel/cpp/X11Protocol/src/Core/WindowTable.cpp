@@ -11,6 +11,7 @@
 #include <functional>
 
 #include "Core/WindowTable.hpp"
+#include "Core/XI2EventMask.hpp"   // selectionMatchesDevice (Phase C)
 #include "Core/WindowView.hpp"
 #include "Utils/MachTime.hpp"
 
@@ -590,6 +591,8 @@ std::vector<int> WindowTable::selectorsOf(uint32_t xid, uint32_t bit) const {
 }
 
 // M6 Stage 1: drop a disconnecting client's selections everywhere.
+// Phase C: the XI2 entries too (xorg frees the client's InputClients entry on
+// exit, Xi/exevents.c:2824-2854).
 void WindowTable::removeClientMasks(int fd) {
   std::lock_guard<std::mutex> lock(mu_);
   for (auto& kv : map_) {
@@ -605,16 +608,93 @@ void WindowTable::removeClientMasks(int fd) {
       st.event_mask = u;
       st.serial++;
     }
+    const size_t xbefore = st.xi2_client_masks.size();
+    st.xi2_client_masks.erase(
+        std::remove_if(st.xi2_client_masks.begin(), st.xi2_client_masks.end(),
+                       [fd](const XI2ClientMask& c) { return c.fd == fd; }),
+        st.xi2_client_masks.end());
+    if (st.xi2_client_masks.size() != xbefore) {
+      uint32_t u = 0;
+      for (const auto& c : st.xi2_client_masks) u |= c.mask;
+      st.xi2_mask = u;
+      st.serial++;
+    }
   }
 }
 
-void WindowTable::setXI2Mask(uint32_t xid, uint32_t xi2_mask) {
+// Phase C (M4): xorg XISetEventMask — replace only this client's slot for
+// this device spec; the union feeds the existing gate sites.
+void WindowTable::setClientXI2Mask(uint32_t xid, int fd, uint16_t deviceid, uint32_t mask) {
+#ifdef X11_TRACE_VERBOSE
+  fprintf(stderr, "[XI2MASK] xid=0x%08X fd=%d dev=%u mask=0x%08X\n",
+          (unsigned)xid, fd, (unsigned)deviceid, (unsigned)mask);
+#endif
   if (xid == 0) return;
   std::lock_guard<std::mutex> lock(mu_);
   WindowState* st = findLocked(xid);
   if (!st) return;
-  st->xi2_mask = xi2_mask;
+
+  auto& v = st->xi2_client_masks;
+  auto it = std::find_if(v.begin(), v.end(), [fd, deviceid](const XI2ClientMask& c) {
+    return c.fd == fd && c.deviceid == deviceid;
+  });
+  if (mask == 0) {
+    if (it != v.end()) v.erase(it);
+  } else if (it != v.end()) {
+    it->mask = mask;
+  } else {
+    v.push_back({fd, deviceid, mask});
+  }
+
+  uint32_t u = 0;
+  for (const auto& c : v) u |= c.mask;
+  st->xi2_mask = u;
   st->serial++;
+}
+
+// Phase C (M5): the delivery list for one XI2 event on `xid`.
+std::vector<int> WindowTable::xi2SelectorsOf(uint32_t xid, uint32_t bit, uint16_t deviceid) const {
+  std::vector<int> out;
+  if (xid == 0 || bit == 0) return out;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = map_.find(xid);
+  if (it == map_.end()) return out;
+  const WindowState& st = it->second;
+  for (const auto& c : st.xi2_client_masks) {
+    if (!(c.mask & bit)) continue;
+    if (!xi2::selectionMatchesDevice(c.deviceid, deviceid)) continue;
+    if (std::find(out.begin(), out.end(), c.fd) != out.end()) continue;
+    if (c.fd == st.owner_fd) out.insert(out.begin(), c.fd);   // owner first
+    else out.push_back(c.fd);
+  }
+  return out;
+}
+
+bool WindowTable::firstXI2Selector(uint32_t xid, uint32_t bit, uint16_t deviceid,
+                                   int& fd, uint32_t& mask) const {
+  const std::vector<int> fds = xi2SelectorsOf(xid, bit, deviceid);
+  if (fds.empty()) return false;
+  fd = fds.front();
+  mask = 0;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = map_.find(xid);
+  if (it == map_.end()) return false;
+  for (const auto& c : it->second.xi2_client_masks) {
+    if (c.fd == fd && xi2::selectionMatchesDevice(c.deviceid, deviceid)) mask |= c.mask;
+  }
+  return true;
+}
+
+std::vector<WindowTable::XI2ClientMask> WindowTable::xi2MasksFor(uint32_t xid, int fd) const {
+  std::vector<XI2ClientMask> out;
+  if (xid == 0) return out;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = map_.find(xid);
+  if (it == map_.end()) return out;
+  for (const auto& c : it->second.xi2_client_masks) {
+    if (c.fd == fd) out.push_back(c);
+  }
+  return out;
 }
 
 // Assumes mu_ is held.
