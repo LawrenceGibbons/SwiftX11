@@ -210,14 +210,28 @@ private func currentMouseLocationInContentUnits() -> (x: Int32, y: Int32) {
   return (x, y)
 }
 
+// X11 root coordinates (top-left origin over the virtual desktop union) of the
+// current mouse location — the same mapping X11View.rootPointInX11TopLeft uses.
+private func currentMouseLocationInX11Root() -> (x: Int32, y: Int32) {
+  let gp = NSEvent.mouseLocation
+  let screens = NSScreen.screens
+  let vminX = screens.map { $0.frame.minX }.min() ?? 0
+  let vmaxY = screens.map { $0.frame.maxY }.max() ?? 0
+  let x = Int32((gp.x - vminX).rounded(.toNearestOrAwayFromZero))
+  let y = Int32((vmaxY - gp.y).rounded(.toNearestOrAwayFromZero)) - 1
+  return (max(0, x), max(0, y))
+}
+
 private func postSyntheticEnterForCurrentMouseLocation() {
   let (x, y) = currentMouseLocationInContentUnits()
-  x11_post_pointer_enter(xid, x, y, 0)
+  let (rx, ry) = currentMouseLocationInX11Root()
+  x11_post_pointer_enter(xid, x, y, rx, ry, 0)
 }
 
 private func postSyntheticLeaveForCurrentMouseLocation() {
   let (x, y) = currentMouseLocationInContentUnits()
-  x11_post_pointer_leave(xid, x, y, 0)
+  let (rx, ry) = currentMouseLocationInX11Root()
+  x11_post_pointer_leave(xid, x, y, rx, ry, 0)
 }
 
   

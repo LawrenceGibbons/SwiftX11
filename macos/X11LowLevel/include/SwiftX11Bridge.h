@@ -162,14 +162,21 @@ void x11_post_key_event(uint32_t xwin_id,
                         uint32_t modifiers,
                         const char* utf8_text);
 
+// Enter/Leave carry their own root coordinates (v1.20.0.26): the server
+// used to derive them from a cached host origin that outside-the-view
+// motion had corrupted.
 void x11_post_pointer_enter(uint32_t xid,
                             int32_t x_u,
                             int32_t y_u,
+                            int32_t root_x_u,
+                            int32_t root_y_u,
                             uint32_t modifiers);
 
 void x11_post_pointer_leave(uint32_t xid,
                             int32_t x_u,
                             int32_t y_u,
+                            int32_t root_x_u,
+                            int32_t root_y_u,
                             uint32_t modifiers);
   
 

@@ -92,10 +92,12 @@ void x11_proto_bridge_post_pointer_move2(uint32_t xid,
 
   void x11_proto_bridge_post_enter(uint32_t xid,
                                    int32_t win_x, int32_t win_y,
+                                   int32_t root_x, int32_t root_y,
                                    uint32_t modifiers);
 
   void x11_proto_bridge_post_leave(uint32_t xid,
                                    int32_t win_x, int32_t win_y,
+                                   int32_t root_x, int32_t root_y,
                                    uint32_t modifiers);
 
   void x11_proto_bridge_post_focus(uint32_t xid,

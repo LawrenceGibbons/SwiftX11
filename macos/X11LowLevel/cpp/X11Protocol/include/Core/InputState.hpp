@@ -157,8 +157,11 @@ namespace x11 {
     void clearFocusHost(uint32_t host_xid) {
       if (focus_host == host_xid) focus_host = 0;
       focus_xid = 0;
-      // pointer_xid: keep unless you want to clear when not dragging.
-      if (drag_xid == 0) pointer_xid = 0;
+      // pointer_xid is the sprite window and independent of focus (xorg keeps
+      // sprite->win across focus changes).  AppKit's mouseExited on app
+      // deactivation clears it through PointerLeave; clearing it here left
+      // that exit with nothing to leave, or forced a fallback Leave on the
+      // host instead (v1.20.0.26).
     }
     
     void enter(uint32_t xid) {

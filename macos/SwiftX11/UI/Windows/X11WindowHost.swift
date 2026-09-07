@@ -1060,8 +1060,12 @@ final class X11View: NSView {
     let dragging = (buttonMask != 0)
     let deliver: UInt8 = (bounds.contains(p) || dragging) ? 1 : 0
 
-    let (winX, winY) = pointInX11(event, clampToView: !dragging)
-    
+    // Never clamp (v1.20.0.26): a deliver=0 move outside the view with
+    // clamped local coords but real root coords taught the server a wrong
+    // host origin (root − local), which then mispositioned every Cocoa-driven
+    // Enter/Leave.  Inside the view the clamp was a no-op anyway.
+    let (winX, winY) = pointInX11(event, clampToView: false)
+
     // Global root coords (top-left)
     let (rootX, rootY) = rootPointInX11TopLeft()
     
@@ -1163,7 +1167,8 @@ final class X11View: NSView {
     lastInsideForSyntheticCrossing = true
     isPointerInside = true
     let (x, y) = pointInX11(event, clampToView: true)
-    x11_post_pointer_enter(xid, x, y, mods(event.modifierFlags))
+    let (rootX, rootY) = rootPointInX11TopLeft()
+    x11_post_pointer_enter(xid, x, y, rootX, rootY, mods(event.modifierFlags))
   }
   
   override func mouseExited(with event: NSEvent) {
@@ -1173,7 +1178,8 @@ final class X11View: NSView {
       isPointerInside = false
     }
     let (x, y) = pointInX11(event, clampToView: true)
-    x11_post_pointer_leave(xid, x, y, mods(event.modifierFlags))
+    let (rootX, rootY) = rootPointInX11TopLeft()
+    x11_post_pointer_leave(xid, x, y, rootX, rootY, mods(event.modifierFlags))
   }
   
   override func scrollWheel(with event: NSEvent) {

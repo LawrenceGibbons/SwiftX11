@@ -536,13 +536,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // M16: use THIS command's host-local coordinates.  The previous code
           // read the last motion's, which belong to the window just LEFT, so
           // the Enter could target the wrong child of the new host and carry
-          // the old host's event coordinates.  Root coords come from the new
-          // host's cached origin when known.
-          int32_t rx = ctx.input().root_x_u, ry = ctx.input().root_y_u;
-          {
-            int32_t ox = 0, oy = 0;
-            if (ctx.input().getHostOrigin(host, ox, oy)) { rx = ox + c.win_x_u; ry = oy + c.win_y_u; }
-          }
+          // the old host's event coordinates.  Root coords travel with the
+          // command too (v1.20.0.26): deriving them from the cached host
+          // origin went wrong whenever an outside-the-view move had fed that
+          // cache clamped local coordinates (Enter at root (2301,1020) for a
+          // 300-px-tall window at y=600 — origin 721 + clamped local 299).
+          const int32_t rx = c.root_x_u, ry = c.root_y_u;
           ctx.input().updateMotion(host, c.win_x_u, c.win_y_u, rx, ry,
                                    ctx.input().buttons, c.modsMask);
 
@@ -588,20 +587,23 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t px = ctx.input().pointer_xid;
           if (dx && ctx.windows().topLevelAncestorOf(dx) == host)      leaveWin = dx;
           else if (px && ctx.windows().topLevelAncestorOf(px) == host) leaveWin = px;
-          else if (px == 0)                                             leaveWin = host;  // pointer window unknown (e.g. cleared on focus loss)
-          // px in another host: the Enter there already emitted the Leave
-          // for this one (Phase D) — nothing left to leave.
+          // px == 0: the sprite is already on root — AppKit sends a second
+          // mouseExited when the app deactivates after the pointer has left,
+          // and the old `host` fallback turned it into a spurious Leave
+          // (v1.20.0.26).  px in another host: the Enter there already
+          // emitted the Leave for this one (Phase D).
 
           // After leaving, cursor should usually fall back (focus/host/inherit).
           if (leaveWin) ctx.input().leave(leaveWin);
           const uint32_t cursorTarget = ctx.input().routePointer(host);
           maybeApplyCursor(ctx, host, cursorTarget);
 
-          // Phase D: xorg DoEnterLeaveEvents(leaveWin, root).
+          // Phase D: xorg DoEnterLeaveEvents(leaveWin, root), at the exit
+          // event's own root position.
           if (leaveWin) {
             x11::enterleave::doEnterLeave(ctx, srv->eventOps(), leaveWin, /*to=root*/0,
                                           x11::notifymode::kNormal,
-                                          ctx.input().root_x_u, ctx.input().root_y_u,
+                                          c.root_x_u, c.root_y_u,
                                           ctx.input().buttons, c.modsMask);
           }
           break;
@@ -710,7 +712,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                                           x11::notifymode::kNormal);
 
               ctx.input().focus_xid = 0;
-              if (ctx.input().drag_xid == 0) ctx.input().pointer_xid = 0;
+              // pointer_xid (the sprite window) is left alone: focus and the
+              // pointer are independent, and AppKit's mouseExited on app
+              // deactivation clears it through PointerLeave (v1.20.0.26).
             }
           }
 
@@ -1751,6 +1755,7 @@ extern "C" void x11_proto_bridge_post_key(uint32_t xid,
 
 extern "C" void x11_proto_bridge_post_enter(uint32_t xid,
                                            int32_t win_x_u, int32_t win_y_u,
+                                           int32_t root_x_u, int32_t root_y_u,
                                            uint32_t modifiers)
 {
   if (xid == 0) return;
@@ -1762,12 +1767,15 @@ extern "C" void x11_proto_bridge_post_enter(uint32_t xid,
   c.xid = xid;
   c.win_x_u = win_x_u;
   c.win_y_u = win_y_u;
+  c.root_x_u = root_x_u;
+  c.root_y_u = root_y_u;
   c.modsMask = modifiers;
   srv->hostCmds().push(c);
 }
 
 extern "C" void x11_proto_bridge_post_leave(uint32_t xid,
                                            int32_t win_x_u, int32_t win_y_u,
+                                           int32_t root_x_u, int32_t root_y_u,
                                            uint32_t modifiers)
 {
   if (xid == 0) return;
@@ -1779,6 +1787,8 @@ extern "C" void x11_proto_bridge_post_leave(uint32_t xid,
   c.xid = xid;
   c.win_x_u = win_x_u;
   c.win_y_u = win_y_u;
+  c.root_x_u = root_x_u;
+  c.root_y_u = root_y_u;
   c.modsMask = modifiers;
   srv->hostCmds().push(c);
 }

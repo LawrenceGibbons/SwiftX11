@@ -57,10 +57,12 @@ extern "C" void x11_proto_bridge_post_key(uint32_t xid,
 
 extern "C" void x11_proto_bridge_post_enter(uint32_t xid,
                                              int32_t win_x_u, int32_t win_y_u,
+                                             int32_t root_x_u, int32_t root_y_u,
                                              uint32_t modifiers);
 
 extern "C" void x11_proto_bridge_post_leave(uint32_t xid,
                                              int32_t win_x_u, int32_t win_y_u,
+                                             int32_t root_x_u, int32_t root_y_u,
                                              uint32_t modifiers);
 
 extern "C" void x11_proto_bridge_post_focus(uint32_t xid,
@@ -183,19 +185,23 @@ extern "C" void x11_post_key_event(uint32_t xid, bool is_down,
 extern "C" void x11_post_pointer_enter(uint32_t xid,
                                         int32_t x_u,
                                         int32_t y_u,
+                                        int32_t root_x_u,
+                                        int32_t root_y_u,
                                         uint32_t modifiers)
 {
   if (xid == 0) return;
-  x11_proto_bridge_post_enter(xid, x_u, y_u, modifiers);
+  x11_proto_bridge_post_enter(xid, x_u, y_u, root_x_u, root_y_u, modifiers);
 }
 
 extern "C" void x11_post_pointer_leave(uint32_t xid,
                                         int32_t x_u,
                                         int32_t y_u,
+                                        int32_t root_x_u,
+                                        int32_t root_y_u,
                                         uint32_t modifiers)
 {
   if (xid == 0) return;
-  x11_proto_bridge_post_leave(xid, x_u, y_u, modifiers);
+  x11_proto_bridge_post_leave(xid, x_u, y_u, root_x_u, root_y_u, modifiers);
 }
 
 // ===========================================================================
