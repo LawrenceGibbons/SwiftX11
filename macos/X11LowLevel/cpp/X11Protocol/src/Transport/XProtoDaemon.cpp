@@ -1107,12 +1107,21 @@ void XProtoDaemon::drainHostCommands() {
     // input to the wrong client corrupts its XCB sequence state (the
     // event arrives mid-reply, causing disconnect).
     if (!cs && !clients_.empty()) {
-      // Skip input events if owner not found (window was destroyed)
-      if (c.type == HostCmdType::Key ||
-          c.type == HostCmdType::Button ||
-          c.type == HostCmdType::PointerMove ||
-          c.type == HostCmdType::ScrollTicks ||
-          c.type == HostCmdType::Focus) {
+      // A GlobalPointerTracker tick carries xid 0 (pointer over no X window,
+      // v1.20.0.24) and deliver 0: it exists only to feed XI2 RawMotion,
+      // which postMotion fans out per root selector through sendEventToFd
+      // (each target restamped) before returning without routing anything.
+      // Any client may lend its transport for that; without this the tick
+      // died here and xeyes tracked only while the pointer crossed X windows
+      // (v1.20.0.31).
+      const bool trackerTick = (c.type == HostCmdType::PointerMove && c.xid == 0 && !c.deliver);
+      // Skip other input events if owner not found (window was destroyed)
+      if (!trackerTick &&
+          (c.type == HostCmdType::Key ||
+           c.type == HostCmdType::Button ||
+           c.type == HostCmdType::PointerMove ||
+           c.type == HostCmdType::ScrollTicks ||
+           c.type == HostCmdType::Focus)) {
         continue;
       }
       cs = &clients_.begin()->second;
