@@ -27,8 +27,13 @@ final class GlobalPointerTracker {
   // Last root position posted; a tick that lands on the same X11 point is
   // dropped.  xorg emits raw events only for actual motion, and the 30 Hz
   // timer used to stream RawMotion to every root selector while the mouse
-  // sat still (v1.20.0.24).
+  // sat still (v1.20.0.24).  An unchanged position is still re-posted once
+  // a second (v1.20.0.32): the first tick fires before any client exists and
+  // is dropped by the daemon, and a fresh server then reported the pointer at
+  // (0,0) until the first move.  The server drops zero-delta raw events, so
+  // the re-post only refreshes the canonical position.
   private var lastRootXY: (Int32, Int32)? = nil
+  private var lastPostTime: TimeInterval = 0
 
   func updateActiveWindow(xid: UInt32, lastWinXY: (Int32, Int32)) {
     self.activeXid = xid
@@ -90,8 +95,11 @@ final class GlobalPointerTracker {
     let rootX = Int32((gp.x - vminX).rounded(.toNearestOrAwayFromZero))
     let rootY = max(0, Int32((vmaxY - gp.y).rounded(.toNearestOrAwayFromZero)) - 1)
 
-    if let last = lastRootXY, last.0 == rootX, last.1 == rootY { return }
+    let now = ProcessInfo.processInfo.systemUptime
+    if let last = lastRootXY, last.0 == rootX, last.1 == rootY,
+       now - lastPostTime < 1.0 { return }
     lastRootXY = (rootX, rootY)
+    lastPostTime = now
 
     // Window-local coords are also X11 units (points). Keep last-known.
     let (winX, winY) = lastWinXY
