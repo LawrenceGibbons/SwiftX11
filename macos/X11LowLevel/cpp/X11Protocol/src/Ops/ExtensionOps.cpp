@@ -20,6 +20,7 @@ extern "C" {
 
 #include "Ops/ExtensionOps.hpp"
 #include "Ops/SelectionOps.hpp"
+#include "Extensions/XKBOps.hpp"   // XKEYBOARD (major 145)
 #include "Core/XProtoContext.hpp"
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/WindowTable.hpp"
@@ -67,6 +68,7 @@ ExtensionOps::ExtensionOps(XProtoRegistrar& reg) {
   reg.registerMajor(ext::kXTEST,     &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kCOMPOSITE, &ExtensionOps::onMajor, this);
   reg.registerMajor(ext::kDAMAGE,    &ExtensionOps::onMajor, this);
+  reg.registerMajor(ext::kXKB,       &ExtensionOps::onMajor, this);
 }
 
 void ExtensionOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
@@ -83,6 +85,14 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   const uint8_t minor = dc.minor;
   const uint16_t seq  = dc.seq;
   ByteReader& br      = dc.br;
+
+  // -------------------------------------------------------------------
+  // XKEYBOARD — major opcode 145 (Extensions/XKBOps.cpp)
+  // -------------------------------------------------------------------
+  if (major == ext::kXKB) {
+    XKBOps::dispatch(ctx, dc);
+    return;
+  }
 
   // -------------------------------------------------------------------
   // XFIXES — minor 0 = QueryVersion, plus minimal sub-opcodes

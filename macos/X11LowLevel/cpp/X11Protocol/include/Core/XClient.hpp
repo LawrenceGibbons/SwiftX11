@@ -18,6 +18,30 @@ namespace x11 {
 class XProtoContext;
 class EventOps;
 
+// XKEYBOARD per-client state (xorg keeps the same split: `xkbClientFlags`
+// and `mapNotifyMask`/`newKeyboardNotifyMask` on ClientRec, the per-device
+// interest masks in XkbInterestRec).  Every XKB request except UseExtension
+// is refused with BadAccess until the client has done UseExtension
+// (xkb/xkb.c `_XkbClientInitialized`).
+struct XkbClientState {
+  bool     initialised = false;
+  uint32_t pcfFlags = 0;                 // XkbPCF_* (DetectableAutoRepeat etc.)
+  uint32_t autoCtrls = 0, autoCtrlValues = 0;
+  // SelectEvents interest masks, per XkbSelectEventsReq detail sizes.
+  uint16_t newKeyboardNotifyMask = 0;
+  uint16_t mapNotifyMask = 0;
+  uint16_t stateNotifyMask = 0;
+  uint32_t ctrlsNotifyMask = 0;
+  uint32_t iStateNotifyMask = 0;
+  uint32_t iMapNotifyMask = 0;
+  uint16_t namesNotifyMask = 0;
+  uint8_t  compatNotifyMask = 0;
+  uint8_t  bellNotifyMask = 0;
+  uint8_t  actionMessageMask = 0;
+  uint16_t accessXNotifyMask = 0;
+  uint16_t extDevNotifyMask = 0;
+};
+
 class XClient {
 public:
   XClient(XProtoContext& ctx, EventOps& evOps,
@@ -56,7 +80,12 @@ public:
   // XC-MISC: allocate individual XIDs (up to count).  Returns actual count.
   uint32_t allocXIDList(uint32_t* out, uint32_t count);
 
+  // XKEYBOARD state (Extensions/XKBOps.cpp).
+  XkbClientState& xkb() { return xkb_; }
+  const XkbClientState& xkb() const { return xkb_; }
+
 private:
+  XkbClientState xkb_{};
   int fd_;
   uint32_t rid_base_;
   uint32_t rid_mask_;

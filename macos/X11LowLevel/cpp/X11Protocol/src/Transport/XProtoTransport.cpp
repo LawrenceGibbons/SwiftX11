@@ -833,7 +833,18 @@ bool XProtoTransport::sendErrorCore(uint8_t errorCode, uint16_t seq,
   const auto e = x11::wireerr::buildCoreError32(errorCode, seq, resourceId, majorCode);
   return sendAll(e.data(), e.size());
 }
-  
+
+bool XProtoTransport::sendErrorExt(uint8_t errorCode, uint16_t seq, uint32_t value,
+                                   uint8_t minorCode, uint8_t majorCode)
+{
+#ifndef NDEBUG
+  TS_FPRINTF("[X11_ERROR] code=%u seq=%u value=0x%X major=%u minor=%u\n",
+          (unsigned)errorCode, (unsigned)seq, value, (unsigned)majorCode, (unsigned)minorCode);
+#endif
+  const auto e = x11::wireerr::buildError32(errorCode, seq, value, minorCode, majorCode);
+  return sendAll(e.data(), e.size());
+}
+
   
 // ---------------------------------------------------------------------------
 // Wire ring buffer — records every outgoing packet header for crash diagnosis

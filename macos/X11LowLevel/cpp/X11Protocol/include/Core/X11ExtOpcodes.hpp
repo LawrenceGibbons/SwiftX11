@@ -24,6 +24,7 @@ static constexpr uint8_t kXInput2  = 141;  // XInput2 (XI2)
 static constexpr uint8_t kXTEST    = 142;  // XTEST
 static constexpr uint8_t kCOMPOSITE = 143; // Composite
 static constexpr uint8_t kDAMAGE    = 144; // DAMAGE
+static constexpr uint8_t kXKB       = 145; // XKEYBOARD (runtime toggle, v1.20.0.20)
 
 // Extension first_event values
 static constexpr uint8_t kXFIXES_FirstEvent   = 87;
@@ -39,12 +40,17 @@ static constexpr uint8_t kXInput_FirstEvent  = 93;
 static constexpr uint8_t kCOMPOSITE_FirstEvent = 0;
 static constexpr uint8_t kDAMAGE_FirstEvent    = 110;  // above XInput range (93-109)
 
+// XKEYBOARD has exactly one event code (XkbEventCode 0; the sub-type rides in
+// byte 1) and one error (BadKeyboard = first_error + 0).
+static constexpr uint8_t kXKB_FirstEvent       = 111;  // above DAMAGE (110)
+
 // Extension first_error values (0 = none)
 static constexpr uint8_t kSHAPE_FirstError    = 0;
 static constexpr uint8_t kRANDR_FirstError    = 0;
 static constexpr uint8_t kRENDER_FirstError   = 0;
 static constexpr uint8_t kCOMPOSITE_FirstError = 0;
 static constexpr uint8_t kDAMAGE_FirstError    = 0;
+static constexpr uint8_t kXKB_FirstError       = 128;  // FirstExtensionError, as xorg
 
 } // namespace ext
 } // namespace x11

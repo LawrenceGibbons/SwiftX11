@@ -101,8 +101,8 @@ struct HelpView: View {
                 helpSection("Known Limitations") {
                     bulletList([
                         "No GLX \u{2014} OpenGL rendering over X11 is not supported",
-                        "XInput2 (XI2) \u{2014} implemented but not advertised, for Electron compatibility (xeyes may note it as missing)",
-                        "No XKB compose sequences \u{2014} dead keys and multi-key compose not supported",
+                        "XInput2 (XI2) \u{2014} implemented, advertised only when the XInput2 toggle is on (default off)",
+                        "XKEYBOARD \u{2014} client-info surface implemented (GetMap, GetNames, GetState, GetControls, compat, indicators, GetKbdByName), advertised only when the XKEYBOARD toggle is on (default off); no SetMap, no compose sequences or dead keys",
                         "Little-endian only \u{2014} big-endian X11 clients are rejected at connection time",
                         "Requires Metal GPU \u{2014} software rendering is not supported",
                         "US keyboard layout assumed \u{2014} non-US layouts may have incorrect keysym mapping"

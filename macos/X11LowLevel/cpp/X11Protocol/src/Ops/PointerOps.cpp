@@ -19,6 +19,7 @@
 #include <Utils/ByteReader.hpp>        // your ByteReader
 #include "XProtoRegistrar.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/CoreKeymap.hpp"         // modifier map storage (shared with XKB)
 
 namespace x11 {
 
@@ -47,48 +48,9 @@ static std::array<uint8_t, 32> g_ptrMap = { 1,2,3,4,5,6,7 };
 // -----------------------------
 // Modifier mapping state (core 118/119)
 // -----------------------------
-// Protocol: 8 modifiers, each has numKeyPerModifier keycodes (CARD8).
-// Payload bytes = 8 * numKeyPerModifier, padded to 4.
-// We cap to keep storage simple.
-static constexpr uint8_t kMaxKeysPerMod = 32;
+// Storage lives in Core/CoreKeymap.cpp (v1.20.0.20) so the XKEYBOARD
+// keymap builder can derive its modmap from the same rows.
 
-static uint8_t g_modMapN = 0; // numKeyPerModifier (rep1 in GetModifierMapping reply)
-static std::array<uint8_t, 8 * kMaxKeysPerMod> g_modMap{}; // packed [mod0 keys...][mod1 keys...]...
-
-// X11 keycodes are mac_vk + 8 in your server.
-static inline uint8_t macToX11Keycode(uint8_t mac_vk) {
-  return (uint8_t)(mac_vk + 8u);
-}
-
-// Seed a reasonable default modifier map (n=2 keys per modifier: left + right).
-static void initDefaultModifierMapIfEmpty() {
-  // If we've already been set to something nonzero, don't clobber it.
-  // (This preserves SetModifierMapping behavior across runs if you later persist it.)
-  if (g_modMapN != 0) return;
-
-  g_modMapN = 2;
-  g_modMap.fill(0);
-
-  // Layout: g_modMap[modifier_index * n + key_index]
-  // Order: Shift, Lock, Control, Mod1, Mod2, Mod3, Mod4, Mod5
-  g_modMap[0*2 + 0] = macToX11Keycode(56);  // Shift_L
-  g_modMap[0*2 + 1] = macToX11Keycode(60);  // Shift_R
-  g_modMap[1*2 + 0] = macToX11Keycode(57);  // CapsLock
-  g_modMap[1*2 + 1] = 0;                    // (no second Lock key)
-  g_modMap[2*2 + 0] = macToX11Keycode(59);  // Control_L
-  g_modMap[2*2 + 1] = macToX11Keycode(62);  // Control_R
-  g_modMap[3*2 + 0] = macToX11Keycode(58);  // Option_L  -> Mod1 (Alt)
-  g_modMap[3*2 + 1] = macToX11Keycode(61);  // Option_R  -> Mod1 (Alt)
-  g_modMap[4*2 + 0] = 0;                    // Mod2 (unused)
-  g_modMap[4*2 + 1] = 0;
-  g_modMap[5*2 + 0] = 0;                    // Mod3 (unused)
-  g_modMap[5*2 + 1] = 0;
-  g_modMap[6*2 + 0] = macToX11Keycode(55);  // Command_L -> Mod4 (Super)
-  g_modMap[6*2 + 1] = macToX11Keycode(54);  // Command_R -> Mod4 (Super)
-  g_modMap[7*2 + 0] = 0;                    // Mod5 (unused)
-  g_modMap[7*2 + 1] = 0;
-}
-  
 static inline uint32_t pad4_u32(uint32_t nbytes) {
   return (nbytes + 3u) & ~3u;
 }
@@ -96,12 +58,12 @@ static inline uint32_t pad4_u32(uint32_t nbytes) {
 // Be permissive for bring-up: accept zeros, duplicates, etc.
 static inline bool validateModifierMap(const uint8_t* map, uint8_t n) {
   if (n == 0) return false;
-  if (n > kMaxKeysPerMod) return false;
+  if (n > kCoreMaxKeysPerModifier) return false;
   if (!map) return false;
   return true;
 }
-  
-  
+
+
 static bool validatePointerMap(const uint8_t* map, uint8_t n) {
   if (!map || n == 0) return false;
   bool seen[256] = {false};
@@ -114,8 +76,8 @@ static bool validatePointerMap(const uint8_t* map, uint8_t n) {
   }
   return true;
 }
-  
-  
+
+
 static void sendReplyHeader(XProtoTransport& t,
                             uint16_t seq,
                             uint8_t rep1,
@@ -202,8 +164,6 @@ void PointerOps::handle(XProtoContext& ctx, DispatchContext& dc)
 
       // ---- 118: SetModifierMapping ----
     case x11::opcode::SetModifierMapping: {
-      initDefaultModifierMapIfEmpty();
-
       const uint8_t n = data;               // numKeyPerModifier
       const uint32_t rawBytes = uint32_t(n) * 8u;
 
@@ -214,12 +174,8 @@ void PointerOps::handle(XProtoContext& ctx, DispatchContext& dc)
       uint8_t status = MappingSuccess;
 
       // (We don't model MappingBusy yet; so never return Busy.)
-      if (!validateModifierMap(keys, n)) {
+      if (!validateModifierMap(keys, n) || !setCoreModifierMap(keys, n)) {
         status = MappingFailed;
-      } else {
-        g_modMapN = n;
-        std::memset(g_modMap.data(), 0, g_modMap.size());
-        std::memcpy(g_modMap.data(), keys, rawBytes);
       }
 
       sendReplyHeader(t, seq, status, 0);
@@ -228,13 +184,14 @@ void PointerOps::handle(XProtoContext& ctx, DispatchContext& dc)
 
     // ---- 119: GetModifierMapping ----
     case x11::opcode::GetModifierMapping: {
-      initDefaultModifierMapIfEmpty();
-
       if (br.remaining()) br.skip(br.remaining());
 
-      uint8_t n = g_modMapN;
+      uint8_t storedN = 0;
+      const uint8_t* stored = coreModifierMap(storedN);
+
+      uint8_t n = storedN;
       if (n == 0) n = 1;
-      if (n > kMaxKeysPerMod) n = kMaxKeysPerMod;
+      if (n > kCoreMaxKeysPerModifier) n = kCoreMaxKeysPerModifier;
 
       const uint32_t rawBytes     = uint32_t(n) * 8u;
       const uint32_t payloadBytes = pad4_u32(rawBytes);
@@ -245,17 +202,17 @@ void PointerOps::handle(XProtoContext& ctx, DispatchContext& dc)
 
       std::vector<uint8_t> payload(payloadBytes, 0);
 
-      const uint8_t storedN = (g_modMapN == 0 ? 1 :
-                              (g_modMapN > kMaxKeysPerMod ? kMaxKeysPerMod : g_modMapN));
-      const uint32_t storedRaw = uint32_t(storedN) * 8u;
+      const uint8_t clampedStored = (storedN == 0 ? 1 :
+                                    (storedN > kCoreMaxKeysPerModifier ? kCoreMaxKeysPerModifier : storedN));
+      const uint32_t storedRaw = uint32_t(clampedStored) * 8u;
 
       const uint32_t toCopy = (rawBytes < storedRaw) ? rawBytes : storedRaw;
-      if (toCopy) std::memcpy(payload.data(), g_modMap.data(), toCopy);
+      if (toCopy) std::memcpy(payload.data(), stored, toCopy);
 
       (void)t.sendReplyBytes(payload.data(), payload.size());
       return;
-    }      
-      
+    }
+
     default:
       // Not ours.
       break;

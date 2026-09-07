@@ -316,6 +316,14 @@ void x11_set_xi2_advertised(int enabled);
 int  x11_get_xi2_advertised(void);
 
 // -------------------------------------------------------------------------------------
+// XKEYBOARD advertisement toggle — default OFF until verified against every
+// client library (libX11, GDK3, Java AWT, Chromium).  When ON, QueryExtension
+// reports XKEYBOARD and clients translate keycodes through XkbGetMap.
+// -------------------------------------------------------------------------------------
+void x11_set_xkb_advertised(int enabled);
+int  x11_get_xkb_advertised(void);
+
+// -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
 // Set/get whether server-side text rendering uses antialiased (8-bit alpha) glyphs.

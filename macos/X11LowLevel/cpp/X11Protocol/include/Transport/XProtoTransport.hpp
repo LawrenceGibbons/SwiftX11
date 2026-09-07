@@ -99,6 +99,10 @@ public:
   // handle error replies
   bool sendError32(const uint8_t e[32]); // raw
   bool sendErrorCore(uint8_t errorCode, uint16_t seq, uint32_t resourceId, uint8_t majorCode);
+  // Extension error: carries the minor opcode (byte 8-9 of xError) so the
+  // client's error handler can attribute it to the right request.
+  bool sendErrorExt(uint8_t errorCode, uint16_t seq, uint32_t value,
+                    uint8_t minorCode, uint8_t majorCode);
 
   void debugResetReplyTracker(); // call on begin/end session
 

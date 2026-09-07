@@ -405,6 +405,26 @@ extern "C" int x11_get_xi2_advertised(void)
 }
 
 // -------------------------------------------------------------------------------------
+// XKEYBOARD advertisement toggle (v1.20.0.20, Phase F / M23)
+// -------------------------------------------------------------------------------------
+// Default OFF: advertising a partial XKB is worse than none — libX11 switches
+// its keysym translation to XkbGetMap on the first XLookupString, Chromium
+// builds its keymap from GetMap with no core fallback, and Java AWT's key
+// path goes dead if GetMap fails.  ON once verified.  Consulted live by
+// QueryExtension / ListExtensions.
+static std::atomic<int> g_xkb_advertised{0};
+
+extern "C" void x11_set_xkb_advertised(int enabled)
+{
+  g_xkb_advertised.store(enabled, std::memory_order_relaxed);
+}
+
+extern "C" int x11_get_xkb_advertised(void)
+{
+  return g_xkb_advertised.load(std::memory_order_relaxed);
+}
+
+// -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
 extern "C" void x11_set_font_antialiased(int enabled)

@@ -22,11 +22,13 @@ final class SettingsStore: ObservableObject {
     self.tcpBindAddress = UserDefaults.standard.object(forKey: "tcpBindAddress") as? String ?? "0.0.0.0"
     self.logVerbosity = UserDefaults.standard.object(forKey: "logVerbosity") as? Int ?? 0
     self.xi2Advertised = UserDefaults.standard.object(forKey: "xi2Advertised") as? Bool ?? false
+    self.xkbAdvertised = UserDefaults.standard.object(forKey: "xkbAdvertised") as? Bool ?? false
     // Sync initial state to C++ (didSet does NOT fire during init, so apply
     // the persisted values explicitly here).
     x11_set_font_antialiased(self.antialiasedFonts ? 1 : 0)
     x11_set_log_verbosity(Int32(self.logVerbosity))
     x11_set_xi2_advertised(self.xi2Advertised ? 1 : 0)
+    x11_set_xkb_advertised(self.xkbAdvertised ? 1 : 0)
   }
 
   @Published var enableClipboard: Bool = true
@@ -59,6 +61,16 @@ final class SettingsStore: ObservableObject {
     didSet {
       UserDefaults.standard.set(xi2Advertised, forKey: "xi2Advertised")
       x11_set_xi2_advertised(xi2Advertised ? 1 : 0)
+    }
+  }
+
+  // Advertise XKEYBOARD. Default OFF until the implementation is verified
+  // against every client library; XI2 needs it ON for GTK3 clients (GDK's
+  // non-XKB keymap path crashes on the first XI2 key event, M23).
+  @Published var xkbAdvertised: Bool {
+    didSet {
+      UserDefaults.standard.set(xkbAdvertised, forKey: "xkbAdvertised")
+      x11_set_xkb_advertised(xkbAdvertised ? 1 : 0)
     }
   }
 }
