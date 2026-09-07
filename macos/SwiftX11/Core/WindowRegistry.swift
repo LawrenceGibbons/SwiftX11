@@ -301,8 +301,11 @@ final class WindowRegistry {
       forName: NSWindow.didResignKeyNotification,
       object: window,
       queue: .main
-    ) { note in
+    ) { [weak self] note in
       MainActor.assumeIsolated {
+        // A resign invalidates any pending suppression: the next key gain is
+        // a genuine one and must post FocusIn (v1.20.0.29).
+        self?.suppressNextRaiseFromCocoa.remove(xid)
         #if DEBUG
         // Who took key?  A resign with no X11 successor (app deactivated, or
         // key moved to a non-X11 window) is what killed Chromium tooltips
@@ -1087,8 +1090,23 @@ final class WindowRegistry {
 
     X11View.logIfInLayout("raiseWindow: makeKeyAndOrderFront host=0x\(String(host, radix: 16))", view: controller.x11View)
 
-    // Suppress the next didBecomeKey notification since we're causing it.
-    suppressNextRaiseFromCocoa.insert(xid)
+    // Already key: just order front.  The only raise producer today is
+    // Cocoa's own didBecomeKey round trip (x11_post_window_raise), so this
+    // is the common case (v1.20.0.29).
+    if win.isKeyWindow {
+      win.orderFront(nil)
+      return
+    }
+
+    // Suppress the next didBecomeKey only when this call will actually
+    // produce one: the app is active and the window is not key yet.  The
+    // flag used to be set unconditionally; when no notification followed
+    // (window already key, or app inactive so AppKit defers key status to
+    // activation) it went stale and swallowed the next genuine key gain —
+    // Cmd+Tab back to an X11 window posted no FocusIn until a click.
+    if NSApp.isActive {
+      suppressNextRaiseFromCocoa.insert(xid)
+    }
     if X11Trace.lifecycle { print("[MAKEKEY] about to makeKeyAndOrderFront window=\(String(describing: win))") }
 
     NSApp.activate(ignoringOtherApps: true)
