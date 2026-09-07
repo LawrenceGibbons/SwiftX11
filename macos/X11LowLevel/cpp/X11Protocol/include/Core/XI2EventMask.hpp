@@ -109,14 +109,15 @@ constexpr uint32_t kKeyEventLength = 22;     // (120 - 32) / 4
 constexpr size_t kEnterEventSize = 104;
 constexpr uint32_t kEnterEventLength = 18;  // (104 - 32) / 4
 
-// xXIRawEvent with 2 valuators (X, Y axes):
+// xXIRawEvent with 2 valuators (X, Y axes) — xorg eventToRawEvent
+// (dix/eventconvert.c:768-808):
 // GenericEvent header (8) + evtype(2)+deviceid(2)+time(4)+detail(4)+
 //   sourceid(2)+valuators_len(2)+flags(4)+pad(4) = 32 bytes header
-// + valuator_mask[1] (4 bytes, bits 0+1 set)
-// + raw_values[2] (2×FP32.32 = 16 bytes)
-// + values[2] (2×FP32.32 = 16 bytes)
-// Total: 68 bytes, length = (68-32)/4 = 9
-constexpr size_t kRawEventSize = 68;
-constexpr uint32_t kRawEventLength = 9;
+// + valuator mask: valuators_len = bytes_to_int32(bits_to_bytes(36)) = 2 words
+// + values[2]     (accelerated, 2×FP3232 = 16 bytes)  ← first
+// + raw_values[2] (unaccelerated, 2×FP3232 = 16 bytes)
+// Total: 72 bytes, length = (72-32)/4 = 10   (Phase E, L4)
+constexpr size_t kRawEventSize = 72;
+constexpr uint32_t kRawEventLength = 10;
 
 } // namespace x11::xi2

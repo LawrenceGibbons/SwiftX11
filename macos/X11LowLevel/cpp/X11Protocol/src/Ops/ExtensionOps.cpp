@@ -48,6 +48,9 @@ extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
 #include "Utils/WireErrors.hpp"
 #include "Core/X11ExtOpcodes.hpp"
 #include "Core/InputState.hpp"
+#include "Core/AtomTable.hpp"      // XI2 button/axis label atoms (XIQueryDevice)
+#include "Core/X11Modifiers.hpp"   // toX11State (XIQueryPointer mods)
+#include "Utils/FocusEvents.hpp"   // XISetFocus → DoFocusEvents
 
 // Bridge function (defined in UICommandQueue.cpp)
 extern "C" void x11_ui_push_shape_changed(uint32_t host_xid);
@@ -1058,6 +1061,20 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] fd=%d minor=%u seq=%u\n",
         ctx.transport().clientFd(), (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
 #endif
+    // Phase E (M13, L11): XI errors carry the minor opcode and the device
+    // errors use the extension's error base (BadDevice = first_error + 0,
+    // Xi/extinit.c:1065); every reply carries the minor in RepType (byte 1).
+    const uint8_t kBadDevice = ext::kXInput_FirstError;
+    auto xiError = [&](uint8_t code, uint32_t value) {
+      br.skip(br.remaining());
+      (void)ctx.transport().sendErrorExt(code, seq, value, minor, ext::kXInput2);
+    };
+    auto isKeyboardDev = [](uint16_t d) {
+      return d == x11::xi2::kVirtualCoreKeyboard || d == x11::xi2::kXTESTKeyboard ||
+             d == x11::xi2::kRealKeyboard;
+    };
+    auto fp1616 = [](int32_t v) { return (uint32_t)((int64_t)v * 65536); };
+
     switch (minor) {
 
     // ---- minor 1: GetExtensionVersion (XI1 legacy — reply-bearing) ----
@@ -1065,11 +1082,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // libXi sends this before XIQueryVersion.
       // Request: CARD16 name_len, pad16, then name bytes.
       br.skip(br.remaining());
-      // Reply 32 bytes: major=2, minor=0, present=1
+      // Reply: XIVersion = 2.2, present (Xi/getvers.c:101-109) — M13.
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 1;                             // RepType = X_GetExtensionVersion
         wire::wr32_le(rep.data() + 4, 0);     // length
         wire::wr16_le(rep.data() + 8, 2);     // server_major
-        wire::wr16_le(rep.data() + 10, 0);    // server_minor
+        wire::wr16_le(rep.data() + 10, 2);    // server_minor
         rep[12] = 1;                            // present = True
       });
       return;
@@ -1092,13 +1110,20 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         const char* name;
         uint8_t num_classes; // number of InputClassInfo entries
       };
+      // xorg Xi/listdev.c: every device (ShouldSkipDevice skips only masters
+      // other than VCP/VCK, :305-318); `use` per :174-183 — IsXPointer 0 /
+      // IsXKeyboard 1 for the masters, IsXExtensionPointer 4 /
+      // IsXExtensionKeyboard 3 for slaves (XI.h:189-193; the old table had 3
+      // and 4 swapped); `attached` = the master's id for a slave.  Phase E, L1.
       const XI1Dev devs[] = {
         { 2, 0, 0, "Virtual core pointer",         2 },  // ButtonInfo + ValuatorInfo
-        { 3, 1, 0, "Virtual core keyboard",         1 },  // KeyInfo
-        { 4, 3, 2, "Virtual core XTEST pointer",   2 },  // ButtonInfo + ValuatorInfo
-        { 5, 4, 3, "Virtual core XTEST keyboard",  1 },  // KeyInfo
+        { 3, 1, 0, "Virtual core keyboard",        1 },  // KeyInfo
+        { 4, 4, 2, "Virtual core XTEST pointer",   2 },
+        { 5, 3, 3, "Virtual core XTEST keyboard",  1 },
+        { 6, 4, 2, "SwiftX11 pointer",             2 },
+        { 7, 3, 3, "SwiftX11 keyboard",            1 },
       };
-      constexpr uint8_t ndevices = 4;
+      constexpr uint8_t ndevices = 6;
 
       // Build payload: xDeviceInfo array, then InputClassInfo array, then name strings
       std::vector<uint8_t> payload;
@@ -1117,11 +1142,14 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
       // Section 2: InputClassInfo entries (in device order)
       for (const auto& d : devs) {
-        if (d.use == 0 || d.use == 3) { // pointer devices
-          // xButtonInfo: class=1, length=4, num_buttons=5
-          push8(1); push8(4); push16(5);
-          // xValuatorInfo: class=2, length=8, num_axes=0, mode=0(Relative), motion_buffer_size=0
-          push8(2); push8(8); push8(0); push8(0); push32(0);
+        if (d.use == 0 || d.use == 4) { // pointer devices
+          // xButtonInfo: class=1, length=4, num_buttons=10 (core pointer)
+          push8(1); push8(4); push16(10);
+          // xValuatorInfo: class=2, length=8+2*12, num_axes=2, mode=0 (Relative),
+          // motion_buffer_size=0, then one xAxisInfo per axis (resolution, min,
+          // max; NO_AXIS_LIMITS = -1) — Xi/listdev.c CopySwapValuatorClass.
+          push8(2); push8(32); push8(2); push8(0); push32(0);
+          for (int a = 0; a < 2; a++) { push32(0); push32(0xFFFFFFFFu); push32(0xFFFFFFFFu); }
         } else { // keyboard devices
           // xKeyInfo: class=0, length=8, min_keycode=8, max_keycode=255, num_keys=248, pad=0
           push8(0); push8(8); push8(8); push8(255); push16(248); push16(0);
@@ -1151,88 +1179,99 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
-    // ---- minor 7: GrabDevice (XI1 reply-bearing) ----
-    case 7: {
+    // ---- XI1 minors 3–39: numbered per xorg's dispatch vector
+    // (Xi/extinit.c:186-227) — Phase E, M12.  The old table had GrabDevice
+    // at 7 (= GetSelectedExtensionEvents), GetDeviceFocus at 10 (=
+    // GetDeviceMotionEvents) and QueryDeviceState at 24 (= GetDeviceKeyMapping),
+    // so thirteen reply-bearing minors were consumed without a reply.
+
+    // ---- minor 13: GrabDevice (XI1 reply-bearing) ----
+    case 13: {
       // Request: CARD32 grab_window, CARD32 time, CARD16 num_classes,
       //          CARD8 this_device_mode, CARD8 other_device_mode,
       //          BOOL owner_events, CARD8 deviceid, CARD16 pad,
       //          then class list.
       br.skip(br.remaining());
-      // Reply: status = Success (0).
-      // xGrabDeviceReply: repType(1), RepType(byte1), seq(2-3),
-      //   length(4-7)=0, status(8), pad...
+      // xGrabDeviceReply: status(8) = Success.
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 13;                         // RepType
         wire::wr32_le(rep.data() + 4, 0);  // length = 0
         rep[8] = 0;                          // status = Success
       });
-      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 GrabDevice minor=7 seq=%u — replied Success\n", (unsigned)seq); x11_ui_push_log(1, buf); }
       return;
     }
 
-    // ---- minor 10: GetDeviceFocus (XI1 reply-bearing) ----
-    case 10: {
+    // ---- minor 20: GetDeviceFocus (XI1 reply-bearing) ----
+    case 20: {
       // Request: CARD8 deviceid, pad*3
       br.skip(br.remaining());
-      // Reply: focus window, time, revert-to.
-      // xGetDeviceFocusReply: repType(1), RepType(byte1), seq(2-3),
-      //   length(4-7)=0, focus(8-11), time(12-15), revertTo(16), pad...
-      const uint32_t focusWin = ctx.input().focus_xid ? ctx.input().focus_xid : 1; // PointerRoot=1
-      (void)ctx.reply().sendReply32(seq, [focusWin](std::array<uint8_t, 32>& rep) {
+      // xGetDeviceFocusReply: focus(8-11) None / PointerRoot(1) / window,
+      // time(12-15), revertTo(16) — same mapping as XIGetFocus.
+      const uint32_t f = ctx.input().focus_xid;
+      const uint32_t focusWin = (f == 0) ? 0u : (f == x11::kRootXid) ? 1u : f;
+      const uint8_t revert = ctx.input().focus_revert_to;   // 0 None, 1 PointerRoot, 2 Parent
+      (void)ctx.reply().sendReply32(seq, [focusWin, revert](std::array<uint8_t, 32>& rep) {
+        rep[1] = 20;                                // RepType
         wire::wr32_le(rep.data() + 4, 0);         // length = 0
-        wire::wr32_le(rep.data() + 8, focusWin);  // focus window
+        wire::wr32_le(rep.data() + 8, focusWin);  // focus
         wire::wr32_le(rep.data() + 12, 0);        // time = CurrentTime
-        rep[16] = 1;                                // revertTo = PointerRoot
+        rep[16] = revert;                           // revertTo
       });
-      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 GetDeviceFocus minor=10 seq=%u focus=0x%X\n", (unsigned)seq, focusWin); x11_ui_push_log(1, buf); }
       return;
     }
 
-    // ---- minor 24: QueryDeviceState (XI1 reply-bearing) ----
-    case 24: {
+    // ---- minor 30: QueryDeviceState (XI1 reply-bearing) ----
+    case 30: {
       // Request: CARD8 deviceid, pad*3
       br.skip(br.remaining());
-      // Reply: num_classes=0, no trailing class data.
-      // xQueryDeviceStateReply: repType(1), RepType(byte1), seq(2-3),
-      //   length(4-7)=0, num_classes(8), pad...
+      // xQueryDeviceStateReply: num_classes(8) = 0, no trailing class data.
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0);  // length = 0 (no trailing classes)
+        rep[1] = 30;                         // RepType
+        wire::wr32_le(rep.data() + 4, 0);  // length = 0
         rep[8] = 0;                          // num_classes = 0
       });
-      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 QueryDeviceState minor=24 seq=%u\n", (unsigned)seq); x11_ui_push_log(1, buf); }
       return;
     }
 
-    // ---- remaining XI1 legacy reply-bearing stubs (send error to keep XCB in sync) ----
-    case 3:  // GetDeviceDontPropagateList (reply)
-    case 4:  // GetDeviceMotionEvents (reply)
-    case 5:  // ChangeKeyboardDevice (reply)
-    case 6:  // ChangePointerDevice (reply)
-    case 14: // GetFeedbackControl (reply)
-    case 18: // GetDeviceKeyMapping (reply)
-    case 20: // GetDeviceModifierMapping (reply)
-    case 22: // GetDeviceButtonMapping (reply)
-    case 30: // GetSelectedExtensionEvents (reply)
-    case 31: // GetDeviceInfo (reply, XI1.5)
-      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XI1 reply-bearing minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
-      br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    // ---- other reply-bearing XI1 minors: BadRequest keeps XCB's sequence aligned ----
+    case 3:  // OpenDevice
+    case 5:  // SetDeviceMode
+    case 7:  // GetSelectedExtensionEvents
+    case 9:  // GetDeviceDontPropagateList
+    case 10: // GetDeviceMotionEvents
+    case 11: // ChangeKeyboardDevice
+    case 12: // ChangePointerDevice
+    case 22: // GetFeedbackControl
+    case 24: // GetDeviceKeyMapping
+    case 26: // GetDeviceModifierMapping
+    case 27: // SetDeviceModifierMapping
+    case 28: // GetDeviceButtonMapping
+    case 29: // SetDeviceButtonMapping
+    case 33: // SetDeviceValuators
+    case 34: // GetDeviceControl
+    case 35: // ChangeDeviceControl
+    case 36: // ListDeviceProperties
+    case 39: // GetDeviceProperty
+      xiError(x11::error::BadRequest, 0);
       return;
 
-    // ---- XI1 legacy void stubs (no reply expected) ----
-    case 8:  // UngrabDevice
-    case 9:  // FocusIn/FocusOut (event, not request)
-    case 11: // SetDeviceFocus
-    case 12: // ChangeFeedbackControl
-    case 13: // GetDeviceModifierMapping — already covered above
-    case 15: // ChangeDeviceDontPropagateList
-    case 16: // GetDeviceMotionEvents — already covered above
-    case 17: // ChangeDeviceKeyMapping
-    case 19: // ChangeDeviceKeyMapping
-    case 21: // SetDeviceModifierMapping
-    case 23: // SetDeviceButtonMapping
-    case 25: // SendExtensionEvent
-    case 26: case 27: case 28: case 29:
-    case 32: case 33: case 34: case 35: case 36: case 37: case 38: case 39:
+    // ---- void XI1 minors: consume ----
+    case 4:  // CloseDevice
+    case 6:  // SelectExtensionEvent
+    case 8:  // ChangeDeviceDontPropagateList
+    case 14: // UngrabDevice
+    case 15: // GrabDeviceKey
+    case 16: // UngrabDeviceKey
+    case 17: // GrabDeviceButton
+    case 18: // UngrabDeviceButton
+    case 19: // AllowDeviceEvents
+    case 21: // SetDeviceFocus
+    case 23: // ChangeFeedbackControl
+    case 25: // ChangeDeviceKeyMapping
+    case 31: // SendExtensionEvent
+    case 32: // DeviceBell
+    case 37: // ChangeDeviceProperty
+    case 38: // DeleteDeviceProperty
       br.skip(br.remaining());
       return;
 
@@ -1244,75 +1283,85 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       uint32_t qwin = 0; uint16_t deviceid = 0;
       if (br.remaining() >= 6) { qwin = br.readU32(); deviceid = br.readU16(); }
       br.skip(br.remaining());
-      (void)deviceid;
-
-      // xorg ProcXIQueryPointer returns BadWindow for an invalid win.
-      if (qwin != 1u && qwin != 0) {
-        WindowView qv{};
-        if (!ctx.windows().snapshot(qwin, qv)) {
-          ctx.transport().sendErrorCore(x11::error::BadWindow, seq, qwin,
-                                        (uint8_t)ext::kXInput2);
-          return;
-        }
+      // Xi/xiquerypointer.c:100-117 (Phase E, M14): unknown device or a
+      // keyboard (no valuators) → BadDevice; win None or unknown → BadWindow.
+      if (!x11::xi2::isKnownDevice(deviceid) || isKeyboardDev(deviceid)) {
+        xiError(kBadDevice, deviceid);
+        return;
+      }
+      const bool qIsRoot = (qwin == x11::kRootXid);
+      if (qwin == 0 || (!qIsRoot && !ctx.window(qwin))) {
+        xiError(x11::error::BadWindow, qwin);
+        return;
       }
 
       const auto& in = ctx.input();
       const int32_t root_x = in.root_x_u, root_y = in.root_y_u;
       const uint32_t host = in.last_xid;
 
-      uint32_t child = 0;
+      // :158-174 — one screen, so same_screen is always True and win_x/win_y
+      // are the sprite position relative to the queried window's root origin
+      // wherever the pointer is.  (The old reply said same_screen=0 with zero
+      // coords when the pointer was over another host; libXi returns that
+      // byte as its Bool result and GDK read it as failure, keeping stale
+      // coordinates and modifiers.)  `child` is the direct child of the
+      // queried window on the sprite path (t->parent == pWin), else None.
       int32_t win_x = root_x, win_y = root_y;
-      uint8_t same_screen = 1;
-
-      if (qwin == 1u || qwin == 0) {
-        child = host;                 // top-level window the pointer is over
-        win_x = root_x; win_y = root_y;
+      uint32_t child = 0;
+      if (qIsRoot) {
+        child = host;   // toplevel under the pointer (0 = over no X window)
       } else {
-        const uint32_t qhost = ctx.windows().topLevelAncestorOf(qwin);
-        if (qhost == host && host != 0) {
-          // child = the DIRECT child of qwin on the path to the pointer window
-          // (xorg ProcXIQueryPointer walks pSprite->win up to pWin), NOT the
-          // deepest window under the pointer.
-          uint32_t deepest = pickDeepestMappedWindowAtHostPoint(ctx, host, in.win_x_u, in.win_y_u);
-          uint32_t cur2 = deepest; int cdepth = 0;
-          while (cur2 && cur2 != qwin && cdepth < 64) {
-            WindowView dv{}; if (!ctx.windows().snapshot(cur2, dv)) break;
-            if (dv.parent_xid == qwin) { child = cur2; break; }
-            cur2 = dv.parent_xid; cdepth++;
+        int32_t ox = 0, oy = 0;
+        uint32_t cur = qwin;
+        for (int hop = 0; cur && cur != x11::kRootXid && hop < 256; hop++) {
+          WindowView cv{};
+          if (!ctx.windows().snapshot(cur, cv)) break;
+          ox += (int32_t)cv.x + (int32_t)cv.border_width;
+          oy += (int32_t)cv.y + (int32_t)cv.border_width;
+          cur = cv.parent_xid;
+        }
+        win_x = root_x - ox; win_y = root_y - oy;
+        if (host && ctx.windows().topLevelAncestorOf(qwin) == host) {
+          uint32_t t = pickDeepestMappedWindowAtHostPoint(ctx, host, in.win_x_u, in.win_y_u);
+          if (!t) t = host;
+          for (int hop = 0; t && t != x11::kRootXid && hop < 64; hop++) {
+            WindowView tv{};
+            if (!ctx.windows().snapshot(t, tv)) break;
+            if (tv.parent_xid == qwin) { child = t; break; }
+            t = tv.parent_xid;
           }
-          // win coords: pointer relative to qwin (walk qwin->host subtracting offsets)
-          int32_t lx = in.win_x_u, ly = in.win_y_u;
-          uint32_t cur = qwin; int depth = 0;
-          while (cur && cur != host && depth < 64) {
-            WindowView cv{}; if (!ctx.windows().snapshot(cur, cv)) break;
-            lx -= cv.x; ly -= cv.y; cur = cv.parent_xid; depth++;
-          }
-          win_x = lx; win_y = ly;
-        } else {
-          same_screen = 0; child = 0; win_x = 0; win_y = 0;
         }
       }
 
-      // XI2 button mask: internal bit i (0-4) -> XI2 button i+1 (1-indexed).
+      // Held buttons in one mask word (buttons_len = bytes_to_int32(
+      // bits_to_bytes(10)) = 1, :139-141); modifier state split as XKB keeps
+      // it (Caps Lock locked, the rest base; :119-127).
       uint32_t btnmask = 0;
-      for (int i = 0; i < 5; i++) if (in.buttons & (1u << i)) btnmask |= (1u << (i + 1));
+      for (int i = 0; i < 10; i++) if (in.buttons & (1u << i)) btnmask |= (1u << (i + 1));
+      const uint32_t x11mods = x11::input::toX11State(0, in.mods) & 0xFFu;
+      const uint32_t locked  = x11mods & 0x02u;
 
       std::array<uint8_t, 60> rep{};
       rep[0] = 1;                                    // Reply
+      rep[1] = 40;                                   // RepType = X_XIQueryPointer
       wire::wr16_le(rep.data() + 2, seq);
-      wire::wr32_le(rep.data() + 4, 7);              // length = (60-32)/4
-      wire::wr32_le(rep.data() + 8, 1u);       // root
+      wire::wr32_le(rep.data() + 4, 7);              // length = 6 + buttons_len
+      wire::wr32_le(rep.data() + 8, x11::kRootXid);  // root
       wire::wr32_le(rep.data() + 12, child);         // child
-      wire::wr32_le(rep.data() + 16, (uint32_t)(root_x << 16)); // root_x FP1616
-      wire::wr32_le(rep.data() + 20, (uint32_t)(root_y << 16)); // root_y
-      wire::wr32_le(rep.data() + 24, (uint32_t)(win_x << 16));  // win_x
-      wire::wr32_le(rep.data() + 28, (uint32_t)(win_y << 16));  // win_y
-      rep[32] = same_screen;                         // same_screen
+      wire::wr32_le(rep.data() + 16, fp1616(root_x));
+      wire::wr32_le(rep.data() + 20, fp1616(root_y));
+      wire::wr32_le(rep.data() + 24, fp1616(win_x));
+      wire::wr32_le(rep.data() + 28, fp1616(win_y));
+      rep[32] = 1;                                   // same_screen
       rep[33] = 0;                                   // pad
       wire::wr16_le(rep.data() + 34, 1);             // buttons_len = 1
-      // mods (36-51) + group (52-55) left zero
-      wire::wr32_le(rep.data() + 56, btnmask);       // button mask (buttons_len=1)
-      ctx.transport().sendAll(rep.data(), rep.size());
+      wire::wr32_le(rep.data() + 36, x11mods & ~locked); // mods.base
+      wire::wr32_le(rep.data() + 40, 0);                 // mods.latched
+      wire::wr32_le(rep.data() + 44, locked);            // mods.locked
+      wire::wr32_le(rep.data() + 48, x11mods);           // mods.effective
+      // group (52-55) zero
+      wire::wr32_le(rep.data() + 56, btnmask);       // button mask
+      (void)ctx.reply().sendReplyRaw(rep.data(), rep.size());
       return;
     }
 
@@ -1338,7 +1387,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (win == 1) return;                    // root: nothing to route to
       x11::WindowView wv{};
       if (!ctx.windows().snapshot(win, wv)) {
-        ctx.transport().sendErrorCore(x11::error::BadWindow, seq, win, major);
+        xiError(x11::error::BadWindow, win);
         return;
       }
       // Same path as the core CWCursor branch (WindowAttrOps.cpp).
@@ -1362,6 +1411,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // decoded deviceid=0 (M2 in docs/XI2_XORG_COMPARISON.md).
       br.skip(br.remaining());
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 45;                          // RepType
         wire::wr32_le(rep.data() + 4, 0);   // length
         rep[8] = 1;                           // set = True
         wire::wr16_le(rep.data() + 10, 2);   // deviceid = Virtual core pointer
@@ -1401,10 +1451,10 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           const uint32_t word = br.readU32();
           if (j == 0) mask = word;  // event types 0-31 live in word 0
         }
-        // Device spec: XIAllDevices, XIAllMasterDevices or an id we advertise.
-        // (BadDevice needs the XI error base — M13, Phase E; BadValue until then.)
+        // Device spec: XIAllDevices, XIAllMasterDevices or an id we advertise
+        // (dixLookupDevice fails → BadDevice, Xi/xiselectev.c:173-178).
         if (deviceid != xi2::kAllDevices && deviceid != xi2::kAllMasterDevices &&
-            !xi2::isKnownDevice(deviceid)) { fail(x11::error::BadValue, deviceid); return; }
+            !xi2::isKnownDevice(deviceid)) { fail(kBadDevice, deviceid); return; }
         // HierarchyChanged only for XIAllDevices; raw events only on root.
         if (deviceid != xi2::kAllDevices && (mask & xi2::kHierarchyChangedMask)) {
           fail(x11::error::BadValue, 11); return;
@@ -1423,14 +1473,45 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     // ---- minor 47: XIQueryVersion (reply-bearing) ----
+    // xorg Xi/xiqueryversion.c:66-115 (Phase E, M13): BadValue below 2.0;
+    // the reply is min(server 2.2, client); the first answer is remembered
+    // per client, and a later request may only raise it when both sides are
+    // at 2.2 or above (Peter's no-more-breaking promise) — asking for less
+    // than the remembered version is BadValue, asking for more (below 2.2)
+    // gets the remembered one.
     case 47: {
-      // Request: CARD16 client_major_version, CARD16 client_minor_version
+      uint16_t cmaj = 0, cmin = 0;
+      if (br.remaining() >= 4) { cmaj = br.readU16(); cmin = br.readU16(); }
       br.skip(br.remaining());
-      // Reply: server_major=2, server_minor=2
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0);     // length (no extra data)
-        wire::wr16_le(rep.data() + 8, 2);     // server_major_version
-        wire::wr16_le(rep.data() + 10, 2);    // server_minor_version (2.2 for ScrollClass)
+      if (cmaj < 2) { xiError(x11::error::BadValue, cmaj); return; }
+      auto cmp = [](uint16_t a1, uint16_t b1, uint16_t a2, uint16_t b2) -> int {
+        if (a1 != a2) return a1 < a2 ? -1 : 1;
+        if (b1 != b2) return b1 < b2 ? -1 : 1;
+        return 0;
+      };
+      uint16_t maj = 2, min = 2;                              // XIVersion
+      if (cmp(2, 2, cmaj, cmin) > 0) { maj = cmaj; min = cmin; }
+      XClient* cl = ctx.hasClient() ? ctx.client() : nullptr;
+      if (cl) {
+        if (cl->xi2Major()) {
+          if (cmp(maj, min, 2, 2) >= 0 && cmp(cl->xi2Major(), cl->xi2Minor(), 2, 2) >= 0) {
+            if (cmp(maj, min, cl->xi2Major(), cl->xi2Minor()) > 0) cl->setXI2Version(maj, min);
+          } else {
+            if (cmp(maj, min, cl->xi2Major(), cl->xi2Minor()) < 0) {
+              xiError(x11::error::BadValue, cmaj);
+              return;
+            }
+            maj = cl->xi2Major(); min = cl->xi2Minor();
+          }
+        } else {
+          cl->setXI2Version(maj, min);
+        }
+      }
+      (void)ctx.reply().sendReply32(seq, [maj, min](std::array<uint8_t, 32>& rep) {
+        rep[1] = 47;                            // RepType
+        wire::wr32_le(rep.data() + 4, 0);     // length
+        wire::wr16_le(rep.data() + 8, maj);   // major_version
+        wire::wr16_le(rep.data() + 10, min);  // minor_version
       });
       return;
     }
@@ -1440,11 +1521,12 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // Request: CARD16 deviceid (0=XIAllDevices, 1=XIAllMasterDevices, or specific)
       const uint16_t requested_device = br.remaining() >= 2 ? br.readU16() : 0;
       br.skip(br.remaining());
-      const auto layout = x11::getScreenLayout();
-      { char buf[128]; snprintf(buf, sizeof(buf),
-          "[XIQueryDevice] seq=%u requested_device=%u\n",
-          (unsigned)seq, (unsigned)requested_device);
-        x11_ui_push_log(1, buf); fprintf(stderr, "%s", buf); }
+      // Xi/xiquerydevice.c:81-87: a specific id must name a device → BadDevice.
+      if (requested_device != 0 && requested_device != 1 &&
+          !x11::xi2::isKnownDevice(requested_device)) {
+        xiError(kBadDevice, requested_device);
+        return;
+      }
 
       // Build XIDeviceInfo entries for the 4 virtual core devices.
       // XIDeviceInfo wire format (per device):
@@ -1514,61 +1596,61 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         payload.insert(payload.end(), dev->name, dev->name + name_len);
         for (uint16_t i = 0; i < name_pad; i++) payload.push_back(0);
 
-        // ButtonClass for pointer devices
+        // ButtonClass for pointer devices — xorg CorePointerProc
+        // (dix/devices.c:644-668): 10 buttons, the first seven labelled
+        // (Button Left … Button Horiz Wheel Right, the rest None), state =
+        // the held buttons (ListButtonInfo, Xi/xiquerydevice.c:263-290).
+        // Phase E, M20: GDK/Chromium classify axes and buttons by label.
         if (dev->has_buttons) {
-          // ButtonClass: type=0, length_words, sourceid, num_buttons,
-          //   state_mask (ceil(num_buttons/32)*4 bytes), labels[num_buttons]
-          const uint16_t num_buttons = 5;
-          const uint16_t state_words = 1; // ceil(5/32) = 1 word = 4 bytes
-          // Total bytes: 8 (header) + state_words*4 + num_buttons*4
-          const uint16_t total_bytes = 8 + state_words * 4 + num_buttons * 4;
-          const uint16_t length_words = total_bytes / 4;
+          static const char* const kBtnLabels[10] = {
+            "Button Left", "Button Middle", "Button Right",
+            "Button Wheel Up", "Button Wheel Down",
+            "Button Horiz Wheel Left", "Button Horiz Wheel Right",
+            nullptr, nullptr, nullptr };
+          const uint16_t num_buttons = 10;
+          const uint16_t state_words = 1;   // bytes_to_int32(bits_to_bytes(10))
+          const uint16_t length_words = (8 + state_words * 4 + num_buttons * 4) / 4;
+          uint32_t state = 0;
+          for (int b = 0; b < 10; b++)
+            if (ctx.input().buttons & (1u << b)) state |= (1u << (b + 1));
 
           appendU16(1);              // type = ButtonClass (XI2: 1)
           appendU16(length_words);   // length in 4-byte words
           appendU16(dev->id);        // sourceid
           appendU16(num_buttons);    // num_buttons
-          // Button state mask (all released = 0)
-          appendU32(0);
-          // Labels (atom per button — 0=None for all)
-          for (uint16_t b = 0; b < num_buttons; b++) appendU32(0);
+          appendU32(state);          // button state mask (1-indexed bits)
+          for (int b = 0; b < 10; b++) {
+            const char* l = kBtnLabels[b];
+            appendU32(l ? x11::AtomTable::instance().intern(l, std::strlen(l), false) : 0u);
+          }
 
-          // ValuatorClass for X axis (axis 0)
-          // Format: type(2) + length(2) + sourceid(2) + number(2) +
-          //         label(4) + min(4+4 FP3232) + max(4+4) + value(4+4) +
-          //         resolution(4) + mode(1) + pad(3)
-          // Total: 2+2+2+2+4+8+8+8+4+1+3 = 44 bytes = 11 words
-          appendU16(2);              // type = ValuatorClass
-          appendU16(11);             // length = 11 words
-          appendU16(dev->id);        // sourceid
-          appendU16(0);              // number = 0 (X axis)
-          appendU32(0);              // label = None
-          // min: FP3232 = 0.0
-          appendU32(0); appendU32(0);
-          // max: FP3232 = screen width
-          appendU32((uint32_t)layout.virtual_w); appendU32(0);
-          // value: FP3232 = 0.0
-          appendU32(0); appendU32(0);
-          appendU32(1);              // resolution
-          payload.push_back(1);      // mode = Absolute (master pointer uses Absolute)
-          payload.push_back(0);      // pad
-          payload.push_back(0);      // pad
-          payload.push_back(0);      // pad
-
-          // ValuatorClass for Y axis (axis 1) — same structure
-          appendU16(2);              // type = ValuatorClass
-          appendU16(11);             // length = 11 words
-          appendU16(dev->id);        // sourceid
-          appendU16(1);              // number = 1 (Y axis)
-          appendU32(0);              // label = None
-          appendU32(0); appendU32(0);  // min
-          appendU32((uint32_t)layout.virtual_h); appendU32(0); // max (screen height)
-          appendU32(0); appendU32(0);  // value
-          appendU32(1);              // resolution
-          payload.push_back(1);      // mode = Absolute
-          payload.push_back(0);
-          payload.push_back(0);
-          payload.push_back(0);
+          // Two ValuatorClasses — xorg InitValuatorAxisStruct for the core
+          // pointer (dix/devices.c:662-671, 1594-1607): labels Rel X / Rel Y,
+          // Relative, min = max = NO_AXIS_LIMITS (−1), resolution 0; `value`
+          // is the accumulated axis value, i.e. the current root position for
+          // the master (ListValuatorInfo, Xi/xiquerydevice.c:358-380).  Device
+          // events carry that same absolute position and raw events the
+          // deltas — the split xorg makes for a relative core pointer (L4).
+          //   type(2) length(2) sourceid(2) number(2) label(4) min(8) max(8)
+          //   value(8) resolution(4) mode(1) pad(3) = 44 bytes = 11 words
+          const int32_t axisVal[2] = { ctx.input().root_x_u, ctx.input().root_y_u };
+          static const char* const kAxisLabels[2] = { "Rel X", "Rel Y" };
+          for (uint16_t axis = 0; axis < 2; axis++) {
+            appendU16(2);              // type = ValuatorClass
+            appendU16(11);             // length = 11 words
+            appendU16(dev->id);        // sourceid
+            appendU16(axis);           // number
+            appendU32(x11::AtomTable::instance().intern(kAxisLabels[axis],
+                                                       std::strlen(kAxisLabels[axis]), false));
+            appendU32(0xFFFFFFFFu); appendU32(0);            // min = -1 (FP3232)
+            appendU32(0xFFFFFFFFu); appendU32(0);            // max = -1
+            appendU32((uint32_t)axisVal[axis]); appendU32(0); // value
+            appendU32(0);              // resolution
+            payload.push_back(0);      // mode = Relative
+            payload.push_back(0);      // pad
+            payload.push_back(0);      // pad
+            payload.push_back(0);      // pad
+          }
 
           // NO ScrollClass.  xorg (xiquerydevice.c) only emits a ScrollInfo for
           // axes whose scroll.type != NONE, and those are SEPARATE axes from
@@ -1606,7 +1688,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // to ensure a single sendAll() call (no interleaving opportunity).
       std::vector<uint8_t> reply(32 + payload.size(), 0);
       reply[0] = 1; // Reply
-      reply[1] = 0;
+      reply[1] = 48;  // RepType = X_XIQueryDevice
       wire::wr16_le(reply.data() + 2, seq);
       wire::wr32_le(reply.data() + 4, payload_words);
       wire::wr16_le(reply.data() + 8, num_devices);
@@ -1617,16 +1699,46 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     // ---- minor 49: XISetFocus (void) ----
-    case 49:
+    // xorg Xi/xisetdevfocus.c:70-86: the device must have a focus class
+    // (keyboards), then SetInputFocus(RevertToParent) — the same choreography
+    // as core opcode 42 (Phase E, L7).
+    case 49: {
+      uint32_t focus = 0, time = 0; uint16_t dev = 0;
+      if (br.remaining() >= 10) { focus = br.readU32(); time = br.readU32(); dev = br.readU16(); }
       br.skip(br.remaining());
+      (void)time;
+      if (!x11::xi2::isKnownDevice(dev) || !isKeyboardDev(dev)) { xiError(kBadDevice, dev); return; }
+      const uint32_t newFocus = (focus == 0) ? 0u : (focus == 1) ? x11::kRootXid : focus;
+      if (newFocus && newFocus != x11::kRootXid && !ctx.window(newFocus)) {
+        xiError(x11::error::BadWindow, focus);
+        return;
+      }
+      const uint32_t oldFocus = ctx.input().focus_xid;
+      uint8_t mode = x11::notifymode::kNormal;
+      {
+        x11::KeyboardGrab kg{};
+        if (ctx.grabs().getKeyboardGrabInfo(kg) && kg.active) mode = x11::notifymode::kWhileGrabbed;
+      }
+      if (auto* s = x11_proto_bridge_get_server())
+        x11::focusev::doFocusEvents(ctx, s->eventOps(), oldFocus, newFocus, mode);
+      ctx.input().focus_xid = newFocus;
+      ctx.input().focus_revert_to = 2;   // RevertToParent
       return;
+    }
 
     // ---- minor 50: XIGetFocus (reply-bearing) ----
+    // Xi/xisetdevfocus.c:89-122: None / PointerRoot / the focus window.
     case 50: {
+      uint16_t dev = 0;
+      if (br.remaining() >= 2) dev = br.readU16();
       br.skip(br.remaining());
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0);  // length
-        wire::wr32_le(rep.data() + 8, 1);  // focus = PointerRoot (1)
+      if (!x11::xi2::isKnownDevice(dev) || !isKeyboardDev(dev)) { xiError(kBadDevice, dev); return; }
+      const uint32_t f = ctx.input().focus_xid;
+      const uint32_t focusWin = (f == 0) ? 0u : (f == x11::kRootXid) ? 1u : f;
+      (void)ctx.reply().sendReply32(seq, [focusWin](std::array<uint8_t, 32>& rep) {
+        rep[1] = 50;                              // RepType
+        wire::wr32_le(rep.data() + 4, 0);       // length
+        wire::wr32_le(rep.data() + 8, focusWin); // focus
       });
       return;
     }
@@ -1676,15 +1788,13 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
                                deviceid == x11::xi2::kXTESTPointer ||
                                deviceid == x11::xi2::kRealPointer);
       if (!isKeyboard && !isPointer) {
-        // xorg: dixLookupDevice fails → BadDevice.  We have no XI error base
-        // yet (M13); BadValue keeps the client's sequence aligned.
-        ctx.transport().sendErrorCore(x11::error::BadValue, seq, deviceid, major);
+        xiError(kBadDevice, deviceid);   // dixLookupDevice fails → BadDevice
         return;
       }
       if (win != 1) {
         x11::WindowView wv{};
         if (!ctx.windows().snapshot(win, wv)) {
-          ctx.transport().sendErrorCore(x11::error::BadWindow, seq, win, major);
+          xiError(x11::error::BadWindow, win);
           return;
         }
       }
@@ -1760,6 +1870,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
       // XI2 GrabStatus codes match core (0..4).
       (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+        rep[1] = 51;                        // RepType
         wire::wr32_le(rep.data() + 4, 0);  // length = 0
         rep[8] = gs;                        // status at byte 8 (xXIGrabDeviceReply)
       });
@@ -1784,7 +1895,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
                                deviceid == x11::xi2::kXTESTPointer ||
                                deviceid == x11::xi2::kRealPointer);
       if (!isKeyboard && !isPointer) {
-        ctx.transport().sendErrorCore(x11::error::BadValue, seq, deviceid, major);
+        xiError(kBadDevice, deviceid);
         return;
       }
       const int      fd  = ctx.transport().clientFd();
@@ -1824,38 +1935,81 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining());
       return;
 
-    case 54: // XIPassiveGrabDevice (reply-bearing)
-      { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] XIPassiveGrabDevice minor=54 seq=%u — sending BadRequest\n", (unsigned)seq); x11_ui_push_log(1, buf); }
-      br.skip(br.remaining());
-      ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    // ---- minor 54: XIPassiveGrabDevice (reply-bearing) ----
+    // xorg Xi/xipassivegrab.c:79-258 (Phase E, M21): validate device, grab
+    // type, detail and window, then reply with the modifier combinations
+    // that FAILED — none here.  The grab itself is not recorded (no target
+    // client installs XI2 passive grabs; the core GrabButton table stays the
+    // one passive-grab store), so every combination reports success rather
+    // than the BadRequest that made Xlib's default handler exit.
+    case 54: {
+      if (br.remaining() < 28) { xiError(x11::error::BadLength, 0); return; }
+      (void)br.readU32();                       // time
+      const uint32_t grab_window = br.readU32();
+      (void)br.readU32();                       // cursor
+      const uint32_t detail      = br.readU32();
+      const uint16_t deviceid    = br.readU16();
+      const uint16_t num_mods    = br.readU16();
+      const uint16_t mask_len    = br.readU16();
+      const uint8_t  grab_type   = br.readU8();
+      (void)br.readU8();                        // grab_mode
+      (void)br.readU8();                        // paired_device_mode
+      (void)br.readU8();                        // owner_events
+      br.skip(br.remaining());                  // pad, mask words, modifiers
+      (void)num_mods; (void)mask_len;
+      if (deviceid != x11::xi2::kAllDevices && deviceid != x11::xi2::kAllMasterDevices &&
+          !x11::xi2::isKnownDevice(deviceid)) { xiError(kBadDevice, deviceid); return; }
+      if (grab_type > 6) { xiError(x11::error::BadValue, grab_type); return; }           // :113-122
+      if (grab_type >= 2 && detail != 0) { xiError(x11::error::BadValue, detail); return; } // :124-131
+      if (grab_window != x11::kRootXid && !ctx.window(grab_window)) {
+        xiError(x11::error::BadWindow, grab_window);
+        return;
+      }
+      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 54;                          // RepType
+        wire::wr32_le(rep.data() + 4, 0);   // length: no xXIGrabModifierInfo follow
+        wire::wr16_le(rep.data() + 8, 0);   // num_modifiers (failed) = 0
+      });
       return;
+    }
 
     // ---- minor 56: XIListProperties (reply-bearing) ----
+    // Xi/xiproperty.c:1103-1105: the device must exist (BadDevice); we
+    // advertise no device properties (Phase E, L21).
     case 56: {
+      uint16_t dev = 0;
+      if (br.remaining() >= 2) dev = br.readU16();
       br.skip(br.remaining());
+      if (!x11::xi2::isKnownDevice(dev)) { xiError(kBadDevice, dev); return; }
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 56;                          // RepType
         wire::wr32_le(rep.data() + 4, 0);   // length
         wire::wr16_le(rep.data() + 8, 0);   // num_properties = 0
       });
       return;
     }
 
-    // ---- minor 57-58: XI2 void stubs ----
-    case 57: // XIChangeProperty
-    case 58: // XIDeleteProperty
+    // ---- minor 57-58: XIChangeProperty / XIDeleteProperty (void) ----
+    case 57:
+    case 58:
       br.skip(br.remaining());
       return;
 
     // ---- minor 59: XIGetProperty (reply-bearing) ----
+    // Xi/xiproperty.c:1198-1201: device must exist; a property we do not
+    // hold reads back as type None, format 0, no items.
     case 59: {
+      uint16_t dev = 0;
+      if (br.remaining() >= 2) dev = br.readU16();
       br.skip(br.remaining());
-      // Reply: type=0 (None), bytes_after=0, num_items=0
+      if (!x11::xi2::isKnownDevice(dev)) { xiError(kBadDevice, dev); return; }
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
+        rep[1] = 59;                          // RepType
         wire::wr32_le(rep.data() + 4, 0);   // length
-        rep[1] = 0;                           // result_format = 0
         wire::wr32_le(rep.data() + 8, 0);   // type = None
         wire::wr32_le(rep.data() + 12, 0);  // bytes_after
         wire::wr32_le(rep.data() + 16, 0);  // num_items
+        rep[20] = 0;                          // format
       });
       return;
     }
@@ -1896,6 +2050,13 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
+    // ---- minor 61: XIBarrierReleasePointer (void) ----
+    // Xi/xibarriers.c:862-912 — no barriers exist here (CreatePointerBarrier
+    // is a silent XFIXES stub), so there is nothing to release (L22).
+    case 61:
+      br.skip(br.remaining());
+      return;
+
     default:
       break;
     }
@@ -1903,8 +2064,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Without an error reply, a reply-bearing minor we haven't implemented
     // would leave XCB hanging, eventually causing a sequence desync crash.
     { char buf[128]; snprintf(buf, sizeof(buf), "[XInput2] unhandled minor=%u seq=%u — sending BadRequest\n", (unsigned)minor, (unsigned)seq); x11_ui_push_log(1, buf); }
-    br.skip(br.remaining());
-    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
+    xiError(x11::error::BadRequest, 0);
     return;
   }
 

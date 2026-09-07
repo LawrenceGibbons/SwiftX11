@@ -478,6 +478,9 @@ namespace x11 {
       if (x11_get_xi2_advertised()) {
         present = 1; major = ext::kXInput2;
         first_event = ext::kXInput_FirstEvent;
+        // BadDevice = first_error + 0 (Xi/extinit.c:1065); with 0 every device
+        // error was code 0, which GDK's error traps read as "no error" (M13).
+        first_error = ext::kXInput_FirstError;
       } else {
         present = 0;
       }

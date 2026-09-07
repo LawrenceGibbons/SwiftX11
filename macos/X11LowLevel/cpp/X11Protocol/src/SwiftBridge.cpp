@@ -53,7 +53,8 @@ extern "C" void x11_proto_bridge_post_scroll(uint32_t xid,
 extern "C" void x11_proto_bridge_post_key(uint32_t xid,
                                            uint8_t is_down,
                                            uint32_t keycode,
-                                           uint32_t modifiers);
+                                           uint32_t modifiers,
+                                           uint8_t is_repeat);
 
 extern "C" void x11_proto_bridge_post_enter(uint32_t xid,
                                              int32_t win_x_u, int32_t win_y_u,
@@ -173,13 +174,15 @@ extern "C" void x11_post_scroll_ticks(uint32_t xid,
 
 extern "C" void x11_post_key_event(uint32_t xid, bool is_down,
                                     uint32_t keycode, uint32_t modifiers,
+                                    bool is_repeat,
                                     const char* utf8_text)
 {
   (void)utf8_text;
   x11_proto_bridge_post_key(xid,
                             is_down ? 1 : 0,
                             keycode,
-                            modifiers);
+                            modifiers,
+                            is_repeat ? 1 : 0);
 }
 
 extern "C" void x11_post_pointer_enter(uint32_t xid,

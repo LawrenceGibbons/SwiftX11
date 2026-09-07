@@ -156,10 +156,13 @@ void x11_post_scroll_ticks(uint32_t xid,
                            uint32_t buttons,
                            uint32_t modifiers);
 
+// is_repeat = NSEvent.isARepeat: becomes the XI2 XIKeyRepeat flag
+// (Phase E, M11).  Cocoa sends no key-up between autorepeats, matching xorg.
 void x11_post_key_event(uint32_t xwin_id,
                         bool is_down,
                         uint32_t keycode,
                         uint32_t modifiers,
+                        bool is_repeat,
                         const char* utf8_text);
 
 // Enter/Leave carry their own root coordinates (v1.20.0.26): the server

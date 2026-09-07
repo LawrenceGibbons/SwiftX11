@@ -19,6 +19,11 @@ namespace x11 {
   struct InputState {
     // global/root pointer
     int32_t root_x_u = 0, root_y_u = 0;
+    // Root position at the last XI2 RawMotion: the core pointer's axes are
+    // relative (Rel X / Rel Y), so a raw event carries the delta since the
+    // previous one (Phase E, L4).
+    int32_t raw_last_x = 0, raw_last_y = 0;
+    bool    raw_have = false;
 
     // host-window local
     int32_t win_x_u = 0,  win_y_u = 0;

@@ -53,6 +53,7 @@ struct HostCmd {
   // buttons / scroll / keys
   uint8_t button = 0;
   uint8_t isDown = 0;
+  uint8_t isRepeat = 0;   // key autorepeat (NSEvent.isARepeat) → XI2 XIKeyRepeat
   int16_t ticks = 0;
   uint8_t axis = 0;
   uint32_t keyCode = 0;

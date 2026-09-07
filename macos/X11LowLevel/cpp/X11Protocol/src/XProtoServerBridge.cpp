@@ -1171,8 +1171,14 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           if (c.isDown) ctx.input().keyDown(x11_kc);
           else          ctx.input().keyUp(x11_kc);
 
-          // Keep canonical mods in sync
+          // xorg event_set_state (dix/inpututils.c:794-796): a key event
+          // carries the modifier state BEFORE the key — for a modifier key
+          // that is the previous canonical state (Phase E, M11).  Cocoa sends
+          // the post-event flags in modsMask; those become the new canonical
+          // state, the event is stamped with the old one.
+          const uint32_t evMods = ctx.input().mods;
           ctx.input().mods = c.modsMask;
+          const bool isRepeat = (c.isRepeat != 0);   // XI2 XIKeyRepeat flag
 
           // xorg EventIsDeliverable: deliverable via the window's own XI2 mask
           // OR its core mask.  GTK3 under XI2 selects keys only via XI2, so
@@ -1269,11 +1275,11 @@ static void processOneHostCmd(x11::XProtoServer* srv,
               if (kg.is_xi2) {
                 if (kg.xi2mask & xi2bit)
                   (void)srv->eventOps().sendXI2KeyEvent(ctx, kg.grabWindow, c.isDown != 0, x11_kc,
-                                                        ctx.input().buttons, c.modsMask,
-                                                        /*force=*/true, kg.owner_fd);
+                                                        ctx.input().buttons, evMods,
+                                                        /*force=*/true, kg.owner_fd, isRepeat);
               } else {
                 srv->eventOps().sendKeyEvent(ctx, kg.grabWindow, c.isDown != 0, x11_kc,
-                                             ctx.input().buttons, c.modsMask, kg.owner_fd);
+                                             ctx.input().buttons, evMods, kg.owner_fd);
               }
               break;
             }
@@ -1296,11 +1302,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           if (!srv->eventOps().sendXI2KeyEvent(ctx, target,
                                                c.isDown != 0,
                                                x11_kc,
-                                               ctx.input().buttons, c.modsMask)) {
+                                               ctx.input().buttons, evMods,
+                                               /*force=*/false, /*toFd=*/-1, isRepeat)) {
             srv->eventOps().sendKeyEvent(ctx, target,
                                          c.isDown != 0,
                                          x11_kc,
-                                         ctx.input().buttons, c.modsMask);
+                                         ctx.input().buttons, evMods);
           }
           break;
         }
@@ -1744,7 +1751,8 @@ extern "C" void x11_proto_bridge_post_scroll(uint32_t xid,
 extern "C" void x11_proto_bridge_post_key(uint32_t xid,
                                          uint8_t is_down,
                                          uint32_t keycode,
-                                         uint32_t modifiers)
+                                         uint32_t modifiers,
+                                         uint8_t is_repeat)
 {
   auto* srv = x11_proto_bridge_get_server();
   if (!srv) return;
@@ -1752,6 +1760,7 @@ extern "C" void x11_proto_bridge_post_key(uint32_t xid,
   c.type = HostCmdType::Key;
   c.xid = xid;               // may be 0 → route to focus on C++ side
   c.isDown = is_down ? 1 : 0;
+  c.isRepeat = is_repeat ? 1 : 0;
   c.keyCode = keycode;
   c.modsMask = modifiers;
   srv->hostCmds().push(c);

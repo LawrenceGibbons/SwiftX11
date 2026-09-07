@@ -172,10 +172,13 @@ namespace x11 {
                             uint32_t child_xid,
                             bool force = false, int toFd = -1);
 
+    // `repeat`: autorepeat press → XIKeyRepeat flag (Phase E, M11).  Carries
+    // the paired pointer's position and button mask like xorg (L6).
     bool sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
                          bool is_press, uint8_t keycode,
                          uint32_t buttons, uint32_t mods,
-                         bool force = false, int toFd = -1);
+                         bool force = false, int toFd = -1,
+                         bool repeat = false);
 
     bool sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
                               bool is_enter,

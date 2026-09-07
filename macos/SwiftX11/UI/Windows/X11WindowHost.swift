@@ -1242,7 +1242,7 @@ final class X11View: NSView {
       
       // Cocoa reports the physical key in `event.keyCode`.
       // This matches the key that triggered the modifier transition.
-      x11_post_key_event(xid, isDown, UInt32(event.keyCode), mods(newFlags), nil)
+      x11_post_key_event(xid, isDown, UInt32(event.keyCode), mods(newFlags), false, nil)
     }
   }
   
@@ -1251,13 +1251,14 @@ final class X11View: NSView {
     
     let text = event.characters ?? ""
     text.withCString { cstr in
-      x11_post_key_event(xid, true, UInt32(event.keyCode), mods(event.modifierFlags), cstr)
+      // isARepeat → XI2 XIKeyRepeat flag (Phase E, M11)
+      x11_post_key_event(xid, true, UInt32(event.keyCode), mods(event.modifierFlags), event.isARepeat, cstr)
     }
   }
   
   override func keyUp(with event: NSEvent) {
     lastModifierFlags = event.modifierFlags
-    x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), nil)
+    x11_post_key_event(xid, false, UInt32(event.keyCode), mods(event.modifierFlags), false, nil)
   }
   
   private var currentCursor: NSCursor = .arrow {

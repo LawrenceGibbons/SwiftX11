@@ -47,6 +47,13 @@ struct AbsGeom { int absX=0, absY=0; };
     return (int16_t)v;
   }
 
+// FP16.16 from a signed integer: multiply rather than shift (left-shifting
+// a negative int32 is undefined before C++20; the value was right by luck) —
+// xorg double_to_fp1616 (dix/inpututils.c:1044-1046).  Phase E, L12.
+static inline uint32_t fp1616(int32_t v) {
+  return (uint32_t)((int64_t)v * 65536);
+}
+
 static inline void getRootWH(x11::XProtoContext& ctx, int& outW, int& outH) {
   outW = 0;
   outH = 0;
@@ -580,12 +587,20 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
     if (v >  32767) return  32767;
     return (int16_t)v;
   };
+  // xorg pairs a key event with the master pointer's sprite position
+  // (Xi/exevents.c:1860-1862): root coords, and event coords relative to
+  // the event window — Phase E, L6.
   int16_t rx = clamp16(ctx.input().root_x_u);
   int16_t ry = clamp16(ctx.input().root_y_u);
+  int16_t ex = 0, ey = 0;
+  if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey) &&
+      !computeEventXYFromRoot(ctx, wid, ctx.input().root_x_u, ctx.input().root_y_u, &ex, &ey)) {
+    ex = 0; ey = 0;
+  }
   wire::wr16_le(ev + 20, (uint16_t)rx);
   wire::wr16_le(ev + 22, (uint16_t)ry);
-  wire::wr16_le(ev + 24, (uint16_t)rx);
-  wire::wr16_le(ev + 26, (uint16_t)ry);
+  wire::wr16_le(ev + 24, (uint16_t)ex);
+  wire::wr16_le(ev + 26, (uint16_t)ey);
 
   const uint16_t st = x11::input::toX11State(buttons, mods);
   wire::wr16_le(ev + 28, st); // state
@@ -721,21 +736,27 @@ namespace {
 
 // Build button mask word from internal button bits (0-4 → X11 wire bits 1-5)
 static uint32_t xi2ButtonMask(uint32_t buttons) {
+  // xorg event_set_state (dix/inpututils.c:784-786) sets a bit for every
+  // held button; the core pointer has 10 (buttons 6/7 = horizontal wheel,
+  // which the core `state` field cannot carry) — Phase E, L2.
   uint32_t mask = 0;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 10; i++) {
     if (buttons & (1u << i))
       mask |= (1u << (i + 1));  // XI2 button bits are 1-indexed
   }
   return mask;
 }
 
-// Fill mods section (4×uint32 = 16 bytes) at buf
+// Fill mods section (4×uint32 = 16 bytes) at buf.  Caps Lock is a locked
+// modifier in XKB state (dix/inpututils.c:798-803: base/latched/locked, with
+// `effective` their union) — Phase E, L24.
 static void fillXI2Mods(uint8_t* buf, uint32_t mods_state) {
-  uint32_t x11mods = x11::input::toX11State(0, mods_state) & 0xFFu;
-  x11::wire::wr32_le(buf + 0,  x11mods);  // base
-  x11::wire::wr32_le(buf + 4,  0);        // latched
-  x11::wire::wr32_le(buf + 8,  0);        // locked
-  x11::wire::wr32_le(buf + 12, x11mods);  // effective
+  const uint32_t x11mods = x11::input::toX11State(0, mods_state) & 0xFFu;
+  const uint32_t locked  = x11mods & 0x02u;          // LockMask
+  x11::wire::wr32_le(buf + 0,  x11mods & ~locked);   // base
+  x11::wire::wr32_le(buf + 4,  0);                   // latched
+  x11::wire::wr32_le(buf + 8,  locked);              // locked
+  x11::wire::wr32_le(buf + 12, x11mods);             // effective
 }
 
 // Fill group section (4×uint8 = 4 bytes) at buf
@@ -777,10 +798,10 @@ bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 20, 1);                           // root window
   wire::wr32_le(buf + 24, wid);                         // event window
   wire::wr32_le(buf + 28, child_xid);                   // child (FixUpEventFromWindow)
-  wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));    // root_x FP16.16
-  wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));    // root_y FP16.16
-  wire::wr32_le(buf + 40, (uint32_t)((int32_t)ex << 16)); // event_x FP16.16
-  wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16)); // event_y FP16.16
+  wire::wr32_le(buf + 32, fp1616(root_x));    // root_x FP16.16
+  wire::wr32_le(buf + 36, fp1616(root_y));    // root_y FP16.16
+  wire::wr32_le(buf + 40, fp1616(ex)); // event_x FP16.16
+  wire::wr32_le(buf + 44, fp1616(ey)); // event_y FP16.16
   wire::wr16_le(buf + 48, xi2::kXIButtonsLen);          // buttons_len = 8 (xorg)
   wire::wr16_le(buf + 50, xi2::kXIValuatorsLen);        // valuators_len = 2 (xorg)
   wire::wr16_le(buf + 52, xi2::kRealPointer);          // sourceid = real slave pointer (not XTEST)
@@ -831,10 +852,10 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 20, 1);                            // root
   wire::wr32_le(buf + 24, wid);                          // event
   wire::wr32_le(buf + 28, child_xid);                    // child
-  wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));
-  wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));
-  wire::wr32_le(buf + 40, (uint32_t)((int32_t)ex << 16));
-  wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16));
+  wire::wr32_le(buf + 32, fp1616(root_x));
+  wire::wr32_le(buf + 36, fp1616(root_y));
+  wire::wr32_le(buf + 40, fp1616(ex));
+  wire::wr32_le(buf + 44, fp1616(ey));
   wire::wr16_le(buf + 48, xi2::kXIButtonsLen);           // buttons_len = 8 (xorg)
   wire::wr16_le(buf + 50, xi2::kXIValuatorsLen);         // valuators_len = 2 (xorg)
   wire::wr16_le(buf + 52, xi2::kRealPointer);           // sourceid = real slave pointer (not XTEST)
@@ -854,12 +875,22 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
 bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
                                bool is_press, uint8_t keycode,
                                uint32_t buttons, uint32_t mods,
-                               bool force, int toFd) {
+                               bool force, int toFd, bool repeat) {
   uint32_t mask_bit = is_press ? xi2::kKeyPressMask : xi2::kKeyReleaseMask;
   const WindowView* wv = ctx.window(wid);
   if (!force && !wv) return false;
   if (!force && !(wv->xi2_mask & mask_bit) &&
       !(ctx.input().xi2_root_mask & mask_bit)) return false;
+
+  // xorg pairs every key event with the master pointer's sprite position
+  // and button state (Xi/exevents.c:1860-1862, dix/inpututils.c:784-786) —
+  // Phase E, L6.
+  const int32_t root_x = ctx.input().root_x_u, root_y = ctx.input().root_y_u;
+  int16_t ex = 0, ey = 0;
+  if (!computeEventXYFromHostLocal(ctx, wid, &ex, &ey) &&
+      !computeEventXYFromRoot(ctx, wid, root_x, root_y, &ex, &ey)) {
+    ex = 0; ey = 0;
+  }
 
   uint8_t buf[xi2::kKeyEventSize] = {};
   buf[0] = 35;
@@ -873,15 +904,20 @@ bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 20, 1);   // root
   wire::wr32_le(buf + 24, wid);
   wire::wr32_le(buf + 28, 0);   // child
-  // Coordinates: 0 for keyboard events (no pointer position included)
+  wire::wr32_le(buf + 32, fp1616(root_x));
+  wire::wr32_le(buf + 36, fp1616(root_y));
+  wire::wr32_le(buf + 40, fp1616(ex));
+  wire::wr32_le(buf + 44, fp1616(ey));
   wire::wr16_le(buf + 48, xi2::kXIButtonsLen);   // buttons_len = 8 (xorg)
   wire::wr16_le(buf + 50, xi2::kXIValuatorsLen); // valuators_len = 2 (xorg)
   wire::wr16_le(buf + 52, xi2::kRealKeyboard);          // sourceid = real slave keyboard (not XTEST)
-  wire::wr32_le(buf + 56, 0);   // flags
+  // flags: XIKeyRepeat (1 << 16) on an autorepeat press (dix/eventconvert.c:714-715) — M11
+  wire::wr32_le(buf + 56, (is_press && repeat) ? (1u << 16) : 0u);
   fillXI2Mods(buf + 60, mods);
   fillXI2Group(buf + 76);
-  // Trailing: 32B button mask (all zero) + 8B valuator mask (all zero, no axes).
-  // (keys carry no valuators, so no FP3232 axisvalues follow the mask.)
+  // Trailing: 32B button mask (paired pointer's held buttons) + 8B valuator
+  // mask (all zero: keys carry no valuators, so no FP3232 values follow).
+  wire::wr32_le(buf + 80, xi2ButtonMask(buttons));
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
                     xi2::kVirtualCoreKeyboard, force, toFd, /*propagates=*/true);
@@ -923,10 +959,10 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 20, 1);                            // root
   wire::wr32_le(buf + 24, wid);                          // event
   wire::wr32_le(buf + 28, child);                        // child (path window on Virtual events)
-  wire::wr32_le(buf + 32, (uint32_t)(root_x << 16));
-  wire::wr32_le(buf + 36, (uint32_t)(root_y << 16));
-  wire::wr32_le(buf + 40, (uint32_t)((int32_t)ex << 16));
-  wire::wr32_le(buf + 44, (uint32_t)((int32_t)ey << 16));
+  wire::wr32_le(buf + 32, fp1616(root_x));
+  wire::wr32_le(buf + 36, fp1616(root_y));
+  wire::wr32_le(buf + 40, fp1616(ex));
+  wire::wr32_le(buf + 44, fp1616(ey));
   buf[48] = 1;   // same_screen = True
   buf[49] = focusFlagFor(ctx, wid) ? 1 : 0;   // focus, as the core sender (enterleave.c DeviceEnterLeaveEvent)
   wire::wr16_le(buf + 50, xi2::kXIButtonsLen);          // buttons_len = 8 (xorg)
@@ -999,30 +1035,42 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {
   // whenever the pointer was over Vitis and Chromium received RawMotion it
   // never selected.  The sequence is restamped per target by sendEventToFd.
 
-  // xXIRawEvent wire format with 2 valuators (X, Y):
-  //   Header (32 bytes) + valuator_mask[1] (4) + raw[2]×8 + cooked[2]×8 = 68
-  // libXi's XInputWireToCookie requires length>0 to allocate cookie data.
+  // The core pointer's axes are relative (Rel X / Rel Y, dix/devices.c:
+  // 662-663), so the valuators carry the delta since the previous raw event
+  // (GetPointerEvents: raw = device delta, values = the accelerated delta;
+  // no acceleration here, so both are the same) — Phase E, L4.  A move
+  // that does not change the root position is no move at all in xorg.
+  auto& in = ctx.input();
+  const int32_t dx = in.raw_have ? in.root_x_u - in.raw_last_x : 0;
+  const int32_t dy = in.raw_have ? in.root_y_u - in.raw_last_y : 0;
+  const bool first = !in.raw_have;
+  in.raw_last_x = in.root_x_u; in.raw_last_y = in.root_y_u; in.raw_have = true;
+  if (!first && dx == 0 && dy == 0) return;
+
+  // xXIRawEvent (xorg eventToRawEvent, dix/eventconvert.c:768-808):
+  //   32-byte header + valuator mask (valuators_len = 2 words, MAX_VALUATORS
+  //   = 36) + values[] (accelerated) + raw_values[], one FP3232 per set
+  //   valuator = 72 bytes, length 10.  libXi's XInputWireToCookie needs
+  //   length > 0 to allocate the cookie.
   uint8_t buf[xi2::kRawEventSize] = {};
   buf[0] = 35;                                         // GenericEvent
   buf[1] = (uint8_t)ext::kXInput2;                     // extension
   wire::wr16_le(buf + 2,  ctx.transport().lastSeq());  // sequence
-  wire::wr32_le(buf + 4,  xi2::kRawEventLength);       // length = 9
+  wire::wr32_le(buf + 4,  xi2::kRawEventLength);       // length = 10
   wire::wr16_le(buf + 8,  xi2::kRawMotion);            // evtype = 17
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);   // deviceid
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());     // time
   wire::wr32_le(buf + 16, 0);                          // detail = 0
   wire::wr16_le(buf + 20, xi2::kRealPointer);          // sourceid = real slave pointer (not XTEST)
-  wire::wr16_le(buf + 22, 1);                          // valuators_len = 1 (one mask word)
+  wire::wr16_le(buf + 22, xi2::kXIValuatorsLen);       // valuators_len = 2 (xorg)
   wire::wr32_le(buf + 24, 0);                          // flags = 0
   // buf[28-31] = pad (already 0)
 
-  // Valuator data (36 bytes after the 32-byte header):
-  wire::wr32_le(buf + 32, 0x03);                       // valuator_mask: bits 0+1 set (X, Y)
-  // raw_values[0] = X delta (FP32.32) — set to 0 (we don't track deltas)
-  // raw_values[1] = Y delta (FP32.32)
-  // values[0] = X delta cooked (FP32.32)
-  // values[1] = Y delta cooked (FP32.32)
-  // All zero — xeyes only uses RawMotion as a trigger to call XQueryPointer
+  buf[32] = 0x03;                                      // valuator mask: bits 0+1 (X, Y); word 1 zero
+  wire::wr32_le(buf + 40, (uint32_t)dx);               // values[0]     = X (FP3232 integral, frac 0)
+  wire::wr32_le(buf + 48, (uint32_t)dy);               // values[1]     = Y
+  wire::wr32_le(buf + 56, (uint32_t)dx);               // raw_values[0] = X
+  wire::wr32_le(buf + 64, (uint32_t)dy);               // raw_values[1] = Y
 
   for (int fd : fds) (void)ctx.transport().sendEventToFd(fd, buf, sizeof(buf));
 }

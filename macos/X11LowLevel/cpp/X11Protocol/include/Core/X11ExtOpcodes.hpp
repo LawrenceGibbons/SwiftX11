@@ -51,6 +51,10 @@ static constexpr uint8_t kRENDER_FirstError   = 0;
 static constexpr uint8_t kCOMPOSITE_FirstError = 0;
 static constexpr uint8_t kDAMAGE_FirstError    = 0;
 static constexpr uint8_t kXKB_FirstError       = 128;  // FirstExtensionError, as xorg
+// XInput: five errors from its base (Xi/extinit.c:327-331, 1065-1069):
+// BadDevice +0, BadEvent +1, BadMode +2, DeviceBusy +3, BadClass +4.
+// Distinct from XKB's single code (M13, Phase E).
+static constexpr uint8_t kXInput_FirstError    = 129;
 
 } // namespace ext
 } // namespace x11

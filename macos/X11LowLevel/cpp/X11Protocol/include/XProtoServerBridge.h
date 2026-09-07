@@ -88,7 +88,8 @@ void x11_proto_bridge_post_pointer_move2(uint32_t xid,
   void x11_proto_bridge_post_key(uint32_t xid,
                                  uint8_t is_down,
                                  uint32_t keycode,
-                                 uint32_t modifiers);
+                                 uint32_t modifiers,
+                                 uint8_t is_repeat);
 
   void x11_proto_bridge_post_enter(uint32_t xid,
                                    int32_t win_x, int32_t win_y,

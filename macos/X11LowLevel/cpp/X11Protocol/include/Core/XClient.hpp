@@ -84,8 +84,16 @@ public:
   XkbClientState& xkb() { return xkb_; }
   const XkbClientState& xkb() const { return xkb_; }
 
+  // XInput2 version negotiated by XIQueryVersion (0.0 = not yet asked), as
+  // xorg's XIClientPrivate (Xi/xiqueryversion.c); XIQueryPointer consults
+  // it for the 2.2 touch rule (Phase E, M13).
+  uint16_t xi2Major() const { return xi2_major_; }
+  uint16_t xi2Minor() const { return xi2_minor_; }
+  void setXI2Version(uint16_t major, uint16_t minor) { xi2_major_ = major; xi2_minor_ = minor; }
+
 private:
   XkbClientState xkb_{};
+  uint16_t xi2_major_ = 0, xi2_minor_ = 0;
   int fd_;
   uint32_t rid_base_;
   uint32_t rid_mask_;
