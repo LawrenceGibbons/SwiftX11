@@ -957,14 +957,40 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // at the grab's level with the grab's mask, addressed to the
           // grabbing client.  A click on Electron while a GTK popup holds an
           // owner_events grab therefore reaches the popup, not Electron (G-3).
+          //
+          // C1: a passive GrabButton matched by THIS press routes the same way
+          // (xorg ActivatePassiveGrab, dix/events.c:3854-3862, activates the
+          // grab and delivers the triggering press to rClient(grab) at the grab
+          // window — never gated by what the window selected).  The click path
+          // used to run the press through window selection and drop it at
+          // [BTN_DROP] when nobody had selected ButtonPress, so Java's
+          // XGrabButton fallback / Motif bindings / click-to-raise never fired.
+          // The wheel path (ScrollTicks, L8) already routed passive matches
+          // this way; the two paths now agree.
+          x11::PointerGrab routeGrab{};
+          bool haveRouteGrab = false;
+          if (haveActiveGrab) {
+            routeGrab = activeGrab;
+            haveRouteGrab = true;
+          } else if (passiveMatched) {
+            routeGrab.active      = true;
+            routeGrab.grabWindow  = pg.grabWindow;
+            routeGrab.ownerEvents = pg.ownerEvents;
+            routeGrab.eventMask   = pg.eventMask;
+            routeGrab.is_xi2      = false;
+            routeGrab.owner_fd    = pg.owner_fd;   // C1: rClient(grab)
+            routeGrab.implicit    = true;
+            haveRouteGrab = true;
+          }
+
           uint32_t target  = deliver;
           bool     viaGrab = false;
           int      toFd    = -1;
-          if (haveActiveGrab) {
-            const auto d = x11::grabroute::route(ctx, activeGrab, normalWants ? deliver : 0);
+          if (haveRouteGrab) {
+            const auto d = x11::grabroute::route(ctx, routeGrab, normalWants ? deliver : 0);
             target  = d.target;
             viaGrab = d.viaGrab;
-            if (viaGrab) toFd = activeGrab.owner_fd;
+            if (viaGrab) toFd = routeGrab.owner_fd;
           } else if (!normalWants) {
             // Diagnostic: log why the click was dropped
             const x11::WindowView* dbgUnder = ctx.window(under);
@@ -988,7 +1014,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // to, not the pre-propagation pick.  InputState::button() above
           // set drag_xid = under; retarget to deliver so drag motion
           // routes to the window that actually received the ButtonPress.
-          if (!haveActiveGrab && c.isDown && ctx.input().drag_xid == under && deliver != under) {
+          // (A passive match already set under = grab window.)
+          if (!haveActiveGrab && !passiveMatched && c.isDown &&
+              ctx.input().drag_xid == under && deliver != under) {
             ctx.input().drag_xid = deliver;
           }
 
@@ -1018,16 +1046,17 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 #endif
           const int32_t rx = ctx.input().root_x_u, ry = ctx.input().root_y_u;
+          bool deliveredXI2 = false;
           if (viaGrab) {
             // DeliverOneGrabbedEvent (dix/events.c:4322-4366): the grab's level
             // only, filtered by the grab's own mask, to the grabbing client.
             const uint32_t xi2bit  = c.isDown ? x11::xi2::kButtonPressMask : x11::xi2::kButtonReleaseMask;
             const uint32_t corebit = c.isDown ? x11::mask::ButtonPress      : x11::mask::ButtonRelease;
-            if (x11::grabroute::grabWantsXI2(activeGrab, xi2bit)) {
+            if (x11::grabroute::grabWantsXI2(routeGrab, xi2bit)) {
               (void)srv->eventOps().sendXI2ButtonEvent(ctx, target, c.isDown != 0, c.button,
                                                        rx, ry, buttonsBefore, c.modsMask,
                                                        child, /*force=*/true, toFd);
-            } else if (x11::grabroute::grabWantsCore(activeGrab, corebit)) {
+            } else if (x11::grabroute::grabWantsCore(routeGrab, corebit)) {
               srv->eventOps().sendButtonEvent(ctx, target, c.isDown != 0, c.button,
                                               rx, ry, buttonsBefore, c.modsMask,
                                               child, toFd);
@@ -1035,46 +1064,50 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           } else {
             // xorg DeliverDeviceEvents: XI2 first; if it delivers via the window's
             // own selection, the core event is suppressed (no double-processing).
-            const bool xi2Sent =
+            deliveredXI2 =
               srv->eventOps().sendXI2ButtonEvent(ctx, target,
                                                  c.isDown != 0, c.button,
                                                  rx, ry, buttonsBefore, c.modsMask,
                                                  child);
-            if (!xi2Sent) {
+            if (!deliveredXI2) {
               srv->eventOps().sendButtonEvent(ctx, target,
                                               c.isDown != 0, c.button,
                                               rx, ry, buttonsBefore, c.modsMask,
                                               child);
             }
+          }
 
-            // xorg ActivateImplicitGrab (dix/events.c:2119-2164) /
-            // ActivatePassiveGrab (:3854-3863): a delivered press with no grab
-            // active starts a grab on the delivery window, at the level the
-            // press was delivered, with that window's mask (owner_events from
-            // OwnerGrabButtonMask) — or with the matched passive record — and
-            // ActivatePointerGrab sends Leave(sprite)/Enter(grab window) with
-            // NotifyGrab when they differ (M17).
-            if (c.isDown && !haveActiveGrab) {
+          // xorg ActivateImplicitGrab (dix/events.c:2119-2164) /
+          // ActivatePassiveGrab (:3854-3863): a delivered press with no active
+          // grab starts a grab — on the delivery window with that window's mask
+          // (owner_events from OwnerGrabButtonMask), or the matched passive
+          // record owned by rClient(grab) (C1).  ActivatePointerGrab sends
+          // Leave(sprite)/Enter(grab window) with NotifyGrab when they differ
+          // (M17).  Runs after delivery in BOTH branches: a passive match is
+          // delivered via the grab, so this used to be skipped (the passive
+          // grab was recorded, but only in the normal-delivery branch).
+          if (c.isDown && !haveActiveGrab) {
+            x11::PointerGrab ig{};
+            if (passiveMatched) {
+              ig.grabWindow  = pg.grabWindow;
+              ig.ownerEvents = pg.ownerEvents;
+              ig.eventMask   = pg.eventMask;
+              ig.owner_fd    = pg.owner_fd;   // C1: the grabbing client
+              ig.is_xi2      = false;
+            } else {
               const x11::WindowView* dv = ctx.window(target);
-              x11::PointerGrab ig{};
-              if (passiveMatched) {
-                ig.grabWindow  = pg.grabWindow;
-                ig.ownerEvents = pg.ownerEvents;
-                ig.eventMask   = pg.eventMask;
-                ig.owner_fd    = dv ? dv->owner_fd : -1;
-                ig.is_xi2      = false;
-              } else if (dv) {
+              if (dv) {
                 ig.grabWindow  = target;
                 ig.ownerEvents = (dv->event_mask & x11::mask::OwnerGrabButton) != 0;
                 ig.eventMask   = (uint16_t)dv->event_mask;
                 ig.owner_fd    = dv->owner_fd;
-                ig.is_xi2      = xi2Sent;
+                ig.is_xi2      = deliveredXI2;
                 ig.xi2mask     = dv->xi2_mask;
                 // Phase C: the grab belongs to the client that RECEIVED the
                 // press (xorg ActivateImplicitGrab records `client` and its
                 // own mask on the window), which with per-client selections
                 // need not be the window's owner.
-                if (xi2Sent) {
+                if (deliveredXI2) {
                   int rfd = -1; uint32_t rmask = 0;
                   if (ctx.windows().firstXI2Selector(target, x11::xi2::kButtonPressMask,
                                                      x11::xi2::kVirtualCorePointer, rfd, rmask)) {
@@ -1089,12 +1122,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                   }
                 }
               }
-              ig.grab_time = x11_now_ms_monotonic();
-              ig.implicit  = true;
-              if (ig.grabWindow && ig.owner_fd >= 0 &&
-                  ctx.grabs().tryPointerGrab(ig) == x11::kGrabSuccess) {
-                x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), under, ig.grabWindow, /*NotifyGrab*/1);
-              }
+            }
+            ig.grab_time = x11_now_ms_monotonic();
+            ig.implicit  = true;
+            if (ig.grabWindow && ig.owner_fd >= 0 &&
+                ctx.grabs().tryPointerGrab(ig) == x11::kGrabSuccess) {
+              x11::grabchoreo::pointerGrabCrossings(ctx, srv->eventOps(), under, ig.grabWindow, /*NotifyGrab*/1);
             }
           }
 
@@ -1200,8 +1233,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 g = x11::PointerGrab{};
                 g.active = true; g.grabWindow = pg.grabWindow; g.ownerEvents = pg.ownerEvents;
                 g.eventMask = pg.eventMask; g.is_xi2 = false; g.implicit = true;
-                const x11::WindowView* gv = ctx.window(pg.grabWindow);
-                g.owner_fd = gv ? gv->owner_fd : -1;
+                g.owner_fd = pg.owner_fd;   // C1: rClient(grab), not the grab window's owner
                 const auto d = x11::grabroute::route(ctx, g, normal);
                 to = d.target; viaGrab = d.viaGrab;
                 if (viaGrab) toFd = g.owner_fd;

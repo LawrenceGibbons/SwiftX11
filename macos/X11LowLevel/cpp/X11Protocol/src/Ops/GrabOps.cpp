@@ -249,6 +249,7 @@ void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t seq, uint8_t ownerEv
   g.modifiers = modifiers;           // 0x8000 => AnyModifier
   g.ownerEvents = (ownerEvents != 0);
   g.eventMask = eventMask;
+  g.owner_fd = ctx.transport().clientFd();   // C1: rClient(grab)
 
   ctx.grabs().addOrReplace(g);
 }

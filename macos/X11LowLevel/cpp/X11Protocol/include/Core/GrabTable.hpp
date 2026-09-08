@@ -22,6 +22,12 @@ struct PassiveGrab {
   uint16_t modifiers = AnyModifier; // 0x8000 => AnyModifier
   bool ownerEvents = false;
   uint16_t eventMask = 0;        // core mask installed when the grab activates
+  int      owner_fd = -1;        // grabbing client (rClient(grab)) — C1: the
+                                 // activated grab and its triggering press are
+                                 // addressed here, not to the grab window's
+                                 // owner (xorg ActivatePassiveGrab →
+                                 // TryClientEvents(rClient(grab), …),
+                                 // dix/events.c:3860).
 };
 
 // Active pointer grab.  Carries the fields of xorg's GrabRec that delivery
