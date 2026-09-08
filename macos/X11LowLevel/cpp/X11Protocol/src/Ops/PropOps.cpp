@@ -555,8 +555,12 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   PropertyTable::Prop p{};
   const bool found = PropertyTable::instance().get(wid, atom, p);
 
-  // “no such property”
-  if (!found || p.format == 0 || p.data.empty()) {
+  // “no such property”.  A ZERO-LENGTH property is still PRESENT (xorg only
+  // takes this path when pProp == NULL): reporting it as None broke the INCR
+  // terminator (a zero-length property of the target type) and flag
+  // properties (review §B6).  Only genuine absence or an invalid stored
+  // format falls here.
+  if (!found || p.format == 0) {
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
       rep[1] = 0;                       // format
       wire::wr32_le(rep.data()+8,  0); // type=None
@@ -566,12 +570,17 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
     return;
   }
 
-  // Type mismatch => empty (but property exists)
+  // Type mismatch => the property's ACTUAL type and format with the full
+  // size in bytesAfter, so the client can re-request with the right type
+  // (xorg ProcGetProperty, dix/property.c:44-56 — it returns pProp->format
+  // and pProp->size, not 0/0; §B5).
   if (reqType != 0 && p.type != reqType) {
+    const uint32_t ub = p.format / 8u;
+    const uint32_t items = ub ? (uint32_t)(p.data.size() / ub) : 0u;
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t,32>& rep) {
-      rep[1] = 0;                          // format = 0
+      rep[1] = p.format;                    // format = actual
       wire::wr32_le(rep.data()+8,  p.type); // type = actual property type
-      wire::wr32_le(rep.data()+12, 0);      // bytesAfter = 0
+      wire::wr32_le(rep.data()+12, items);  // bytesAfter = full size (items, as xorg)
       wire::wr32_le(rep.data()+16, 0);      // nItems = 0
     });
     return;
@@ -639,9 +648,13 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
                                                         payload.size());
   if (!ok) return;
   
-  // Delete property if requested and we returned the entire property starting at offset 0
-  // X11 spec: only delete when entire property is returned (offset 0, no bytes remaining)
-  if (deleteFlag && longOff == 0 && sendOff == 0 && bytesAfter == 0) {
+  // Delete when the client asked and the LAST chunk was returned, whatever
+  // the starting offset (xorg: `if (stuff->delete && reply.bytesAfter == 0)`,
+  // dix/property.c:85).  Requiring offset 0 stalled every chunked INCR read —
+  // the receiver's final GetProperty(delete) has offset > 0, so the property
+  // was never freed and the sender never got PropertyNotify(Deleted) to
+  // advance (review §B5).
+  if (deleteFlag && bytesAfter == 0) {
     PropertyTable::instance().erase(wid, atom);
     // X11 spec: generate PropertyNotify with state=Deleted after deletion
     sendPropertyNotify(ctx, wid, atom, /*deleted*/true);
