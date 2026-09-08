@@ -1001,7 +1001,9 @@ void XProtoDaemon::drainHostCommands() {
         {
           std::array<uint8_t, 32> ev{};
           ev[0] = ext::kRANDR_FirstEvent; // 89 = RRScreenChangeNotify
-          ev[1] = 0;  // rotation (0 = RR_Rotate_0)
+          ev[1] = 1;  // rotation = RR_Rotate_0 (which is the BIT 1<<0, not 0 —
+                      // GetCrtcInfo already reports 1, so this matched neither
+                      // xorg nor the server's own reply; review §A3/§8)
           wire::wr16_le(ev.data() + 2, session.seq);
           wire::wr32_le(ev.data() + 4, now);        // timestamp
           wire::wr32_le(ev.data() + 8, now);        // configTimestamp

@@ -235,7 +235,13 @@ void SelectionOps::xfixesNotifySetOwner(XProtoContext& ctx, uint32_t selection,
     wire::wr32_le(ev + 16, timestamp);                  // timestamp
     wire::wr32_le(ev + 20, timestamp);                  // selectionTimestamp
     // pad2 (offset 24) and pad3 (offset 28) already zero.
-    (void)ctx.transport().sendEvent32(s.window, ev);    // routes to owner_fd of s.window
+    // Deliver to the SUBSCRIBER's transport, not by window owner: xorg's
+    // XFixes delivers straight to e->pClient (xfixes/select.c:79-91).  The
+    // old sendEvent32(s.window) needed a WindowView and routed by owner, so a
+    // subscription on the ROOT window — exactly Java's XClipboard
+    // FlavorListener pattern — was dropped, and a foreign-window subscription
+    // went to the wrong client (review §A3).
+    (void)ctx.transport().sendEventToFd(s.fd, ev, 32);
   }
 }
 
