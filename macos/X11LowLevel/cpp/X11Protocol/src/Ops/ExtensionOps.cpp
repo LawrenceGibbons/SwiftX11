@@ -2140,10 +2140,79 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     // ---- minor 2: XTestFakeInput (void — no reply) ----
     case 2: {
-      // Request: CARD8 type, CARD8 detail, pad16, CARD32 time,
-      //          CARD32 root, pad32, pad32, CARD16 rootX, CARD16 rootY
-      // Silently consume for now — synthesized events not yet routed.
+      // Body (from br, wire offset 4): type(1), detail(1), pad(2), time(4),
+      // root(4), pad(4), pad(4), rootX(2), rootY(2).  xorg feeds the synthesized
+      // event into the normal input pipeline; we do the same via the host-command
+      // bridge, so grabs and routing see it exactly like real input.  `time`
+      // (delay) is honoured as immediate and `root` as the single screen.
+      // Types: KeyPress 2, KeyRelease 3, ButtonPress 4, ButtonRelease 5,
+      // MotionNotify 6 (detail 0 = absolute rootX/rootY, 1 = relative delta).
+      if (br.remaining() < 24) { br.skip(br.remaining()); return; }
+      const uint8_t  type   = br.readU8();
+      const uint8_t  detail = br.readU8();
+      (void)br.readU16();                        // pad
+      (void)br.readU32();                        // time (delay) — immediate
+      (void)br.readU32();                        // root — single screen
+      (void)br.readU32(); (void)br.readU32();    // pad, pad
+      const int16_t  rootX  = br.readI16();
+      const int16_t  rootY  = br.readI16();
       br.skip(br.remaining());
+
+      const uint32_t buttons = ctx.input().buttons;
+      const uint32_t mods    = ctx.input().mods;
+
+      switch (type) {
+        case 2:   // KeyPress
+        case 3: { // KeyRelease
+          // `detail` is an X11 keycode; the Key host-cmd handler adds +8
+          // (mac VK → X11), so pass detail-8.  Route to the keyboard focus:
+          // the handler needs a non-zero host for its guard, so give it the
+          // focus window's toplevel (falling back to the pointer host).
+          if (detail < 8) break;
+          const uint32_t fwin = ctx.input().focus_xid;
+          uint32_t fhost = (fwin && fwin != x11::kRootXid)
+                             ? ctx.windows().topLevelAncestorOf(fwin) : 0;
+          if (!fhost) fhost = (fwin && fwin != x11::kRootXid) ? fwin : ctx.input().last_xid;
+          x11_post_key_event(fhost, type == 2, (uint32_t)(detail - 8), mods,
+                             /*is_repeat=*/false, /*utf8_text=*/nullptr);
+          break;
+        }
+        case 4:   // ButtonPress
+        case 5: { // ButtonRelease
+          // No position in the request — xorg uses the current pointer.  Deliver
+          // at the pointer's host so passive/active grabs and normal routing all
+          // see the real sprite (this is what verifies C1).
+          uint32_t host = ctx.input().last_xid;
+          if (!host) host = ctx.input().focus_host;
+          if (!host) break;
+          x11_post_pointer_button(host, type == 4, detail,
+                                  ctx.input().win_x_u, ctx.input().win_y_u,
+                                  ctx.input().root_x_u, ctx.input().root_y_u,
+                                  buttons, mods);
+          break;
+        }
+        case 6: { // MotionNotify — detail 0 absolute, 1 relative
+          const int32_t nrx = (detail == 1) ? ctx.input().root_x_u + rootX : rootX;
+          const int32_t nry = (detail == 1) ? ctx.input().root_y_u + rootY : rootY;
+          // Toplevel host containing the destination (rootless: root's children).
+          uint32_t host = 0; int32_t lx = nrx, ly = nry;
+          for (uint32_t top : ctx.windows().childrenInStackOrder(x11::kRootXid)) {
+            x11::WindowView vw{};
+            if (!ctx.windows().snapshot(top, vw) || !vw.mapped) continue;
+            const int32_t bw = (int32_t)vw.border_width;
+            if (nrx >= (int32_t)vw.x - bw && nrx < (int32_t)vw.x + (int32_t)vw.w + bw &&
+                nry >= (int32_t)vw.y - bw && nry < (int32_t)vw.y + (int32_t)vw.h + bw) {
+              host = top; lx = nrx - (int32_t)vw.x; ly = nry - (int32_t)vw.y;
+            }
+          }
+          // deliver=1 over a window (postMotion routes + crossings), else a
+          // window-free position update keeps QueryPointer correct.
+          x11_post_pointer_move2(host, lx, ly, nrx, nry, host ? 1 : 0, buttons, mods);
+          break;
+        }
+        default:
+          break;   // unknown fake type — ignore
+      }
       return;
     }
 
