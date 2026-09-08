@@ -27,57 +27,35 @@ uint32_t pickDeepestMappedWindowAtHostPoint(XProtoContext& ctx, uint32_t host_xi
     return host_xid;
   }
 
-  // We’ll pick the deepest window whose rect contains the point.
-  uint32_t best = host_xid;
-  int bestDepth = -1;
-
-  // Consider all descendants + host.
-  std::vector<uint32_t> nodes = ctx.windows().descendantsOf(host_xid);
-  nodes.push_back(host_xid);
-
-  auto depthAndLocal = [&](uint32_t xid, int32_t& lx, int32_t& ly, int& depth) -> bool {
-    lx = host_x;
-    ly = host_y;
-    depth = 0;
-
-    // Walk from xid up to host_xid subtracting offsets.
-    uint32_t cur = xid;
-    int safety = 0;
-    while (cur && cur != host_xid) {
+  // xorg XYToWindow (dix/events.c): descend from the host, at each level
+  // taking the TOPMOST mapped child whose footprint (border included, shape
+  // honoured) contains the point, and stop where no child does.  The old
+  // pick chose "deepest, first found" over every descendant, so among
+  // overlapping siblings the one created first won regardless of stacking:
+  // a window mapped or raised over a sibling under the pointer was never
+  // the sprite window (no crossings, clicks to the covered sibling) —
+  // Phase G, L17 verification (v1.20.0.38).
+  uint32_t cur = host_xid;
+  int32_t lx = host_x, ly = host_y;          // point in cur's content coordinates
+  for (int depth = 0; depth < 64; depth++) {
+    const std::vector<uint32_t> kids = ctx.windows().childrenInStackOrder(cur);   // bottom → top
+    bool descended = false;
+    for (auto it = kids.rbegin(); it != kids.rend(); ++it) {
       WindowView cv{};
-      if (!ctx.windows().snapshot(cur, cv)) return false;
-      lx -= (cv.x + cv.border_width);
-      ly -= (cv.y + cv.border_width);
-      cur = cv.parent_xid;
-      depth++;
-      if (++safety > 64) return false;
+      if (!ctx.windows().snapshot(*it, cv)) continue;
+      if (!isMapped(cv)) continue;
+      const int32_t bw = (int32_t)cv.border_width;
+      const int32_t cx = lx - ((int32_t)cv.x + bw);   // point in the child's content coords
+      const int32_t cy = ly - ((int32_t)cv.y + bw);
+      if (cx < -bw || cy < -bw || cx >= (int32_t)cv.w + bw || cy >= (int32_t)cv.h + bw) continue;
+      if ((cv.input_shaped || cv.bounding_shaped) &&
+          !ctx.windows().isInShapeRegion(*it, (int16_t)cx, (int16_t)cy)) continue;
+      cur = *it; lx = cx; ly = cy; descended = true;
+      break;
     }
-    if (xid != host_xid && cur != host_xid) return false;
-    return true;
-  };
-
-  for (uint32_t xid : nodes) {
-    WindowView vw{};
-    if (!ctx.windows().snapshot(xid, vw)) continue;
-    if (!isMapped(vw)) continue;
-
-    int32_t lx=0, ly=0; int depth=0;
-    if (!depthAndLocal(xid, lx, ly, depth)) continue;
-    // Include border region in hit test (border is part of the window's footprint)
-    const int32_t bw_i = (int32_t)vw.border_width;
-    if (lx < -bw_i || ly < -bw_i || lx >= (int32_t)vw.w + bw_i || ly >= (int32_t)vw.h + bw_i) continue;
-
-    // SHAPE extension: check input/bounding shape containment
-    if ((vw.input_shaped || vw.bounding_shaped) &&
-        !ctx.windows().isInShapeRegion(xid, (int16_t)lx, (int16_t)ly)) continue;
-
-    if (depth > bestDepth) {
-      best = xid;
-      bestDepth = depth;
-    }
+    if (!descended) break;
   }
-
-  return best;
+  return cur;
 }
 
 } // namespace x11
