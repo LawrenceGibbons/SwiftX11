@@ -4,18 +4,33 @@ A native macOS X11 protocol server. X11 clients render into native Cocoa/Metal w
 
 SwiftX11 implements the X11 wire protocol directly, enabling X11 applications — including Xilinx Vivado running in a Linux Docker container — to display on macOS with native window management, Metal-accelerated rendering, and macOS clipboard integration.
 
-**Current version:** v1.19.33
+**Current version:** v1.20.0
+
+## Recent Changes
+
+Highlights since v1.19.33:
+
+- **XInput2 (XI2) — full Stage 2, on by default.** Per-client event selection and fan-out, raw events, active/passive grabs, and crossing/focus semantics verified against the xorg-server source (Phases A–G). Fixes Vitis menus and portal-GTK dialogs.
+- **XKEYBOARD (XKB) extension — on by default.** Byte-exact GetMap/GetNames/GetControls/GetCompatMap, per-client event selection, detectable autorepeat, and `_XKB_RULES_NAMES`. Required for GTK3 to receive keys over XI2; verified live against XQuartz's libX11 1.8.
+- **Comprehensive keyboard mapping** — full macOS virtual-keycode → X11 keysym coverage (letters, digits, punctuation, F1–F20, keypad, navigation, left/right modifiers), 4-column GetKeyboardMapping for Swing/GTK.
+- **Clipboard** — INCR protocol for large (>64KB) transfers, bidirectional X11 ↔ macOS sync (12MB buffers).
+- **Rendering** — ARGB32 component-alpha (subpixel) glyphs, RENDER picture clip rectangles, direction-aware CopyArea overlap.
+- **Input correctness (2026-09-08 review, R0 + R2)** — passive button- and keyboard-grab activation (`GrabButton`/`GrabKey`), `WarpPointer` now generates motion/crossing events, `GrabServer` suspends other clients, `MappingNotify` for all three mapping requests, `XkbStateNotify` on Caps Lock, plus a batch of wire-hygiene fixes (PolyText font shifts, CHAR2B text extents, zero-length properties, selection-owner cleanup).
+- **Ctrl+click → right-click** and Option+click → middle-click made reliable.
+
+See `docs/CLAUDE.md` for the detailed version log.
 
 ## Features
 
-- **80+ X11 core opcodes** — window management, drawing, events, properties, selections, fonts
-- **10 extensions** — SHAPE, RANDR, Xinerama, RENDER, XI2, XTEST, XFIXES, BIG-REQUESTS, XC-MISC, Generic Event
+- **100+ X11 core opcodes** — window management, drawing, events, properties, selections, fonts, keyboard/pointer mapping
+- **13 extensions** — SHAPE, RANDR, Xinerama, RENDER, XI2 (XInput2), XKEYBOARD, XTEST, XFIXES, Composite, DAMAGE, BIG-REQUESTS, XC-MISC, Generic Event
 - **Metal rendering** with partial texture uploads and 20ms damage coalescing
-- **macOS clipboard bridge** — copy/paste between X11 and macOS apps via NSPasteboard
+- **macOS clipboard bridge** — bidirectional copy/paste via NSPasteboard, INCR protocol for large transfers
+- **Full keyboard support** — macOS virtual-keycode → X11 keysym mapping, XKEYBOARD, passive key grabs
 - **Multi-monitor** — real CGDisplay data, dynamic RANDR/Xinerama with reconfiguration callbacks
-- **Multi-client** — concurrent X11 connections with per-client resource tracking
+- **Multi-client** — concurrent X11 connections with per-client resource tracking and event selection
 - **Rootless windows** — each top-level X11 window is a native NSWindow
-- **Font system** — 21 bundled BDF fonts, system PCF loading, macOS CoreText bridge, XLFD glob matching
+- **Font system** — 21 bundled BDF fonts, system PCF loading, macOS CoreText bridge (subpixel glyphs), XLFD glob matching
 - **Wide/dashed lines** — line_width, OnOffDash/DoubleDash, CapNotLast/CapButt
 - **Window type support** — `_NET_WM_WINDOW_TYPE`, `_MOTIF_WM_HINTS`, `WM_TRANSIENT_FOR`
 - **Stage Manager compatible** — transient dialogs appear in the correct Stage Manager stage
@@ -29,7 +44,9 @@ SwiftX11 implements the X11 wire protocol directly, enabling X11 applications �
 | xcalc | Working | Symbol fonts, button widgets |
 | xclock | Working | Timer updates |
 | xfd | Working | Font display with cursor and text fonts |
-| Xilinx Vivado 2025.1 | Working | Java Swing, full IP workflow, dialogs, popups |
+| Xilinx Vivado 2025.1 | Working | Java Swing, full IP workflow, dialogs, popups, hw_ila drag |
+| Xilinx Vitis 2025.1 | Working | Electron/Chromium + GTK, menus, portal-GTK file dialogs (over XI2) |
+| License Manager | Working | Cairo/AWT subpixel glyphs, scrollbars |
 
 ## Build
 
@@ -91,11 +108,9 @@ Swift (AppKit/Metal)          C++ (X11 Protocol)
 ### Protocol
 
 - **Little-endian only** — big-endian client connections are rejected at handshake. All practical X11 clients on modern hardware are little-endian.
-- **INCR protocol** — not implemented. Large clipboard transfers (>65KB) are silently truncated. Affects large copy/paste in Vivado.
 - **MULTIPLE selection target** — not implemented. Multi-target clipboard requests (e.g., `xsel -m`) fail.
 - **AllowEvents / Sync grabs** — all grabs behave as async. The sync/freeze event queue is not implemented. No known client depends on this.
-- **GrabKey** — keyboard passive grabs are stubbed. Accessibility tools that use keyboard grabs won't work.
-- **XKB (X Keyboard Extension)** — not advertised. Clients fall back to core keyboard protocol, which works correctly.
+- **XKEYBOARD dynamic remap** — the served keymap is built once at startup. `xmodmap` changes are seen by core-protocol clients (a `MappingNotify` is broadcast) but XKB-path clients keep the boot keymap until a session restart.
 - **Xauth** — not implemented. Authentication is not required for local display `:1`.
 
 ### Rendering
@@ -109,8 +124,7 @@ Swift (AppKit/Metal)          C++ (X11 Protocol)
 
 ### Window Management
 
-- **Ctrl+click** — does not reliably trigger right-click (button 3) in some contexts. Two-finger trackpad click works as a workaround.
-- **Pointer coordinate offset after left-edge resize** — menu selections may be offset horizontally after resizing a window by dragging its left edge.
+- **Cooperative activation (macOS 14+)** — a newly mapped window comes to the front and takes focus on a real user click, but not when SwiftX11 is only frontmost via scripting or an Xcode launch. This is macOS's cooperative-activation policy, not an X11 issue; normal use is unaffected.
 
 ## Extensions
 
@@ -119,13 +133,16 @@ Swift (AppKit/Metal)          C++ (X11 Protocol)
 | SHAPE | 1.1 | Full — pixel-level clipping, bounding/clip/input shapes |
 | RANDR | 1.3 | Full — dynamic multi-monitor with real display data |
 | Xinerama | 1.1 | Full — per-monitor screen entries |
-| RENDER | 0.11 | Partial — PictFormats, Composite, FillRectangles, SolidFill, Glyphs |
-| XI2 (XInput2) | 2.0 | Partial — RawMotion, DeviceInfo, XI events |
+| RENDER | 0.11 | Partial — PictFormats, Composite, Trapezoids/Triangles, gradients, component-alpha glyphs, picture clips |
+| XI2 (XInput2) | 2.2 | Full — per-client selection/fan-out, raw events, active/passive grabs, crossing/focus semantics (default on) |
+| XKEYBOARD | 1.0 | Full — GetMap/GetNames/GetControls/GetCompatMap, SelectEvents, StateNotify, detectable autorepeat (default on) |
 | XTEST | 2.2 | Full — GetVersion, FakeInput, CompareCursor, GrabControl |
-| XFIXES | 5.0 | Partial — QueryVersion, SelectionNotify |
+| XFIXES | 5.0 | Partial — QueryVersion, SelectionNotify, ChangeSaveSet |
+| Composite | 0.4 | Minimal — advertised, redirect stubs |
+| DAMAGE | 1.1 | Minimal — advertised; internal damage tracking works, DamageNotify not sent |
 | BIG-REQUESTS | — | Full — max 4MB requests |
 | XC-MISC | — | Full — XID range recycling |
-| Generic Event | 1.0 | Minimal — event wrapper infrastructure |
+| Generic Event | 1.0 | Full — GenericEvent (35) dispatch for XI2 cookies |
 
 ## Diagnostics
 
