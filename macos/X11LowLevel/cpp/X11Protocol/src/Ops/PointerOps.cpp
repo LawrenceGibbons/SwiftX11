@@ -19,9 +19,21 @@
 #include <Utils/ByteReader.hpp>        // your ByteReader
 #include "XProtoRegistrar.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/XConstants.hpp"         // x11::error::*
 #include "Core/CoreKeymap.hpp"         // modifier map storage (shared with XKB)
+#include "Transport/XProtoDaemon.hpp"  // sendMappingNotify (C9)
+
+extern "C" x11::XProtoDaemon* x11_proto_bridge_get_daemon(void);   // C9: MappingNotify
 
 namespace x11 {
+
+// Core MappingNotify request codes (X.h).
+enum { kMappingModifier = 0, kMappingKeyboard = 1, kMappingPointer = 2 };
+
+// Is X11 keycode `kc` currently held?  InputState.keymap_ is a 256-bit table.
+static inline bool keyIsHeld(const InputState& in, uint8_t kc) {
+  return (in.keymap_[kc >> 3] >> (kc & 7u)) & 1u;
+}
 
 static inline void put16le(uint8_t* p, uint16_t v) {
   p[0] = (uint8_t)(v & 0xFF);
@@ -54,15 +66,6 @@ static std::array<uint8_t, 32> g_ptrMap = { 1,2,3,4,5,6,7 };
 static inline uint32_t pad4_u32(uint32_t nbytes) {
   return (nbytes + 3u) & ~3u;
 }
-
-// Be permissive for bring-up: accept zeros, duplicates, etc.
-static inline bool validateModifierMap(const uint8_t* map, uint8_t n) {
-  if (n == 0) return false;
-  if (n > kCoreMaxKeysPerModifier) return false;
-  if (!map) return false;
-  return true;
-}
-
 
 static bool validatePointerMap(const uint8_t* map, uint8_t n) {
   if (!map || n == 0) return false;
@@ -148,17 +151,26 @@ void PointerOps::handle(XProtoContext& ctx, DispatchContext& dc)
       br.align4();
       if (br.remaining()) br.skip(br.remaining());
 
-      uint8_t status = MappingSuccess;
-
-      if (n == 0 || n > g_ptrMap.size() || !validatePointerMap(map, n)) {
-        status = MappingFailed;
-      } else {
-        g_ptrMapN = n;
-        std::memset(g_ptrMap.data(), 0, g_ptrMap.size());
-        std::memcpy(g_ptrMap.data(), map, n);
+      // xorg ProcSetPointerMapping (dix/devices.c:1841-1897): the map length
+      // must equal the current button count and every element 0..n with no
+      // duplicate, else BadValue (was a MappingFailed reply); MappingBusy in
+      // the reply status if a button whose mapping changes is held; else apply
+      // and MappingNotify(MappingPointer).
+      if (n != g_ptrMapN || !map || !validatePointerMap(map, n)) {
+        t.sendErrorCore(x11::error::BadValue, seq, n, x11::opcode::SetPointerMapping);
+        return;
       }
 
-      sendReplyHeader(t, seq, status, 0);
+      uint8_t status = MappingSuccess;
+      const uint32_t held = ctx.input().buttons;   // bit i = button i+1
+      for (uint8_t i = 0; i < n; i++) {
+        if (map[i] != g_ptrMap[i] && (held & (1u << i))) { status = MappingBusy; break; }
+      }
+      if (status == MappingSuccess) std::memcpy(g_ptrMap.data(), map, n);
+
+      sendReplyHeader(t, seq, status, 0);   // reply first, then broadcast the event
+      if (status == MappingSuccess)
+        if (auto* d = x11_proto_bridge_get_daemon()) d->sendMappingNotify(kMappingPointer, 0, 0);
       return;
     }
 
@@ -171,14 +183,41 @@ void PointerOps::handle(XProtoContext& ctx, DispatchContext& dc)
       br.align4();
       if (br.remaining()) br.skip(br.remaining());
 
-      uint8_t status = MappingSuccess;
-
-      // (We don't model MappingBusy yet; so never return Busy.)
-      if (!validateModifierMap(keys, n) || !setCoreModifierMap(keys, n)) {
-        status = MappingFailed;
+      // xorg ProcSetModifierMapping / check_modmap_change (dix/devices.c:
+      // 1723-1752, dix/inpututils.c:131-175): a keycode outside [min,max]
+      // (non-zero) → BadValue (was a MappingFailed reply); MappingBusy in the
+      // reply status if any NEW or OLD modifier key is held; else apply and
+      // MappingNotify(MappingModifier).
+      if (n > kCoreMaxKeysPerModifier || (n != 0 && !keys)) {
+        t.sendErrorCore(x11::error::BadValue, seq, n, x11::opcode::SetModifierMapping);
+        return;
+      }
+      for (uint32_t i = 0; i < rawBytes; i++) {
+        const uint8_t kc = keys[i];
+        if (kc != 0 && kc < kCoreMinKeyCode) {
+          t.sendErrorCore(x11::error::BadValue, seq, kc, x11::opcode::SetModifierMapping);
+          return;
+        }
       }
 
-      sendReplyHeader(t, seq, status, 0);
+      uint8_t status = MappingSuccess;
+      const InputState& in = ctx.input();
+      for (uint32_t i = 0; i < rawBytes && status == MappingSuccess; i++)      // new keys held?
+        if (keys[i] && keyIsHeld(in, keys[i])) status = MappingBusy;
+      if (status == MappingSuccess) {                                          // old keys held?
+        uint8_t oldN = 0; const uint8_t* old = coreModifierMap(oldN);
+        for (uint32_t i = 0; i < (uint32_t)oldN * 8u && status == MappingSuccess; i++)
+          if (old[i] && keyIsHeld(in, old[i])) status = MappingBusy;
+      }
+
+      const bool applied = (status == MappingSuccess && n != 0);
+      if (applied) setCoreModifierMap(keys, n);   // range-validated above; cannot fail
+      // n == 0 clears every modifier; our fixed-row model has nothing to store,
+      // so it is a success no-op (no MappingNotify — nothing changed).
+
+      sendReplyHeader(t, seq, status, 0);   // reply first, then broadcast the event
+      if (applied)
+        if (auto* d = x11_proto_bridge_get_daemon()) d->sendMappingNotify(kMappingModifier, 0, 0);
       return;
     }
 

@@ -42,6 +42,14 @@ inline uint8_t macToX11Keycode(uint8_t mac_vk) { return (uint8_t)(mac_vk + 8u); 
 // 256-entry table indexed by X11 keycode (US layout on macOS keycodes).
 const KeySyms4* coreKeyboardMap();
 
+// ChangeKeyboardMapping (opcode 100): overwrite keycodeCount rows from
+// firstKeycode.  Fixed 4 columns (excess truncated, shortfall NoSymbol-padded).
+// Returns false (→ BadValue) for a range outside [kCoreMinKeyCode, kCoreMaxKeyCode].
+// Does NOT rebuild the XKB model (that is E2 / R5) — core clients see the change
+// via GetKeyboardMapping; XKB-path clients stay on the boot keymap until then.
+bool setCoreKeyboardMap(uint8_t firstKeycode, uint8_t keysymsPerKeycode,
+                        uint8_t keycodeCount, const uint32_t* syms);
+
 // Packed modifier map: 8 rows (Shift, Lock, Control, Mod1..Mod5) of
 // `keysPerMod` keycodes each; 0 = empty slot.  Seeds the macOS default
 // (Shift/CapsLock/Control/Option→Mod1/Command→Mod4) on first use.

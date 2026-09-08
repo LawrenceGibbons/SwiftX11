@@ -36,7 +36,7 @@ private:
   static void onMajor(void* user, XProtoContext& ctx, DispatchContext& dc);
   void handle(XProtoContext& ctx, DispatchContext& dc);
 
-  void handleChangeKeyboardMapping(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // 100
+  void handleChangeKeyboardMapping(XProtoContext& ctx, uint16_t seq, uint8_t keyCodeCount, ByteReader& br);  // 100
   void handleChangeKeyboardControl(XProtoContext& ctx, uint16_t seq, ByteReader& br);  // 102
   void handleGetKeyboardControl(XProtoContext& ctx, uint16_t seq, ByteReader& br);     // 103 (reply)
   void handleBell(XProtoContext& ctx, uint16_t seq, ByteReader& br);                   // 104

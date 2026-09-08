@@ -119,6 +119,13 @@ public:
   // (raw events → every root selector, dix/events.c DeliverRawEvent).
   bool sendEventToFd(int fd, const uint8_t* ev, size_t len);
 
+  // C9: broadcast a core MappingNotify (event 34) to EVERY client, restamping
+  // the sequence per target — xorg do_butmap_change / XkbSendLegacyMapNotify
+  // write it to all clients unconditionally (no event-mask selection).
+  // request is Mapping{Modifier=0, Keyboard=1, Pointer=2}; firstKeyCode/count
+  // are meaningful only for Keyboard.
+  void sendMappingNotify(uint8_t request, uint8_t firstKeyCode, uint8_t count);
+
   // C8: GrabServer/UngrabServer.  While a server grab is held, the poll loop
   // services ONLY the grabbing client's fd — every other client's fd is left
   // out of the poll set, so their requests stay buffered in the socket until

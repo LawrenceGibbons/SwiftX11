@@ -295,6 +295,24 @@ bool XProtoDaemon::sendEventToFd(int fd, const uint8_t* ev, size_t len) {
   return cs->client->transport().sendAll(fixed.data(), fixed.size());
 }
 
+void XProtoDaemon::sendMappingNotify(uint8_t request, uint8_t firstKeyCode, uint8_t count) {
+  if (!server_) return;
+  uint8_t ev[32];
+  std::memset(ev, 0, sizeof(ev));
+  ev[0] = 34;                 // MappingNotify
+  ev[4] = request;            // Mapping{Modifier=0, Keyboard=1, Pointer=2}
+  ev[5] = firstKeyCode;
+  ev[6] = count;
+  for (auto& [fd, cs] : clients_) {
+    (void)fd;
+    if (!cs.client) continue;
+    uint8_t fixed[32];
+    std::memcpy(fixed, ev, 32);
+    restampForTarget(fixed, cs.client->transport().lastSeq());   // MappingNotify (34) is restamped
+    (void)cs.client->transport().sendAll(fixed, 32);
+  }
+}
+
 bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
   if (!server_ || !ev || len < 32) return false;
   const x11::WindowView* wv = server_->ctx().window(targetWid);

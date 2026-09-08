@@ -8,6 +8,7 @@
 #include <array>
 #include <cstring>
 #include <cstdio>
+#include <vector>
 
 extern "C" {
 #include "SwiftX11Bridge.h"
@@ -18,8 +19,13 @@ extern "C" {
 #include "Ops/ReplyWriter.hpp"
 #include "Utils/WireLE.hpp"
 #include "Core/X11CoreOpcodes.hpp"
+#include "Core/XConstants.hpp"          // x11::error::*
 #include "Core/XClient.hpp"
+#include "Core/CoreKeymap.hpp"          // setCoreKeyboardMap (C9)
+#include "Transport/XProtoDaemon.hpp"   // sendMappingNotify (C9)
 #include "Utils/MachTime.hpp"
+
+extern "C" x11::XProtoDaemon* x11_proto_bridge_get_daemon(void);   // C9
 
 namespace x11 {
 
@@ -48,7 +54,7 @@ void MiscOps::onMajor(void* user, XProtoContext& ctx, DispatchContext& dc) {
 
 void MiscOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   switch (dc.major) {
-    case x11::opcode::ChangeKeyboardMapping : handleChangeKeyboardMapping(ctx, dc.seq, dc.br); return;
+    case x11::opcode::ChangeKeyboardMapping : handleChangeKeyboardMapping(ctx, dc.seq, dc.minor, dc.br); return;
     case x11::opcode::ChangeKeyboardControl : handleChangeKeyboardControl(ctx, dc.seq, dc.br); return;
     case x11::opcode::GetKeyboardControl    : handleGetKeyboardControl(ctx, dc.seq, dc.br);    return;
     case x11::opcode::Bell                  : handleBell(ctx, dc.seq, dc.br);                  return;
@@ -73,13 +79,43 @@ void MiscOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 }
 
 // =============================================================================
-// ChangeKeyboardMapping (100) — void stub
+// ChangeKeyboardMapping (100) — C9.
+// Body: firstKeycode(1), keysymsPerKeycode(1), pad(2), then
+//       keyCodeCount * keysymsPerKeycode CARD32 keysyms.  keyCodeCount is the
+//       request's second header byte (dc.minor).
+// Updates the core keysym table (GetKeyboardMapping reflects it) and broadcasts
+// MappingNotify(MappingKeyboard).  The XKB model is not rebuilt here (E2/R5),
+// so XKB-path clients keep the boot keymap until then.
 // =============================================================================
-void MiscOps::handleChangeKeyboardMapping(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-#ifdef X11_TRACE_VERBOSE
-  x11_ui_push_log(1, "[MiscOps] ChangeKeyboardMapping (100) stub\n");
-#endif
+void MiscOps::handleChangeKeyboardMapping(XProtoContext& ctx, uint16_t seq,
+                                          uint8_t keyCodeCount, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint8_t firstKeycode      = br.readU8();
+  const uint8_t keysymsPerKeycode = br.readU8();
+  (void)br.readU16();   // pad
+
+  const size_t haveSyms = br.remaining() / 4u;
+  const size_t needSyms = (size_t)keyCodeCount * keysymsPerKeycode;
+
+  // xorg ProcChangeKeyboardMapping (dix/devices.c:1783-1839): BadValue for a
+  // range outside [min,max] or a truncated keysym list.
+  if (keyCodeCount == 0 || keysymsPerKeycode == 0 || haveSyms < needSyms ||
+      firstKeycode < x11::kCoreMinKeyCode ||
+      (int)firstKeycode + (int)keyCodeCount - 1 > (int)x11::kCoreMaxKeyCode) {
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, firstKeycode,
+                                  x11::opcode::ChangeKeyboardMapping);
+    br.skip(br.remaining());
+    return;
+  }
+
+  std::vector<uint32_t> syms(needSyms);
+  for (size_t i = 0; i < needSyms; i++) syms[i] = br.readU32();
   br.skip(br.remaining());
+
+  if (x11::setCoreKeyboardMap(firstKeycode, keysymsPerKeycode, keyCodeCount, syms.data())) {
+    if (auto* d = x11_proto_bridge_get_daemon())
+      d->sendMappingNotify(/*MappingKeyboard*/1, firstKeycode, keyCodeCount);
+  }
 }
 
 // =============================================================================

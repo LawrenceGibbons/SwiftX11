@@ -20,14 +20,18 @@ namespace x11 {
 // Keycode → keysym table
 // ---------------------------------------------------------------------------
 
+// File-scope so setCoreKeyboardMap (ChangeKeyboardMapping, C9) can mutate the
+// very table GetKeyboardMapping serves.
+static KeySyms4 g_keyMap[256];
+static bool g_keyMapInited = false;
+
 const KeySyms4* coreKeyboardMap() {
-  static KeySyms4 map[256];
-  static bool inited = false;
-  if (inited) return map;
-  inited = true;
+  KeySyms4* map = g_keyMap;
+  if (g_keyMapInited) return map;
+  g_keyMapInited = true;
 
   // Default: NoSymbol for all columns
-  for (auto &e : map) { e.syms[0] = e.syms[1] = e.syms[2] = e.syms[3] = XK_NoSymbol; }
+  for (auto &e : g_keyMap) { e.syms[0] = e.syms[1] = e.syms[2] = e.syms[3] = XK_NoSymbol; }
 
   // Set a key with normal and shifted keysyms (columns 3-4 = NoSymbol)
   auto setMac = [&](uint8_t mac_vk, uint32_t lo, uint32_t hi) {
@@ -176,6 +180,32 @@ const KeySyms4* coreKeyboardMap() {
   setMac1(81,  XK_KP_Equal);    // kVK_ANSI_KeypadEquals
 
   return map;
+}
+
+// ChangeKeyboardMapping (opcode 100) — C9.  Overwrite `keycodeCount` rows
+// starting at `firstKeycode` with the client's keysyms.  Our table has a fixed
+// 4 columns (normal/shift/mode/mode+shift); a client sending more is truncated
+// to 4, fewer is padded with NoSymbol.  Returns false (→ BadValue) for a range
+// outside [min,max].  NOTE: the XKB model (Core/XkbKeymap.cpp) is built once
+// and is NOT rebuilt here, so XKB-path clients keep the old keysyms until the
+// dynamic rebuild (E2 / R5); core-path clients (GetKeyboardMapping) see this
+// immediately.
+bool setCoreKeyboardMap(uint8_t firstKeycode, uint8_t keysymsPerKeycode,
+                        uint8_t keycodeCount, const uint32_t* syms) {
+  (void)coreKeyboardMap();   // ensure the table is seeded
+  if (!syms || keycodeCount == 0 || keysymsPerKeycode == 0) return false;
+  if (firstKeycode < kCoreMinKeyCode) return false;
+  if ((int)firstKeycode + (int)keycodeCount - 1 > (int)kCoreMaxKeyCode) return false;
+
+  for (uint8_t k = 0; k < keycodeCount; k++) {
+    KeySyms4& e = g_keyMap[(uint8_t)(firstKeycode + k)];
+    for (uint8_t c = 0; c < kCoreKeysymsPerKeycode; c++) {
+      e.syms[c] = (c < keysymsPerKeycode)
+                    ? syms[(size_t)k * keysymsPerKeycode + c]
+                    : (uint32_t)XK_NoSymbol;
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
