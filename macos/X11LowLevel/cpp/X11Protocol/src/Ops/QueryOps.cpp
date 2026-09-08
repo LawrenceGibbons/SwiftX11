@@ -28,6 +28,7 @@
 #include "Core/GrabTable.hpp"        // keyboard grab → NotifyWhileGrabbed (SetInputFocus)
 #include "Core/XProtoServer.hpp"     // eventOps() for the focus choreography
 #include "Utils/FocusEvents.hpp"     // Phase D: DoFocusEvents
+#include "XProtoNotifyBridge.hpp"    // postMotion — WarpPointer event synthesis (C7)
 
 extern "C" {
 #include "SwiftX11Bridge.h"
@@ -645,34 +646,107 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
   });
 }
 
+// A window's origin in X11 root coordinates.  A top-level's WindowView.x/y are
+// already root coords; a child adds its offset within its host.  Root/None
+// resolve to (0,0).
+static void windowRootOrigin(XProtoContext& ctx, uint32_t win, int32_t& outX, int32_t& outY) {
+  outX = 0; outY = 0;
+  if (win == 0 || win == kRootXid) return;
+  uint32_t host = ctx.windows().topLevelAncestorOf(win);
+  if (host == 0) host = win;
+  WindowView hv{};
+  if (!ctx.windows().snapshot(host, hv)) return;
+  int32_t ox = 0, oy = 0;
+  if (win != host) ctx.windows().absoluteOffsetInHost(host, win, ox, oy);
+  outX = (int32_t)hv.x + ox;
+  outY = (int32_t)hv.y + oy;
+}
+
+// The top-level host whose root-space footprint contains (rx, ry), or 0 for
+// none.  Iterates root's children topmost-last (our stacking order; Cocoa owns
+// normal-window Z, so overlapping normals are approximate — the common warp
+// lands over a single window).
+static uint32_t hostContainingRootPoint(XProtoContext& ctx, int32_t rx, int32_t ry) {
+  uint32_t found = 0;
+  for (uint32_t top : ctx.windows().childrenInStackOrder(kRootXid)) {
+    WindowView vw{};
+    if (!ctx.windows().snapshot(top, vw) || !vw.mapped) continue;
+    const int32_t bw = (int32_t)vw.border_width;
+    if (rx >= (int32_t)vw.x - bw && rx < (int32_t)vw.x + (int32_t)vw.w + bw &&
+        ry >= (int32_t)vw.y - bw && ry < (int32_t)vw.y + (int32_t)vw.h + bw)
+      found = top;   // keep the last (topmost) match
+  }
+  return found;
+}
+
 // ---- 41: WarpPointer ----
-void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
-  // Body (20 bytes):
-  //   CARD32 srcWindow (0=None), CARD32 dstWindow (0=None)
-  //   INT16 srcX, srcY, CARD16 srcWidth, srcHeight
-  //   INT16 dstX, dstY
+// Body (20 bytes): srcWindow(4, 0=None), dstWindow(4, 0=None),
+//                  srcX(2), srcY(2), srcWidth(2), srcHeight(2), dstX(2), dstY(2).
+void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   if (br.remaining() < 20) { br.skip(br.remaining()); return; }
 
-  const uint32_t srcWin  = br.readU32();
-  const uint32_t dstWin  = br.readU32();
-  /*srcX*/ br.readI16(); /*srcY*/ br.readI16();
-  /*srcW*/ br.readU16(); /*srcH*/ br.readU16();
-  const int16_t  dstX    = br.readI16();
-  const int16_t  dstY    = br.readI16();
+  const uint32_t srcWin = br.readU32();
+  const uint32_t dstWin = br.readU32();
+  const int16_t  srcX   = br.readI16();
+  const int16_t  srcY   = br.readI16();
+  const uint16_t srcW   = br.readU16();
+  const uint16_t srcH   = br.readU16();
+  const int16_t  dstX   = br.readI16();
+  const int16_t  dstY   = br.readI16();
   br.skip(br.remaining());
 
-  (void)srcWin; // TODO: honour src-window constraint
+  // Validate src/dst windows — xorg ProcWarpPointer (dix/events.c:3697-3711):
+  // dixLookupWindow on either → BadWindow.  None(0) and root are valid.
+  if (srcWin != 0 && srcWin != kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(srcWin, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, srcWin, x11::opcode::WarpPointer);
+      return;
+    }
+  }
+  if (dstWin != 0 && dstWin != kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(dstWin, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, dstWin, x11::opcode::WarpPointer);
+      return;
+    }
+  }
 
-  // UI queue convention:
-  //   xid == 0: relative warp (x_u/y_u are deltas from current pointer)
-  //   xid != 0: absolute warp in host-window-local coordinates
-  static constexpr uint32_t kRootXid = 0x00000029u;
+  const int32_t curRootX = ctx.input().root_x_u;
+  const int32_t curRootY = ctx.input().root_y_u;
 
+  // Src-window constraint — xorg dix/events.c:3705-3722: with srcWin != None
+  // the pointer must lie within [srcX, srcX+srcWidth] x [srcY, srcY+srcHeight]
+  // of srcWin (a 0 width/height is unbounded on that axis); otherwise the warp
+  // is a silent no-op.  (PointInWindowIsVisible is not modelled — rootless.)
+  if (srcWin != 0) {
+    int32_t sox = 0, soy = 0;
+    windowRootOrigin(ctx, srcWin, sox, soy);
+    if (curRootX < sox + srcX || curRootY < soy + srcY ||
+        (srcW != 0 && sox + srcX + (int32_t)srcW < curRootX) ||
+        (srcH != 0 && soy + srcY + (int32_t)srcH < curRootY)) {
+      return;
+    }
+  }
+
+  // Destination in root coordinates.
+  int32_t newRootX, newRootY;
+  if (dstWin == 0) {                 // relative to the current pointer
+    newRootX = curRootX + dstX;
+    newRootY = curRootY + dstY;
+  } else {                           // relative to dstWin's origin (root for kRootXid)
+    int32_t dox = 0, doy = 0;
+    windowRootOrigin(ctx, dstWin, dox, doy);
+    newRootX = dox + dstX;
+    newRootY = doy + dstY;
+  }
+
+  // Move the OS cursor (Swift CGWarpMouseCursorPosition).  UI queue convention:
+  //   xid == 0 → relative warp (deltas from the current OS cursor)
+  //   xid != 0 → absolute, host-window-local coordinates
   if (dstWin == 0) {
-    // Relative warp
     x11_ui_push_warp_pointer(0, (int32_t)dstX, (int32_t)dstY);
   } else {
-    // Window-relative → host-local coordinates
     uint32_t target = (dstWin == kRootXid) ? 0 : dstWin;
     uint32_t host = 0;
     int32_t offX = 0, offY = 0;
@@ -681,8 +755,33 @@ void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t /*seq*/, ByteReade
       if (host == 0) host = target;
       ctx.windows().absoluteOffsetInHost(host, target, offX, offY);
     }
-    // host==0 means root-relative (treated as screen coordinates by Swift)
     x11_ui_push_warp_pointer(host, (int32_t)dstX + offX, (int32_t)dstY + offY);
+  }
+
+  // Synthesize the motion the warp implies — xorg ProcWarpPointer →
+  // SetCursorPosition(generateEvent=TRUE) → miPointerMove →
+  // GetPointerEvents(MotionNotify) → CheckMotion (mi/mipointer.c:388,744;
+  // dix/events.c:3757): a MotionNotify, the Enter/Leave when the sprite window
+  // changes, and the XI2 RawMotion.  CGWarpMouseCursorPosition emits no OS
+  // mouse-moved event and nothing else would synthesize one, so InputState
+  // would stay stale and Java Robot / warp-based UIs would see a pointer that
+  // "didn't move" (C7).  A zero-distance warp short-circuits like xorg's
+  // miPointerMoveNoEvent.  Canonical button/mod state via the 0xFFFFFFFF
+  // sentinel (postMotion substitutes InputState — M8).
+  if (newRootX != curRootX || newRootY != curRootY) {
+    const uint32_t landHost = hostContainingRootPoint(ctx, newRootX, newRootY);
+    int32_t localX = newRootX, localY = newRootY;
+    uint8_t deliver = 0;
+    if (landHost) {
+      WindowView hv{};
+      if (ctx.windows().snapshot(landHost, hv)) {
+        localX = newRootX - (int32_t)hv.x;
+        localY = newRootY - (int32_t)hv.y;
+        deliver = 1;
+      }
+    }
+    x11::notify::postMotion(landHost, localX, localY, newRootX, newRootY, deliver,
+                            /*buttons*/0xFFFFFFFFu, /*mods*/0xFFFFFFFFu);
   }
 }
 
