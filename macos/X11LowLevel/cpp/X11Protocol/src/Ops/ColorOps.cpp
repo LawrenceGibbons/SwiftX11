@@ -300,23 +300,24 @@ void ColorOps::handleAllocNamedColor(XProtoContext& ctx, uint16_t seq, ByteReade
     }
   }
 
-  uint16_t r = 0, g = 0, b = 0;
-  uint8_t r8 = 255, g8 = 255, b8 = 255;
-  if (x11::lookupColorName(name.c_str(), name.size(), r8, g8, b8)) {
-    r = (uint16_t(r8) << 8) | r8;
-    g = (uint16_t(g8) << 8) | g8;
-    b = (uint16_t(b8) << 8) | b8;
-  } else {
-    // Unknown -> white fallback (bring-up)
-    r = g = b = 0xFFFF;
+  // An unknown color name is BadName (xorg dix/colormap.c → OsLookupColor),
+  // not a silent white success (review §B7).
+  uint8_t r8 = 0, g8 = 0, b8 = 0;
+  if (!x11::lookupColorName(name.c_str(), name.size(), r8, g8, b8)) {
+    ctx.transport().sendErrorCore(x11::error::BadName, seq, 0, x11::opcode::AllocNamedColor);
+    return;
   }
+  const uint16_t r = (uint16_t(r8) << 8) | r8;
+  const uint16_t g = (uint16_t(g8) << 8) | g8;
+  const uint16_t b = (uint16_t(b8) << 8) | b8;
 
   uint32_t pixel = 0;
   {
     std::lock_guard<std::mutex> lock(cmapMu());
     cmapState().ensureCreated(cmap);
+    // pixel 0 is valid TrueColor black — do NOT reassign it (the old
+    // `if (pixel == 0) allocPixel()` handed "black" a random dark pixel).
     pixel = packRGB16ToPixel24(r, g, b);
-    if (pixel == 0) pixel = cmapState().allocPixel();
   }
 
   (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
@@ -479,10 +480,11 @@ void ColorOps::handleLookupColor(XProtoContext& ctx, uint16_t seq, ByteReader& b
     }
   }
 
+  // Unknown name → BadName (review §B7), not a white success.
   uint8_t r8 = 0, g8 = 0, b8 = 0;
   if (!x11::lookupColorName(name.c_str(), name.size(), r8, g8, b8)) {
-    // Unknown color -> return white
-    r8 = g8 = b8 = 255;
+    ctx.transport().sendErrorCore(x11::error::BadName, seq, 0, x11::opcode::LookupColor);
+    return;
   }
 
   const uint16_t r = (uint16_t(r8) << 8) | r8;

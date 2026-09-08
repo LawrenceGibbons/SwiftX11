@@ -359,40 +359,22 @@ void FontOps::handleQueryFont(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
       return;
     }
 
-    // X11 QueryTextExtents request:
-    //  - oddLength==0: CHAR2B stream (2 bytes each)
-    //  - oddLength==1: CHAR8 stream, padded to even total bytes after font id
+    // X11 QueryTextExtents (xorg ProcQueryTextExtents, dix/dispatch.c): the
+    // string is ALWAYS CHAR2B (byte1 high, byte2 low).  `oddLength` does NOT
+    // switch to an 8-bit stream — it means the CHAR2B count is odd, so one
+    // trailing pair is 4-byte alignment padding and the real count is one
+    // fewer.  The old code read the padded stream as CHAR8 for oddLength=1,
+    // doubling glyph counts/widths for Xt/Motif metric probes (review §G11).
     std::vector<uint16_t> codes;
-
-    if (!oddLength) {
-      // CHAR2B stream (byte1, byte2)
-      const size_t n2 = br.remaining() / 2;
-      codes.reserve(n2);
-      for (size_t i = 0; i < n2; i++) {
-        const uint8_t b1 = br.readU8();
-        const uint8_t b2 = br.readU8();
-        const uint16_t code = (uint16_t(b1) << 8) | uint16_t(b2);
-        codes.push_back(code);
-      }
-      // Defensive: consume any trailing odd byte (should not happen)
-      br.skip(br.remaining());
-    } else {
-      // CHAR8 stream; if remaining is odd, last byte is pad to 2-byte boundary.
-      size_t n1 = br.remaining();
-      const bool hasPad = (n1 & 1u) != 0;
-      if (hasPad) n1 -= 1;
-
-      codes.reserve(n1);
-      for (size_t i = 0; i < n1; i++) {
-        const uint8_t b = br.readU8();
-        codes.push_back(uint16_t(b));
-      }
-
-      if (hasPad && br.remaining() > 0) {
-        (void)br.readU8(); // consume pad
-      }
-      br.skip(br.remaining());
+    size_t nchars = br.remaining() / 2;
+    if (oddLength && nchars > 0) nchars -= 1;   // drop the padding pair
+    codes.reserve(nchars);
+    for (size_t i = 0; i < nchars; i++) {
+      const uint8_t b1 = br.readU8();
+      const uint8_t b2 = br.readU8();
+      codes.push_back((uint16_t(b1) << 8) | uint16_t(b2));
     }
+    br.skip(br.remaining());
 
     // Compute extents
     int32_t overallWidth = 0;

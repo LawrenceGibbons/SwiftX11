@@ -229,6 +229,18 @@ ClientSession* XProtoDaemon::findClient(int fd) {
   return (it != clients_.end()) ? &it->second : nullptr;
 }
 
+// KeymapNotify (type 11) is the only core event with NO sequence field — its
+// bytes 2-3 are part of the key-down bitmap (keycodes 16-31, xorg
+// WriteEventsToClient skips it, dix/events.c:6083).  Every other event is
+// stamped with the target client's last sequence so its monotonic wire floor
+// isn't poisoned by a foreign sequence (review 2026-09-08 §B2 — restamping a
+// KeymapNotify clobbered the letter-row bitmap).
+static inline void restampForTarget(uint8_t* ev, uint16_t targetSeq) {
+  if ((ev[0] & 0x7Fu) == 11) return;   // KeymapNotify — leave bytes 2-3
+  ev[2] = static_cast<uint8_t>(targetSeq & 0xFF);
+  ev[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+}
+
 bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]) {
   if (!server_ || !ev) return false;
   const x11::WindowView* wv = server_->ctx().window(targetWid);
@@ -248,9 +260,7 @@ bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]
   // corrupting all subsequent replies and causing XCB desync crashes.
   uint8_t fixed[32];
   std::memcpy(fixed, ev, 32);
-  uint16_t targetSeq = cs->client->transport().lastSeq();
-  fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
-  fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+  restampForTarget(fixed, cs->client->transport().lastSeq());
   return cs->client->transport().sendAll(fixed, 32);
 }
 
@@ -268,9 +278,7 @@ bool XProtoDaemon::sendEventToSelectors(uint32_t wid, uint32_t bit,
     if (!cs || !cs->client) continue;  // stale fd (disconnected) — skip
     uint8_t fixed[32];
     std::memcpy(fixed, ev, 32);
-    uint16_t targetSeq = cs->client->transport().lastSeq();
-    fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
-    fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+    restampForTarget(fixed, cs->client->transport().lastSeq());
     if (cs->client->transport().sendAll(fixed, 32)) any = true;
   }
   return any;
@@ -283,9 +291,7 @@ bool XProtoDaemon::sendEventToFd(int fd, const uint8_t* ev, size_t len) {
   // Same per-target sequence restamp as sendEventCrossClient: a foreign
   // sequence would poison the target's monotonic wire floor.
   std::vector<uint8_t> fixed(ev, ev + len);
-  const uint16_t targetSeq = cs->client->transport().lastSeq();
-  fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
-  fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+  restampForTarget(fixed.data(), cs->client->transport().lastSeq());
   return cs->client->transport().sendAll(fixed.data(), fixed.size());
 }
 
@@ -299,9 +305,7 @@ bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_
 
   // Restamp sequence for target transport (same rationale as above).
   std::vector<uint8_t> fixed(ev, ev + len);
-  uint16_t targetSeq = cs->client->transport().lastSeq();
-  fixed[2] = static_cast<uint8_t>(targetSeq & 0xFF);
-  fixed[3] = static_cast<uint8_t>((targetSeq >> 8) & 0xFF);
+  restampForTarget(fixed.data(), cs->client->transport().lastSeq());
   return cs->client->transport().sendAll(fixed.data(), fixed.size());
 }
 

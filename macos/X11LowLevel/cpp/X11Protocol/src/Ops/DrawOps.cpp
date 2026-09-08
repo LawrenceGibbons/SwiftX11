@@ -1318,25 +1318,35 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
             f->name.c_str());
 #endif
 
-    // Parse items until end of request body.
-    while (br.remaining() >= 2) {
+    // Parse items until end of request body.  A TEXTITEM8 is [len][delta][str];
+    // a font-shift item is [255][4-byte font, MSB first] with NO delta byte
+    // (xorg doPolyText, dix/dixfonts.c; FontShiftSize = 5).  The old loop read
+    // a delta unconditionally and the font as CARD32 little-endian, so a shift
+    // consumed 6 bytes and swallowed the top font byte plus one byte of the
+    // next item — the first shift in any XDrawText shredded the rest of the
+    // stream and garbled multi-font Motif/Xt text (review 2026-09-08 §0.2).
+    bool fontChanged = false;
+    while (br.remaining() >= 1) {
       const uint8_t len = br.readU8();
-      const int8_t  delta = (int8_t)br.readU8();
-
-      penX += (int32_t)delta;
-
-      if (len == 0) continue;
 
       if (len == 255) {
-        // Font change item: CARD32 font
+        // Font-shift item: CARD32 font, big-endian (X11 wire order).
         if (br.remaining() < 4) { br.skip(br.remaining()); break; }
-        const uint32_t newFont = br.readU32();
+        const uint8_t b3 = br.readU8(), b2 = br.readU8(), b1 = br.readU8(), b0 = br.readU8();
+        const uint32_t newFont = ((uint32_t)b3 << 24) | ((uint32_t)b2 << 16)
+                               | ((uint32_t)b1 << 8)  |  (uint32_t)b0;
         gc.font = newFont;
+        fontChanged = true;
         const x11::font::BdfFont* nf = resolveFont(ctx, gc);
-        if (nf) f = nf;
+        if (nf) f = nf;   // unknown fid: keep drawing with the current font
         continue;
       }
 
+      if (br.remaining() < 1) break;      // need the delta byte
+      const int8_t delta = (int8_t)br.readU8();
+      penX += (int32_t)delta;
+
+      if (len == 0) continue;
       if (br.remaining() < len) { br.skip(br.remaining()); break; }
 
 #if X11_TRACE_FONT_ENABLED
@@ -1369,6 +1379,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     }
 
     br.skip(br.remaining());
+
+    // xorg's doPolyText commits the last font shift back to the GC.
+    if (fontChanged) x11::GCTable::instance().upsert(gc);
 
     if (dst.isWindow) {
       // PolyText8: computing exact glyph bounding box is complex; use full drawable.
@@ -1711,22 +1724,29 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     const bool useAA = x11::font::antialiasedFonts();
 
-    while (br.remaining() >= 2) {
+    // TEXTITEM16 = [len][delta][CHAR2B×len]; font-shift = [255][4-byte font,
+    // MSB first], no delta (as PolyText8 above — review 2026-09-08 §0.2).
+    bool fontChanged = false;
+    while (br.remaining() >= 1) {
       const uint8_t len = br.readU8();
-      const int8_t  delta = (int8_t)br.readU8();
-
-      penX += (int32_t)delta;
-
-      if (len == 0) continue;
 
       if (len == 255) {
         if (br.remaining() < 4) { br.skip(br.remaining()); break; }
-        const uint32_t newFont = br.readU32();
+        const uint8_t b3 = br.readU8(), b2 = br.readU8(), b1 = br.readU8(), b0 = br.readU8();
+        const uint32_t newFont = ((uint32_t)b3 << 24) | ((uint32_t)b2 << 16)
+                               | ((uint32_t)b1 << 8)  |  (uint32_t)b0;
         gc.font = newFont;
+        fontChanged = true;
         const x11::font::BdfFont* nf = resolveFont(ctx, gc);
         if (nf) f = nf;
         continue;
       }
+
+      if (br.remaining() < 1) break;      // need the delta byte
+      const int8_t delta = (int8_t)br.readU8();
+      penX += (int32_t)delta;
+
+      if (len == 0) continue;
 
       // Each CHAR2B is 2 bytes
       if (br.remaining() < (size_t)len * 2u) { br.skip(br.remaining()); break; }
@@ -1755,6 +1775,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     }
 
     br.skip(br.remaining());
+
+    if (fontChanged) x11::GCTable::instance().upsert(gc);
 
     if (dst.isWindow) {
       damageOrDirty(ctx, drawable, 0, 0, (int32_t)dst.w, (int32_t)dst.h);
