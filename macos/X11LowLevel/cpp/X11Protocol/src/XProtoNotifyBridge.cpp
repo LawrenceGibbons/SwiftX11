@@ -384,97 +384,15 @@ namespace x11 {
   {
     
     
-    // If host window itself doesn't exist, bail.
-    WindowView host{};
-    if (!ctx.windows().snapshot(host_xid, host)) return 0;
-    
-    // Gather subtree (children, grandchildren, ...)
-    std::vector<uint32_t> nodes = ctx.windows().descendantsOf(host_xid);
-    
-    // Include the host window itself as a candidate.
-    nodes.push_back(host_xid);
-    
-    // Pick the deepest window that contains the point, preferring children over parents.
-    // We do this by tracking "depth": number of ancestors between host and window.
-    uint32_t best = host_xid;
-    int bestDepth = -1;
-    int16_t bestX = 0, bestY = 0;
-    
-    // Pre-snapshot host geometry for relative coords.
-    // Your Swift coords are in the host view’s coordinate system, so host is origin.
-    // We'll treat host local coords = (x_px, y_px).
-    for (uint32_t xid : nodes) {
-      WindowView vw{};
-      if (!ctx.windows().snapshot(xid, vw)) continue;
-      if (!vw.mapped) continue;
-      
-      // Compute depth relative to host by walking parents (using snapshots)
-      int depth = 0;
-      uint32_t p = vw.parent_xid;
-      while (p && p != host_xid) {
-        WindowView pv{};
-        if (!ctx.windows().snapshot(p, pv)) { depth = -1; break; }
-        p = pv.parent_xid;
-        depth++;
-        if (depth > 64) { depth = -1; break; } // safety
-      }
-      if (depth < 0) continue;
-      if (xid != host_xid && p != host_xid) continue; // not actually in subtree chain
-      
-      // Convert point into this window's parent coordinate space and test containment.
-      // For now: assume all child coords are relative to host (not strictly true).
-      // Better: walk down and subtract ancestor offsets. We'll do the correct version below.
-    }
-    
-    // Correct version: compute local coords by subtracting ancestor offsets.
-    auto contains = [&](uint32_t xid, WindowView& vw, int32_t& outLocalX, int32_t& outLocalY, int& outDepth) -> bool {
-      outLocalX = x_px;
-      outLocalY = y_px;
-      outDepth = 0;
-      
-      uint32_t cur = xid;
-      while (cur && cur != host_xid) {
-        WindowView cv{};
-        if (!ctx.windows().snapshot(cur, cv)) return false;
-        // subtract this window's offset in its parent (including border_width)
-        outLocalX -= (cv.x + cv.border_width);
-        outLocalY -= (cv.y + cv.border_width);
-        cur = cv.parent_xid;
-        outDepth++;
-        if (outDepth > 64) return false;
-      }
-      if (cur != host_xid && xid != host_xid) return false;
-      
-      // Now outLocalX/outLocalY are in xid's local (drawable) coords.
-      // Include border region in hit test (border is part of the window's footprint).
-      const int32_t bw_i = (int32_t)vw.border_width;
-      return (outLocalX >= -bw_i && outLocalY >= -bw_i &&
-              outLocalX < (int32_t)vw.w + bw_i &&
-              outLocalY < (int32_t)vw.h + bw_i);
-    };
-    
-    for (uint32_t xid : nodes) {
-      WindowView vw{};
-      if (!ctx.windows().snapshot(xid, vw)) continue;
-      if (!vw.mapped) continue;
-      
-      int32_t lx = 0, ly = 0;
-      int depth = 0;
-      if (!contains(xid, vw, lx, ly, depth)) continue;
+    // Sprite window under the pointer — the SAME stacking-aware pick every
+    // other hit test uses (pickDeepestMappedWindowAtHostPoint = xorg
+    // XYToWindow / miSpriteTrace).  This duplicate picker chose
+    // deepest-by-depth, first-found among overlapping same-depth siblings, so
+    // motion could be delivered to a covered sibling while crossings tracked
+    // the topmost window (review §C4).
+    const uint32_t best = pickDeepestMappedWindowAtHostPoint(ctx, host_xid, x_px, y_px);
+    if (!best) return 0;
 
-      // SHAPE extension: check input/bounding shape containment
-      if ((vw.input_shaped || vw.bounding_shaped) &&
-          !ctx.windows().isInShapeRegion(xid, (int16_t)lx, (int16_t)ly)) continue;
-
-      // Prefer deepest window.
-      if (depth > bestDepth) {
-        best = xid;
-        bestDepth = depth;
-        bestX = (int16_t)lx;
-        bestY = (int16_t)ly;
-      }
-    }
-    
     // Build motion mask: PointerMotionMask always, plus button-specific
     // masks when buttons are pressed (e.g., ButtonMotionMask for Xaw
     // SimpleMenu highlighting via <BtnMotion> translation).

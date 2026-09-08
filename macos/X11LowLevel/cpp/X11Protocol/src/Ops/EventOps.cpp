@@ -206,6 +206,12 @@ static bool deliverXI2(x11::XProtoContext& ctx, uint32_t wid, uint8_t* buf, size
   if (force)     { (void)ctx.transport().sendEventVariable(wid, buf, len); return true; }
 
   std::vector<int> fds = ctx.windows().xi2SelectorsOf(wid, bit, deviceid);
+  // Whether the WINDOW's own XI2 selection consumed the event.  A delivery
+  // that happened ONLY through the root-selection fallback must NOT suppress
+  // the core twin — otherwise a client that core-selected the event on this
+  // window loses it because some other client root-XI2-selected (review
+  // §A5/D1; the doc's "return own keeps core flowing" describes THIS).
+  const bool ownSelection = !fds.empty();
   if (fds.empty()) {
     if (!propagates) return false;
     fds = ctx.input().rootXI2SelectorsOf(bit, deviceid);
@@ -219,7 +225,7 @@ static bool deliverXI2(x11::XProtoContext& ctx, uint32_t wid, uint8_t* buf, size
     std::memcpy(buf + 40, buf + 32, 8);   // event_x/y = root_x/y
   }
   for (int fd : fds) (void)ctx.transport().sendEventToFd(fd, buf, len);
-  return true;
+  return ownSelection;
 }
 
 static void buildButtonEvent32(uint8_t ev[32],
