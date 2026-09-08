@@ -28,6 +28,12 @@ public:
   /// macOS-clipboard bridge) is preserved.
   static void clearOwnersOwnedBy(uint32_t clientBase, uint32_t clientMask);
 
+  // A window that owns a selection is being destroyed: drop its ownership so
+  // GetSelectionOwner stops returning a corpse and ConvertSelection falls back
+  // to the macOS-clipboard bridge instead of forwarding a SelectionRequest to a
+  // dead window (which the requestor waits ~10 s to time out — review §G2).
+  static void clearOwnerWindow(uint32_t wid);
+
   /// INCR receive (server-as-requestor): large X11→macOS clipboard
   /// captures arrive as chunked INCR transfers.  PropOps calls these from
   /// ChangeProperty so each chunk written to the proxy requestor (root)

@@ -169,6 +169,18 @@ void SelectionOps::clearOwnersOwnedBy(uint32_t clientBase, uint32_t clientMask) 
 }
 
 // ---------------------------------------------------------------------------
+// Drop selection ownership held by a single destroyed window (§G2).
+// ---------------------------------------------------------------------------
+void SelectionOps::clearOwnerWindow(uint32_t wid) {
+  if (wid <= 1) return;   // 0 = None, 1 = root proxy (macOS bridge) — keep
+  std::lock_guard<std::mutex> lk(sSelMtx);
+  for (auto it = sSelOwner.begin(); it != sSelOwner.end(); ) {
+    if (it->second == wid) it = sSelOwner.erase(it);
+    else                   ++it;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // XFIXES SelectionNotify subscriptions (M4).
 // Modeled on xorg xfixes/select.c.  Accessed only from the single xproto
 // dispatch thread, so no lock is needed on the subscription vector.
@@ -278,22 +290,25 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
           (unsigned)selection, (unsigned)owner, (unsigned)time);
 #endif
 
+  // xorg ClientTimeToServerTime: CurrentTime (0) is resolved to the current
+  // server time BEFORE it is stored and compared (dix/selection.c:153-191).
+  // Storing 0 defeated the ICCCM stale-owner guard and let a TIMESTAMP target
+  // serve 0 (review §G3).
+  const uint32_t reqTime = time ? time : x11_now_ms_monotonic();
+
   uint32_t prevOwner = 0;
   {
     std::lock_guard<std::mutex> lk(sSelMtx);
 
-    // ICCCM timestamp validation: if time is not CurrentTime (0) and is
-    // earlier than the last SetSelectionOwner time, ignore the request.
-    if (time != 0) {
-      auto tIt = sSelTime.find(selection);
-      if (tIt != sSelTime.end() && tIt->second != 0) {
-        // Compare as unsigned (X11 timestamps wrap at 2^32)
-        int32_t diff = (int32_t)(time - tIt->second);
-        if (diff < 0) {
-          TS_DBG("[SEL] SetSelectionOwner REJECTED: time %u < last %u\n",
-                  (unsigned)time, (unsigned)tIt->second);
-          return;
-        }
+    // Ignore an owner change whose time predates the last change (ICCCM).
+    auto tIt = sSelTime.find(selection);
+    if (tIt != sSelTime.end() && tIt->second != 0) {
+      // Compare as unsigned (X11 timestamps wrap at 2^32)
+      int32_t diff = (int32_t)(reqTime - tIt->second);
+      if (diff < 0) {
+        TS_DBG("[SEL] SetSelectionOwner REJECTED: time %u < last %u\n",
+                (unsigned)reqTime, (unsigned)tIt->second);
+        return;
       }
     }
 
@@ -304,7 +319,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     } else {
       sSelOwner[selection] = owner;
     }
-    sSelTime[selection] = time;
+    sSelTime[selection] = reqTime;
   }
 
   // If previous owner was different and non-zero, send SelectionClear (type 29)

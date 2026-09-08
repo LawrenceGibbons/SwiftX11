@@ -31,6 +31,7 @@
 #include "Core/XProtoServer.hpp"
 #include "Utils/FocusEvents.hpp"   // Phase D: focus revert choreography
 #include "XProtoNotifyBridge.hpp"   // windowsRestructured (L17)
+#include "Ops/SelectionOps.hpp"    // clearOwnerWindow on destroy (§G2)
 #include <cstdio>   // snprintf
 
 // WM-emulation state cleanup on unmap/destroy (defined in XProtoServerBridge.cpp).
@@ -713,6 +714,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
         (void)ctx.transport().sendEventToSelectors(c, x11::mask::StructureNotify, ev.data());
       }
       ctx.grabs().removeForWindows({c});
+      x11::SelectionOps::clearOwnerWindow(c);
       ctx.windows().erase(c);
       x11::PropertyTable::instance().eraseWindow(c);
       x11_ui_push_destroy(c);
@@ -721,6 +723,10 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
 
   // 1) Clear any grabs referencing this window (passive + active)
   ctx.grabs().removeForWindows({wid});
+
+  // 1b) Drop any selection this window owned (§G2) so a paste doesn't block
+  //     on a dead owner.
+  x11::SelectionOps::clearOwnerWindow(wid);
 
   // 2) Authoritative C++ state
   ctx.windows().erase(wid);
