@@ -19,6 +19,7 @@
 #include "Core/XProtoServer.hpp"        // owns ctx_, eventOps_, transport_
 #include "Core/XI2EventMask.hpp"
 #include "Core/XConstants.hpp"
+#include "Core/X11ExtOpcodes.hpp"       // kXKB_FirstEvent (E1: XkbStateNotify)
 #include "Ops/EventOps.hpp"
 #include "Utils/GrabRoute.hpp"        // Phase B2: grab-time routing (xorg DeliverGrabbedEvent)
 #include "Utils/GrabChoreography.hpp" // implicit-grab activation / release crossings
@@ -1334,6 +1335,44 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t evMods = ctx.input().mods;
           ctx.input().mods = c.modsMask;
           const bool isRepeat = (c.isRepeat != 0);   // XI2 XIKeyRepeat flag
+
+          // E1 (XkbStateNotify): a modifier/lock state change is broadcast to
+          // XKB clients that selected it — GTK reads XkbModifierLockMask for its
+          // "Caps Lock is on" hint (xorg XkbSendStateNotify, xkb/xkbEvents.c:
+          // 201-254).  Observable here because flagsChanged forwards every
+          // modifier transition (Caps Lock included) as a key event.
+          {
+            const uint8_t oldX = (uint8_t)(x11::input::toX11State(0, evMods) & 0xFFu);
+            const uint8_t newX = (uint8_t)(x11::input::toX11State(0, c.modsMask) & 0xFFu);
+            if (oldX != newX) {
+              constexpr uint8_t  kLockBit = 0x02;   // X11 LockMask
+              constexpr uint16_t kMState = 0x0001, kMBase = 0x0002, kMLock = 0x0008;
+              uint16_t changed = kMState;
+              if ((uint8_t)(newX & ~kLockBit) != (uint8_t)(oldX & ~kLockBit)) changed |= kMBase;
+              if ((uint8_t)(newX &  kLockBit) != (uint8_t)(oldX &  kLockBit)) changed |= kMLock;
+              if (auto* d = x11_proto_bridge_get_daemon()) {
+                uint8_t ev[32]; std::memset(ev, 0, sizeof(ev));
+                ev[0]  = x11::ext::kXKB_FirstEvent;            // 111
+                ev[1]  = 2;                                    // xkbType = XkbStateNotify
+                const uint32_t tms = x11_now_ms_monotonic();
+                ev[4] = (uint8_t)(tms & 0xFF);        ev[5] = (uint8_t)((tms >> 8) & 0xFF);
+                ev[6] = (uint8_t)((tms >> 16) & 0xFF); ev[7] = (uint8_t)((tms >> 24) & 0xFF);
+                ev[8]  = 3;                                    // deviceID = master keyboard
+                ev[9]  = newX;                                 // mods (effective)
+                ev[10] = (uint8_t)(newX & ~kLockBit);          // baseMods
+                ev[12] = (uint8_t)(newX &  kLockBit);          // lockedMods
+                ev[19] = newX;                                 // compatState
+                ev[20] = newX;                                 // grabMods
+                ev[21] = newX;                                 // compatGrabMods
+                ev[22] = newX;                                 // lookupMods
+                ev[23] = newX;                                 // compatLookupMods
+                ev[26] = (uint8_t)(changed & 0xFF); ev[27] = (uint8_t)((changed >> 8) & 0xFF); // changed
+                ev[28] = x11_kc;                               // keycode
+                ev[29] = c.isDown ? 2 : 3;                     // eventType (KeyPress/KeyRelease)
+                d->sendXkbStateNotify(changed, ev);
+              }
+            }
+          }
 
           // xorg EventIsDeliverable: deliverable via the window's own XI2 mask
           // OR its core mask.  GTK3 under XI2 selects keys only via XI2, so

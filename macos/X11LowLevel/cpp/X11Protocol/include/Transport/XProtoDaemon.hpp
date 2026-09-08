@@ -126,6 +126,13 @@ public:
   // are meaningful only for Keyboard.
   void sendMappingNotify(uint8_t request, uint8_t firstKeyCode, uint8_t count);
 
+  // E1: broadcast a pre-built 32-byte XkbStateNotify (event 111) to every
+  // client whose XKB stateNotifyMask intersects `changed` — xorg
+  // XkbSendStateNotify (xkb/xkbEvents.c:237-254) gates delivery on
+  // `interest->stateNotifyMask & changed`.  The caller builds every field
+  // except the per-client sequence (restamped here).
+  void sendXkbStateNotify(uint16_t changed, const uint8_t evTemplate[32]);
+
   // C8: GrabServer/UngrabServer.  While a server grab is held, the poll loop
   // services ONLY the grabbing client's fd — every other client's fd is left
   // out of the poll set, so their requests stay buffered in the socket until
