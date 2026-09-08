@@ -62,6 +62,57 @@ bool GrabTable::match(uint32_t grabWindow, uint8_t button, uint16_t modifiers, P
   return true;
 }
 
+// ---- Passive keyboard grabs (GrabKey/UngrabKey) — C2 ----
+
+void GrabTable::addOrReplaceKey(const PassiveKeyGrab& g) {
+  std::lock_guard<std::mutex> lock(mu_);
+  for (auto& e : passiveKeys_) {
+    if (e.grabWindow == g.grabWindow && e.key == g.key && e.modifiers == g.modifiers) {
+      e = g;
+      return;
+    }
+  }
+  passiveKeys_.push_back(g);
+}
+
+void GrabTable::removeKey(uint32_t grabWindow, uint8_t key, uint16_t modifiers) {
+  std::lock_guard<std::mutex> lock(mu_);
+  for (size_t i = 0; i < passiveKeys_.size(); ) {
+    const auto& e = passiveKeys_[i];
+    if (e.grabWindow == grabWindow &&
+        (key == AnyKey || e.key == key) &&
+        (modifiers == AnyModifier || e.modifiers == modifiers)) {
+      passiveKeys_.erase(passiveKeys_.begin() + (long)i);
+      continue;
+    }
+    i++;
+  }
+}
+
+bool GrabTable::matchKey(uint32_t grabWindow, uint8_t key, uint16_t modifiers, PassiveKeyGrab& out) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  // Prefer most-specific: exact key+mods > anykey/exactmods > exactkey/anymods.
+  auto score = [&](const PassiveKeyGrab& g) -> int {
+    if (g.grabWindow != grabWindow) return -1;
+    const bool keyOK = (g.key == AnyKey || g.key == key);
+    const bool modOK = (g.modifiers == AnyModifier || g.modifiers == modifiers);
+    if (!keyOK || !modOK) return -1;
+    int s = 0;
+    if (g.key != AnyKey) s += 2;
+    if (g.modifiers != AnyModifier) s += 1;
+    return s;
+  };
+  int bestS = -1;
+  const PassiveKeyGrab* best = nullptr;
+  for (const auto& g : passiveKeys_) {
+    const int s = score(g);
+    if (s > bestS) { bestS = s; best = &g; }
+  }
+  if (!best) return false;
+  out = *best;
+  return true;
+}
+
 uint8_t GrabTable::tryPointerGrab(const PointerGrab& req) {
   std::lock_guard<std::mutex> lock(mu_);
   if (pointer_.active) {
@@ -161,6 +212,7 @@ bool GrabTable::getKeyboardGrabInfo(KeyboardGrab& out) const {
 void GrabTable::clearAll() {
   std::lock_guard<std::mutex> lock(mu_);
   passive_.clear();
+  passiveKeys_.clear();
   pointer_ = PointerGrab{};
   keyboard_ = KeyboardGrab{};
 }
@@ -174,6 +226,12 @@ void GrabTable::removeForWindows(const std::vector<uint32_t>& xids) {
         return std::find(xids.begin(), xids.end(), g.grabWindow) != xids.end();
       }),
     passive_.end());
+  passiveKeys_.erase(
+    std::remove_if(passiveKeys_.begin(), passiveKeys_.end(),
+      [&](const PassiveKeyGrab& g) {
+        return std::find(xids.begin(), xids.end(), g.grabWindow) != xids.end();
+      }),
+    passiveKeys_.end());
   // Clear active grab if it references a destroyed window
   if (pointer_.active &&
       std::find(xids.begin(), xids.end(), pointer_.grabWindow) != xids.end()) {
@@ -196,6 +254,17 @@ void GrabTable::clearOwnedBy(int owner_fd) {
   if (keyboard_.active && keyboard_.owner_fd == owner_fd) {
     keyboard_ = KeyboardGrab{};
   }
+  // Passive grabs registered by the disconnecting client (C1 gave PassiveGrab
+  // an owner_fd; C2 gave PassiveKeyGrab one) — a grab on a window owned by
+  // another client would otherwise leak past the grabber's disconnect.
+  passive_.erase(
+    std::remove_if(passive_.begin(), passive_.end(),
+      [&](const PassiveGrab& g) { return g.owner_fd == owner_fd; }),
+    passive_.end());
+  passiveKeys_.erase(
+    std::remove_if(passiveKeys_.begin(), passiveKeys_.end(),
+      [&](const PassiveKeyGrab& g) { return g.owner_fd == owner_fd; }),
+    passiveKeys_.end());
 }
 
 } // namespace x11

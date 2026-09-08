@@ -46,6 +46,45 @@ bool checkPassiveGrabsRootDown(x11::XProtoContext& ctx, uint32_t under, uint32_t
   return false;
 }
 
+// xorg CheckDeviceGrabs for a KEYBOARD event (dix/events.c:4183-4206): passive
+// GrabKey grabs are checked along the FOCUS trace from the root down to the
+// focus window, then (when the pointer lies inside the focus subtree) down the
+// sprite trace below the focus window.  focus == PointerRoot (our kRootXid)
+// checks the whole sprite trace; focus == None (0) checks nothing further.
+// C2.  `key` is the X11 keycode, `x11Mods` the modifier state before the key.
+bool checkPassiveKeyGrabsRootDown(x11::XProtoContext& ctx, uint32_t focus, uint32_t sprite,
+                                  uint8_t key, uint16_t x11Mods, x11::PassiveKeyGrab& out) {
+  // Root grabs first (root is trace[0]); snapshot() fails on the root XID so it
+  // is never reached by the parent walks below.
+  if (ctx.grabs().matchKey(x11::kRootXid, key, x11Mods, out)) return true;
+
+  // Check a leaf→toplevel chain root-down (excludes the root XID).
+  auto walkUpChecking = [&](uint32_t leaf, uint32_t stopExclusive) -> bool {
+    std::vector<uint32_t> tr;
+    for (uint32_t w = leaf; w && w != x11::kRootXid && w != stopExclusive && tr.size() < 64;) {
+      tr.push_back(w);
+      x11::WindowView vw{};
+      if (!ctx.windows().snapshot(w, vw)) break;
+      w = vw.parent_xid;
+    }
+    for (size_t i = tr.size(); i-- > 0;)
+      if (ctx.grabs().matchKey(tr[i], key, x11Mods, out)) return true;
+    return false;
+  };
+
+  if (focus == x11::kRootXid) {                 // PointerRoot → sprite trace
+    return sprite ? walkUpChecking(sprite, 0) : false;
+  }
+  if (focus == 0) return false;                 // None → nothing further
+
+  // Real focus window: root → focus, then, if the pointer is inside the focus
+  // subtree, the sprite trace below focus (focus exclusive).
+  if (walkUpChecking(focus, 0)) return true;
+  if (sprite && sprite != focus && x11::wintree::isAncestor(ctx, focus, sprite))
+    return walkUpChecking(sprite, /*stopExclusive=*/focus);
+  return false;
+}
+
 // xorg EventIsDeliverable: a window takes a button event if it selected it
 // at either level (core mask or its XI2 selection).
 bool wantsButton(x11::XProtoContext& ctx, uint32_t xid, bool isDown) {
@@ -1373,16 +1412,54 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           }
 #endif
 
+          // ---- C2: passive keyboard grab (GrabKey) activation.  On a key
+          // press with no keyboard grab active, xorg CheckDeviceGrabs walks the
+          // focus trace root-down (dix/events.c:4183-4206) and, on a match,
+          // ActivatePassiveGrab activates a keyboard grab on the grab window
+          // owned by the grabbing client (dix/events.c:3854-3862) and delivers
+          // the press to it.  The grab terminates on the activating key's
+          // release.  Hotkey clients (WM accelerators, Swing/GTK mnemonics)
+          // never fired before this — GrabKey was a pure no-op.
+          if (c.isDown) {
+            x11::KeyboardGrab existing{};
+            const bool haveKb = ctx.grabs().getKeyboardGrabInfo(existing) && existing.active;
+            if (!haveKb) {
+              const uint16_t x11ModsKey = x11::input::toX11State(0, evMods) & 0xFFu;
+              x11::PassiveKeyGrab kpg{};
+              if (checkPassiveKeyGrabsRootDown(ctx, focus, sprite, x11_kc, x11ModsKey, kpg)) {
+                x11::KeyboardGrab kgg{};
+                kgg.grabWindow  = kpg.grabWindow;
+                kgg.ownerEvents = kpg.ownerEvents;
+                kgg.owner_fd    = kpg.owner_fd;
+                kgg.grab_time   = x11_now_ms_monotonic();
+                kgg.is_xi2      = false;
+                kgg.implicit    = true;
+                kgg.grab_key    = x11_kc;
+                if (ctx.grabs().tryKeyboardGrab(kgg) == x11::kGrabSuccess) {
+                  // ActivateKeyboardGrab (dix/events.c:1720-1735): FocusOut
+                  // (focus → grab window) / FocusIn NotifyGrab at both levels.
+                  const uint32_t from = ctx.input().focus_xid;
+                  if (from && from != kpg.grabWindow)
+                    x11::grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(),
+                                                           from, kpg.grabWindow, /*NotifyGrab*/1);
+                }
+              }
+            }
+          }
+
           // ---- Active keyboard grab (GrabKeyboard / XIGrabDevice on the
-          // keyboard) — xorg DeliverGrabbedEvent: with owner_events the
-          // focus-based target if it belongs to the grabbing client, otherwise
-          // the grab window at the grab's level (a core GrabKeyboard's mask is
-          // KeyPress|KeyRelease, dix/events.c:5317; an XI2 grab uses its
-          // xi2mask), addressed to the grabbing client.  Swing popups/combos
-          // and GTK menus grab the keyboard for arrow/Escape navigation.
+          // keyboard, or a passive GrabKey just activated above) — xorg
+          // DeliverGrabbedEvent: with owner_events the focus-based target if it
+          // belongs to the grabbing client, otherwise the grab window at the
+          // grab's level (a core GrabKeyboard's mask is KeyPress|KeyRelease,
+          // dix/events.c:5317; an XI2 grab uses its xi2mask), addressed to the
+          // grabbing client.  Swing popups/combos and GTK menus grab the
+          // keyboard for arrow/Escape navigation.
+          bool consumedByGrab = false;
           x11::KeyboardGrab kg{};
-          if (ctx.grabs().getKeyboardGrabInfo(kg) && kg.active &&
-              (kg.grabWindow == x11::kRootXid || ctx.window(kg.grabWindow))) {
+          const bool haveKbGrab = ctx.grabs().getKeyboardGrabInfo(kg) && kg.active &&
+                                  (kg.grabWindow == x11::kRootXid || ctx.window(kg.grabWindow));
+          if (haveKbGrab) {
             bool viaGrab = true;
             if (kg.ownerEvents && normalWants) {
               const x11::WindowView* tv = ctx.window(target);
@@ -1399,33 +1476,46 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 srv->eventOps().sendKeyEvent(ctx, kg.grabWindow, c.isDown != 0, x11_kc,
                                              ctx.input().buttons, evMods, kg.owner_fd);
               }
-              break;
+              consumedByGrab = true;
             }
-            // owner_events within the grabbing client: normal delivery at `target`.
-          } else if (!normalWants) {
-            break; // nobody wants it (or fenced)
+            // else owner_events within the grabbing client: normal delivery.
           }
 
+          // Normal delivery — skipped when the grab consumed the event, or when
+          // there is no grab and nobody selected the key (or propagation was
+          // fenced).
+          if (!consumedByGrab && (haveKbGrab || normalWants)) {
         #ifdef X11_TRACE_VERBOSE
-          fprintf(stderr,
-                  "[KEY] host=0x%08X focus=0x%08X deliver=0x%08X down=%d kc=%u mods=0x%X\n",
-                  (unsigned)host,
-                  (unsigned)focus,
-                  (unsigned)target,
-                  (int)(c.isDown != 0),
-                  (unsigned)x11_kc,
-                  (unsigned)c.modsMask);
+            fprintf(stderr,
+                    "[KEY] host=0x%08X focus=0x%08X deliver=0x%08X down=%d kc=%u mods=0x%X\n",
+                    (unsigned)host, (unsigned)focus, (unsigned)target,
+                    (int)(c.isDown != 0), (unsigned)x11_kc, (unsigned)c.modsMask);
         #endif
+            if (!srv->eventOps().sendXI2KeyEvent(ctx, target,
+                                                 c.isDown != 0,
+                                                 x11_kc,
+                                                 ctx.input().buttons, evMods,
+                                                 /*force=*/false, /*toFd=*/-1, isRepeat)) {
+              srv->eventOps().sendKeyEvent(ctx, target,
+                                           c.isDown != 0,
+                                           x11_kc,
+                                           ctx.input().buttons, evMods);
+            }
+          }
 
-          if (!srv->eventOps().sendXI2KeyEvent(ctx, target,
-                                               c.isDown != 0,
-                                               x11_kc,
-                                               ctx.input().buttons, evMods,
-                                               /*force=*/false, /*toFd=*/-1, isRepeat)) {
-            srv->eventOps().sendKeyEvent(ctx, target,
-                                         c.isDown != 0,
-                                         x11_kc,
-                                         ctx.input().buttons, evMods);
+          // C2: a passive-GrabKey-activated grab terminates on the release of
+          // the key that activated it (X11 GrabKey), after the release has been
+          // delivered.  DeactivateKeyboardGrab sends FocusOut(grab window) /
+          // FocusIn(focus) NotifyUngrab.
+          if (!c.isDown) {
+            x11::KeyboardGrab rk{};
+            if (ctx.grabs().getKeyboardGrabInfo(rk) && rk.active && rk.implicit &&
+                rk.grab_key == x11_kc) {
+              const uint32_t gw = ctx.grabs().clearKeyboardGrab(rk.owner_fd);
+              if (gw)
+                x11::grabchoreo::keyboardGrabFocusPair(ctx, srv->eventOps(), gw,
+                                                       ctx.input().focus_xid, /*NotifyUngrab*/2);
+            }
           }
           break;
         }

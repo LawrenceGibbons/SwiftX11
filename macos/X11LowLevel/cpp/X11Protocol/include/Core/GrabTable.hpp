@@ -14,6 +14,7 @@ namespace x11 {
 
 // X11 constants
 static constexpr uint8_t  AnyButton    = 0;       // 0 means AnyButton
+static constexpr uint8_t  AnyKey       = 0;       // 0 means AnyKey
 static constexpr uint16_t AnyModifier  = 0x8000u; // AnyModifier per X11 protocol
 
 struct PassiveGrab {
@@ -50,6 +51,17 @@ struct PointerGrab {
   uint32_t cursor = 0;         // grab cursor (stored; not yet applied — L15)
 };
 
+// Passive keyboard grab (GrabKey).  GrabKey has no event mask — the grab
+// always reports KeyPress and KeyRelease — so, unlike PassiveGrab, there is
+// no eventMask field (xorg gives the tempGrab KeyPressMask|KeyReleaseMask).
+struct PassiveKeyGrab {
+  uint32_t grabWindow = 0;
+  uint8_t  key = AnyKey;             // 0 => AnyKey (keycode)
+  uint16_t modifiers = AnyModifier;  // 0x8000 => AnyModifier
+  bool     ownerEvents = false;
+  int      owner_fd = -1;            // rClient(grab) — C2
+};
+
 struct KeyboardGrab {
   bool     active = false;
   uint32_t grabWindow = 0;
@@ -58,6 +70,10 @@ struct KeyboardGrab {
   uint32_t grab_time = 0;
   bool     is_xi2 = false;
   uint32_t xi2mask = 0;
+  // C2: a grab activated by a passive GrabKey press terminates when the
+  // activating key is released (X11 GrabKey semantics).
+  bool     implicit = false;
+  uint8_t  grab_key = 0;             // keycode that activated the grab (0 otherwise)
 };
 
 // Grab status codes (core GrabPointer/GrabKeyboard reply; XI2 uses the same
@@ -100,6 +116,12 @@ public:
   void remove(uint32_t grabWindow, uint8_t button, uint16_t modifiers);
   bool match(uint32_t grabWindow, uint8_t button, uint16_t modifiers, PassiveGrab& out) const;
 
+  // Passive keyboard grabs (GrabKey/UngrabKey) — C2.  Same AnyKey/AnyModifier
+  // matching as the button grabs.
+  void addOrReplaceKey(const PassiveKeyGrab& g);
+  void removeKey(uint32_t grabWindow, uint8_t key, uint16_t modifiers);
+  bool matchKey(uint32_t grabWindow, uint8_t key, uint16_t modifiers, PassiveKeyGrab& out) const;
+
   // Active pointer grab.  Returns kGrabSuccess or kAlreadyGrabbed: a grab
   // held by ANOTHER client, or by this client at the OTHER level (xorg
   // GrabDevice: `grab->grabtype != grabtype` → AlreadyGrabbed), is refused
@@ -138,6 +160,7 @@ private:
 
   mutable std::mutex mu_;
   std::vector<PassiveGrab> passive_;
+  std::vector<PassiveKeyGrab> passiveKeys_;   // C2
   PointerGrab pointer_;
   KeyboardGrab keyboard_;
 };

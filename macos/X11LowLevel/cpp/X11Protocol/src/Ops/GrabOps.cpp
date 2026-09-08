@@ -388,14 +388,61 @@ void GrabOps::handleUngrabKeyboard(XProtoContext& ctx, uint16_t /*seq*/, ByteRea
   }
 }
 
-// 33 GrabKey (void)
-void GrabOps::handleGrabKey(XProtoContext& /*ctx*/, uint16_t /*seq*/, uint8_t /*ownerEvents*/, ByteReader& br) {
+// 33 GrabKey (void) — C2 passive keyboard grab.
+// Body (12 bytes): grabWindow(4), modifiers(2), key(1), pointerMode(1),
+//                  keyboardMode(1), pad(3).
+void GrabOps::handleGrabKey(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvents, ByteReader& br) {
+  if (br.remaining() < 12) { br.skip(br.remaining()); return; }
+  const uint32_t grabWindow = br.readU32();
+  const uint16_t modifiers  = br.readU16();
+  const uint8_t  key        = br.readU8();
+  const uint8_t  pointerMode  = br.readU8();
+  const uint8_t  keyboardMode = br.readU8();
+  (void)pointerMode; (void)keyboardMode;   // sync modes accepted, never frozen (L23)
   br.skip(br.remaining());
+
+  // Validate grab window exists (allow root XID 0 and 1).
+  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(grabWindow, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabKey);
+      return;
+    }
+  }
+  // xorg ProcGrabKey (dix/events.c): a keycode other than AnyKey must lie in
+  // [min_keycode, max_keycode]; ours is [8, 255].  BadValue otherwise.
+  if (key != x11::AnyKey && key < 8) {
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, key, x11::opcode::GrabKey);
+    return;
+  }
+
+  PassiveKeyGrab g{};
+  g.grabWindow  = grabWindow;
+  g.key         = key;                 // 0 => AnyKey
+  g.modifiers   = modifiers;           // 0x8000 => AnyModifier
+  g.ownerEvents = (ownerEvents != 0);
+  g.owner_fd    = ctx.transport().clientFd();   // rClient(grab)
+  ctx.grabs().addOrReplaceKey(g);
 }
 
-// 34 UngrabKey (void)
-void GrabOps::handleUngrabKey(XProtoContext& /*ctx*/, uint16_t /*seq*/, uint8_t /*keycode*/, ByteReader& br) {
+// 34 UngrabKey (void).
+// Header: reqType=34, key=minor, length.  Body (8 bytes): grabWindow(4),
+//         modifiers(2), pad(2).
+void GrabOps::handleUngrabKey(XProtoContext& ctx, uint16_t seq, uint8_t key, ByteReader& br) {
+  if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+  const uint32_t grabWindow = br.readU32();
+  const uint16_t modifiers  = br.readU16();
+  (void)br.readU16(); // pad
   br.skip(br.remaining());
+
+  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+    WindowView tmp{};
+    if (!ctx.windows().snapshot(grabWindow, tmp)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::UngrabKey);
+      return;
+    }
+  }
+  ctx.grabs().removeKey(grabWindow, key, modifiers);
 }
 
 // 35 AllowEvents (void).  Sync grab modes never freeze here (every target
