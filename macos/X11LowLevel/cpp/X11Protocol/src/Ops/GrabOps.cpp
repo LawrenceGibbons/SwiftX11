@@ -19,8 +19,11 @@
 #include "Core/XProtoServer.hpp"        // eventOps()
 #include "Core/timestamp.hpp"           // x11_now_ms_monotonic
 #include "Core/CursorRouting.hpp"       // maybeApplyCursor — grab cursor (L15)
+#include "Transport/XProtoDaemon.hpp"   // grabServer/ungrabServer (C8)
 
 extern "C" x11::XProtoServer* x11_proto_bridge_get_server(void);
+namespace x11 { class XProtoDaemon; }
+extern "C" x11::XProtoDaemon* x11_proto_bridge_get_daemon(void);   // C8: GrabServer
 
 namespace x11 {
 
@@ -458,14 +461,24 @@ void GrabOps::handleAllowEvents(XProtoContext& ctx, uint16_t /*seq*/, uint8_t mo
 #endif
 }
 
-// 36 GrabServer (void, no-op for single-process)
-void GrabOps::handleGrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+// 36 GrabServer (void) — C8.  Suspend all other clients until UngrabServer:
+// the daemon poll loop stops servicing every fd but this one (xorg
+// ProcGrabServer → OnlyListenToOneClient, dix/dispatch.c:1156-1173).  Java AWT
+// brackets focus/restack and selection setup in XGrabServer/XUngrabServer and
+// relied on nothing else interleaving.
+void GrabOps::handleGrabServer(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
+  if (auto* d = x11_proto_bridge_get_daemon())
+    d->grabServer(ctx.transport().clientFd());
 }
 
-// 37 UngrabServer (void, no-op)
-void GrabOps::handleUngrabServer(XProtoContext& /*ctx*/, uint16_t /*seq*/, ByteReader& br) {
+// 37 UngrabServer (void) — release the server grab held by this client; the
+// poll loop resumes all clients next iteration (xorg ProcUngrabServer →
+// ListenToAllClients, dix/dispatch.c:1187-1204).
+void GrabOps::handleUngrabServer(XProtoContext& ctx, uint16_t /*seq*/, ByteReader& br) {
   br.skip(br.remaining());
+  if (auto* d = x11_proto_bridge_get_daemon())
+    d->ungrabServer(ctx.transport().clientFd());
 }
 
 // -----------------------------

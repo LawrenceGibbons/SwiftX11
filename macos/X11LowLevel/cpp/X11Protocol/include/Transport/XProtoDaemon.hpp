@@ -119,6 +119,17 @@ public:
   // (raw events → every root selector, dix/events.c DeliverRawEvent).
   bool sendEventToFd(int fd, const uint8_t* ev, size_t len);
 
+  // C8: GrabServer/UngrabServer.  While a server grab is held, the poll loop
+  // services ONLY the grabbing client's fd — every other client's fd is left
+  // out of the poll set, so their requests stay buffered in the socket until
+  // the grab is released (xorg OnlyListenToOneClient, dix/dispatch.c:1157;
+  // os/connection.c listen_to_client).  Grant to the first grabber (a
+  // contender's GrabServer, processed while another holds it, is a no-op — the
+  // contender is muted next iteration and resumes when the grab clears).
+  void grabServer(int fd)   { if (server_grab_fd_ < 0) server_grab_fd_ = fd; }
+  void ungrabServer(int fd) { if (server_grab_fd_ == fd) server_grab_fd_ = -1; }
+  int  serverGrabFd() const { return server_grab_fd_; }
+
 private:
   void runListener(int display, bool enableTCP, bool enableUnix,
                    const char* tcpBindAddr);
@@ -147,6 +158,10 @@ private:
   XProtoModules* modules_ = nullptr;
 
   bool notifyBridgeInited_ = false;
+
+  // C8: fd of the client holding a server grab (-1 = none).  Daemon-thread
+  // only (poll loop + request dispatch both run there).
+  int server_grab_fd_ = -1;
 };
 
 } // namespace x11

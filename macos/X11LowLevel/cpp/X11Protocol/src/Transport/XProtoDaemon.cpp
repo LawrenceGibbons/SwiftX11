@@ -358,8 +358,19 @@ void XProtoDaemon::runListener(int display, bool enableTCP, bool enableUnix,
 
     const size_t numListeners = listen_fds_.size();
 
+    // C8: while a server grab is held, service ONLY the grabbing client's fd.
+    // Other clients are left out of the poll set entirely so their buffered
+    // requests wait in the socket (not busy-polled) until UngrabServer, matching
+    // xorg's OnlyListenToOneClient (dix/dispatch.c:1157).  If the grabber has
+    // vanished, drop the stale grab.
+    const int grabFd = server_grab_fd_;
+    if (grabFd >= 0 && clients_.find(grabFd) == clients_.end()) {
+      server_grab_fd_ = -1;
+    }
+
     std::vector<int> clientFds;
     for (auto& [fd, _] : clients_) {
+      if (grabFd >= 0 && fd != grabFd) continue;   // muted during a server grab
       fds.push_back({fd, POLLIN, 0});
       clientFds.push_back(fd);
     }
@@ -563,6 +574,11 @@ void XProtoDaemon::acceptClient(int listenFd) {
 void XProtoDaemon::removeClient(int fd) {
   auto it = clients_.find(fd);
   if (it == clients_.end()) return;
+
+  // C8: a client that held the server grab and then disconnected must release
+  // it, or every other client stays muted forever (xorg CloseDownClient →
+  // UngrabServer).
+  if (server_grab_fd_ == fd) server_grab_fd_ = -1;
 
   ClientSession& cs = it->second;
 
