@@ -179,8 +179,6 @@ namespace x11 {
 
     // MARK: -- buttons, ponters and cursors
     void button(uint32_t xid, bool is_press, uint8_t button_num, uint32_t after_mask) {
-      const uint32_t before = buttons;
-
       // Force bit to match press/release.
       uint32_t mask = after_mask;
       if (button_num >= 1 && button_num <= 31) {
@@ -200,8 +198,9 @@ namespace x11 {
 
       buttons = mask;
 
-      // Robust drag tracking: don't depend on 'before' being preserved
-      // between press and release (a PointerMove can corrupt it).
+      // Robust drag tracking: derive drag state from the post-transition
+      // button mask, never a saved pre-transition value (a PointerMove
+      // between press and release can corrupt such state).
       //   - All buttons released → always clear drag
       //   - First button down while not dragging → start drag
       if (buttons == 0) {

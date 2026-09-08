@@ -909,19 +909,19 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     //  - depth-1 pixmap bits, OR
     //  - 32bpp pixels (window FB or depth>1 pixmap)
     // ------------------------------------------------------------
-    const uint32_t* srcPixels = nullptr;
+    // CopyPlane only proceeds for a depth-1 source (bail below otherwise), so
+    // it reads srcBits, never a 32bpp source pointer.
     const uint8_t*  srcBits   = nullptr;
     int srcW = 0, srcH = 0;
     uint32_t srcStrideBytes = 0;
     bool srcDepth1 = false;
-    
+
     const bool srcIsWin = ctx.windows().exists(src);
     const bool srcIsPix = ctx.pixmaps().exists(src);
-    
+
     if (srcIsWin) {
       DrawableRW srcRW{};
       if (!resolveDrawableRW(ctx, src, srcRW) || !srcRW.pixels32) return;
-      srcPixels = srcRW.pixels32;
       srcW = (int)srcRW.w;
       srcH = (int)srcRW.h;
       srcDepth1 = false;
@@ -930,7 +930,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       if (!ctx.pixmaps().snapshot(src, pv)) return;
       srcW = (int)pv.w;
       srcH = (int)pv.h;
-      
+
       if (pv.depth == 1) {
         if (!pv.bits || pv.stride_bytes == 0) return;
         srcBits = pv.bits;
@@ -938,7 +938,6 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
         srcDepth1 = true;
       } else {
         if (!pv.pixels) return;
-        srcPixels = pv.pixels;
         srcDepth1 = false;
       }
     } else {

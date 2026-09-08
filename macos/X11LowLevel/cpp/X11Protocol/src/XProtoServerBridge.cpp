@@ -849,7 +849,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           uint32_t effectiveHost = host;
           int32_t effectiveWinX = c.win_x_u;
           int32_t effectiveWinY = c.win_y_u;
-          bool hostCorrected = false;
           {
             const int32_t rx = ctx.input().root_x_u;
             const int32_t ry = ctx.input().root_y_u;
@@ -866,7 +865,6 @@ static void processOneHostCmd(x11::XProtoServer* srv,
                 effectiveHost = *it;
                 effectiveWinX = rx - vw.x;
                 effectiveWinY = ry - vw.y;
-                hostCorrected = true;
                 break;
               }
             }

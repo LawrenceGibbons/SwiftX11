@@ -397,12 +397,10 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
     uint32_t host = ctx.windows().topLevelAncestorOf(wid);
     if (host == 0) host = wid;
     bool has_take_focus = false;
-    bool has_delete_window = false;
     const uint32_t* d32 = reinterpret_cast<const uint32_t*>(data);
     const size_t nAtoms = dataBytes / 4;
     for (size_t i = 0; i < nAtoms; i++) {
-      if (d32[i] == x11::atom::kWM_TAKE_FOCUS)    has_take_focus = true;
-      if (d32[i] == x11::atom::kWM_DELETE_WINDOW)  has_delete_window = true;
+      if (d32[i] == x11::atom::kWM_TAKE_FOCUS) has_take_focus = true;
     }
     ctx.windows().setWantsTakeFocus(host, has_take_focus);
   }
