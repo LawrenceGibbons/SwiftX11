@@ -41,6 +41,8 @@
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/ScreenLayout.hpp"
 #include "Core/XConstants.hpp"
+#include "Core/XEventMask.hpp"      // x11::mask (R1 Phase 2 disconnect notifies)
+#include "Utils/WireEvents.hpp"     // buildUnmapNotify / buildDestroyNotify
 #include "Core/X11ExtOpcodes.hpp"
 #include "Core/timestamp.hpp"
 #include "Ops/EventOps.hpp"
@@ -282,6 +284,65 @@ bool XProtoDaemon::sendEventToSelectors(uint32_t wid, uint32_t bit,
     if (cs->client->transport().sendAll(fixed, 32)) any = true;
   }
   return any;
+}
+
+// R1 Phase 2: a client's exit destroys its windows exactly as DestroyWindow
+// would.  xorg frees the client's resources through DeleteWindow
+// (dix/window.c:1070-1084): UnmapWindow → UnmapNotify for a mapped window
+// (2855, DeliverUnmapNotify), CrushTree → DestroyNotify for every inferior
+// deepest-first (1023-1045), then DestroyNotify for the window itself; each
+// to the window's StructureNotify selectors and its parent's
+// SubstructureNotify selectors (DeliverEvents, dix/events.c:2969-2972).
+// Only the roots of the client's subtrees are unmapped (xorg unrealizes
+// their inferiors without UnmapNotify); inferiors owned by another client
+// survive eraseOwnedBy here and so are not announced as destroyed.
+// The caller purged the dying client's own selections first.
+void XProtoDaemon::emitDisconnectDestroyNotifies(int fd) {
+  if (!server_) return;
+  auto& wt = server_->ctx().windows();
+  const std::vector<uint32_t> owned = wt.ownedBy(fd);
+  if (owned.empty()) return;
+
+  auto notifyDestroy = [&](uint32_t wid, uint32_t parentXid) {
+    x11::WindowView v{};
+    if (wt.snapshot(wid, v) && (v.event_mask & x11::mask::StructureNotify)) {
+      auto ev = x11::wireev::buildDestroyNotify(0, wid, wid);
+      (void)sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
+    }
+    x11::WindowView pv{};
+    if (parentXid != 0 && wt.snapshot(parentXid, pv) &&
+        (pv.event_mask & x11::mask::SubstructureNotify)) {
+      auto ev = x11::wireev::buildDestroyNotify(0, parentXid, wid);
+      (void)sendEventToSelectors(parentXid, x11::mask::SubstructureNotify, ev.data());
+    }
+  };
+
+  for (uint32_t top : owned) {
+    x11::WindowView tv{};
+    if (!wt.snapshot(top, tv)) continue;
+    x11::WindowView pv{};
+    const bool haveParent = tv.parent_xid != 0 && wt.snapshot(tv.parent_xid, pv);
+    // A window whose parent the client also owns is an inferior of that
+    // parent's subtree and is handled there.
+    if (haveParent && pv.owner_fd == fd) continue;
+
+    if (tv.mapped) {
+      if (tv.event_mask & x11::mask::StructureNotify) {
+        auto ev = x11::wireev::buildUnmapNotify(0, top, top, /*fromConfigure*/false);
+        (void)sendEventToSelectors(top, x11::mask::StructureNotify, ev.data());
+      }
+      if (haveParent && (pv.event_mask & x11::mask::SubstructureNotify)) {
+        auto ev = x11::wireev::buildUnmapNotify(0, tv.parent_xid, top, /*fromConfigure*/false);
+        (void)sendEventToSelectors(tv.parent_xid, x11::mask::SubstructureNotify, ev.data());
+      }
+    }
+    const std::vector<uint32_t> desc = wt.descendantsOf(top);   // shallow → deep
+    for (auto it = desc.rbegin(); it != desc.rend(); ++it) {
+      x11::WindowView cv{};
+      if (wt.snapshot(*it, cv) && cv.owner_fd == fd) notifyDestroy(*it, cv.parent_xid);
+    }
+    notifyDestroy(top, tv.parent_xid);
+  }
 }
 
 bool XProtoDaemon::sendEventToFd(int fd, const uint8_t* ev, size_t len) {
@@ -684,6 +745,14 @@ void XProtoDaemon::removeClient(int fd) {
     // No matching x11_ui_push_destroy(): the NSWindow (if any) persists
     // alongside the X11 window.
   } else {
+    // R1 Phase 2: tell the survivors first — UnmapNotify/DestroyNotify to the
+    // windows' StructureNotify and their parents' SubstructureNotify
+    // selectors, as xorg DeleteWindow does on resource free (root selectors
+    // are how a WM learns a client died).  The dying client's own selections
+    // are purged beforehand so it is never a target.
+    server_->ctx().windows().removeClientMasks(fd);
+    emitDisconnectDestroyNotifies(fd);
+
     // Default DestroyAll behaviour: erase all windows and tear down their
     // NSWindow counterparts.
     owned = server_->ctx().windows().eraseOwnedBy(fd);

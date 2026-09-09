@@ -680,6 +680,26 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
     if (ctx.input().focus_host == check) ctx.input().focus_host = 0;
   }
 
+  // xorg DeleteWindow unmaps first (dix/window.c:1075 UnmapWindow → 2855
+  // DeliverUnmapNotify): a mapped window gets UnmapNotify — to its own
+  // StructureNotify selectors and the parent's SubstructureNotify selectors —
+  // ahead of its DestroyNotify.  R1 Phase 2: root observers see the unmap.
+  if (hadSnap && dv.mapped) {
+    const uint16_t evSeq = ctx.transport().lastSeq();
+    if (dv.event_mask & x11::mask::StructureNotify) {
+      auto ev = x11::wireev::buildUnmapNotify(evSeq, wid, wid, /*fromConfigure*/false);
+      (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
+    }
+    if (parentXid != 0) {
+      WindowView pv{};
+      if (ctx.windows().snapshot(parentXid, pv) &&
+          (pv.event_mask & x11::mask::SubstructureNotify)) {
+        auto ev = x11::wireev::buildUnmapNotify(evSeq, parentXid, wid, /*fromConfigure*/false);
+        (void)ctx.transport().sendEventToSelectors(parentXid, x11::mask::SubstructureNotify, ev.data());
+      }
+    }
+  }
+
   // X11 spec: DestroyNotify sent to the window itself (StructureNotifyMask)
   // and to the parent (SubstructureNotifyMask)
   {
@@ -754,6 +774,25 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
 
   // Get all descendants in BFS order, then destroy deepest first
   auto desc = ctx.windows().descendantsOf(wid);
+
+  // xorg DestroySubwindows runs DeleteWindow per direct child (dix/window.c:
+  // 1075): a mapped child gets UnmapNotify (its own StructureNotify + the
+  // parent's SubstructureNotify) before its subtree's DestroyNotifies; its
+  // inferiors are unrealized without UnmapNotify.  R1 Phase 2.
+  for (uint32_t child : ctx.windows().childrenInStackOrder(wid)) {
+    WindowView cv{};
+    if (!ctx.windows().snapshot(child, cv) || !cv.mapped) continue;
+    const uint16_t evSeq = ctx.transport().lastSeq();
+    if (cv.event_mask & x11::mask::StructureNotify) {
+      auto ev = x11::wireev::buildUnmapNotify(evSeq, child, child, /*fromConfigure*/false);
+      (void)ctx.transport().sendEventToSelectors(child, x11::mask::StructureNotify, ev.data());
+    }
+    WindowView pv{};
+    if (ctx.windows().snapshot(wid, pv) && (pv.event_mask & x11::mask::SubstructureNotify)) {
+      auto ev = x11::wireev::buildUnmapNotify(evSeq, wid, child, /*fromConfigure*/false);
+      (void)ctx.transport().sendEventToSelectors(wid, x11::mask::SubstructureNotify, ev.data());
+    }
+  }
 
   // Reverse: destroy deepest children first (leaf → root)
   for (auto it = desc.rbegin(); it != desc.rend(); ++it) {

@@ -112,6 +112,8 @@ public:
   // Used for PropertyNotify and (Stage 1b) Structure/Substructure/Expose.
   // Returns true if delivered to at least one client.
   bool sendEventToSelectors(uint32_t wid, uint32_t bit, const uint8_t ev[32]);
+  // R1 Phase 2: UnmapNotify/DestroyNotify for a disconnecting client's windows (xorg DeleteWindow).
+  void emitDisconnectDestroyNotifies(int fd);
 
   // Send an event (32-byte or variable-length GenericEvent) to ONE client by
   // fd, restamping the sequence for that client's transport.  Window-free:

@@ -911,6 +911,19 @@ std::vector<uint32_t> WindowTable::childrenInStackOrder(uint32_t parent) const {
   return result;
 }
   
+  // R1 Phase 2: non-destructive enumeration of a client's windows, for the
+  // disconnect-time UnmapNotify/DestroyNotify emission that precedes
+  // eraseOwnedBy (xorg DeleteWindow on resource free).
+  std::vector<uint32_t> WindowTable::ownedBy(int owner_fd) const
+  {
+    std::vector<uint32_t> xids;
+    std::lock_guard<std::mutex> lock(mu_);
+    for (const auto& kv : map_) {
+      if (kv.second.owner_fd == owner_fd) xids.push_back(kv.first);
+    }
+    return xids;
+  }
+
   std::vector<uint32_t> WindowTable::eraseOwnedBy(int owner_fd)
   {
     std::vector<uint32_t> xids;

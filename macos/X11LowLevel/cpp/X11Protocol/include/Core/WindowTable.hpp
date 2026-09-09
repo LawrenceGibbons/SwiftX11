@@ -129,6 +129,8 @@ public:
   // Erase all windows owned by owner_fd.
   // Returns erased XIDs in child-first order (deepest children first).
   std::vector<uint32_t> eraseOwnedBy(int owner_fd);
+  // R1 Phase 2: non-destructive enumeration of a client's windows (disconnect-time notifies).
+  std::vector<uint32_t> ownedBy(int owner_fd) const;
 
   // Reassign ownership of every window currently owned by `oldFd` to
   // `newFd`.  Used by SetCloseDownMode RetainPermanent on client
