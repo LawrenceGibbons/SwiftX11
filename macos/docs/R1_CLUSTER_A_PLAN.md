@@ -1,6 +1,6 @@
 # R1 — Root window as a real window (Cluster A) — implementation plan
 
-Status: **design, not yet implemented.** Written overnight after R2 verified (develop @ v1.20.0.41-dbg, checkpoint branch `r2-verified`). R1 is pervasive (108 `kRootXid` references across 16 files), interdependent, and — because the root XID is fundamental to the connection handshake — a single miscategorised site breaks *every* client. It must be built in phases with a runtime test (xterm/Vivado/Vitis connect + input) after each. Do not merge blind.
+Status: **Phase 1 implemented** — 1a/1b no-op rename (`dc68da9`) + 1c root-as-real-window (`5b5157d`), v2.0.0.1-dbg on develop, awaiting the runtime connect test; Phases 2–4 not started. Design written overnight after R2 verified (develop @ v1.20.0.41-dbg, checkpoint branch `r2-verified`). R1 is pervasive (108 `kRootXid` references across 16 files), interdependent, and — because the root XID is fundamental to the connection handshake — a single miscategorised site breaks *every* client. It must be built in phases with a runtime test (xterm/Vivado/Vitis connect + input) after each. Do not merge blind.
 
 Source: `docs/XORG_COMPARISON_REVIEW_2026-09-08.md` §1 (Cluster A, A1–A5), §11 R1.
 
