@@ -763,16 +763,22 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   // WM, so a ClientMessage of a known EWMH type (_NET_ACTIVE_WINDOW,
   // _NET_WM_STATE, WM_CHANGE_STATE) is interpreted here rather than delivered
   // to a client — on a normal server the WM is the one SubstructureRedirect
-  // selector that would receive it.  Any other event to root goes to root's
-  // own selectors matching the request's event mask, deduped across bits
-  // (xorg DeliverEventsToWindow), which is why sendEvent32(root) — owner -1,
-  // a cross-client drop — is bypassed for the root case.
+  // selector that would receive it — and consumed (no further delivery).
+  if (resolvedDest == x11::kRootWindowXid &&
+      (event[0] & 0x7Fu) == 33 /* ClientMessage */ &&
+      x11::ewmh::isKnownRootMessage(wire::rd32_le(event + 8))) {
+    x11::ewmh::handleRootClientMessage(ctx, event);
+    return;
+  }
+
   if (resolvedDest == x11::kRootWindowXid) {
-    const uint8_t rt = event[0] & 0x7Fu;
-    if (rt == 33 /* ClientMessage */ &&
-        x11::ewmh::isKnownRootMessage(wire::rd32_le(event + 8))) {
-      x11::ewmh::handleRootClientMessage(ctx, event);
-    } else if (eventMask != 0) {
+    // Any OTHER event to root goes to root's own selectors matching the
+    // request's event mask, deduped across bits (xorg DeliverEventsToWindow);
+    // sendEvent32(root) — owner -1 — would be a cross-client drop.  We must
+    // NOT return here: the SelectionNotify capture below still has to run for
+    // the clipboard proactive-capture path, whose requestor IS the root
+    // window (Vivado Edit->Copy sends SendEvent(SelectionNotify, dest=root)).
+    if (eventMask != 0) {
       std::vector<int> sent;
       for (uint32_t m = eventMask; m; m &= (m - 1)) {
         const uint32_t one = m & (~m + 1);   // lowest set bit
@@ -784,10 +790,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
         }
       }
     }
-    return;
-  }
-
-  if (resolvedDest != 0) {
+  } else if (resolvedDest != 0) {
     (void)ctx.transport().sendEvent32(resolvedDest, event);
   }
 
