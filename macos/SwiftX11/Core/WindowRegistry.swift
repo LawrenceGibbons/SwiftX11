@@ -1542,6 +1542,25 @@ final class WindowRegistry {
       win.makeKeyAndOrderFront(nil)
       return
     }
+    // R1 Phase 4: _NET_WM_STATE / WM_CHANGE_STATE actions.  zoom() and
+    // toggleFullScreen() flip state, so gate on the current state to make the
+    // add/remove requests idempotent.
+    if typeAtom == 0x80000004 {            // MAXIMIZE add (zoom to fill screen)
+      if !win.isZoomed { win.zoom(nil) }
+      return
+    }
+    if typeAtom == 0x80000014 {            // MAXIMIZE remove (restore)
+      if win.isZoomed { win.zoom(nil) }
+      return
+    }
+    if typeAtom == 0x80000012 {            // FULLSCREEN remove
+      if win.styleMask.contains(.fullScreen) { win.toggleFullScreen(nil) }
+      return
+    }
+    if typeAtom == 0x80000007 {            // ICONIFY (WM_CHANGE_STATE IconicState)
+      if !win.isMiniaturized { win.miniaturize(nil) }
+      return
+    }
     // Override-redirect windows (menus, tooltips, drag icons) are never
     // WM-managed: nothing below may give them a title bar or drop them to
     // normal level.  Chromium sets _MOTIF_WM_HINTS (decor=0) on EVERY window

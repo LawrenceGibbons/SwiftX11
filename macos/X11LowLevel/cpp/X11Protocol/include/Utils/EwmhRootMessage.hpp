@@ -54,6 +54,74 @@ inline bool isKnownRootMessage(uint32_t msgType) {
          msgType == atom::kWM_CHANGE_STATE;
 }
 
+// _NET_WM_STATE action codes (EWMH).
+namespace netwmstate {
+  static constexpr uint32_t kRemove = 0;
+  static constexpr uint32_t kAdd    = 1;
+  static constexpr uint32_t kToggle = 2;
+}
+
+// Is `stateAtom` currently listed in `window`'s _NET_WM_STATE property?
+inline bool netWmStateHas(uint32_t window, uint32_t stateAtom) {
+  PropertyTable::Prop p{};
+  if (!PropertyTable::instance().get(window, atom::k_NET_WM_STATE, p) || p.format != 32)
+    return false;
+  const size_t n = p.data.size() / 4;
+  for (size_t i = 0; i < n; i++)
+    if (wire::rd32_le(p.data.data() + i * 4) == stateAtom) return true;
+  return false;
+}
+
+// Add or remove `stateAtom` from `window`'s _NET_WM_STATE property list, so a
+// client (wmctrl, a pager) reading the property sees the current state.
+inline void netWmStateSet(uint32_t window, uint32_t stateAtom, bool present) {
+  PropertyTable::Prop p{};
+  std::vector<uint32_t> atoms;
+  if (PropertyTable::instance().get(window, atom::k_NET_WM_STATE, p) && p.format == 32) {
+    const size_t n = p.data.size() / 4;
+    for (size_t i = 0; i < n; i++) {
+      const uint32_t a = wire::rd32_le(p.data.data() + i * 4);
+      if (a != stateAtom) atoms.push_back(a);   // drop any existing copy
+    }
+  }
+  if (present) atoms.push_back(stateAtom);
+  std::vector<uint8_t> bytes(atoms.size() * 4);
+  for (size_t i = 0; i < atoms.size(); i++) wire::wr32_le(bytes.data() + i * 4, atoms[i]);
+  PropertyTable::instance().setReplace(window, atom::k_NET_WM_STATE, atom::kATOM, 32,
+                                       bytes.data(), bytes.size());
+}
+
+// Apply one _NET_WM_STATE property change (action × one state atom): resolve a
+// toggle against the current property, drive the NSWindow through the UI bridge,
+// and record the new state in the property.
+inline void applyNetWmState(XProtoContext& ctx, uint32_t window, uint32_t host,
+                            uint32_t action, uint32_t stateAtom) {
+  (void)ctx;
+  if (stateAtom == 0) return;
+  const bool cur = netWmStateHas(window, stateAtom);
+  bool want = cur;
+  switch (action) {
+    case netwmstate::kAdd:    want = true;  break;
+    case netwmstate::kRemove: want = false; break;
+    case netwmstate::kToggle: want = !cur;  break;
+    default: return;
+  }
+  if (want == cur) return;   // no change
+
+  if (stateAtom == atom::k_NET_WM_STATE_FULLSCREEN) {
+    x11_ui_push_window_type(host, want ? uiaction::kFullscreenAdd : uiaction::kFullscreenRemove);
+  } else if (stateAtom == atom::k_NET_WM_STATE_MAXIMIZED_VERT ||
+             stateAtom == atom::k_NET_WM_STATE_MAXIMIZED_HORZ) {
+    // macOS has no independent vert/horz maximize — either maps to "zoom".
+    x11_ui_push_window_type(host, want ? uiaction::kMaximizeAdd : uiaction::kMaximizeRemove);
+  } else if (stateAtom == atom::k_NET_WM_STATE_MODAL) {
+    if (want) x11_ui_push_window_type(host, uiaction::kModal);
+  } else {
+    // MODAL/HIDDEN/other: reflect in the property only.
+  }
+  netWmStateSet(window, stateAtom, want);
+}
+
 // Resolve a ClientMessage's target window (its `window` field) to a live
 // top-level; 0 when it is missing/None/root/unknown.
 inline uint32_t resolveTarget(XProtoContext& ctx, uint32_t window) {
@@ -85,12 +153,40 @@ inline void handleRootClientMessage(XProtoContext& ctx, const uint8_t ev[32]) {
     return;
   }
 
-  // _NET_WM_STATE and WM_CHANGE_STATE: recognised now, interpreted in
-  // increment 2 (maximize / fullscreen / iconify).
+  if (msgType == atom::k_NET_WM_STATE) {
+    const uint32_t host = resolveTarget(ctx, window);
+    if (!host) return;
+    const uint32_t action = wire::rd32_le(ev + 12);
+    const uint32_t p1     = wire::rd32_le(ev + 16);
+    const uint32_t p2     = wire::rd32_le(ev + 20);
+    applyNetWmState(ctx, window, host, action, p1);
+    if (p2 && p2 != p1) applyNetWmState(ctx, window, host, action, p2);
 #ifndef NDEBUG
-  { char b[96]; snprintf(b, sizeof b, "[EWMH] root ClientMessage type=%u win=0x%X (unhandled yet)\n",
-                         (unsigned)msgType, (unsigned)window); x11_ui_push_log(2, b); }
+    { char b[112]; snprintf(b, sizeof b, "[EWMH] _NET_WM_STATE win=0x%X action=%u p1=%u p2=%u\n",
+                            (unsigned)window, (unsigned)action, (unsigned)p1, (unsigned)p2);
+      x11_ui_push_log(2, b); }
 #endif
+    return;
+  }
+
+  if (msgType == atom::kWM_CHANGE_STATE) {
+    // ICCCM: data[0] = requested WM_STATE (3 = IconicState, 1 = NormalState).
+    const uint32_t host = resolveTarget(ctx, window);
+    if (!host) return;
+    const uint32_t state = wire::rd32_le(ev + 12);
+    if (state == 3 /* IconicState */) {
+      x11_ui_push_window_type(host, uiaction::kIconify);
+      netWmStateSet(window, atom::k_NET_WM_STATE_HIDDEN, true);
+    } else if (state == 1 /* NormalState */) {
+      x11_ui_push_window_type(host, uiaction::kActivate);   // deminiaturize + raise
+      netWmStateSet(window, atom::k_NET_WM_STATE_HIDDEN, false);
+    }
+#ifndef NDEBUG
+    { char b[96]; snprintf(b, sizeof b, "[EWMH] WM_CHANGE_STATE win=0x%X state=%u\n",
+                           (unsigned)window, (unsigned)state); x11_ui_push_log(2, b); }
+#endif
+    return;
+  }
 }
 
 // Publish the EWMH support advertisement on the root window so clients (wmctrl,
