@@ -17,6 +17,7 @@
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
 #include "Core/ScreenLayout.hpp"
+#include "Utils/EwmhRootMessage.hpp"   // R1 Phase 4: EWMH root advertisement
 #include "Utils/ByteReader.hpp"
 #include "Ops/EventOps.hpp"
 #include "Core/timestamp.hpp"
@@ -62,6 +63,10 @@ XProtoServer::XProtoServer()
                     lay.virtual_w, lay.virtual_h, /*event_mask*/0, /*owner_fd*/-1);
     windows_.setMapped(x11::kRootWindowXid, true);
   }
+
+  // R1 Phase 4: advertise EWMH support on the root (SwiftX11 is the WM), so
+  // clients send _NET_ACTIVE_WINDOW / _NET_WM_STATE / WM_CHANGE_STATE here.
+  x11::ewmh::initRootProperties();
 
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);

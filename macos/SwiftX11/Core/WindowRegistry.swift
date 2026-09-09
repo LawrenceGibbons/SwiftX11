@@ -1532,6 +1532,16 @@ final class WindowRegistry {
       }
       return
     }
+    // R1 Phase 4: _NET_ACTIVE_WINDOW → activate the window (deminiaturize if
+    // minimised, then raise + make key).  Cooperative activation on macOS 14+
+    // means NSApp.activate is honoured only when the app can come forward; the
+    // orderFront/makeKey still raises the window within the app.
+    if typeAtom == 0x80000008 {
+      if win.isMiniaturized { win.deminiaturize(nil) }
+      NSApp.activate(ignoringOtherApps: true)
+      win.makeKeyAndOrderFront(nil)
+      return
+    }
     // Override-redirect windows (menus, tooltips, drag icons) are never
     // WM-managed: nothing below may give them a title bar or drop them to
     // normal level.  Chromium sets _MOTIF_WM_HINTS (decor=0) on EVERY window

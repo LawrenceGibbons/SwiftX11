@@ -30,6 +30,7 @@
 extern "C" {
 #include "SwiftX11Bridge.h"
 #include "Utils/MachTime.hpp"
+#include "Utils/EwmhRootMessage.hpp"   // R1 Phase 4: EWMH root ClientMessage interpreter
 }
 
 // Access the server's HostCommandQueue for deferred clipboard capture.
@@ -731,8 +732,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   if (br.remaining() < 36) { br.skip(br.remaining()); return; }
 
   const uint32_t destination = br.readU32();
-  const uint32_t eventMask   = br.readU32();
-  (void)eventMask;
+  const uint32_t eventMask   = br.readU32();   // R1 Phase 4: used for root delivery
 
   uint8_t event[32];
   for (int i = 0; i < 32; ++i) event[i] = br.readU8();
@@ -757,6 +757,34 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   } else if (destination == 1) {
     // InputFocus
     resolvedDest = ctx.input().focus_xid;
+  }
+
+  // R1 Phase 4 (A1): a SendEvent to the ROOT window.  SwiftX11 is the rootless
+  // WM, so a ClientMessage of a known EWMH type (_NET_ACTIVE_WINDOW,
+  // _NET_WM_STATE, WM_CHANGE_STATE) is interpreted here rather than delivered
+  // to a client — on a normal server the WM is the one SubstructureRedirect
+  // selector that would receive it.  Any other event to root goes to root's
+  // own selectors matching the request's event mask, deduped across bits
+  // (xorg DeliverEventsToWindow), which is why sendEvent32(root) — owner -1,
+  // a cross-client drop — is bypassed for the root case.
+  if (resolvedDest == x11::kRootWindowXid) {
+    const uint8_t rt = event[0] & 0x7Fu;
+    if (rt == 33 /* ClientMessage */ &&
+        x11::ewmh::isKnownRootMessage(wire::rd32_le(event + 8))) {
+      x11::ewmh::handleRootClientMessage(ctx, event);
+    } else if (eventMask != 0) {
+      std::vector<int> sent;
+      for (uint32_t m = eventMask; m; m &= (m - 1)) {
+        const uint32_t one = m & (~m + 1);   // lowest set bit
+        for (int fd : ctx.windows().selectorsOf(x11::kRootWindowXid, one)) {
+          if (std::find(sent.begin(), sent.end(), fd) == sent.end()) {
+            sent.push_back(fd);
+            (void)ctx.transport().sendEventToFd(fd, event, 32);
+          }
+        }
+      }
+    }
+    return;
   }
 
   if (resolvedDest != 0) {

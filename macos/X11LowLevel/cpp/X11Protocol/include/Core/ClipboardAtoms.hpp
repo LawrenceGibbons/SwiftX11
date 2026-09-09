@@ -45,6 +45,17 @@ static constexpr uint32_t k_NET_FRAME_EXTENTS         = 92;
 // Motif WM hints
 static constexpr uint32_t k_MOTIF_WM_HINTS            = 93;
 
+// EWMH root-message / state atoms (R1 Phase 4 — SwiftX11 acts as the WM and
+// interprets these ClientMessages sent to the root window).
+static constexpr uint32_t k_NET_ACTIVE_WINDOW         = 94;
+static constexpr uint32_t kWM_CHANGE_STATE            = 95; // ICCCM (iconify)
+static constexpr uint32_t k_NET_WM_STATE_MAXIMIZED_VERT = 96;
+static constexpr uint32_t k_NET_WM_STATE_MAXIMIZED_HORZ = 97;
+static constexpr uint32_t k_NET_WM_STATE_HIDDEN       = 98;
+static constexpr uint32_t k_NET_SUPPORTED             = 99;
+static constexpr uint32_t k_NET_SUPPORTING_WM_CHECK   = 100;
+static constexpr uint32_t kWM_STATE                   = 101; // ICCCM WM_STATE (type + property)
+
 // Predefined atoms (1-68) commonly needed
 static constexpr uint32_t kPRIMARY           = 1;
 static constexpr uint32_t kSECONDARY         = 2;
@@ -56,7 +67,7 @@ static constexpr uint32_t kWM_NAME           = 39;
 static constexpr uint32_t kWM_NORMAL_HINTS   = 40;
 
 static constexpr uint32_t kFirstPreRegistered = 69;
-static constexpr uint32_t kLastPreRegistered  = 93;
+static constexpr uint32_t kLastPreRegistered  = 101;
 
 } // namespace atom
 } // namespace x11

@@ -136,6 +136,15 @@ struct AtomTableState {
       { "_NET_FRAME_EXTENTS",         x11::atom::k_NET_FRAME_EXTENTS },
       // Motif WM hints
       { "_MOTIF_WM_HINTS",            x11::atom::k_MOTIF_WM_HINTS },
+      // EWMH root-message / state atoms (R1 Phase 4)
+      { "_NET_ACTIVE_WINDOW",             x11::atom::k_NET_ACTIVE_WINDOW },
+      { "WM_CHANGE_STATE",                x11::atom::kWM_CHANGE_STATE },
+      { "_NET_WM_STATE_MAXIMIZED_VERT",   x11::atom::k_NET_WM_STATE_MAXIMIZED_VERT },
+      { "_NET_WM_STATE_MAXIMIZED_HORZ",   x11::atom::k_NET_WM_STATE_MAXIMIZED_HORZ },
+      { "_NET_WM_STATE_HIDDEN",           x11::atom::k_NET_WM_STATE_HIDDEN },
+      { "_NET_SUPPORTED",                 x11::atom::k_NET_SUPPORTED },
+      { "_NET_SUPPORTING_WM_CHECK",       x11::atom::k_NET_SUPPORTING_WM_CHECK },
+      { "WM_STATE",                       x11::atom::kWM_STATE },
     };
     for (const auto& e : kExtra) {
       name_to_atom.emplace(std::string(e.name), e.id);
