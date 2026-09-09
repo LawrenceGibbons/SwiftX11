@@ -4,11 +4,11 @@ A native macOS X11 protocol server. X11 clients render into native Cocoa/Metal w
 
 SwiftX11 implements the X11 wire protocol directly, enabling X11 applications — including Xilinx Vivado running in a Linux Docker container — to display on macOS with native window management, Metal-accelerated rendering, and macOS clipboard integration.
 
-**Current version:** v1.20.0
+**Current version:** v1.21.0
 
 ## Recent Changes
 
-Highlights since v1.19.33:
+Highlights since v1.20.0:
 
 - **XInput2 (XI2) — full Stage 2, on by default.** Per-client event selection and fan-out, raw events, active/passive grabs, and crossing/focus semantics verified against the xorg-server source (Phases A–G). Fixes Vitis menus and portal-GTK dialogs.
 - **XKEYBOARD (XKB) extension — on by default.** Byte-exact GetMap/GetNames/GetControls/GetCompatMap, per-client event selection, detectable autorepeat, and `_XKB_RULES_NAMES`. Required for GTK3 to receive keys over XI2; verified live against XQuartz's libX11 1.8.
