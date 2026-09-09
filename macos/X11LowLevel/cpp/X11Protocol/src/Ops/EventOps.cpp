@@ -512,7 +512,7 @@ void EventOps::sendMotionNotify(XProtoContext& ctx,
   buildMotionEvent32(ev,
                      ctx.transport().lastSeq(),
                      x11_now_ms_monotonic(),
-                     1,      // root
+                     x11::kRootWindowXid,   // root (R1: was the literal 1)
                      wid,    // event window
                      child_xid, // child of the event window on the sprite path
                      (int)ex, (int)ey,
@@ -558,7 +558,7 @@ void EventOps::sendButtonEvent(XProtoContext& ctx,
                      is_press ? 4 : 5,
                      ctx.transport().lastSeq(),
                      x11_now_ms_monotonic(),
-                     1,
+                     x11::kRootWindowXid,   // root (R1: was the literal 1)
                      wid,
                      child_xid,
                      (int)ex, (int)ey,
