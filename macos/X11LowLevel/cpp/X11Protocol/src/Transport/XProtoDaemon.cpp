@@ -808,12 +808,9 @@ void XProtoDaemon::removeClient(int fd) {
 
   // M6 Stage 1: drop this client's per-window event selections so broadcast
   // delivery never targets a dead fd, and other clients' unions stay correct.
+  // (R1 Phase 3: this covers the root window's XI2 selections too — the
+  // RawMotion gate no longer keeps a dead client's bits alive.)
   server_->ctx().windows().removeClientMasks(fd);
-
-  // Drop this client's XI2 root-window selection so the union that gates
-  // RawMotion (and the root fallback in every XI2 sender) does not keep a
-  // dead client's bits alive — xeyes' RawMotion used to stay set after exit.
-  server_->ctx().input().removeClientRootXI2Mask(fd);
 
   // Cancel any active INCR clipboard transfers for this client
   x11::IncrTransfer::instance().cancelForFd(fd);

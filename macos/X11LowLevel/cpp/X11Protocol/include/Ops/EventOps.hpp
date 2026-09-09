@@ -144,9 +144,9 @@ namespace x11 {
     // (dix/events.c): XI2 is tried first and, once it delivers, the walk breaks and
     // the core event is never sent — so a client selecting XI2 does not also receive
     // the core copy of the same physical event (which double-processed clicks in
-    // Chromium/GTK).  A delivery that happened ONLY via the root-selection union
-    // (xi2_root_mask) returns FALSE (it is not this window's own selection and
-    // must not suppress core delivery to the window's own client).
+    // Chromium/GTK).  Root is an ordinary window in that walk (R1 Phase 3): a
+    // root selector receives the event because the walk chose root as the
+    // target, with event=root and child=the toplevel (childOnSpritePath).
     //
     // Crossing events are the EXCEPTION: xorg's DoEnterLeaveEvents
     // (dix/enterleave.c:595-608) sends the core AND the XI2 crossing
@@ -196,7 +196,7 @@ namespace x11 {
                            uint8_t mode = 0, uint8_t detail = 3);
 
     // XI2 RawMotion: window-free.  Delivered to EVERY client whose root
-    // XISelectEvents has XI_RawMotion (InputState::xi2_root_masks), each with
+    // XISelectEvents has XI_RawMotion (root's xi2_client_masks in WindowTable, R1 Phase 3), each with
     // its own sequence — xorg DeliverRawEvent (dix/events.c:2464-2488).  Raw
     // events carry no `event` window (FixUpEventFromWindow returns early for
     // them), so nothing here depends on which window the pointer is over.

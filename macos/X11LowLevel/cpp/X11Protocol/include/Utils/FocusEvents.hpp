@@ -116,7 +116,7 @@ inline void doFocusEvents(XProtoContext& ctx, EventOps& ev, uint32_t from, uint3
 
   if (fromNP && toNP) {                              // CoreFocusPointerRootNoneSwitch
     if (from == kPointerRootFocus && to != kPointerRootFocus) outNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
-    // root: FocusOut(PointerRoot|DetailNone), FocusIn(PointerRoot|DetailNone) — no target here
+    // root: FocusOut(PointerRoot|DetailNone), FocusIn(PointerRoot|DetailNone) — root's own selectors receive these since R1 Phase 3
     if (to == kPointerRootFocus) inNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
     return;
   }
@@ -124,13 +124,13 @@ inline void doFocusEvents(XProtoContext& ctx, EventOps& ev, uint32_t from, uint3
     outNotifyPointer(from, 0, false);
     out(from, kNonlinear);
     outChain(from, kRootWindowXid, kNonlinearVirtual);
-    // root: FocusIn(PointerRoot | DetailNone) — no target here
+    // root: FocusIn(PointerRoot | DetailNone) — root's own selectors receive these since R1 Phase 3
     if (to == kPointerRootFocus) inNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
     return;
   }
   if (fromNP) {                                      // CoreFocusFromPointerRootOrNone
     if (from == kPointerRootFocus) outNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
-    // root: FocusOut(PointerRoot | DetailNone), FocusIn(NonlinearVirtual) — no target here
+    // root: FocusOut(PointerRoot | DetailNone), FocusIn(NonlinearVirtual) — root's own selectors receive these since R1 Phase 3
     inChain(kRootWindowXid, to, kNonlinearVirtual);
     in(to, kNonlinear);
     inNotifyPointer(to, 0, false);

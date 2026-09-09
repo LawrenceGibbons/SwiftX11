@@ -99,13 +99,16 @@ bool wantsButton(x11::XProtoContext& ctx, uint32_t xid, bool isDown) {
 }
 
 // Normal-delivery target for a button event at `under` (xorg
-// DeliverDeviceEvents): climb by selection up to the toplevel, fenced by
-// do_not_propagate (§2.8).  0 = nobody wants it.
+// DeliverDeviceEvents, dix/events.c:2865-2900): climb by selection, fenced by
+// do_not_propagate (§2.8), through the toplevel to the ROOT — the walk's last
+// window since R1 Phase 3 (A4), so a root selector (WM click-to-raise, xev
+// -root) gets what nobody below wanted.  0 = nobody wants it.
 uint32_t buttonDeliveryWindow(x11::XProtoContext& ctx, uint32_t under, uint32_t host, bool isDown) {
+  (void)host;   // the climb no longer stops at the toplevel
   if (wantsButton(ctx, under, isDown)) return under;
   const uint32_t dnpBit = isDown ? x11::mask::ButtonPress : x11::mask::ButtonRelease;
   uint32_t cur = under;
-  for (int safety = 0; cur && cur != host && safety < 64; safety++) {
+  for (int safety = 0; cur && safety < 64; safety++) {
     x11::WindowView vw{};
     if (!ctx.windows().snapshot(cur, vw)) return 0;
     if (vw.do_not_propagate_mask & dnpBit) return 0;
@@ -692,7 +695,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           // Phase D: xorg DoEnterLeaveEvents(leaveWin, root), at the exit
           // event's own root position.
           if (leaveWin) {
-            x11::enterleave::doEnterLeave(ctx, srv->eventOps(), leaveWin, /*to=root*/0,
+            x11::enterleave::doEnterLeave(ctx, srv->eventOps(), leaveWin, x11::kRootWindowXid,
                                           x11::notifymode::kNormal,
                                           c.root_x_u, c.root_y_u,
                                           ctx.input().buttons, c.modsMask);
@@ -961,7 +964,9 @@ static void processOneHostCmd(x11::XProtoServer* srv,
 
           uint32_t deliver = under;
 
-          // If under doesn't select, climb to parent until effective host (simple propagation).
+          // If under doesn't select, climb to parent (simple propagation) —
+          // through the toplevel to the ROOT, the walk's last window (xorg
+          // DeliverDeviceEvents, dix/events.c:2865-2900; R1 Phase 3, A4).
           // do_not_propagate_mask (§2.8): propagation from a window stops
           // when the event's mask bit is in that window's dnp mask.
           const uint32_t btnDnpBit = c.isDown ? x11::mask::ButtonPress
@@ -970,7 +975,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           if (!wantsBtn(deliver)) {
             uint32_t cur = under;
             int safety = 0;
-            while (cur && cur != effectiveHost) {
+            while (cur) {
               x11::WindowView vw{};
               if (!ctx.windows().snapshot(cur, vw)) break;
               if (vw.do_not_propagate_mask & btnDnpBit) {
@@ -1423,7 +1428,10 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           uint32_t target = 0;
           {
             uint32_t cur = start;
-            for (int safety = 0; cur && cur != x11::kRootWindowXid && safety < 64; safety++) {
+            // R1 Phase 3 (A4): the climb includes the root (PointerRoot focus
+            // walks the sprite trace to root, dix/events.c:4620-4640; a root
+            // focus is a stopAt of root).
+            for (int safety = 0; cur && safety < 64; safety++) {
               if (wantsKey(cur)) { target = cur; break; }
               if (cur == stopAt) break;
               x11::WindowView vw{};

@@ -192,40 +192,25 @@ static constexpr uint32_t kCoreMotionBits =
 // selection on `wid` carries `bit` for the event's device — xorg
 // DeliverEventToInputClients over the window's InputClients list
 // (dix/events.c:2203-2285) — each with its own sequence.  For the event
-// types that propagate (button, motion, key — `propagates`), xorg's
-// DeliverDeviceEvents walk ends at root, where a root selector receives the
-// event with event=root and child=the toplevel (FixUpEventFromWindow); mirror
-// that when nobody selected on the window.  Crossing and focus events are
-// delivered to their window only (DeviceEnterLeaveEvent / DeviceFocusEvent →
-// DeliverEventsToWindow, no walk), so they never fall back to root.  Returns
-// xorg's "deliveries > 0", which the callers use to suppress the core twin.
+// types that propagate (button, motion, key), xorg's DeliverDeviceEvents walk
+// ends at ROOT, an ordinary window whose selectors receive the event with
+// event=root and child=the toplevel (FixUpEventFromWindow) — since R1 Phase 3
+// (A5) the callers' walks include the root, so `wid` IS root in that case and
+// its selection is looked up like any other (the Phase C post-hoc root
+// fallback, with its re-addressing and the "not the window's own selection"
+// exception, is gone).  Crossing and focus events are delivered to their
+// window only (DeviceEnterLeaveEvent / DeviceFocusEvent →
+// DeliverEventsToWindow, no walk).  Returns xorg's "deliveries > 0", which the
+// callers use to suppress the core twin.
 static bool deliverXI2(x11::XProtoContext& ctx, uint32_t wid, uint8_t* buf, size_t len,
-                       uint32_t bit, uint16_t deviceid, bool force, int toFd,
-                       bool propagates) {
+                       uint32_t bit, uint16_t deviceid, bool force, int toFd) {
   if (toFd >= 0) { (void)ctx.transport().sendEventToFd(toFd, buf, len); return true; }
   if (force)     { (void)ctx.transport().sendEventVariable(wid, buf, len); return true; }
 
-  std::vector<int> fds = ctx.windows().xi2SelectorsOf(wid, bit, deviceid);
-  // Whether the WINDOW's own XI2 selection consumed the event.  A delivery
-  // that happened ONLY through the root-selection fallback must NOT suppress
-  // the core twin — otherwise a client that core-selected the event on this
-  // window loses it because some other client root-XI2-selected (review
-  // §A5/D1; the doc's "return own keeps core flowing" describes THIS).
-  const bool ownSelection = !fds.empty();
-  if (fds.empty()) {
-    if (!propagates) return false;
-    fds = ctx.input().rootXI2SelectorsOf(bit, deviceid);
-    if (fds.empty()) return false;
-    // Re-address to the root window: xXIDeviceEvent and xXIEnterEvent share
-    // the root@20 / event@24 / child@28 / root_xy@32 / event_xy@40 layout.
-    uint32_t top = ctx.windows().topLevelAncestorOf(wid);
-    if (top == 0) top = wid;
-    x11::wire::wr32_le(buf + 24, 1);
-    x11::wire::wr32_le(buf + 28, top);
-    std::memcpy(buf + 40, buf + 32, 8);   // event_x/y = root_x/y
-  }
+  const std::vector<int> fds = ctx.windows().xi2SelectorsOf(wid, bit, deviceid);
+  if (fds.empty()) return false;
   for (int fd : fds) (void)ctx.transport().sendEventToFd(fd, buf, len);
-  return ownSelection;
+  return true;
 }
 
 static void buildButtonEvent32(uint8_t ev[32],
@@ -600,7 +585,7 @@ void EventOps::sendKeyEvent(XProtoContext& ctx,
   wire::wr16_le(ev + 2, ctx.transport().lastSeq());
   wire::wr32_le(ev + 4, x11_now_ms_monotonic()); // time (ms)
 
-  wire::wr32_le(ev + 8, 1);    // root
+  wire::wr32_le(ev + 8, x11::kRootWindowXid);    // root (R1: was the literal 1)
   wire::wr32_le(ev + 12, wid); // event
   wire::wr32_le(ev + 16, 0);   // child
 
@@ -694,7 +679,7 @@ void EventOps::sendCrossingEvent(XProtoContext& ctx,
   wire::wr16_le(ev + 2, ctx.transport().lastSeq());
   wire::wr32_le(ev + 4, x11_now_ms_monotonic()); // time
 
-  wire::wr32_le(ev + 8, 1);    // root
+  wire::wr32_le(ev + 8, x11::kRootWindowXid);    // root (R1: was the literal 1)
   wire::wr32_le(ev + 12, wid); // event
   wire::wr32_le(ev + 16, child); // child: None on the endpoints, the path window on Virtual events
 
@@ -816,8 +801,7 @@ bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   const WindowView* wv = ctx.window(wid);
   if (!force && !wv) return false;
   // Phase C: the window's union gates cheaply; deliverXI2 picks the clients.
-  if (!force && !(wv->xi2_mask & xi2::kMotionMask) &&
-      !(ctx.input().xi2_root_mask & xi2::kMotionMask)) return false;
+  if (!force && !(wv->xi2_mask & xi2::kMotionMask)) return false;
 
   // Compute event-local coords using proper hierarchy walk (same as core events)
   int16_t ex = 0, ey = 0;
@@ -837,7 +821,7 @@ bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);    // deviceid
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());      // time
   wire::wr32_le(buf + 16, 0);                           // detail (0 for motion)
-  wire::wr32_le(buf + 20, 1);                           // root window
+  wire::wr32_le(buf + 20, x11::kRootWindowXid);                           // root window
   wire::wr32_le(buf + 24, wid);                         // event window
   wire::wr32_le(buf + 28, child_xid);                   // child (FixUpEventFromWindow)
   wire::wr32_le(buf + 32, fp1616(root_x));    // root_x FP16.16
@@ -858,7 +842,7 @@ bool EventOps::sendXI2MotionEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), xi2::kMotionMask,
-                    xi2::kVirtualCorePointer, force, toFd, /*propagates=*/true);
+                    xi2::kVirtualCorePointer, force, toFd);
 }
 
 bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
@@ -870,8 +854,7 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   uint32_t mask_bit = is_press ? xi2::kButtonPressMask : xi2::kButtonReleaseMask;
   const WindowView* wv = ctx.window(wid);
   if (!force && !wv) return false;
-  if (!force && !(wv->xi2_mask & mask_bit) &&
-      !(ctx.input().xi2_root_mask & mask_bit)) return false;
+  if (!force && !(wv->xi2_mask & mask_bit)) return false;
 
   // Compute event-local coords using proper hierarchy walk (same as core events)
   int16_t ex = 0, ey = 0;
@@ -891,7 +874,7 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr16_le(buf + 10, xi2::kVirtualCorePointer);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
   wire::wr32_le(buf + 16, (uint32_t)button);             // detail = button number
-  wire::wr32_le(buf + 20, 1);                            // root
+  wire::wr32_le(buf + 20, x11::kRootWindowXid);                            // root
   wire::wr32_le(buf + 24, wid);                          // event
   wire::wr32_le(buf + 28, child_xid);                    // child
   wire::wr32_le(buf + 32, fp1616(root_x));
@@ -911,7 +894,7 @@ bool EventOps::sendXI2ButtonEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 128, (uint32_t)root_y);            // valuator 1 = y (FP3232 integral)
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                    xi2::kVirtualCorePointer, force, toFd, /*propagates=*/true);
+                    xi2::kVirtualCorePointer, force, toFd);
 }
 
 bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
@@ -921,8 +904,7 @@ bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   uint32_t mask_bit = is_press ? xi2::kKeyPressMask : xi2::kKeyReleaseMask;
   const WindowView* wv = ctx.window(wid);
   if (!force && !wv) return false;
-  if (!force && !(wv->xi2_mask & mask_bit) &&
-      !(ctx.input().xi2_root_mask & mask_bit)) return false;
+  if (!force && !(wv->xi2_mask & mask_bit)) return false;
 
   // xorg pairs every key event with the master pointer's sprite position
   // and button state (Xi/exevents.c:1860-1862, dix/inpututils.c:784-786) —
@@ -943,7 +925,7 @@ bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr16_le(buf + 10, xi2::kVirtualCoreKeyboard);
   wire::wr32_le(buf + 12, x11_now_ms_monotonic());
   wire::wr32_le(buf + 16, (uint32_t)keycode);
-  wire::wr32_le(buf + 20, 1);   // root
+  wire::wr32_le(buf + 20, x11::kRootWindowXid);   // root
   wire::wr32_le(buf + 24, wid);
   wire::wr32_le(buf + 28, 0);   // child
   wire::wr32_le(buf + 32, fp1616(root_x));
@@ -962,7 +944,7 @@ bool EventOps::sendXI2KeyEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 80, xi2ButtonMask(buttons));
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                    xi2::kVirtualCoreKeyboard, force, toFd, /*propagates=*/true);
+                    xi2::kVirtualCoreKeyboard, force, toFd);
 }
 
 bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
@@ -975,8 +957,7 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   uint32_t mask_bit = is_enter ? xi2::kEnterMask : xi2::kLeaveMask;
   const WindowView* wv = ctx.window(wid);
   if (!force && !wv) return false;
-  if (!force && !(wv->xi2_mask & mask_bit) &&
-      !(ctx.input().xi2_root_mask & mask_bit)) return false;
+  if (!force && !(wv->xi2_mask & mask_bit)) return false;
 
   // Compute event-local coords using proper hierarchy walk (same as core events)
   int16_t ex = 0, ey = 0;
@@ -998,7 +979,7 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr16_le(buf + 16, xi2::kRealPointer);           // sourceid = real slave pointer (not XTEST)
   buf[18] = mode;   // mode: 0=Normal, 1=NotifyGrab, 2=NotifyUngrab
   buf[19] = detail; // from the window relation (Utils/EnterLeave.hpp, M15)
-  wire::wr32_le(buf + 20, 1);                            // root
+  wire::wr32_le(buf + 20, x11::kRootWindowXid);                            // root
   wire::wr32_le(buf + 24, wid);                          // event
   wire::wr32_le(buf + 28, child);                        // child (path window on Virtual events)
   wire::wr32_le(buf + 32, fp1616(root_x));
@@ -1015,7 +996,7 @@ bool EventOps::sendXI2CrossingEvent(XProtoContext& ctx, uint32_t wid,
   wire::wr32_le(buf + 72, xi2ButtonMask(buttons));        // button mask, word 0
 
   return deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                    xi2::kVirtualCorePointer, force, toFd, /*propagates=*/false);
+                    xi2::kVirtualCorePointer, force, toFd);
 }
 
 void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
@@ -1023,7 +1004,7 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
   uint32_t mask_bit = is_in ? xi2::kFocusInMask : xi2::kFocusOutMask;
   const WindowView* wv = ctx.window(wid);
   if (!wv) return;
-  if (!(wv->xi2_mask & mask_bit) && !(ctx.input().xi2_root_mask & mask_bit)) return;
+  if (!(wv->xi2_mask & mask_bit)) return;
 
   uint8_t buf[xi2::kEnterEventSize] = {};
   buf[0] = 35;
@@ -1036,7 +1017,7 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
   wire::wr16_le(buf + 16, xi2::kRealKeyboard);           // sourceid = real slave keyboard (not XTEST)
   buf[18] = mode;    // 0=Normal 1=Grab 2=Ungrab 3=WhileGrabbed (xorg DoFocusEvents)
   buf[19] = detail;  // NotifyNonlinear for toplevel transitions; M9 computes the rest
-  wire::wr32_le(buf + 20, 1);   // root
+  wire::wr32_le(buf + 20, x11::kRootWindowXid);   // root
   wire::wr32_le(buf + 24, wid);
   wire::wr32_le(buf + 28, 0);   // child
   // coordinates = 0 for focus events
@@ -1048,13 +1029,14 @@ void EventOps::sendXI2FocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
   // Trailing: 32B button mask (all zero for focus events).
 
   (void)deliverXI2(ctx, wid, buf, sizeof(buf), mask_bit,
-                   xi2::kVirtualCoreKeyboard, /*force=*/false, /*toFd=*/-1,
-                   /*propagates=*/false);
+                   xi2::kVirtualCoreKeyboard, /*force=*/false, /*toFd=*/-1);
 }
 
 void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {
-  // Cheap gate on the union before building anything.
-  if (!(ctx.input().xi2_root_mask & xi2::kRawMotionMask)) return;
+  // Cheap gate on root's union before building anything (R1 Phase 3: root's
+  // XI2 selections are its WindowTable entries like any window's).
+  const WindowView* rv = ctx.window(x11::kRootWindowXid);
+  if (!rv || !(rv->xi2_mask & xi2::kRawMotionMask)) return;
 
   // Phase C: xorg stamps raw events with the slave that produced them
   // (mi/mieq.c:331-340) and matches root selections through xi2mask_isset,
@@ -1062,8 +1044,8 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {
   // XIAllMasterDevices and works on xorg because the master processes the
   // event as well.  Our raw event carries the master id, so accept selections
   // for the master and for its real slave.
-  std::vector<int> fds = ctx.input().rootXI2SelectorsOf(xi2::kRawMotionMask, xi2::kVirtualCorePointer);
-  for (int fd : ctx.input().rootXI2SelectorsOf(xi2::kRawMotionMask, xi2::kRealPointer)) {
+  std::vector<int> fds = ctx.windows().xi2SelectorsOf(x11::kRootWindowXid, xi2::kRawMotionMask, xi2::kVirtualCorePointer);
+  for (int fd : ctx.windows().xi2SelectorsOf(x11::kRootWindowXid, xi2::kRawMotionMask, xi2::kRealPointer)) {
     bool dup = false;
     for (int f : fds) if (f == fd) { dup = true; break; }
     if (!dup) fds.push_back(fd);
@@ -1125,9 +1107,10 @@ void EventOps::sendXI2RawMotionEvent(XProtoContext& ctx) {
 // slave that produced it, as for RawMotion.
 static void sendXI2RawSimple(x11::XProtoContext& ctx, uint16_t evtype, uint32_t maskBit,
                              uint16_t deviceid, uint16_t sourceid, uint32_t detail) {
-  if (!(ctx.input().xi2_root_mask & maskBit)) return;
-  std::vector<int> fds = ctx.input().rootXI2SelectorsOf(maskBit, deviceid);
-  for (int fd : ctx.input().rootXI2SelectorsOf(maskBit, sourceid)) {
+  const x11::WindowView* rv = ctx.window(x11::kRootWindowXid);
+  if (!rv || !(rv->xi2_mask & maskBit)) return;
+  std::vector<int> fds = ctx.windows().xi2SelectorsOf(x11::kRootWindowXid, maskBit, deviceid);
+  for (int fd : ctx.windows().xi2SelectorsOf(x11::kRootWindowXid, maskBit, sourceid)) {
     bool dup = false;
     for (int f : fds) if (f == fd) { dup = true; break; }
     if (!dup) fds.push_back(fd);

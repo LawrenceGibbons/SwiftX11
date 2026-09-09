@@ -1439,8 +1439,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint16_t num_masks = br.readU16();
       br.skip(2); // pad
       if (num_masks == 0) { fail(x11::error::BadValue, 0); return; }
-      const bool isRoot = (window == x11::kRootWindowXid);
-      if (!isRoot && !ctx.window(window)) { fail(x11::error::BadWindow, window); return; }
+      const bool isRoot = (window == x11::kRootWindowXid);   // raw events are root-only (below)
+      if (!ctx.window(window)) { fail(x11::error::BadWindow, window); return; }   // R1: root is a window
 
       struct Sel { uint16_t dev; uint32_t mask; };
       std::vector<Sel> sels;
@@ -1468,10 +1468,9 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining()); // trailing padding
 
       const int fd = ctx.transport().clientFd();
-      for (const Sel& s : sels) {
-        if (isRoot) ctx.input().setRootXI2Mask(fd, s.dev, s.mask);
-        else        ctx.windows().setClientXI2Mask(window, fd, s.dev, s.mask);
-      }
+      // R1 Phase 3 (A5): root's selections are stored like any window's —
+      // xorg keeps one InputClients list per window, root included.
+      for (const Sel& s : sels) ctx.windows().setClientXI2Mask(window, fd, s.dev, s.mask);
       return;
     }
 
@@ -2054,9 +2053,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining());
       const int fd = ctx.transport().clientFd();
       std::vector<std::pair<uint16_t, uint32_t>> list;
-      if (window == x11::kRootWindowXid) {
-        for (const auto& s : ctx.input().rootXI2MasksFor(fd)) list.push_back({s.deviceid, s.mask});
-      } else if (!ctx.window(window)) {
+      if (!ctx.window(window)) {   // R1 Phase 3: root reads back from WindowTable like any window
         (void)ctx.transport().sendErrorExt(x11::error::BadWindow, seq, window, 60, ext::kXInput2);
         return;
       } else {

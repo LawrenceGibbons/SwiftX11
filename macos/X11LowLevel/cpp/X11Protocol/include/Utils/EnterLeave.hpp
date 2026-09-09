@@ -124,11 +124,13 @@ inline std::vector<uint32_t> between(XProtoContext& ctx, uint32_t child, uint32_
 
 namespace enterleave {
 
-// One crossing to `w` (root skipped), through the active pointer grab if any.
+// One crossing to `w`, through the active pointer grab if any.  The root is a
+// real window since R1 (Phase 3): its Enter(Inferior)/Leave(Inferior) and the
+// Virtual chains that end at it reach root selectors (xev -root, a WM).
 inline void emitOne(XProtoContext& ctx, EventOps& ev, uint32_t w, bool is_enter,
                     uint8_t mode, uint8_t detail, uint32_t child,
                     int32_t rx, int32_t ry, uint32_t buttons, uint32_t mods) {
-  if (w == 0 || w == kRootWindowXid || !ctx.window(w)) return;
+  if (w == 0 || !ctx.window(w)) return;
   PointerGrab g{};
   if (ctx.grabs().getPointerGrab(g) && g.active) {
     const auto cd = grabroute::crossingUnderGrab(ctx, g, w, is_enter);

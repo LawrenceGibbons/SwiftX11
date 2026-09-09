@@ -47,60 +47,12 @@ namespace x11 {
     uint32_t last_cursor_host = 0;
     uint32_t last_cursor_cid  = 0;
 
-    // XI2 root-window selections (XISelectEvents on XID 1): one entry per
-    // (client fd, device spec), exactly as WindowTable keeps them for real
-    // windows — root has no WindowState.  xorg keeps an InputClients entry per
-    // client per window with a per-device xi2mask and XISetEventMask replaces
-    // only the caller's slot (Xi/exevents.c:3313-3348).  A single shared word
-    // was last-writer-wins: Chromium's startup root selection erased xeyes'
-    // RawMotion bit (reproduced 2026-09-04).  `xi2_root_mask` is the derived
-    // UNION (cheap gate); delivery iterates the entries (Phase C, M4/M5).
-    struct RootXI2Selection { int fd; uint16_t deviceid; uint32_t mask; };
-    std::vector<RootXI2Selection> xi2_root_sels;
-    uint32_t xi2_root_mask = 0;   // union of xi2_root_sels — never assign directly
-
-    void setRootXI2Mask(int fd, uint16_t deviceid, uint32_t mask) {
-      auto it = xi2_root_sels.begin();
-      for (; it != xi2_root_sels.end(); ++it)
-        if (it->fd == fd && it->deviceid == deviceid) break;
-      if (mask == 0) {                            // all-zero / mask_len==0 = deselect
-        if (it != xi2_root_sels.end()) xi2_root_sels.erase(it);
-      } else if (it != xi2_root_sels.end()) {
-        it->mask = mask;
-      } else {
-        xi2_root_sels.push_back({fd, deviceid, mask});
-      }
-      recomputeRootXI2Mask();
-    }
-    void removeClientRootXI2Mask(int fd) {
-      bool changed = false;
-      for (size_t i = 0; i < xi2_root_sels.size();) {
-        if (xi2_root_sels[i].fd == fd) { xi2_root_sels.erase(xi2_root_sels.begin() + (long)i); changed = true; }
-        else ++i;
-      }
-      if (changed) recomputeRootXI2Mask();
-    }
-    // fds that selected `bit` on root for an event on `deviceid` (no duplicates).
-    std::vector<int> rootXI2SelectorsOf(uint32_t bit, uint16_t deviceid) const {
-      std::vector<int> out;
-      for (const auto& s : xi2_root_sels) {
-        if (!(s.mask & bit) || !xi2::selectionMatchesDevice(s.deviceid, deviceid)) continue;
-        bool dup = false;
-        for (int f : out) if (f == s.fd) { dup = true; break; }
-        if (!dup) out.push_back(s.fd);
-      }
-      return out;
-    }
-    std::vector<RootXI2Selection> rootXI2MasksFor(int fd) const {
-      std::vector<RootXI2Selection> out;
-      for (const auto& s : xi2_root_sels) if (s.fd == fd) out.push_back(s);
-      return out;
-    }
-    void recomputeRootXI2Mask() {
-      uint32_t u = 0;
-      for (const auto& s : xi2_root_sels) u |= s.mask;
-      xi2_root_mask = u;
-    }
+    // R1 Phase 3 (A5): XI2 root selections live in WindowTable like every
+    // other window's (xi2_client_masks on kRootWindowXid, one entry per client
+    // fd and device spec, xorg's per-window InputClients list) — the Phase C
+    // side table that stood in for a root WindowState is gone, and with it the
+    // post-hoc root fallback in deliverXI2: root is simply the last window of
+    // the delivery walk (dix/events.c:2865-2900).
 
     // Screen origin cache: maps host XID → (screen_x, screen_y).
     // Updated whenever the pointer moves over a host window.
