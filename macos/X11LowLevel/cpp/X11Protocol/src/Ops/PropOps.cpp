@@ -116,7 +116,7 @@ void PropOps::handleChangeProperty(XProtoContext& ctx, uint16_t seq, uint8_t mod
   const uint32_t wid   = br.readU32();
 
   // Validate window exists (allow root XID 0 and 1)
-  if (wid != 0 && wid != x11::kRootXid) {
+  if (wid != 0 && wid != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(wid, tmp)) {
       br.skip(br.remaining());
@@ -490,7 +490,7 @@ void PropOps::handleDeleteProperty(XProtoContext& ctx, uint16_t seq, ByteReader&
   br.skip(br.remaining());
 
   // Validate window exists (allow root XID 0 and 1)
-  if (wid != 0 && wid != x11::kRootXid) {
+  if (wid != 0 && wid != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(wid, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::DeleteProperty);
@@ -542,7 +542,7 @@ void PropOps::handleGetProperty(XProtoContext& ctx, uint16_t seq, uint8_t delete
   br.skip(br.remaining());
 
   // Validate window exists (allow root XID 0 and 1)
-  if (wid != 0 && wid != x11::kRootXid) {
+  if (wid != 0 && wid != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(wid, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::GetProperty);
@@ -674,7 +674,7 @@ void PropOps::handleListProperties(XProtoContext& ctx, uint16_t seq, ByteReader&
   if (br.remaining()) br.skip(br.remaining());
 
   // Validate window exists (allow root XID 0 and 1)
-  if (wid != 0 && wid != x11::kRootXid) {
+  if (wid != 0 && wid != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(wid, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::ListProperties);

@@ -6,7 +6,7 @@
 //  CoreFocusEvents / DeviceFocusEvents (Phase D, v1.20.0.25 —
 //  docs/XI2_XORG_COMPARISON.md M9, M18).
 //
-//  Focus moves from `from` to `to`.  0 means None; kRootXid stands for
+//  Focus moves from `from` to `to`.  0 means None; kPointerRootFocus stands for
 //  PointerRoot (SetInputFocus(PointerRoot) and RevertToPointerRoot store the
 //  root as the focus).  Details from the window relation, exactly as for
 //  crossings (dix/enterleave.c:1403-1425 core, 1428-1550 XI2):
@@ -37,7 +37,7 @@
 //  The root window's own FocusIn/FocusOut (NotifyPointerRoot /
 //  NotifyDetailNone / NonlinearVirtual) have no target here — root has no
 //  WindowView, so no client can select on it — and are skipped by emitOne.
-//  PointerRoot is represented by kRootXid (1), which is also the wire value
+//  PointerRoot is represented by kPointerRootFocus (1), which is also the wire value
 //  of PointerRoot, so GetInputFocus reports what xorg would; a RevertToParent
 //  that reaches the root therefore reads as PointerRoot, whose key routing
 //  (M19) matches a root-window focus anyway.
@@ -53,7 +53,7 @@
 
 namespace x11::focusev {
 
-inline bool isNoneOrPointerRoot(uint32_t w) { return w == 0 || w == kRootXid; }
+inline bool isNoneOrPointerRoot(uint32_t w) { return w == 0 || w == kPointerRootFocus; }
 
 inline void emitOne(XProtoContext& ctx, EventOps& ev, uint32_t w, bool is_in,
                     uint8_t mode, uint8_t detail) {
@@ -115,23 +115,23 @@ inline void doFocusEvents(XProtoContext& ctx, EventOps& ev, uint32_t from, uint3
   };
 
   if (fromNP && toNP) {                              // CoreFocusPointerRootNoneSwitch
-    if (from == kRootXid && to != kRootXid) outNotifyPointer(kRootXid, 0, /*inclusive=*/true);
+    if (from == kPointerRootFocus && to != kPointerRootFocus) outNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
     // root: FocusOut(PointerRoot|DetailNone), FocusIn(PointerRoot|DetailNone) — no target here
-    if (to == kRootXid) inNotifyPointer(kRootXid, 0, /*inclusive=*/true);
+    if (to == kPointerRootFocus) inNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
     return;
   }
   if (toNP) {                                        // CoreFocusToPointerRootOrNone
     outNotifyPointer(from, 0, false);
     out(from, kNonlinear);
-    outChain(from, kRootXid, kNonlinearVirtual);
+    outChain(from, kRootWindowXid, kNonlinearVirtual);
     // root: FocusIn(PointerRoot | DetailNone) — no target here
-    if (to == kRootXid) inNotifyPointer(kRootXid, 0, /*inclusive=*/true);
+    if (to == kPointerRootFocus) inNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
     return;
   }
   if (fromNP) {                                      // CoreFocusFromPointerRootOrNone
-    if (from == kRootXid) outNotifyPointer(kRootXid, 0, /*inclusive=*/true);
+    if (from == kPointerRootFocus) outNotifyPointer(kRootWindowXid, 0, /*inclusive=*/true);
     // root: FocusOut(PointerRoot | DetailNone), FocusIn(NonlinearVirtual) — no target here
-    inChain(kRootXid, to, kNonlinearVirtual);
+    inChain(kRootWindowXid, to, kNonlinearVirtual);
     in(to, kNonlinear);
     inNotifyPointer(to, 0, false);
     return;

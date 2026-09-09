@@ -111,7 +111,7 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
 #endif
 
   // Validate grab window exists (allow root XID 0 and 1)
-  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+  if (grabWindow != 0 && grabWindow != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(grabWindow, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabPointer);
@@ -238,7 +238,7 @@ void GrabOps::handleGrabButton(XProtoContext& ctx, uint16_t seq, uint8_t ownerEv
   br.skip(br.remaining());
 
   // Validate grab window exists (allow root XID 0 and 1)
-  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+  if (grabWindow != 0 && grabWindow != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(grabWindow, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabButton);
@@ -275,7 +275,7 @@ void GrabOps::handleUngrabButton(XProtoContext& ctx, uint16_t seq, uint8_t butto
   br.skip(br.remaining());
 
   // Validate grab window exists (allow root XID 0 and 1)
-  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+  if (grabWindow != 0 && grabWindow != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(grabWindow, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::UngrabButton);
@@ -311,7 +311,7 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t owner
 #endif
 
   // Validate grab window exists (allow root XID 0 and 1)
-  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+  if (grabWindow != 0 && grabWindow != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(grabWindow, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabKeyboard);
@@ -405,7 +405,7 @@ void GrabOps::handleGrabKey(XProtoContext& ctx, uint16_t seq, uint8_t ownerEvent
   br.skip(br.remaining());
 
   // Validate grab window exists (allow root XID 0 and 1).
-  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+  if (grabWindow != 0 && grabWindow != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(grabWindow, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::GrabKey);
@@ -438,7 +438,7 @@ void GrabOps::handleUngrabKey(XProtoContext& ctx, uint16_t seq, uint8_t key, Byt
   (void)br.readU16(); // pad
   br.skip(br.remaining());
 
-  if (grabWindow != 0 && grabWindow != x11::kRootXid) {
+  if (grabWindow != 0 && grabWindow != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(grabWindow, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, grabWindow, x11::opcode::UngrabKey);

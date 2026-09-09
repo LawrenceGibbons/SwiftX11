@@ -1030,8 +1030,8 @@ void XProtoDaemon::drainHostCommands() {
           ev[0] = 22; // ConfigureNotify
           ev[1] = 0;
           wire::wr16_le(ev.data() + 2, session.seq);
-          wire::wr32_le(ev.data() + 4, kRootXid);  // event
-          wire::wr32_le(ev.data() + 8, kRootXid);  // window
+          wire::wr32_le(ev.data() + 4, kRootWindowXid);  // event
+          wire::wr32_le(ev.data() + 8, kRootWindowXid);  // window
           wire::wr32_le(ev.data() + 12, 0);         // above-sibling: None
           wire::wr16_le(ev.data() + 16, 0);         // x
           wire::wr16_le(ev.data() + 18, 0);         // y
@@ -1054,8 +1054,8 @@ void XProtoDaemon::drainHostCommands() {
           wire::wr16_le(ev.data() + 2, session.seq);
           wire::wr32_le(ev.data() + 4, now);        // timestamp
           wire::wr32_le(ev.data() + 8, now);        // configTimestamp
-          wire::wr32_le(ev.data() + 12, kRootXid);  // root
-          wire::wr32_le(ev.data() + 16, kRootXid);  // requestWindow (root)
+          wire::wr32_le(ev.data() + 12, kRootWindowXid);  // root
+          wire::wr32_le(ev.data() + 16, kRootWindowXid);  // requestWindow (root)
           wire::wr16_le(ev.data() + 20, 0);         // sizeID
           wire::wr16_le(ev.data() + 22, 0);         // subpixelOrder
           wire::wr16_le(ev.data() + 24, rw);        // widthInPixels

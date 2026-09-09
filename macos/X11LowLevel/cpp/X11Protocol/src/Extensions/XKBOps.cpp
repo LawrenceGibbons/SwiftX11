@@ -155,7 +155,7 @@ void ensureRulesNamesProperty() {
   // these names cannot change anything.
   static const char rmlvo[] = "evdev\0pc105\0us\0\0";
   const uint32_t atom = AtomTable::instance().intern("_XKB_RULES_NAMES", 16, false);
-  PropertyTable::instance().setReplace(kRootXid, atom, /*XA_STRING*/ 31, 8,
+  PropertyTable::instance().setReplace(kRootWindowXid, atom, /*XA_STRING*/ 31, 8,
                                        reinterpret_cast<const uint8_t*>(rmlvo), sizeof(rmlvo));
 }
 

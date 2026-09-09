@@ -65,29 +65,29 @@ constexpr uint8_t kWhileGrabbed = 3;
 
 // ---------------------------------------------------------------------------
 // Window-tree helpers shared by the crossing and focus choreography.
-// 0 and kRootXid both mean the root; every mapped X window descends from it.
+// 0 and kRootWindowXid both mean the root; every mapped X window descends from it.
 // ---------------------------------------------------------------------------
 namespace wintree {
 
-inline uint32_t normRoot(uint32_t w) { return w == 0 ? kRootXid : w; }
+inline uint32_t normRoot(uint32_t w) { return w == 0 ? kRootWindowXid : w; }
 
-// Parent of `w`; kRootXid for a toplevel; 0 for the root or an unknown window.
+// Parent of `w`; kRootWindowXid for a toplevel; 0 for the root or an unknown window.
 inline uint32_t parentOf(XProtoContext& ctx, uint32_t w) {
-  if (w == 0 || w == kRootXid) return 0;
+  if (w == 0 || w == kRootWindowXid) return 0;
   WindowView v{};
   if (!ctx.windows().snapshot(w, v)) return 0;
-  return v.parent_xid ? v.parent_xid : kRootXid;
+  return v.parent_xid ? v.parent_xid : kRootWindowXid;
 }
 
 // xorg IsParent(a, b): `a` is a proper ancestor of `b`.
 inline bool isAncestor(XProtoContext& ctx, uint32_t a, uint32_t b) {
   a = normRoot(a); b = normRoot(b);
-  if (a == b || b == kRootXid) return false;
-  if (a == kRootXid) return true;
+  if (a == b || b == kRootWindowXid) return false;
+  if (a == kRootWindowXid) return true;
   uint32_t w = parentOf(ctx, b);
   for (int i = 0; w && i < 64; i++) {
     if (w == a) return true;
-    if (w == kRootXid) return false;
+    if (w == kRootWindowXid) return false;
     w = parentOf(ctx, w);
   }
   return false;
@@ -99,10 +99,10 @@ inline uint32_t commonAncestor(XProtoContext& ctx, uint32_t a, uint32_t b) {
   a = normRoot(a); b = normRoot(b);
   uint32_t p = parentOf(ctx, b);
   for (int i = 0; p && i < 64; i++) {
-    if (p == kRootXid || isAncestor(ctx, p, a)) return p;
+    if (p == kRootWindowXid || isAncestor(ctx, p, a)) return p;
     p = parentOf(ctx, p);
   }
-  return kRootXid;
+  return kRootWindowXid;
 }
 
 // Windows strictly between `child` and its ancestor `ancestor`, ordered from
@@ -113,7 +113,7 @@ inline std::vector<uint32_t> between(XProtoContext& ctx, uint32_t child, uint32_
   ancestor = normRoot(ancestor);
   uint32_t w = parentOf(ctx, normRoot(child));
   for (int i = 0; w && w != ancestor && i < 64; i++) {
-    if (w == kRootXid) break;
+    if (w == kRootWindowXid) break;
     out.push_back(w);
     w = parentOf(ctx, w);
   }
@@ -128,7 +128,7 @@ namespace enterleave {
 inline void emitOne(XProtoContext& ctx, EventOps& ev, uint32_t w, bool is_enter,
                     uint8_t mode, uint8_t detail, uint32_t child,
                     int32_t rx, int32_t ry, uint32_t buttons, uint32_t mods) {
-  if (w == 0 || w == kRootXid || !ctx.window(w)) return;
+  if (w == 0 || w == kRootWindowXid || !ctx.window(w)) return;
   PointerGrab g{};
   if (ctx.grabs().getPointerGrab(g) && g.active) {
     const auto cd = grabroute::crossingUnderGrab(ctx, g, w, is_enter);

@@ -6,6 +6,7 @@
 //
 
 #include <unordered_map>
+#include "Core/XConstants.hpp"   // kRootWindowXid / kPointerRootFocus (R1)
 #include <algorithm>
 #include <deque>
 #include <functional>
@@ -37,8 +38,6 @@ const WindowTable::WindowState* WindowTable::findLocked(uint32_t xid) const {
   }
 
   uint32_t WindowTable::topLevelAncestorLocked(uint32_t xid) const {
-    // Root is XID 0x00000001 in your server.
-    static constexpr uint32_t kRootXid = 0x00000001u;
     uint32_t cur = xid;
 
     for (;;) {
@@ -51,7 +50,7 @@ const WindowTable::WindowState* WindowTable::findLocked(uint32_t xid) const {
       const uint32_t p = it->second.parent;
 
       // If parent is root/none, cur is top-level.
-      if (p == 0 || p == kRootXid) return cur;
+      if (p == 0 || p == x11::kRootWindowXid) return cur;
 
       cur = p;
     }
@@ -829,7 +828,6 @@ bool WindowTable::queryTree(uint32_t wid,
                             uint32_t  maxChildren,
                             uint32_t* outNChildren) const
 {
-  static constexpr uint32_t kRoot = 0x00000001u;
 
   if (outParent) *outParent = 0;
   if (outNChildren) *outNChildren = 0;
@@ -838,14 +836,14 @@ bool WindowTable::queryTree(uint32_t wid,
     std::lock_guard<std::mutex> lock(mu_);
     const WindowState* st = findLocked(wid);
     if (outParent) *outParent = st ? st->parent : 0;
-    return st != nullptr || wid == kRoot;
+    return st != nullptr || wid == x11::kRootWindowXid;
   }
 
   std::lock_guard<std::mutex> lock(mu_);
 
   // Parent:
   const WindowState* st = findLocked(wid);
-  if (!st && wid != kRoot) {
+  if (!st && wid != x11::kRootWindowXid) {
     // Unknown window — return error
     return false;
   }
@@ -1058,15 +1056,13 @@ void WindowTable::setCursor(uint32_t xid, uint32_t cursor_xid) {
 uint32_t WindowTable::cursor(uint32_t xid) const {
   if (xid == 0) return 0;
 
-  // Root is XID 0x00000001 in your server.
-  static constexpr uint32_t kRootXid = 0x00000001u;
 
   std::lock_guard<std::mutex> lock(mu_);
 
   uint32_t cur = xid;
   int safety = 0;
 
-  while (cur != 0 && cur != kRootXid) {
+  while (cur != 0 && cur != x11::kRootWindowXid) {
     const WindowState* st = findLocked(cur);
     if (!st) return 0;                 // unknown chain => default
 

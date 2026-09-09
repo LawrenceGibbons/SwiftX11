@@ -41,7 +41,7 @@ bool checkPassiveGrabsRootDown(x11::XProtoContext& ctx, uint32_t under, uint32_t
     if (!ctx.windows().snapshot(w, vw)) break;
     w = vw.parent_xid;
   }
-  if (ctx.grabs().match(x11::kRootXid, button, x11Mods, out)) return true;   // root first
+  if (ctx.grabs().match(x11::kRootWindowXid, button, x11Mods, out)) return true;   // root first
   for (size_t i = trace.size(); i-- > 0;)
     if (ctx.grabs().match(trace[i], button, x11Mods, out)) return true;
   return false;
@@ -50,19 +50,19 @@ bool checkPassiveGrabsRootDown(x11::XProtoContext& ctx, uint32_t under, uint32_t
 // xorg CheckDeviceGrabs for a KEYBOARD event (dix/events.c:4183-4206): passive
 // GrabKey grabs are checked along the FOCUS trace from the root down to the
 // focus window, then (when the pointer lies inside the focus subtree) down the
-// sprite trace below the focus window.  focus == PointerRoot (our kRootXid)
+// sprite trace below the focus window.  focus == PointerRoot (our kPointerRootFocus)
 // checks the whole sprite trace; focus == None (0) checks nothing further.
 // C2.  `key` is the X11 keycode, `x11Mods` the modifier state before the key.
 bool checkPassiveKeyGrabsRootDown(x11::XProtoContext& ctx, uint32_t focus, uint32_t sprite,
                                   uint8_t key, uint16_t x11Mods, x11::PassiveKeyGrab& out) {
   // Root grabs first (root is trace[0]); snapshot() fails on the root XID so it
   // is never reached by the parent walks below.
-  if (ctx.grabs().matchKey(x11::kRootXid, key, x11Mods, out)) return true;
+  if (ctx.grabs().matchKey(x11::kRootWindowXid, key, x11Mods, out)) return true;
 
   // Check a leaf→toplevel chain root-down (excludes the root XID).
   auto walkUpChecking = [&](uint32_t leaf, uint32_t stopExclusive) -> bool {
     std::vector<uint32_t> tr;
-    for (uint32_t w = leaf; w && w != x11::kRootXid && w != stopExclusive && tr.size() < 64;) {
+    for (uint32_t w = leaf; w && w != x11::kRootWindowXid && w != stopExclusive && tr.size() < 64;) {
       tr.push_back(w);
       x11::WindowView vw{};
       if (!ctx.windows().snapshot(w, vw)) break;
@@ -73,7 +73,7 @@ bool checkPassiveKeyGrabsRootDown(x11::XProtoContext& ctx, uint32_t focus, uint3
     return false;
   };
 
-  if (focus == x11::kRootXid) {                 // PointerRoot → sprite trace
+  if (focus == x11::kPointerRootFocus) {                 // PointerRoot → sprite trace
     return sprite ? walkUpChecking(sprite, 0) : false;
   }
   if (focus == 0) return false;                 // None → nothing further
@@ -853,7 +853,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           {
             const int32_t rx = ctx.input().root_x_u;
             const int32_t ry = ctx.input().root_y_u;
-            auto topLevels = ctx.windows().childrenInStackOrder(1);
+            auto topLevels = ctx.windows().childrenInStackOrder(x11::kRootWindowXid);
             for (auto it = topLevels.rbegin(); it != topLevels.rend(); ++it) {
               if (*it == host) break;
               x11::WindowView vw{};
@@ -1409,7 +1409,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           const uint32_t keyDnpBit = c.isDown ? x11::mask::KeyPress
                                               : x11::mask::KeyRelease;
           uint32_t start = host, stopAt = host;
-          if (focus == x11::kRootXid) {                         // PointerRoot
+          if (focus == x11::kPointerRootFocus) {                         // PointerRoot
             start = sprite ? sprite : host; stopAt = 0;
           } else if (focus == 0) {
             start = host; stopAt = host;
@@ -1423,7 +1423,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           uint32_t target = 0;
           {
             uint32_t cur = start;
-            for (int safety = 0; cur && cur != x11::kRootXid && safety < 64; safety++) {
+            for (int safety = 0; cur && cur != x11::kRootWindowXid && safety < 64; safety++) {
               if (wantsKey(cur)) { target = cur; break; }
               if (cur == stopAt) break;
               x11::WindowView vw{};
@@ -1495,7 +1495,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           bool consumedByGrab = false;
           x11::KeyboardGrab kg{};
           const bool haveKbGrab = ctx.grabs().getKeyboardGrabInfo(kg) && kg.active &&
-                                  (kg.grabWindow == x11::kRootXid || ctx.window(kg.grabWindow));
+                                  (kg.grabWindow == x11::kRootWindowXid || ctx.window(kg.grabWindow));
           if (haveKbGrab) {
             bool viaGrab = true;
             if (kg.ownerEvents && normalWants) {
@@ -1816,7 +1816,7 @@ extern "C" void x11_proto_bridge_screen_layout_changed(void)
   if (!srv) return;
   HostCmd c{};
   c.type = HostCmdType::ScreenLayoutChanged;
-  c.xid = x11::kRootXid;
+  c.xid = x11::kRootWindowXid;
   srv->hostCmds().push(c);
 }
 

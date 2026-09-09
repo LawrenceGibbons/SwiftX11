@@ -1208,7 +1208,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       // xGetDeviceFocusReply: focus(8-11) None / PointerRoot(1) / window,
       // time(12-15), revertTo(16) — same mapping as XIGetFocus.
       const uint32_t f = ctx.input().focus_xid;
-      const uint32_t focusWin = (f == 0) ? 0u : (f == x11::kRootXid) ? 1u : f;
+      const uint32_t focusWin = (f == 0) ? 0u : (f == x11::kPointerRootFocus) ? 1u : f;
       const uint8_t revert = ctx.input().focus_revert_to;   // 0 None, 1 PointerRoot, 2 Parent
       (void)ctx.reply().sendReply32(seq, [focusWin, revert](std::array<uint8_t, 32>& rep) {
         rep[1] = 20;                                // RepType
@@ -1289,7 +1289,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         xiError(kBadDevice, deviceid);
         return;
       }
-      const bool qIsRoot = (qwin == x11::kRootXid);
+      const bool qIsRoot = (qwin == x11::kRootWindowXid);
       if (qwin == 0 || (!qIsRoot && !ctx.window(qwin))) {
         xiError(x11::error::BadWindow, qwin);
         return;
@@ -1316,7 +1316,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       } else {
         int32_t ox = 0, oy = 0;
         uint32_t cur = qwin;
-        for (int hop = 0; cur && cur != x11::kRootXid && hop < 256; hop++) {
+        for (int hop = 0; cur && cur != x11::kRootWindowXid && hop < 256; hop++) {
           WindowView cv{};
           if (!ctx.windows().snapshot(cur, cv)) break;
           ox += (int32_t)cv.x + (int32_t)cv.border_width;
@@ -1327,7 +1327,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         if (host && ctx.windows().topLevelAncestorOf(qwin) == host) {
           uint32_t t = pickDeepestMappedWindowAtHostPoint(ctx, host, in.win_x_u, in.win_y_u);
           if (!t) t = host;
-          for (int hop = 0; t && t != x11::kRootXid && hop < 64; hop++) {
+          for (int hop = 0; t && t != x11::kRootWindowXid && hop < 64; hop++) {
             WindowView tv{};
             if (!ctx.windows().snapshot(t, tv)) break;
             if (tv.parent_xid == qwin) { child = t; break; }
@@ -1349,7 +1349,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       rep[1] = 40;                                   // RepType = X_XIQueryPointer
       wire::wr16_le(rep.data() + 2, seq);
       wire::wr32_le(rep.data() + 4, 7);              // length = 6 + buttons_len
-      wire::wr32_le(rep.data() + 8, x11::kRootXid);  // root
+      wire::wr32_le(rep.data() + 8, x11::kRootWindowXid);  // root
       wire::wr32_le(rep.data() + 12, child);         // child
       wire::wr32_le(rep.data() + 16, fp1616(root_x));
       wire::wr32_le(rep.data() + 20, fp1616(root_y));
@@ -1387,7 +1387,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint32_t win    = br.readU32();
       const uint32_t cursor = br.readU32();   // 0 = None (inherit)
       br.skip(br.remaining());                 // deviceid(2) + pad(2)
-      if (win == 1) return;                    // root: nothing to route to
+      if (win == x11::kRootWindowXid) return;                    // root: nothing to route to
       x11::WindowView wv{};
       if (!ctx.windows().snapshot(win, wv)) {
         xiError(x11::error::BadWindow, win);
@@ -1439,7 +1439,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint16_t num_masks = br.readU16();
       br.skip(2); // pad
       if (num_masks == 0) { fail(x11::error::BadValue, 0); return; }
-      const bool isRoot = (window == x11::kRootXid);
+      const bool isRoot = (window == x11::kRootWindowXid);
       if (!isRoot && !ctx.window(window)) { fail(x11::error::BadWindow, window); return; }
 
       struct Sel { uint16_t dev; uint32_t mask; };
@@ -1711,8 +1711,8 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining());
       (void)time;
       if (!x11::xi2::isKnownDevice(dev) || !isKeyboardDev(dev)) { xiError(kBadDevice, dev); return; }
-      const uint32_t newFocus = (focus == 0) ? 0u : (focus == 1) ? x11::kRootXid : focus;
-      if (newFocus && newFocus != x11::kRootXid && !ctx.window(newFocus)) {
+      const uint32_t newFocus = (focus == 0) ? 0u : (focus == 1) ? x11::kPointerRootFocus : focus;
+      if (newFocus && newFocus != x11::kPointerRootFocus && !ctx.window(newFocus)) {
         xiError(x11::error::BadWindow, focus);
         return;
       }
@@ -1737,7 +1737,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining());
       if (!x11::xi2::isKnownDevice(dev) || !isKeyboardDev(dev)) { xiError(kBadDevice, dev); return; }
       const uint32_t f = ctx.input().focus_xid;
-      const uint32_t focusWin = (f == 0) ? 0u : (f == x11::kRootXid) ? 1u : f;
+      const uint32_t focusWin = (f == 0) ? 0u : (f == x11::kPointerRootFocus) ? 1u : f;
       (void)ctx.reply().sendReply32(seq, [focusWin](std::array<uint8_t, 32>& rep) {
         rep[1] = 50;                              // RepType
         wire::wr32_le(rep.data() + 4, 0);       // length
@@ -1992,7 +1992,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           !x11::xi2::isKnownDevice(deviceid)) { xiError(kBadDevice, deviceid); return; }
       if (grab_type > 6) { xiError(x11::error::BadValue, grab_type); return; }           // :113-122
       if (grab_type >= 2 && detail != 0) { xiError(x11::error::BadValue, detail); return; } // :124-131
-      if (grab_window != x11::kRootXid && !ctx.window(grab_window)) {
+      if (grab_window != x11::kRootWindowXid && !ctx.window(grab_window)) {
         xiError(x11::error::BadWindow, grab_window);
         return;
       }
@@ -2054,7 +2054,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       br.skip(br.remaining());
       const int fd = ctx.transport().clientFd();
       std::vector<std::pair<uint16_t, uint32_t>> list;
-      if (window == x11::kRootXid) {
+      if (window == x11::kRootWindowXid) {
         for (const auto& s : ctx.input().rootXI2MasksFor(fd)) list.push_back({s.deviceid, s.mask});
       } else if (!ctx.window(window)) {
         (void)ctx.transport().sendErrorExt(x11::error::BadWindow, seq, window, 60, ext::kXInput2);
@@ -2170,9 +2170,9 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           // focus window's toplevel (falling back to the pointer host).
           if (detail < 8) break;
           const uint32_t fwin = ctx.input().focus_xid;
-          uint32_t fhost = (fwin && fwin != x11::kRootXid)
+          uint32_t fhost = (fwin && fwin != x11::kPointerRootFocus)
                              ? ctx.windows().topLevelAncestorOf(fwin) : 0;
-          if (!fhost) fhost = (fwin && fwin != x11::kRootXid) ? fwin : ctx.input().last_xid;
+          if (!fhost) fhost = (fwin && fwin != x11::kPointerRootFocus) ? fwin : ctx.input().last_xid;
           x11_post_key_event(fhost, type == 2, (uint32_t)(detail - 8), mods,
                              /*is_repeat=*/false, /*utf8_text=*/nullptr);
           break;
@@ -2196,7 +2196,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           const int32_t nry = (detail == 1) ? ctx.input().root_y_u + rootY : rootY;
           // Toplevel host containing the destination (rootless: root's children).
           uint32_t host = 0; int32_t lx = nrx, ly = nry;
-          for (uint32_t top : ctx.windows().childrenInStackOrder(x11::kRootXid)) {
+          for (uint32_t top : ctx.windows().childrenInStackOrder(x11::kRootWindowXid)) {
             x11::WindowView vw{};
             if (!ctx.windows().snapshot(top, vw) || !vw.mapped) continue;
             const int32_t bw = (int32_t)vw.border_width;

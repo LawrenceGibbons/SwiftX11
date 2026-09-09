@@ -151,7 +151,7 @@ void postMotion(uint32_t host_xid,
   // the correct normal window; only borderless popups need rescuing.
   const uint32_t originalHost = host_xid;
   {
-    auto topLevels = ctx->windows().childrenInStackOrder(1); // root children
+    auto topLevels = ctx->windows().childrenInStackOrder(x11::kRootWindowXid); // root children
     // Search from topmost down; stop when we reach host_xid
     for (auto it = topLevels.rbegin(); it != topLevels.rend(); ++it) {
       if (*it == host_xid) break; // nothing above host contains pointer

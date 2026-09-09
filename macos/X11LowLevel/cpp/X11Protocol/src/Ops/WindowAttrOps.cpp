@@ -564,7 +564,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
 
       // X11 spec: ConfigureNotify also sent to parent with SubstructureNotifyMask
-      if (vw2->parent_xid != 0 && vw2->parent_xid != x11::kRootXid) {
+      if (vw2->parent_xid != 0 && vw2->parent_xid != x11::kRootWindowXid) {
         WindowView pv{};
         if (ctx.windows().snapshot(vw2->parent_xid, pv) &&
             (pv.event_mask & x11::mask::SubstructureNotify)) {
@@ -681,7 +681,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint32_t drawable = br.readU32();
     br.skip(br.remaining());
 
-    uint32_t root = kRootXid;
+    uint32_t root = kRootWindowXid;
     int16_t  x = 0, y = 0;
     // Default to actual virtual desktop dimensions (for root window queries)
     const auto screenLayout = x11::getScreenLayout();

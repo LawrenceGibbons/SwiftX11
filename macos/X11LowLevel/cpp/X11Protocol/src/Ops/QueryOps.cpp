@@ -103,7 +103,7 @@ namespace x11 {
     br.skip(br.remaining());
 
     // Validate window exists (root is always valid)
-    if (qwin != kRootXid && qwin != 0) {
+    if (qwin != kRootWindowXid && qwin != 0) {
       WindowView tmp{};
       if (!ctx.windows().snapshot(qwin, tmp)) {
         ctx.transport().sendErrorCore(x11::error::BadWindow, seq, qwin, x11::opcode::QueryPointer);
@@ -140,10 +140,10 @@ namespace x11 {
 
     uint32_t child = 0;
     int32_t winx32 = rootx32, winy32 = rooty32;
-    if (qwin != kRootXid && qwin != 0) {
+    if (qwin != kRootWindowXid && qwin != 0) {
       int32_t ox = 0, oy = 0;
       uint32_t cur = qwin;
-      for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
+      for (int hop = 0; hop < 256 && cur && cur != kRootWindowXid; hop++) {
         WindowView cv{};
         if (!ctx.windows().snapshot(cur, cv)) break;
         ox += (int32_t)cv.x + (int32_t)cv.border_width;
@@ -154,7 +154,7 @@ namespace x11 {
       winy32 = rooty32 - oy;
       if (spriteWin && ctx.windows().topLevelAncestorOf(qwin) == host) {
         uint32_t t = spriteWin;
-        for (int hop = 0; hop < 64 && t && t != kRootXid; hop++) {
+        for (int hop = 0; hop < 64 && t && t != kRootWindowXid; hop++) {
           WindowView tv{};
           if (!ctx.windows().snapshot(t, tv)) break;
           if (tv.parent_xid == qwin) { child = t; break; }
@@ -169,7 +169,7 @@ namespace x11 {
     const int16_t winx = clamp16(winx32), winy = clamp16(winy32);
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       rep[1] = 1; // sameScreen
-      wire::wr32_le(rep.data() + 8,  kRootXid);
+      wire::wr32_le(rep.data() + 8,  kRootWindowXid);
       wire::wr32_le(rep.data() + 12, child);
       wire::wr16_le(rep.data() + 16, (uint16_t)rootx);
       wire::wr16_le(rep.data() + 18, (uint16_t)rooty);
@@ -187,7 +187,6 @@ namespace x11 {
     br.skip(br.remaining());
     
     // root is always constant in your server
-    static constexpr uint32_t kRootXid = 0x00000001u;
     
     uint32_t parent = 0;
     uint32_t children[256];
@@ -197,7 +196,7 @@ namespace x11 {
     bool ok = ctx.windows().queryTree(wid, &parent, children, 256, &nchildren);
     if (!ok) {
       // Root window (XID 1) is always valid even though it's not in WindowTable
-      if (wid != kRootXid && wid != 0) {
+      if (wid != kRootWindowXid && wid != 0) {
         ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::QueryTree);
         return;
       }
@@ -210,7 +209,7 @@ namespace x11 {
     // Reply header (32 bytes)
     const bool okHdr = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       wire::wr32_le(rep.data() + 4, extra_words);   // length_words
-      wire::wr32_le(rep.data() + 8, kRootXid);      // root
+      wire::wr32_le(rep.data() + 8, kRootWindowXid);      // root
       wire::wr32_le(rep.data() + 12, parent);       // parent
       wire::wr16_le(rep.data() + 16, (uint16_t)nchildren);
     });
@@ -574,7 +573,7 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
   br.skip(br.remaining());
 
   // Validate srcWin exists (root is always valid)
-  if (srcWin != kRootXid && srcWin != 0) {
+  if (srcWin != kRootWindowXid && srcWin != 0) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(srcWin, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, srcWin, x11::opcode::TranslateCoords);
@@ -582,7 +581,7 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
     }
   }
   // Validate dstWin exists (root is always valid)
-  if (dstWin != kRootXid && dstWin != 0) {
+  if (dstWin != kRootWindowXid && dstWin != 0) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(dstWin, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, dstWin, x11::opcode::TranslateCoords);
@@ -597,7 +596,7 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
   int32_t absY = (int32_t)srcY;
   {
     uint32_t cur = srcWin;
-    for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
+    for (int hop = 0; hop < 256 && cur && cur != kRootWindowXid; hop++) {
       WindowView vw{};
       if (!ctx.windows().snapshot(cur, vw)) break;
       absX += (int32_t)vw.x + (int32_t)vw.border_width;
@@ -609,9 +608,9 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
   // Convert to dst window local coords
   int32_t dstX = absX;
   int32_t dstY = absY;
-  if (dstWin != kRootXid) {
+  if (dstWin != kRootWindowXid) {
     uint32_t cur = dstWin;
-    for (int hop = 0; hop < 256 && cur && cur != kRootXid; hop++) {
+    for (int hop = 0; hop < 256 && cur && cur != kRootWindowXid; hop++) {
       WindowView vw{};
       if (!ctx.windows().snapshot(cur, vw)) break;
       dstX -= (int32_t)vw.x + (int32_t)vw.border_width;
@@ -651,7 +650,7 @@ void QueryOps::handleTranslateCoords(XProtoContext& ctx, uint16_t seq, ByteReade
 // resolve to (0,0).
 static void windowRootOrigin(XProtoContext& ctx, uint32_t win, int32_t& outX, int32_t& outY) {
   outX = 0; outY = 0;
-  if (win == 0 || win == kRootXid) return;
+  if (win == 0 || win == kRootWindowXid) return;
   uint32_t host = ctx.windows().topLevelAncestorOf(win);
   if (host == 0) host = win;
   WindowView hv{};
@@ -668,7 +667,7 @@ static void windowRootOrigin(XProtoContext& ctx, uint32_t win, int32_t& outX, in
 // lands over a single window).
 static uint32_t hostContainingRootPoint(XProtoContext& ctx, int32_t rx, int32_t ry) {
   uint32_t found = 0;
-  for (uint32_t top : ctx.windows().childrenInStackOrder(kRootXid)) {
+  for (uint32_t top : ctx.windows().childrenInStackOrder(kRootWindowXid)) {
     WindowView vw{};
     if (!ctx.windows().snapshot(top, vw) || !vw.mapped) continue;
     const int32_t bw = (int32_t)vw.border_width;
@@ -697,14 +696,14 @@ void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t seq, ByteReader& b
 
   // Validate src/dst windows — xorg ProcWarpPointer (dix/events.c:3697-3711):
   // dixLookupWindow on either → BadWindow.  None(0) and root are valid.
-  if (srcWin != 0 && srcWin != kRootXid) {
+  if (srcWin != 0 && srcWin != kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(srcWin, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, srcWin, x11::opcode::WarpPointer);
       return;
     }
   }
-  if (dstWin != 0 && dstWin != kRootXid) {
+  if (dstWin != 0 && dstWin != kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(dstWin, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, dstWin, x11::opcode::WarpPointer);
@@ -734,7 +733,7 @@ void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t seq, ByteReader& b
   if (dstWin == 0) {                 // relative to the current pointer
     newRootX = curRootX + dstX;
     newRootY = curRootY + dstY;
-  } else {                           // relative to dstWin's origin (root for kRootXid)
+  } else {                           // relative to dstWin's origin (root for kRootWindowXid)
     int32_t dox = 0, doy = 0;
     windowRootOrigin(ctx, dstWin, dox, doy);
     newRootX = dox + dstX;
@@ -747,7 +746,7 @@ void QueryOps::handleWarpPointer(XProtoContext& ctx, uint16_t seq, ByteReader& b
   if (dstWin == 0) {
     x11_ui_push_warp_pointer(0, (int32_t)dstX, (int32_t)dstY);
   } else {
-    uint32_t target = (dstWin == kRootXid) ? 0 : dstWin;
+    uint32_t target = (dstWin == kRootWindowXid) ? 0 : dstWin;
     uint32_t host = 0;
     int32_t offX = 0, offY = 0;
     if (target != 0) {
@@ -794,7 +793,7 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t rev
   br.skip(br.remaining());
 
   // Validate focus window: None (0) and PointerRoot (1) are always valid
-  if (focus != 0 && focus != 1 && focus != kRootXid) {
+  if (focus != 0 && focus != 1 && focus != kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(focus, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, focus, x11::opcode::SetInputFocus);
@@ -803,7 +802,7 @@ void QueryOps::handleSetInputFocus(XProtoContext& ctx, uint16_t seq, uint8_t rev
   }
 
   const uint32_t oldFocus = ctx.input().focus_xid;
-  const uint32_t newFocus = (focus == 0) ? 0 : (focus == 1) ? kRootXid : focus;
+  const uint32_t newFocus = (focus == 0) ? 0 : (focus == 1) ? kPointerRootFocus : focus;
 
   // xorg SetInputFocus (dix/events.c:4899-4990): DoFocusEvents(old, new,
   // NotifyWhileGrabbed under a keyboard grab, else NotifyNormal) — core and

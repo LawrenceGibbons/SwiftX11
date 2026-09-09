@@ -201,7 +201,7 @@ void ColorOps::handleListInstalledColormaps(XProtoContext& ctx, uint16_t seq, By
   br.skip(br.remaining());
 
   // Validate window exists (allow root XID 0 and 1)
-  if (window != 0 && window != x11::kRootXid) {
+  if (window != 0 && window != x11::kRootWindowXid) {
     WindowView tmp{};
     if (!ctx.windows().snapshot(window, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, window, x11::opcode::ListInstalledColormaps);

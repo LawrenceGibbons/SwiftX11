@@ -24,7 +24,7 @@
 #include "Core/X11ExtOpcodes.hpp"
 #include "Core/InputState.hpp"
 #include "Core/X11CoreOpcodes.hpp"
-#include "Core/XConstants.hpp"     // kRootXid (focusFlagFor)
+#include "Core/XConstants.hpp"     // kPointerRootFocus (focusFlagFor)
 #include "Core/timestamp.hpp"
 #include "Utils/WireEvents.hpp"
 #include "Utils/MachTime.hpp"
@@ -128,7 +128,7 @@ static bool computeEventXYFromRoot(x11::XProtoContext& ctx,
   int32_t absX = 0, absY = 0;
   uint32_t cur = targetWid;
   int safety = 0;
-  while (cur && cur != 1) { // 1 = root XID (kRootXid)
+  while (cur && cur != x11::kRootWindowXid) { // root XID
     x11::WindowView cv{};
     if (!ctx.windows().snapshot(cur, cv)) return false;
     absX += cv.x + cv.border_width;
@@ -171,7 +171,7 @@ static inline void emitCore(x11::XProtoContext& ctx, uint32_t wid, const uint8_t
 static inline bool focusFlagFor(x11::XProtoContext& ctx, uint32_t wid) {
   const uint32_t focusXid = ctx.input().focus_xid;
   if (focusXid == 0) return false;
-  if (focusXid == x11::kRootXid) return true;   // PointerRoot
+  if (focusXid == x11::kPointerRootFocus) return true;   // PointerRoot
   uint32_t cur = wid;
   for (int depth = 0; cur != 0 && depth < 64; depth++) {
     if (cur == focusXid) return true;

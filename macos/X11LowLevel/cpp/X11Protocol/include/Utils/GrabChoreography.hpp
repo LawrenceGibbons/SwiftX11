@@ -26,9 +26,9 @@ namespace x11::grabchoreo {
 // GrabNotViewable.  Realized = mapped with every ancestor mapped.  Root is
 // always viewable.
 inline bool isViewable(XProtoContext& ctx, uint32_t win) {
-  if (win == kRootXid) return true;
+  if (win == kRootWindowXid) return true;
   uint32_t cur = win;
-  for (int depth = 0; cur && cur != kRootXid && depth < 64; depth++) {
+  for (int depth = 0; cur && cur != kRootWindowXid && depth < 64; depth++) {
     WindowView v{};
     if (!ctx.windows().snapshot(cur, v)) return false;
     if (!v.mapped) return false;

@@ -7,6 +7,7 @@
 //
 
 #include "Transport/X11Setup.hpp"
+#include "Core/XConstants.hpp"   // kRootWindowXid / kPointerRootFocus (R1)
 #include "Core/ScreenLayout.hpp"
 
 #include <cstdint>
@@ -101,7 +102,7 @@ extern "C" void x11_send_setup_success_minimal_little_endian(int fd,
   const uint16_t proto_major = 11;
   const uint16_t proto_minor = 0;
 
-  const uint32_t root_xid    = 0x00000001u;
+  const uint32_t root_xid    = x11::kRootWindowXid;
   const uint32_t root_visid  = 0x00000021u;
   const uint32_t root_cmap   = 0x00000020u;
 
