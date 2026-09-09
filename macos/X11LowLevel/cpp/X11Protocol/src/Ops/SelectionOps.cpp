@@ -8,6 +8,7 @@
 
 #include "Ops/SelectionOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Core/XConstants.hpp"   // kRootWindowXid (clipboard root proxy, R1)
 #include "Core/XProtoServer.hpp"
 #include "Core/PropertyTable.hpp"
 #include "Core/ClipboardAtoms.hpp"
@@ -84,7 +85,7 @@ static constexpr uint64_t kIncrRecvMax = (3ull << 24);
 // The owner waits for state=Deleted on the requestor to advance the
 // transfer.
 //
-// MUST use sendAll, not sendEvent32: the proxy requestor is root (XID 1),
+// MUST use sendAll, not sendEvent32: the proxy requestor is root,
 // which has no WindowView — sendEvent32 silently drops events for windows
 // it can't look up, which starved the owner of acks and stalled every
 // INCR transfer (v1.19.36.9 field failure).
@@ -126,7 +127,7 @@ void SelectionOps::claimSelectionsIfMacOSChanged(XProtoContext& ctx) {
       auto ownerIt = sSelOwner.find(sel);
       uint32_t prevOwner = (ownerIt != sSelOwner.end()) ? ownerIt->second : 0;
 
-      if (prevOwner > 1) {
+      if (prevOwner != 0 && prevOwner != x11::kRootWindowXid) {   // a real client window (R1: root is 2)
         // Send SelectionClear to the previous X11 owner
         uint8_t ev[32] = {0};
         ev[0] = 29; // SelectionClear
@@ -142,7 +143,7 @@ void SelectionOps::claimSelectionsIfMacOSChanged(XProtoContext& ctx) {
                 (long long)currentCC, (long long)lastKnownCC);
       }
 
-      sSelOwner[sel] = 1; // root proxy
+      sSelOwner[sel] = x11::kRootWindowXid; // root proxy (R1: the real root, no longer the literal 1)
       sSelMacCC[sel] = currentCC;
       sSelPushedCC[sel] = currentCC;
     }
@@ -157,10 +158,10 @@ void SelectionOps::clearOwnersOwnedBy(uint32_t clientBase, uint32_t clientMask) 
   std::lock_guard<std::mutex> lk(sSelMtx);
   for (auto it = sSelOwner.begin(); it != sSelOwner.end(); ) {
     const uint32_t owner = it->second;
-    // Keep the root proxy (XID 1 = macOS-clipboard bridge); clear real
+    // Keep the root proxy (root = macOS-clipboard bridge); clear real
     // client windows in the disconnecting range so ConvertSelection falls
     // back to serving the macOS clipboard instead of a dead owner.
-    if (owner > 1 && (owner & hi) == (clientBase & hi)) {
+    if (owner != 0 && owner != x11::kRootWindowXid && (owner & hi) == (clientBase & hi)) {
       it = sSelOwner.erase(it);
     } else {
       ++it;
@@ -172,7 +173,7 @@ void SelectionOps::clearOwnersOwnedBy(uint32_t clientBase, uint32_t clientMask) 
 // Drop selection ownership held by a single destroyed window (§G2).
 // ---------------------------------------------------------------------------
 void SelectionOps::clearOwnerWindow(uint32_t wid) {
-  if (wid <= 1) return;   // 0 = None, 1 = root proxy (macOS bridge) — keep
+  if (wid == 0 || wid == x11::kRootWindowXid) return;   // 0 = None, root = proxy (macOS bridge) — keep
   std::lock_guard<std::mutex> lk(sSelMtx);
   for (auto it = sSelOwner.begin(); it != sSelOwner.end(); ) {
     if (it->second == wid) it = sSelOwner.erase(it);
@@ -285,8 +286,8 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
 
   br.skip(br.remaining());
 
-  // Validate owner window (0 = None means "no owner", root = 1 is our proxy)
-  if (owner != 0 && owner != 1 && !ctx.windows().exists(owner)) {
+  // Validate owner window (0 = None means "no owner", root is our proxy)
+  if (owner != 0 && owner != x11::kRootWindowXid && !ctx.windows().exists(owner)) {
     ctx.transport().sendErrorCore(x11::error::BadWindow, seq, owner, x11::opcode::SetSelectionOwner);
     return;
   }
@@ -329,8 +330,8 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
   }
 
   // If previous owner was different and non-zero, send SelectionClear (type 29)
-  // Skip root window (1) — our clipboard proxy, no client to receive the event.
-  if (prevOwner > 1 && prevOwner != owner) {
+  // Skip the root window — our clipboard proxy, no client to receive the event.
+  if (prevOwner != 0 && prevOwner != x11::kRootWindowXid && prevOwner != owner) {
     uint8_t ev[32] = {0};
     ev[0] = 29; // SelectionClear
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
@@ -368,13 +369,13 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
   //
   // Capture both CLIPBOARD (Vivado Edit→Copy) and PRIMARY (xterm select).
   // Only when the owner is a real client window (not None/root).
-  if ((selection == atom::kCLIPBOARD || selection == atom::kPRIMARY) && owner > 1) {
+  if ((selection == atom::kCLIPBOARD || selection == atom::kPRIMARY) && owner != 0 && owner != x11::kRootWindowXid) {
     uint8_t ev[32] = {0};
     ev[0] = 30; // SelectionRequest
     wire::wr16_le(ev + 2, ctx.transport().lastSeq());
     wire::wr32_le(ev + 4,  time);                   // time
     wire::wr32_le(ev + 8,  owner);                   // owner
-    wire::wr32_le(ev + 12, 1u);                        // requestor (root XID = our proxy)
+    wire::wr32_le(ev + 12, x11::kRootWindowXid);       // requestor (root = our proxy)
     wire::wr32_le(ev + 16, selection);               // selection (CLIPBOARD)
     wire::wr32_le(ev + 20, atom::kUTF8_STRING);     // target
     wire::wr32_le(ev + 24, atom::kUTF8_STRING);     // property
@@ -644,9 +645,9 @@ void SelectionOps::handleConvertSelection(XProtoContext& ctx, uint16_t /*seq*/, 
 #endif
     }
 
-    // If owner is root window (1) — this is our proxy after ClipboardCapture.
+    // If owner is root window — this is our proxy after ClipboardCapture.
     // Root has no client transport, so serve from macOS clipboard directly.
-    if (owner == 1) {
+    if (owner == x11::kRootWindowXid) {
 #ifndef NDEBUG
       TS_DBG("[CLIPBOARD] owner=root (proxy) — serving from macOS\n");
 #endif
@@ -870,7 +871,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
             std::lock_guard<std::mutex> lk(sSelMtx);
             auto it = sSelOwner.find(selAtom);
             if (it != sSelOwner.end()) prevSelOwner = it->second;
-            sSelOwner[selAtom] = 1; // root window
+            sSelOwner[selAtom] = x11::kRootWindowXid; // root window (proxy, R1)
           }
 
           if (prevSelOwner > 1) {
@@ -984,7 +985,7 @@ void SelectionOps::incrOnChunk(XProtoContext& ctx, uint32_t wid, uint32_t prop,
       std::lock_guard<std::mutex> lk(sSelMtx);
       auto oIt = sSelOwner.find(selAtom);
       if (oIt != sSelOwner.end()) prevSelOwner = oIt->second;
-      sSelOwner[selAtom] = 1; // root proxy
+      sSelOwner[selAtom] = x11::kRootWindowXid; // root proxy (R1)
     }
     if (prevSelOwner > 1) {
       uint8_t clrEv[32] = {0};

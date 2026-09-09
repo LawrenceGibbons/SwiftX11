@@ -85,8 +85,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     ctx.tracef("[CWA] wid=0x%08X vmask=0x%08X\n", wid, vmask);
 
-    // BadWindow error for unknown window XIDs (allow None=0 and root=1 through)
-    if (!ctx.window(wid) && wid > 1) {
+    // BadWindow error for unknown window XIDs (xorg dixLookupWindow: None and the dead XID 1 are BadWindow too)
+    if (!ctx.window(wid)) {   // R1: root has a WindowView; 0/1 are not windows
       br.skip(br.remaining());
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid,
                                     x11::opcode::ChangeWindowAttributes);
@@ -311,8 +311,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint16_t vmask = br.readU16();
     (void)br.readU16(); // pad
 
-    // BadWindow error for unknown window XIDs (allow None=0 and root=1 through)
-    if (!ctx.window(wid) && wid > 1) {
+    // BadWindow error for unknown window XIDs (xorg dixLookupWindow: None and the dead XID 1 are BadWindow too)
+    if (!ctx.window(wid)) {   // R1: root has a WindowView; 0/1 are not windows
       br.skip(br.remaining());
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid,
                                     x11::opcode::ConfigureWindow);
@@ -602,8 +602,8 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // Prefer WindowTable snapshot
     const WindowView* wv = ctx.window(wid);
 
-    // BadWindow error for unknown window XIDs (allow None=0 and root=1 through)
-    if (!wv && wid > 1) {
+    // BadWindow error for unknown window XIDs (xorg dixLookupWindow: None and the dead XID 1 are BadWindow too)
+    if (!wv) {   // R1: root has a WindowView; 0/1 are not windows
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid,
                                     x11::opcode::GetWindowAttributes);
       return;

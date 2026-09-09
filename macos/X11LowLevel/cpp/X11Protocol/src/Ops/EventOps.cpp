@@ -60,7 +60,7 @@ static inline void getRootWH(x11::XProtoContext& ctx, int& outW, int& outH) {
   outH = 0;
 
   x11::WindowView rv{};
-  if (ctx.windows().snapshot(1 /*root xid*/, rv)) {
+  if (ctx.windows().snapshot(x11::kRootWindowXid, rv)) {   // R1: was the literal 1
     outW = (int)rv.w;   // WindowView::w is uint16_t
     outH = (int)rv.h;   // WindowView::h is uint16_t
     if (outW <= 0) outW = 1;
@@ -460,7 +460,7 @@ void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
     }
     // R1 Phase 2 (A2): a ConfigureNotify also reaches the parent's
     // SubstructureNotify selectors with event=parent (xorg DeliverEvents,
-    // dix/events.c:-8).  This is the Cocoa-driven
+    // dix/events.c:2969-2972).  This is the Cocoa-driven
     // move/resize path, so for a top-level the parent is the root window —
     // wmctrl/xdotool/Java's root observer track geometry through it.
     if (parentXid != 0) {
