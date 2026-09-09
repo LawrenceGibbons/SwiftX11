@@ -614,8 +614,8 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   // X11 spec: CreateNotify sent to parent if parent selects SubstructureNotifyMask
   {
     WindowView parentView{};
-    if (parent == x11::kRootWindowXid || ctx.windows().snapshot(parent, parentView)) {
-      uint32_t parentMask = (parent == x11::kRootWindowXid) ? 0 : parentView.event_mask;
+    if (ctx.windows().snapshot(parent, parentView)) {   // R1 Phase 2 (A2): root has a WindowView — no special case
+      uint32_t parentMask = parentView.event_mask;
       if (parentMask & x11::mask::SubstructureNotify) {
         auto ev = x11::wireev::buildCreateNotify(
           ctx.transport().lastSeq(),
@@ -688,7 +688,7 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
       auto ev = x11::wireev::buildDestroyNotify(evSeq, wid, wid);
       (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
     }
-    if (parentXid != 0 && parentXid != x11::kRootWindowXid) {
+    if (parentXid != 0) {
       WindowView pv{};
       if (ctx.windows().snapshot(parentXid, pv) &&
           (pv.event_mask & x11::mask::SubstructureNotify)) {
@@ -770,7 +770,7 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
           (void)ctx.transport().sendEventToSelectors(child, x11::mask::StructureNotify, ev.data());
         }
         const uint32_t parentXid = cv.parent_xid;
-        if (parentXid != 0 && parentXid != x11::kRootWindowXid) {
+        if (parentXid != 0) {
           WindowView pv{};
           if (ctx.windows().snapshot(parentXid, pv) &&
               (pv.event_mask & x11::mask::SubstructureNotify)) {
@@ -859,7 +859,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     }
 
     // To old parent (if SubstructureNotifyMask)
-    if (oldParent != 0 && oldParent != x11::kRootWindowXid) {
+    if (oldParent != 0) {
       WindowView opv{};
       if (ctx.windows().snapshot(oldParent, opv) &&
           (opv.event_mask & x11::mask::SubstructureNotify)) {
@@ -868,7 +868,7 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     }
 
     // To new parent (if SubstructureNotifyMask)
-    if (newParent != 0 && newParent != x11::kRootWindowXid && newParent != oldParent) {
+    if (newParent != 0 && newParent != oldParent) {
       WindowView npv{};
       if (ctx.windows().snapshot(newParent, npv) &&
           (npv.event_mask & x11::mask::SubstructureNotify)) {
@@ -970,7 +970,7 @@ static void pushMapExtras(XProtoContext& ctx, uint32_t wid) {
         (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
       }
       // To parent
-      if (mv.parent_xid != 0 && mv.parent_xid != x11::kRootWindowXid) {
+      if (mv.parent_xid != 0) {
         WindowView pv{};
         if (ctx.windows().snapshot(mv.parent_xid, pv) &&
             (pv.event_mask & x11::mask::SubstructureNotify)) {
@@ -1175,7 +1175,7 @@ void WindowOps::handleMapSubwindows(XProtoContext& ctx, uint16_t seq, ByteReader
           auto ev = x11::wireev::buildMapNotify(evSeq, xid, xid, childView.override_redirect);
           (void)ctx.transport().sendEventToSelectors(xid, x11::mask::StructureNotify, ev.data());
         }
-        if (parent != 0 && parent != x11::kRootWindowXid) {
+        if (parent != 0) {
           WindowView pv{};
           if (ctx.windows().snapshot(parent, pv) &&
               (pv.event_mask & x11::mask::SubstructureNotify)) {
@@ -1267,7 +1267,7 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
       auto ev = x11::wireev::buildUnmapNotify(evSeq, wid, wid, /*fromConfigure*/false);
       (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
     }
-    if (cv.parent_xid != 0 && cv.parent_xid != x11::kRootWindowXid) {
+    if (cv.parent_xid != 0) {
       WindowView pv{};
       if (ctx.windows().snapshot(cv.parent_xid, pv) &&
           (pv.event_mask & x11::mask::SubstructureNotify)) {
@@ -1340,7 +1340,7 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteRead
         auto ev = x11::wireev::buildUnmapNotify(evSeq, xid, xid, /*fromConfigure*/false);
         (void)ctx.transport().sendEventToSelectors(xid, x11::mask::StructureNotify, ev.data());
       }
-      if (parent != 0 && parent != x11::kRootWindowXid) {
+      if (parent != 0) {
         WindowView pv{};
         if (ctx.windows().snapshot(parent, pv) &&
             (pv.event_mask & x11::mask::SubstructureNotify)) {

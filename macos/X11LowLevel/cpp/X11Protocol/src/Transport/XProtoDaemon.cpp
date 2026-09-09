@@ -1015,6 +1015,8 @@ void XProtoDaemon::drainHostCommands() {
       const uint16_t rh = layout.virtual_h;
       const uint16_t rw_mm = layout.virtual_w_mm;
       const uint16_t rh_mm = layout.virtual_h_mm;
+      // R1 Phase 2: the root WindowView tracks the virtual desktop (hot-plug/resize).
+      if (server_) server_->ctx().windows().setGeometry(kRootWindowXid, 0, 0, rw, rh);
       TS_FPRINTF("[SCREEN_NOTIFY] sending ConfigureNotify + RRScreenChangeNotify "
               "to %zu client(s), new size=%dx%d mm=%dx%d\n",
               clients_.size(), (int)rw, (int)rh, (int)rw_mm, (int)rh_mm);

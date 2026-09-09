@@ -443,19 +443,33 @@ void EventOps::flushPendingNotify(const PendingNotify& pn, uint16_t seq) {
   
   // Only send what the client asked for (mask check mirrors C).
   if (pn.want_configure) {
+    ConfigureNotifyParams p;
+    p.seq = seq;
+    p.window = pn.wid;
+    p.x = w->x;
+    p.y = w->y;
+    p.w = static_cast<uint16_t>(w->w);
+    p.h = static_cast<uint16_t>(w->h);
+    p.borderWidth = w->border_width;
+    p.aboveSibling = 0;
+    p.overrideRedirect = w->override_redirect;
+    const uint32_t parentXid = w->parent_xid;   // copy before any further ctx_.window() lookup
+    auto ev = buildConfigureNotify(p);
     if ((w->event_mask & (1u << 17)) && w->owner_fd > 0) {
-      ConfigureNotifyParams p;
-      p.seq = seq;
-      p.window = pn.wid;
-      p.x = w->x;
-      p.y = w->y;
-      p.w = static_cast<uint16_t>(w->w);
-      p.h = static_cast<uint16_t>(w->h);
-      p.borderWidth = w->border_width;
-      p.aboveSibling = 0;
-      p.overrideRedirect = w->override_redirect;
-      auto ev = buildConfigureNotify(p);
       ctx_.transport().sendEventToSelectors(pn.wid, x11::mask::StructureNotify, ev.data());
+    }
+    // R1 Phase 2 (A2): a ConfigureNotify also reaches the parent's
+    // SubstructureNotify selectors with event=parent (xorg DeliverEvents,
+    // dix/events.c:-8).  This is the Cocoa-driven
+    // move/resize path, so for a top-level the parent is the root window —
+    // wmctrl/xdotool/Java's root observer track geometry through it.
+    if (parentXid != 0) {
+      WindowView pv{};
+      if (ctx_.windows().snapshot(parentXid, pv) && (pv.event_mask & x11::mask::SubstructureNotify)) {
+        auto pev = ev;
+        wire::wr32_le(pev.data() + 4, parentXid);   // event = parent
+        ctx_.transport().sendEventToSelectors(parentXid, x11::mask::SubstructureNotify, pev.data());
+      }
     }
   }
   

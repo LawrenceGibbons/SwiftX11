@@ -564,7 +564,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       }
 
       // X11 spec: ConfigureNotify also sent to parent with SubstructureNotifyMask
-      if (vw2->parent_xid != 0 && vw2->parent_xid != x11::kRootWindowXid) {
+      if (vw2->parent_xid != 0) {
         WindowView pv{};
         if (ctx.windows().snapshot(vw2->parent_xid, pv) &&
             (pv.event_mask & x11::mask::SubstructureNotify)) {
