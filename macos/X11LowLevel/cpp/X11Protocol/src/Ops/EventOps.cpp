@@ -727,7 +727,7 @@ void EventOps::sendFocusEvent(XProtoContext& ctx, uint32_t wid, bool is_in,
   if (!wid) return;
 
   const x11::WindowView* vw = ctx.window(wid);
-  if (!vw || vw->owner_fd <= 0) return;
+  if (!vw) return;   // R1 Phase 3: no owner test — root (owner -1) selects FocusChange like any window
 
   // Cheap gate on the union; emitCore delivers to the selecting clients only
   // (M18 — xorg CoreFocusEvent → DeliverEventsToWindow, dix/events.c:4862).

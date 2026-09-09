@@ -91,7 +91,7 @@ bool checkPassiveKeyGrabsRootDown(x11::XProtoContext& ctx, uint32_t focus, uint3
 bool wantsButton(x11::XProtoContext& ctx, uint32_t xid, bool isDown) {
   if (!xid) return false;
   const x11::WindowView* vw = ctx.window(xid);
-  if (!vw || vw->owner_fd <= 0) return false;
+  if (!vw) return false;   // R1 Phase 3: no owner test — root (owner -1) selects like any window
   const bool coreWant = isDown ? (vw->event_mask & x11::mask::ButtonPress)   != 0
                                : (vw->event_mask & x11::mask::ButtonRelease) != 0;
   const uint32_t xi2bit = isDown ? x11::xi2::kButtonPressMask : x11::xi2::kButtonReleaseMask;
@@ -952,7 +952,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           auto wantsBtn = [&](uint32_t xid) -> bool {
             if (!xid) return false;
             const x11::WindowView* vw = ctx.window(xid);
-            if (!vw || vw->owner_fd <= 0) return false;
+            if (!vw) return false;   // R1 Phase 3: no owner test — root (owner -1) selects like any window; selectorsOf carries the fds
             const uint32_t mask = vw->event_mask;
             const bool coreWant = c.isDown ? (mask & x11::mask::ButtonPress)   != 0
                                            : (mask & x11::mask::ButtonRelease) != 0;
@@ -1385,7 +1385,7 @@ static void processOneHostCmd(x11::XProtoServer* srv,
           auto wantsKey = [&](uint32_t xid) -> bool {
             if (!xid) return false;
             const x11::WindowView* vw = ctx.window(xid);
-            if (!vw || vw->owner_fd <= 0) return false;
+            if (!vw) return false;   // R1 Phase 3: no owner test — root (owner -1) selects like any window; selectorsOf carries the fds
             const uint32_t mask = vw->event_mask;
             const bool coreWant = c.isDown ? (mask & x11::mask::KeyPress)   != 0
                                            : (mask & x11::mask::KeyRelease) != 0;
