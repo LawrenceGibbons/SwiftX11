@@ -7,6 +7,7 @@
 //
 
 #include <cstdint>
+#include "Core/XConstants.hpp"   // R1 Phase 1c
 #include <cstdio>
 
 #include "Core/ScreenLayout.hpp"
@@ -541,3 +542,8 @@ extern "C" int32_t x11_shape_get_rects(uint32_t xid, int16_t* out_xywh, int32_t 
   }
   return n;
 }
+
+// R1 Phase 1c: the root window XID, for Swift.  WindowRegistry decides "is this
+// a top-level?" by parent == root; it used to hard-code 1, which broke the
+// moment the root moved off the wire sentinel.
+extern "C" uint32_t x11_root_window_xid(void) { return x11::kRootWindowXid; }

@@ -296,7 +296,7 @@ static void fillWindowBorderIfReady(x11::XProtoContext& ctx, uint32_t childXid) 
   x11::WindowView cv{};
   if (!ctx.windows().snapshot(childXid, cv)) return;
   if (cv.border_width == 0) return;
-  if (cv.parent_xid == 0 || cv.parent_xid == 1) return;
+  if (cv.parent_xid == 0 || cv.parent_xid == x11::kRootWindowXid) return;
 
   x11::DrawableRW parentDst{};
   if (!x11::resolveDrawableRW(ctx, cv.parent_xid, parentDst)) return;
@@ -2141,7 +2141,7 @@ extern "C" int x11_cpp_get_abs_pos_in_host(uint32_t host, uint32_t xid,
     }
 
     // Stop if we hit root-ish without reaching host.
-    if (vw.parent_xid == 0 || vw.parent_xid == 1) return 0;
+    if (vw.parent_xid == 0 || vw.parent_xid == x11::kRootWindowXid) return 0;
 
     cur = vw.parent_xid;
   }

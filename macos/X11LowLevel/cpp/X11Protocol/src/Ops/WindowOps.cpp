@@ -169,7 +169,7 @@ static void fillWindowBorder(XProtoContext& ctx, uint32_t childXid) {
   if (cv.border_width == 0) return;
 
   // Can't draw borders for host windows (parent=root has no surface)
-  if (cv.parent_xid == 0 || cv.parent_xid == 1) return;
+  if (cv.parent_xid == 0 || cv.parent_xid == x11::kRootWindowXid) return;
 
   // Resolve parent's drawable (will be in the host surface)
   DrawableRW parentDst{};
@@ -521,8 +521,8 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     return;
   }
 
-  // 3) parent must exist (root=1 is always valid in your model)
-  if (parent != 1) {
+  // 3) parent must exist (the root window is always valid)
+  if (parent != x11::kRootWindowXid) {
     if (!ctx.windows().snapshot(parent, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CreateWindow);
       return;

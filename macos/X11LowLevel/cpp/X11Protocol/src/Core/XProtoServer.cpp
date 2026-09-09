@@ -6,6 +6,7 @@
 //
 
 #include <cstdio>
+#include "Core/XConstants.hpp"   // R1 Phase 1c
 #include <unordered_map>
 #include <exception>
 
@@ -48,6 +49,19 @@ XProtoServer::XProtoServer()
   ctx_.setSurfaceRegistry(&surfaces_);
   ctx_.setGrabTable(&grabs_);
   ctx_.setInputState(&input_);
+
+  // R1 Phase 1c: the root is a first-class WindowTable entry — a real window
+  // (never an NSWindow): parent 0 so every ancestor climb terminates here,
+  // mapped, the virtual-desktop geometry, owned by the server (-1: exempt
+  // from eraseOwnedBy).  kRootWindowXid is now 0x2, off the 0/1 wire
+  // sentinels, so SendEvent(dest=root) no longer means InputFocus.  Root-
+  // targeted delivery/selections start routing through it in Phase 2/3.
+  {
+    const auto lay = x11::getScreenLayout();
+    windows_.upsert(x11::kRootWindowXid, /*parent*/0, 0, 0,
+                    lay.virtual_w, lay.virtual_h, /*event_mask*/0, /*owner_fd*/-1);
+    windows_.setMapped(x11::kRootWindowXid, true);
+  }
 
   // Default: context window lookup calls back into this instance.
   ctx_.setWindowLookup(&XProtoServer::lookupWindowTrampoline, this);

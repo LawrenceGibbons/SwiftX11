@@ -167,10 +167,10 @@ final class WindowRegistry {
   
   // xid relationship tracking
   private var infoByXid: [UInt32: X11WindowInfo] = [:]
-  private let X11_ROOT: UInt32 = 0x00000001
+  private let X11_ROOT: UInt32 = x11_root_window_xid()
   private var parentByXid: [UInt32: UInt32] = [:]
   private var childrenByParent: [UInt32: Set<UInt32>] = [:]   // optional, but useful
-  private let rootXid: UInt32 = 1
+  private let rootXid: UInt32 = x11_root_window_xid()
 
   // During initial window construction/layout, Cocoa emits resize callbacks
   // (often 1x1 -> 2x2 jitter). We must NOT echo those back into X11 until
@@ -194,7 +194,7 @@ final class WindowRegistry {
   var debugSnapshotRouting: Bool = false
   
   private func isTopLevelX11Window(_ xid: UInt32) -> Bool {
-    // Top-level means parent is the X11 root (1). If unknown, assume top-level
+    // Top-level means parent is the X11 root (x11_root_window_xid). If unknown, assume top-level
     // (defensive; better to show a window than hide it).
     if let info = infoByXid[xid] { return info.parentXid == rootXid }
     if let p = parentByXid[xid] { return p == rootXid }
@@ -1671,7 +1671,7 @@ final class WindowRegistry {
     let host = topLevelAncestor(of: xid)
 
     // transient_for root (1) or None (0) means "transient for group" — no specific parent
-    let kRootXid: UInt32 = 1
+    let kRootXid: UInt32 = x11_root_window_xid()
     guard transientForXid != 0 && transientForXid != kRootXid else {
       pendingTransientFor.removeValue(forKey: host)
       return

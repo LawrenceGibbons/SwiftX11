@@ -1800,7 +1800,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
                 ctx.transport().clientFd(), (unsigned)deviceid, (unsigned)win,
                 (unsigned)grab_mode, (unsigned)paired);
 #endif
-      if (win != 1) {
+      if (win != x11::kRootWindowXid) {
         x11::WindowView wv{};
         if (!ctx.windows().snapshot(win, wv)) {
           xiError(x11::error::BadWindow, win);
