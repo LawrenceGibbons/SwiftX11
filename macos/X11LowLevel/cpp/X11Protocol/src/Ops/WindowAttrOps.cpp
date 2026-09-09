@@ -319,6 +319,16 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       return;
     }
 
+    // "root really can't be reconfigured, so just return" — xorg ConfigureWindow
+    // (dix/window.c:2273-2275) validates the value list and returns Success for
+    // a parentless window.  Now that the root is a real WindowView (R1) it must
+    // not be moved/resized/restacked by a client; its geometry follows the
+    // virtual desktop (ScreenLayoutChanged).
+    if (wid == x11::kRootWindowXid) {
+      br.skip(br.remaining());
+      return;
+    }
+
     // Compute host once (rootless policy pivot).
     const uint32_t host = ctx.windows().topLevelAncestorOf(wid);
 

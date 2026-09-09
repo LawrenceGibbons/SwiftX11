@@ -874,7 +874,7 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
             sSelOwner[selAtom] = x11::kRootWindowXid; // root window (proxy, R1)
           }
 
-          if (prevSelOwner > 1) {
+          if (prevSelOwner != 0 && prevSelOwner != x11::kRootWindowXid) {   // a real client window (R1)
             uint8_t clrEv[32] = {0};
             clrEv[0] = 29; // SelectionClear
             wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
@@ -987,7 +987,7 @@ void SelectionOps::incrOnChunk(XProtoContext& ctx, uint32_t wid, uint32_t prop,
       if (oIt != sSelOwner.end()) prevSelOwner = oIt->second;
       sSelOwner[selAtom] = x11::kRootWindowXid; // root proxy (R1)
     }
-    if (prevSelOwner > 1) {
+    if (prevSelOwner != 0 && prevSelOwner != x11::kRootWindowXid) {   // a real client window (R1)
       uint8_t clrEv[32] = {0};
       clrEv[0] = 29; // SelectionClear
       wire::wr16_le(clrEv + 2, ctx.transport().lastSeq());
