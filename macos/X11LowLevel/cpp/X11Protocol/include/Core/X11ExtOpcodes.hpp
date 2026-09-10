@@ -47,7 +47,11 @@ static constexpr uint8_t kXKB_FirstEvent       = 111;  // above DAMAGE (110)
 // Extension first_error values (0 = none)
 static constexpr uint8_t kSHAPE_FirstError    = 0;
 static constexpr uint8_t kRANDR_FirstError    = 0;
-static constexpr uint8_t kRENDER_FirstError   = 0;
+// RENDER's five errors (render.h / render/render.c:244-251), reported as the
+// base in QueryExtension and emitted by RenderOps (R3 F3): BadPictFormat +0,
+// BadPicture +1, BadPictOp +2, BadGlyphSet +3, BadGlyph +4 → codes 134-138,
+// clear of XKB (128) and XInput (129-133).
+static constexpr uint8_t kRENDER_FirstError   = 134;
 static constexpr uint8_t kCOMPOSITE_FirstError = 0;
 static constexpr uint8_t kDAMAGE_FirstError    = 0;
 static constexpr uint8_t kXKB_FirstError       = 128;  // FirstExtensionError, as xorg

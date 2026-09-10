@@ -220,6 +220,17 @@ static PictureState* findPicture(uint32_t pid) {
   return (it != sPictures.end()) ? &it->second : nullptr;
 }
 
+// R3 F3: RENDER protocol errors (offsets from ext::kRENDER_FirstError, in
+// render.h order).  renderErr sends one with the request's minor opcode and
+// the offending resource id, as xorg's extension errors do.
+namespace rerr { enum { BadPictFormat = 0, BadPicture = 1, BadPictOp = 2,
+                        BadGlyphSet = 3, BadGlyph = 4 }; }
+static inline void renderErr(x11::XProtoContext& ctx, uint16_t seq, uint8_t minor,
+                             uint8_t sub, uint32_t value) {
+  ctx.transport().sendErrorExt((uint8_t)(x11::ext::kRENDER_FirstError + sub),
+                               seq, value, minor, x11::ext::kRENDER);
+}
+
 // ============================================================================
 // GlyphSet table — proper glyph storage for anti-aliased font rendering
 // ============================================================================
@@ -626,6 +637,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* ps = findPicture(pid);
+      if (!ps) { renderErr(ctx, seq, minor, rerr::BadPicture, pid); return; }   // R3 F3
       if (ps) {
         // Same value-list walk as CreatePicture (bit order, 4 bytes each).
         for (int bit = 0; bit <= 12 && br.remaining() >= 4; bit++) {
@@ -682,6 +694,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* ps = findPicture(pid);
+      if (!ps) { renderErr(ctx, seq, minor, rerr::BadPicture, pid); return; }   // R3 F3
       if (ps) {
         ps->hasClip   = true; // empty list => everything clipped out (spec)
         ps->clipXOrg  = cxo;
@@ -700,7 +713,10 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
-      sPictures.erase(pid);
+      if (sPictures.erase(pid) == 0) {   // R3 F3: unknown picture → BadPicture
+        renderErr(ctx, seq, minor, rerr::BadPicture, pid);
+        return;
+      }
     }
     return;
   }
@@ -788,6 +804,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
+      if (!dps) { renderErr(ctx, seq, minor, rerr::BadPicture, dstPid); return; }   // R3 F3
       if (dps) {
         dstDrawable = dps->drawable;
         dstClip = snapshotClip(*dps);
@@ -1032,6 +1049,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
+      if (!dps) { renderErr(ctx, seq, minor, rerr::BadPicture, dstPid); return; }   // R3 F3
       if (dps) {
         dstDrawable = dps->drawable;
         dstClip = snapshotClip(*dps);
@@ -1323,6 +1341,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(triDstPid);
+      if (!dps) { renderErr(ctx, seq, minor, rerr::BadPicture, triDstPid); return; }   // R3 F3
       if (dps) {
         triDstDrawable = dps->drawable;
         dstClip = snapshotClip(*dps);
@@ -1733,6 +1752,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
+      if (!dps) { renderErr(ctx, seq, minor, rerr::BadPicture, dstPid); return; }   // R3 F3
       if (dps) {
         dstDrawable = dps->drawable;
         dstClip = snapshotClip(*dps);
@@ -2058,6 +2078,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     {
       std::lock_guard<std::mutex> lk(sPicMtx);
       PictureState* dps = findPicture(dstPid);
+      if (!dps) { renderErr(ctx, seq, minor, rerr::BadPicture, dstPid); return; }   // R3 F3
       if (dps) {
         dstDrawable = dps->drawable;
         dstClip = snapshotClip(*dps);
@@ -2354,7 +2375,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
               (unsigned)minor, (unsigned)seq, br.remaining()); x11_ui_push_log(1, buf); }
     br.skip(br.remaining());
     // Send error to prevent XCB sequence desync if sub-opcode was reply-bearing.
-    ctx.transport().sendErrorCore(x11::error::BadRequest, seq, 0, ext::kRENDER);
+    // R3 F3: carry the RENDER minor so GDK error traps identify the request
+    // (was minorCode 0); BadRequest stays a core error with major = RENDER.
+    ctx.transport().sendErrorExt(x11::error::BadRequest, seq, 0, minor, ext::kRENDER);
     return;
   }
 }

@@ -357,6 +357,9 @@ namespace x11 {
       present = 1; major = ext::kBigReq;
     } else if (name == "RENDER") {
       present = 1; major = ext::kRENDER;
+      // R3 F3: real error base so GDK/Cairo error traps can classify
+      // BadPicture/BadPictFormat/BadGlyphSet/BadGlyph (was 0 = "no error").
+      first_error = ext::kRENDER_FirstError;
     } else if (name == "XFIXES") {
       present = 1; major = ext::kXFIXES;
       first_event = ext::kXFIXES_FirstEvent;
