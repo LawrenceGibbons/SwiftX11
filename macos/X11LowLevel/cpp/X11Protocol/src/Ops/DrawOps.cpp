@@ -839,11 +839,18 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   }
 
   // X11 spec: NoExposure sent when graphics_exposures is True in the GC
-  // and no region of the source is obscured.
+  // and no region of the source is obscured.  R3 F2: deliver to the
+  // REQUESTING client directly (sendAll), not sendEvent32(dst) which routes
+  // by the destination's owner and therefore DROPPED for pixmap destinations
+  // — a client doing CopyArea into a pixmap and syncing on NoExpose hung.
+  // (A full GraphicsExpose for an out-of-bounds source is deferred: with C++
+  // backing store the source is materialised for its whole extent, so a
+  // window/pixmap source is always available and NoExpose is the correct
+  // response here.)
   if (gc.graphics_exposures) {
     auto ev = x11::wireev::buildNoExpose(seq, dst,
                                         x11::opcode::CopyArea, 0);
-    (void)ctx.transport().sendEvent32(dst, ev.data());
+    (void)ctx.transport().sendAll(ev.data(), 32);
   }
 }
   
@@ -1048,11 +1055,13 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       damageOrDirty(ctx, dst, (int32_t)dstX, (int32_t)dstY, (int32_t)wpx, (int32_t)hpx);
     }
 
-    // X11 spec: NoExposure sent when graphics_exposures is True in the GC
+    // X11 spec: NoExposure sent when graphics_exposures is True in the GC.
+    // R3 F2: to the requesting client (sendAll), so a pixmap destination is
+    // not dropped by sendEvent32's owner routing.
     if (gst.graphics_exposures) {
       auto noExpEv = x11::wireev::buildNoExpose(seq, dst,
                                                 x11::opcode::CopyPlane, 0);
-      (void)ctx.transport().sendEvent32(dst, noExpEv.data());
+      (void)ctx.transport().sendAll(noExpEv.data(), 32);
     }
   }
 
