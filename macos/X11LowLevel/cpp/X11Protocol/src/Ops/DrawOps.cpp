@@ -377,6 +377,54 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   }
 
   // ============================================================================================
+  // PIXMAP path: ZPixmap depth 8 — A8 alpha masks (R3 F5)
+  // ============================================================================================
+  // Cairo (and Java2D's XRender pipeline) upload antialiased coverage as a
+  // depth-8 A8 image into a pixmap, then use it as the mask in RENDER
+  // Composite — getMaskAlpha() reads (pixel >> 24) & 0xFF.  This upload used
+  // to fall through every branch and be dropped, leaving the pixmap at its
+  // 0xFFFFFFFF init, so every mask pixel read alpha 0xFF and every AA shape
+  // filled its bounding box solid (the depth-8 twin of the fixed depth-32
+  // §4.1 case).  We store coverage in the alpha byte (rgb 0), matching the
+  // 32bpp mask storage the sampler expects.
+  if (format == 2 && depth == 8) {
+    uint16_t pw = 0, ph = 0;
+    uint32_t* dstPixels = ctx.pixmaps().mutablePixels(drawable, &pw, &ph);
+    if (!dstPixels || pw == 0 || ph == 0) { br.skip(br.remaining()); return; }
+
+    // ZPixmap depth-8: one byte per pixel, each scanline padded to 4 bytes.
+    const uint32_t srcStride = (uint32_t)(((uint32_t)width + 3u) & ~3u);
+    const uint64_t need64 = (uint64_t)srcStride * (uint64_t)height;
+    if (need64 > br.remaining()) { br.skip(br.remaining()); return; }
+    const uint8_t* src = br.ptr();
+    br.skip(br.remaining());
+
+    const int32_t dx0 = (int32_t)dstX, dy0 = (int32_t)dstY;
+    auto copyRegion = [&](int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1) {
+      cx0 = std::max<int32_t>(cx0, 0);
+      cy0 = std::max<int32_t>(cy0, 0);
+      cx1 = std::min<int32_t>(cx1, (int32_t)pw);
+      cy1 = std::min<int32_t>(cy1, (int32_t)ph);
+      if (cx0 >= cx1 || cy0 >= cy1) return;
+      for (int32_t py = cy0; py < cy1; py++) {
+        const int32_t srcRow = py - dy0;
+        if (srcRow < 0 || srcRow >= (int32_t)height) continue;
+        const uint8_t* sp = src + (size_t)srcRow * (size_t)srcStride + (size_t)(cx0 - dx0);
+        uint32_t* dp = dstPixels + (size_t)py * (size_t)pw + cx0;
+        const int32_t n = cx1 - cx0;
+        for (int32_t i = 0; i < n; i++) dp[i] = (uint32_t)sp[i] << 24;  // A8 → alpha=coverage
+      }
+    };
+    if (!piGC.has_clip) {
+      copyRegion(dx0, dy0, dx0 + (int32_t)width, dy0 + (int32_t)height);
+    } else {
+      x11::gcClipForEachRect(piGC, dx0, dy0,
+                             dx0 + (int32_t)width, dy0 + (int32_t)height, copyRegion);
+    }
+    return;
+  }
+
+  // ============================================================================================
   // PIXMAP path: XYBitmap/XYPixmap depth=1
   // ============================================================================================
 
@@ -484,6 +532,17 @@ void DrawOps::handleGetImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   }
   if (src.w == 0 || src.h == 0 || src.stridePixels == 0) {
     ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::GetImage);
+    return;
+  }
+
+  // R3 F5: the requested rectangle must lie entirely within the drawable
+  // (xorg ProcGetImage: BadMatch otherwise).  Silently clipping to bounds and
+  // returning fewer rows than requested made Xlib mis-stride every row of the
+  // returned image (it lays the data out at the requested width).
+  if ((int32_t)x < 0 || (int32_t)y < 0 ||
+      (int32_t)x + (int32_t)w > (int32_t)src.w ||
+      (int32_t)y + (int32_t)h > (int32_t)src.h) {
+    ctx.transport().sendErrorCore(x11::error::BadMatch, seq, 0, x11::opcode::GetImage);
     return;
   }
 
