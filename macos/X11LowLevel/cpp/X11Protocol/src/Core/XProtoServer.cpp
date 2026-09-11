@@ -245,15 +245,14 @@ int XProtoServer::dispatch(uint8_t major, uint8_t minor, uint16_t seq,
                (unsigned)major, (unsigned)minor, (unsigned)seq);
       x11_ui_push_log(1, buf);
     }
-    // Safety net: if this was a reply-bearing opcode, send an error reply
-    // to prevent XCB sequence desync crash.
-    if (ctx_.hasClient() && isReplyBearingCore(major)) {
-      char buf[128];
-      snprintf(buf, sizeof(buf),
-               "[DISPATCH] MISSING REPLY — sending BadImplementation for major=%u seq=%u\n",
-               (unsigned)major, (unsigned)seq);
-      x11_ui_push_log(0, buf);
-      ctx_.transport().sendErrorCore(x11::error::BadImplementation, seq, 0, major);
+    // An opcode with no handler is an unimplemented/unknown request.  xorg's
+    // ProcBadRequest answers every such opcode with BadRequest (dix/tables.c
+    // seeds the dispatch vector with it) — for ALL requests, not only
+    // reply-bearing ones (2026-09-08 review B4).  BadRequest carries the
+    // sequence, so it also unblocks a reply-bearing request's XCB wait exactly
+    // as the old reply-bearing-only BadImplementation did.
+    if (ctx_.hasClient()) {
+      ctx_.transport().sendErrorCore(x11::error::BadRequest, seq, 0, major);
     }
     return 0;
   }

@@ -37,8 +37,7 @@ public:
   // Called by drain_requests when it knows it is on xproto thread
   void setXprotoThreadSelf();
 
-  // Update “last seq seen” 
-  uint16_t nextEventSeq();
+  // Update “last seq seen”
   void noteLastSeq(uint16_t seq);
 
   // Queue coalesced notification for later flush on xproto thread
@@ -125,16 +124,11 @@ private:
 
   // Last request sequence
   uint16_t last_seq_  = 0;
-  uint16_t event_seq_ = 0;
 
-  // Monotonic wire-sequence floor.  XCB requires that response sequences
-  // (events, replies, errors) never go backwards.  This tracks the highest
-  // sequence ever sent on the wire so sendAll() can bump stale sequences.
-  uint16_t max_wire_seq_ = 0;
-
-  // Reply-payload tracking.  After a reply header (b0==1) with lenw > 0,
-  // this counts remaining payload bytes.  sendAll() skips the monotonic
-  // floor for payload data (bytes[2:3] are arbitrary payload, not sequences).
+  // Reply-payload tracking.  After a reply header (b0==1) with lenw > 0, this
+  // counts remaining payload bytes so sendAll()'s wire trace and the wire ring
+  // buffer only classify real response headers, never mid-reply payload bytes
+  // (whose bytes[2:3] are arbitrary data, not a sequence).
   uint32_t payload_remaining_ = 0;
 
   // Debug-only: sequence regression detector (per-transport, NOT thread-local).

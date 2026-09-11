@@ -29,6 +29,7 @@
 #include "Core/XProtoServer.hpp"
 #include "Core/XProtoModules.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Core/X11CoreOpcodes.hpp"   // x11::error::BadLength
 #include "Core/XClient.hpp"
 #include "Core/HostCommandQueue.hpp"
 #include "Core/WindowTable.hpp"
@@ -256,10 +257,11 @@ bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]
   // client context, causing a null transport crash when the caller resumes.
   //
   // CRITICAL: restamp bytes[2:3] (sequence) with the TARGET transport's
-  // lastSeq().  The event was built with the SOURCE client's sequence,
-  // but the target client's max_wire_seq_ monotonic floor would be
-  // poisoned by a foreign (much larger/smaller) sequence number,
-  // corrupting all subsequent replies and causing XCB desync crashes.
+  // lastSeq().  xorg stamps every event with the receiving client's most
+  // recent request sequence (dix DeliverEventsToWindow → the client's
+  // sequence); the event here was built with the SOURCE client's sequence,
+  // so without the restamp the target would see an out-of-band sequence and
+  // XCB would desync.
   uint8_t fixed[32];
   std::memcpy(fixed, ev, 32);
   restampForTarget(fixed, cs->client->transport().lastSeq());
@@ -267,8 +269,8 @@ bool XProtoDaemon::sendEventCrossClient(uint32_t targetWid, const uint8_t ev[32]
 }
 
 // M6 Stage 1: deliver a 32-byte event to every client selecting `bit` on `wid`.
-// Same per-target sequence-restamp discipline as sendEventCrossClient (a foreign
-// sequence would poison the target's monotonic wire floor and desync XCB).
+// Same per-target sequence-restamp discipline as sendEventCrossClient (xorg
+// stamps events with the receiving client's sequence; a foreign one desyncs XCB).
 bool XProtoDaemon::sendEventToSelectors(uint32_t wid, uint32_t bit,
                                         const uint8_t ev[32]) {
   if (!server_ || !ev) return false;
@@ -884,7 +886,21 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
         cs.ext_len_have = 0;
         // fall through to phase 0.5
       } else {
-        return DispatchResult::Error; // protocol error — BIG-REQUESTS not enabled
+        // Core protocol has no request shorter than one word, so a zero length
+        // field without BIG-REQUESTS is malformed.  xorg answers BadLength and
+        // keeps the connection (os/io.c) rather than dropping the client; with
+        // no extended length there are no trailing bytes to skip — the request
+        // was exactly its 4-byte header — so emit BadLength and continue
+        // draining the next request (2026-09-08 review B3).
+        cs.seq = (uint16_t)(cs.seq + 1);
+        activateClient(cs);
+        server_->ctx().transport().noteLastSeq(cs.seq);
+        server_->ctx().transport().sendErrorCore(x11::error::BadLength, cs.seq, 0, cs.hdr[0]);
+        deactivateClient();
+        cs.hdr_have = 0;
+        cs.reading_ext_len = false;
+        cs.ext_len_have = 0;
+        return DispatchResult::Dispatched;
       }
     } else {
       const size_t total = (size_t)len_words * 4u;
@@ -921,15 +937,22 @@ DispatchResult XProtoDaemon::readAndDispatch(int fd, ClientSession& cs) {
 
     if (ext_words < 2) return DispatchResult::Error; // minimum is 2 words (8 bytes: 4 hdr + 4 ext_len)
 
-    // Clamp to the advertised BigReqEnable maximum (1M words = 4MB).
-    // Previously unbounded: a corrupt length field drove a resize() of up
-    // to ~17GB outside dispatch's try/catch → std::terminate took down the
-    // whole app (review 2026-08-31 §1.6).  A legitimate client never
-    // exceeds the advertised max; treat overflow as a protocol error.
-    static constexpr uint32_t kMaxExtWords = 1u << 20; // == BigReqEnable reply
+    // Clamp to the advertised BigReqEnable maximum (must equal the value the
+    // BigReqEnable reply returns — see QueryOps::handleBigReqEnable).  Bounding
+    // it also keeps the resize() below from allocating ~17GB outside dispatch's
+    // try/catch → std::terminate on a corrupt length field (review 2026-08-31
+    // §1.6).  A request beyond the advertised max is a hard protocol violation
+    // (xorg refuses it too); emit BadLength so the client sees a real error
+    // rather than a silent socket drop, then disconnect (2026-09-08 review B3).
+    static constexpr uint32_t kMaxExtWords = 0x003FFFFFu; // == BigReqEnable reply (16MB)
     if (ext_words > kMaxExtWords) {
       TS_FPRINTF("[X11] BIG-REQUESTS length %u words exceeds advertised max %u — dropping client fd=%d\n",
                  ext_words, kMaxExtWords, fd);
+      cs.seq = (uint16_t)(cs.seq + 1);
+      activateClient(cs);
+      server_->ctx().transport().noteLastSeq(cs.seq);
+      server_->ctx().transport().sendErrorCore(x11::error::BadLength, cs.seq, 0, cs.hdr[0]);
+      deactivateClient();
       return DispatchResult::Error;
     }
 

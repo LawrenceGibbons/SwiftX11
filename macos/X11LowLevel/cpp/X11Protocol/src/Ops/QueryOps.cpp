@@ -515,8 +515,11 @@ namespace x11 {
       ctx.client()->setBigReqEnabled(true);
     }
 
-    // Maximum request length: 1M words = 4MB
-    static constexpr uint32_t kMaxBigReqWords = 0x00100000u; // 1048576 words = 4MB
+    // Maximum request length: match xorg's MAX_BIG_REQUEST_SIZE (os.h) so a
+    // legitimately-large request (Java2D can PutImage well over 4MB) fits
+    // instead of tripping our old 4MB ceiling and killing the connection
+    // (2026-09-08 review B3).  4194303 words = 16 MB − 4 B.
+    static constexpr uint32_t kMaxBigReqWords = 0x003FFFFFu; // 4194303 words
 
     (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
       wire::wr32_le(rep.data() + 4, 0); // length=0 (no extra data)

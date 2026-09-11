@@ -44,8 +44,8 @@ static constexpr uint8_t kMapNotify   = 19;
 
 
 XProtoTransport::XProtoTransport(XProtoContext& ctx, EventOps& evOps)
-  : ctx_(ctx), evOps_(evOps), last_seq_(0), event_seq_(0) {
-    
+  : ctx_(ctx), evOps_(evOps), last_seq_(0) {
+
 #ifndef NDEBUG
     xproto_tid_ = pthread_self();
 #endif
@@ -53,7 +53,6 @@ XProtoTransport::XProtoTransport(XProtoContext& ctx, EventOps& evOps)
 
 void XProtoTransport::attachClientFd(int fd) {
   client_fd_ = fd;
-  max_wire_seq_ = 0;       // reset monotonic floor for new connection
   payload_remaining_ = 0;  // reset payload tracking
   dbg_last_sent_seq_ = 0;  // reset sequence regression detector
   dbg_send_count_ = 0;
@@ -66,23 +65,12 @@ void XProtoTransport::setXprotoThreadSelf() {
 
 void XProtoTransport::noteLastSeq(uint16_t seq) {
   last_seq_ = seq;
-  if (event_seq_ < seq) event_seq_ = seq;
 }
 
 uint16_t XProtoTransport::lastSeq() const {
   return last_seq_;
 }
 
-  
-uint16_t XProtoTransport::nextEventSeq() {
-  // Ensure nonzero (optional)
-  if (event_seq_ == 0) event_seq_ = (last_seq_ ? last_seq_ : 1);
-  // increment and return
-  event_seq_ = (uint16_t)(event_seq_ + 1);
-  if (event_seq_ == 0) event_seq_ = 1;
-  return event_seq_;
-}  
-  
 #ifdef X11_TRACE_VERBOSE
 static inline void dbg_dump32(const char* tag, const uint8_t* b) {
   fprintf(stderr, "%s ", tag);
@@ -199,139 +187,28 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     if (b0 == 0 || b0 == 1) reply_sent_ = true;
   }
 
-  // ── Monotonic wire-sequence floor ──────────────────────────────
-  // XCB widens 16-bit response sequences to 64-bit and requires they
-  // never go backwards across ANY response type (events included).
-  // When drainHostCommands() interleaves with readAndDispatch(), events
-  // can carry stale (older) sequences.  Fix: if bytes[2:3] of any
-  // response HEADER would regress below the highest previously sent,
-  // bump it up to that floor.
+  // ── Reply-payload tracking (diagnostics only) ──────────────────
+  // Reply payload chunks also flow through sendAll(); their bytes are
+  // arbitrary data, not response headers.  payload_remaining_ tracks how
+  // many payload bytes are still expected after a reply header so the wire
+  // trace and the wire ring buffer below only classify real headers.
   //
-  // CRITICAL: reply payload chunks also flow through sendAll().  Their
-  // bytes[2:3] are arbitrary data, NOT sequence numbers.  We must NOT
-  // read or modify those bytes.  payload_remaining_ tracks how many
-  // payload bytes are still expected after a reply header.
-  const void* sendBuf = buf;
-  uint8_t fixedPkt[32];
-
+  // The monotonic wire-sequence floor / SEQ_WRAP rewrite that used to live
+  // here was removed in v2.0.0.19 (2026-09-08 review B1).  Its feeders are
+  // now correct — no zero-seq emitters, cross-client sequences restamped per
+  // target — so in steady state it was a no-op whose only possible effect was
+  // corrupting a reply's sequence if the payload bookkeeping ever slipped.
+  // xorg's os/io.c WriteToClient never rewrites sequences.
   if (payload_remaining_ > 0) {
-    // We are in the middle of reply payload — skip floor logic entirely.
     uint32_t consumed = (n < static_cast<std::size_t>(payload_remaining_))
                           ? static_cast<uint32_t>(n)
                           : payload_remaining_;
     payload_remaining_ -= consumed;
   } else if (n >= 32 && last_request_seq_ != 0) {
-    // This is a new response header (event/reply/error), past setup phase.
+    // New response header (event/reply/error), past setup phase.  If it is a
+    // reply with payload, remember how many payload bytes follow.
     const uint8_t* bp = static_cast<const uint8_t*>(buf);
-    const uint8_t b0 = bp[0];
-    uint16_t pkt_seq = uint16_t(bp[2] | (uint16_t(bp[3]) << 8));
-
-    // Apply monotonic floor — but handle 16-bit sequence wrap-around.
-    //
-    // X11 sequence numbers are 16-bit (0-65535) and wrap.  After a long
-    // idle period, the client may have processed >32768 requests, wrapping
-    // the 16-bit counter past our high water mark.  The signed delta test
-    // (int16_t)(pkt_seq - max_wire_seq_) misinterprets this as regression
-    // when the real forward distance exceeds 32768.
-    //
-    // Detection: compare lastSeq() (the most recent client request seq)
-    // against max_wire_seq_.  If lastSeq() has also wrapped past
-    // max_wire_seq_, the client has moved on and our floor is stale.
-    // Reset the floor to allow forward progress.
-    if (max_wire_seq_ != 0) {
-      int16_t delta = (int16_t)(pkt_seq - max_wire_seq_);
-      if (delta < 0) {
-        // Check if the client's request sequence has also moved past the
-        // floor (indicating a legitimate wrap, not a regression).
-        // If lastSeq() is in the same "wrapped" region as pkt_seq,
-        // the floor is stale — reset it.
-        uint16_t clientSeq = last_request_seq_;
-        int16_t clientDelta = (int16_t)(clientSeq - max_wire_seq_);
-        if (clientDelta < 0) {
-          // Client request seq is also "behind" the floor — this is a
-          // 16-bit wrap.  Reset the floor to the current packet seq.
-          //
-          // ALWAYS logged (also in release): review 2026-08-31 §1.2 argues
-          // a *poisoned* floor (one packet that ever carried bogus bytes
-          // 2-3) takes this branch and matches the post-sleep crash
-          // signature.  Discriminator: a real wrap shows pkt/clientSeq
-          // just past 0 with floor near 65535; a poisoned floor shows an
-          // arbitrary floor value unrelated to wrapping.  This evidence
-          // gates the M3 floor removal (see REMEDIATION_PLAN.md).
-          {
-            char lbuf[192];
-            snprintf(lbuf, sizeof(lbuf),
-                     "[SEQ_WRAP] pkt=%u floor=%u clientSeq=%u type=%u — resetting floor (fd=%d)\n",
-                     (unsigned)pkt_seq, (unsigned)max_wire_seq_,
-                     (unsigned)clientSeq,
-                     (unsigned)static_cast<const uint8_t*>(buf)[0], client_fd_);
-            x11_ui_push_log(1, lbuf);
-          }
-          max_wire_seq_ = pkt_seq;
-          delta = 0; // no correction needed
-        }
-      }
-      if (delta < 0) {
-        // Genuine regression (not a wrap) — bump to monotonic floor
-#ifdef X11_TRACE_VERBOSE
-        {
-          char lbuf[128];
-          snprintf(lbuf, sizeof(lbuf),
-                   "[SEQ_FLOOR] bumped seq %u → %u (type=%u fd=%d)\n",
-                   (unsigned)pkt_seq, (unsigned)max_wire_seq_,
-                   (unsigned)bp[0], client_fd_);
-          x11_ui_push_log(1, lbuf);
-        }
-#endif
-        std::memcpy(fixedPkt, bp, 32);
-        wire::wr16_le(fixedPkt + 2, max_wire_seq_);
-        pkt_seq = max_wire_seq_;
-
-        if (n == 32) {
-          sendBuf = fixedPkt;
-        } else {
-          // Combined header+payload: send fixed header, then original tail.
-          const uint8_t* hp = fixedPkt;
-          std::size_t hleft = 32;
-          while (hleft) {
-            ssize_t w = ::send(client_fd_, hp, hleft, MSG_NOSIGNAL);
-            if (w < 0) {
-              if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-              return false;
-            }
-            if (w == 0) return false;
-            hp += static_cast<std::size_t>(w);
-            hleft -= static_cast<std::size_t>(w);
-          }
-          const uint8_t* pp = static_cast<const uint8_t*>(buf) + 32;
-          std::size_t pleft = n - 32;
-          while (pleft) {
-            ssize_t w = ::send(client_fd_, pp, pleft, MSG_NOSIGNAL);
-            if (w < 0) {
-              if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-              return false;
-            }
-            if (w == 0) return false;
-            pp += static_cast<std::size_t>(w);
-            pleft -= static_cast<std::size_t>(w);
-          }
-          // Track payload for this combined reply
-          if (b0 == 1) {
-            uint32_t lenw = uint32_t(bp[4]) | (uint32_t(bp[5])<<8) |
-                            (uint32_t(bp[6])<<16) | (uint32_t(bp[7])<<24);
-            uint32_t total = lenw * 4u;
-            uint32_t included = static_cast<uint32_t>(n - 32);
-            payload_remaining_ = (total > included) ? (total - included) : 0;
-          }
-          max_wire_seq_ = pkt_seq;
-          return true;
-        }
-      }
-    }
-    max_wire_seq_ = pkt_seq;
-
-    // If this is a reply header with payload, track remaining bytes.
-    if (b0 == 1) {
+    if (bp[0] == 1) {
       uint32_t lenw = uint32_t(bp[4]) | (uint32_t(bp[5])<<8) |
                       (uint32_t(bp[6])<<16) | (uint32_t(bp[7])<<24);
       uint32_t total = lenw * 4u;
@@ -341,8 +218,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   }
 
   // Record outgoing packet in wire ring buffer (for crash diagnosis).
-  // sendBuf points to the final bytes (after floor fix), n is the total size.
-  recordWirePacket(static_cast<const uint8_t*>(sendBuf), n);
+  recordWirePacket(static_cast<const uint8_t*>(buf), n);
 
   // Live wire trace (gated by x11_set_wire_trace toggle).  Emitted to BOTH
   // stderr (Xcode console) and the in-app log window via x11_ui_push_log — the
@@ -350,7 +226,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
   // log window (where [XInput2] etc. appear) never saw them.
   if (n >= 32 && payload_remaining_ == 0) {
     if (x11_get_wire_trace()) {
-      const uint8_t* h = static_cast<const uint8_t*>(sendBuf);
+      const uint8_t* h = static_cast<const uint8_t*>(buf);
       uint16_t ws = uint16_t(h[2] | (uint16_t(h[3]) << 8));
       char wbuf[192];
       if (h[0] == 0) {
@@ -385,7 +261,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
     }
   }
 
-  const uint8_t* p = static_cast<const uint8_t*>(sendBuf);
+  const uint8_t* p = static_cast<const uint8_t*>(buf);
   std::size_t left = n;
 
   int eagain_waits = 0;
@@ -400,7 +276,7 @@ bool XProtoTransport::sendAll(const void* buf, std::size_t n) {
         // significantly.  poll() yields the CPU and wakes when the client reads.
         if (++eagain_waits == 1) {
           // First EAGAIN — log to help diagnose backpressure issues
-          const uint8_t* hdr = static_cast<const uint8_t*>(sendBuf);
+          const uint8_t* hdr = static_cast<const uint8_t*>(buf);
           TS_FPRINTF("[BACKPRESSURE] sendAll EAGAIN fd=%d n=%zu left=%zu type=%u\n",
                   client_fd_, n, left, (unsigned)hdr[0]);
         }
