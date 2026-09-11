@@ -184,9 +184,9 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   if (width == 0 || height == 0) { br.skip(br.remaining()); return; }
 
   // Draw Trace: Vivado renders by PutImage-ing client-rendered images, so the
-  // tab-label blit shows here.  Small regions only — the full-window blits
-  // (tens of thousands of pixels) would flood the log; a tab label is tiny.
-  if (x11_get_draw_trace() && (int64_t)width * (int64_t)height <= 8192) {
+  // tab-label blit shows here.  Skip only the biggest full-window blits (the
+  // observed floods are ~65000 px); tab/region updates are well under 50000.
+  if (x11_get_draw_trace() && (int64_t)width * (int64_t)height <= 50000) {
     const bool isWin = ctx.windows().exists(drawable);
     char b[176];
     std::snprintf(b, sizeof b,
