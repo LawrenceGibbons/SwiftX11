@@ -8,6 +8,10 @@
 #pragma once
 #include <cstdint>
 
+// Command-as-Control toggle (SwiftBridge.cpp).  When on, ⌘ reports as X11
+// Control in the event state so ⌘C/⌘V drive X11 copy/paste.
+extern "C" int x11_get_cmd_as_ctrl(void);
+
 namespace x11::input {
 
 // Internal, cross-platform modifier bits
@@ -28,7 +32,8 @@ inline uint16_t toX11State(uint32_t buttons, uint32_t mods) {
   if (mods & Lock)  st |= (1u << 1); // LockMask (CapsLock)
   if (mods & Ctrl)  st |= (1u << 2); // ControlMask
   if (mods & Alt)   st |= (1u << 3); // Mod1Mask
-  if (mods & Cmd)   st |= (1u << 6); // Mod4Mask (Super/Command)
+  // ⌘ → Control (⌘C/⌘V copy/paste) when the toggle is on, else Super/Mod4.
+  if (mods & Cmd)   st |= x11_get_cmd_as_ctrl() ? (1u << 2) : (1u << 6);
 
   // Buttons: Button1Mask starts at bit 8
   // Your `buttons` bit layout is 1<<(button-1), so map 1..5 => bits 8..12

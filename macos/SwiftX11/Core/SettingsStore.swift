@@ -25,12 +25,17 @@ final class SettingsStore: ObservableObject {
     // verified 2026-09-07 against xterm, Vivado, Vitis and portal-GTK).
     self.xi2Advertised = UserDefaults.standard.object(forKey: "xi2Advertised") as? Bool ?? true
     self.xkbAdvertised = UserDefaults.standard.object(forKey: "xkbAdvertised") as? Bool ?? true
+    // Command-as-Control: default ON so ⌘C/⌘V drive X11 copy/paste (Mac
+    // muscle memory) instead of Super/Mod4.  Read by CoreKeymap at keymap
+    // build time, so set it before any client connects (below).
+    self.cmdAsControl = UserDefaults.standard.object(forKey: "cmdAsControl") as? Bool ?? true
     // Sync initial state to C++ (didSet does NOT fire during init, so apply
     // the persisted values explicitly here).
     x11_set_font_antialiased(self.antialiasedFonts ? 1 : 0)
     x11_set_log_verbosity(Int32(self.logVerbosity))
     x11_set_xi2_advertised(self.xi2Advertised ? 1 : 0)
     x11_set_xkb_advertised(self.xkbAdvertised ? 1 : 0)
+    x11_set_cmd_as_ctrl(self.cmdAsControl ? 1 : 0)
   }
 
   @Published var enableClipboard: Bool = true
@@ -73,6 +78,17 @@ final class SettingsStore: ObservableObject {
     didSet {
       UserDefaults.standard.set(xkbAdvertised, forKey: "xkbAdvertised")
       x11_set_xkb_advertised(xkbAdvertised ? 1 : 0)
+    }
+  }
+
+  // Command acts as Control: ⌘ reports as X11 Control so ⌘C/⌘V/⌘A work in
+  // X11 apps like on the Mac (default on).  The live event state updates
+  // immediately; the served keymap (GetModifierMapping / ⌘ keysym) refreshes
+  // when X11 clients reconnect.
+  @Published var cmdAsControl: Bool {
+    didSet {
+      UserDefaults.standard.set(cmdAsControl, forKey: "cmdAsControl")
+      x11_set_cmd_as_ctrl(cmdAsControl ? 1 : 0)
     }
   }
 }

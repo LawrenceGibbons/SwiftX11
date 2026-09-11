@@ -332,6 +332,10 @@ int  x11_get_xi2_advertised(void);
 // -------------------------------------------------------------------------------------
 void x11_set_xkb_advertised(int enabled);
 int  x11_get_xkb_advertised(void);
+
+// Command-as-Control: ⌘ acts as X11 Control (⌘C/⌘V → X11 copy/paste).  Default ON.
+void x11_set_cmd_as_ctrl(int enabled);
+int  x11_get_cmd_as_ctrl(void);
 uint32_t x11_root_window_xid(void);   // R1: the root window XID (kRootWindowXid) — Swift must not hard-code 1
 
 // -------------------------------------------------------------------------------------

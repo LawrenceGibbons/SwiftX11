@@ -14,6 +14,10 @@
 #include <array>
 #include <cstring>
 
+// Command-as-Control (SwiftBridge.cpp): when on, ⌘ is a Control key — keysym
+// Control_L/R and listed under the Control modifier — so ⌘C/⌘V copy/paste.
+extern "C" int x11_get_cmd_as_ctrl(void);
+
 namespace x11 {
 
 // ---------------------------------------------------------------------------
@@ -115,8 +119,10 @@ const KeySyms4* coreKeyboardMap() {
   setMac1(62, XK_Control_R);  // kVK_RightControl
   setMac1(58, XK_Alt_L);      // kVK_Option
   setMac1(61, XK_Alt_R);      // kVK_RightOption
-  setMac1(55, XK_Super_L);    // kVK_Command
-  setMac1(54, XK_Super_R);    // kVK_RightCommand
+  // ⌘ → Control (Mac copy/paste muscle memory) when the toggle is on, else Super.
+  const bool cmdAsCtrl = (x11_get_cmd_as_ctrl() != 0);
+  setMac1(55, cmdAsCtrl ? XK_Control_L : XK_Super_L);  // kVK_Command
+  setMac1(54, cmdAsCtrl ? XK_Control_R : XK_Super_R);  // kVK_RightCommand
   setMac1(57, XK_Caps_Lock);  // kVK_CapsLock
   setMac1(63, XK_Meta_L);     // kVK_Function (Fn key → Meta_L)
 
@@ -222,26 +228,31 @@ static void initDefaultModifierMapIfEmpty() {
   // If we've already been set to something nonzero, don't clobber it.
   if (g_modMapN != 0) return;
 
-  g_modMapN = 2;
+  const bool cmdAsCtrl = (x11_get_cmd_as_ctrl() != 0);
+
+  // Command-as-Control needs four keys in the Control row (Ctrl_L/R + ⌘_L/R),
+  // so the map is width-4 when on; width-2 (the historical shape) when off.
+  const uint8_t n = cmdAsCtrl ? 4 : 2;
+  g_modMapN = n;
   g_modMap.fill(0);
+  auto put = [&](int mod, int slot, uint8_t kc) { g_modMap[(size_t)mod * n + slot] = kc; };
 
   // Order: Shift, Lock, Control, Mod1, Mod2, Mod3, Mod4, Mod5
-  g_modMap[0*2 + 0] = macToX11Keycode(56);  // Shift_L
-  g_modMap[0*2 + 1] = macToX11Keycode(60);  // Shift_R
-  g_modMap[1*2 + 0] = macToX11Keycode(57);  // CapsLock
-  g_modMap[1*2 + 1] = 0;                    // (no second Lock key)
-  g_modMap[2*2 + 0] = macToX11Keycode(59);  // Control_L
-  g_modMap[2*2 + 1] = macToX11Keycode(62);  // Control_R
-  g_modMap[3*2 + 0] = macToX11Keycode(58);  // Option_L  -> Mod1 (Alt)
-  g_modMap[3*2 + 1] = macToX11Keycode(61);  // Option_R  -> Mod1 (Alt)
-  g_modMap[4*2 + 0] = 0;                    // Mod2 (unused)
-  g_modMap[4*2 + 1] = 0;
-  g_modMap[5*2 + 0] = 0;                    // Mod3 (unused)
-  g_modMap[5*2 + 1] = 0;
-  g_modMap[6*2 + 0] = macToX11Keycode(55);  // Command_L -> Mod4 (Super)
-  g_modMap[6*2 + 1] = macToX11Keycode(54);  // Command_R -> Mod4 (Super)
-  g_modMap[7*2 + 0] = 0;                    // Mod5 (unused)
-  g_modMap[7*2 + 1] = 0;
+  put(0, 0, macToX11Keycode(56));  // Shift_L
+  put(0, 1, macToX11Keycode(60));  // Shift_R
+  put(1, 0, macToX11Keycode(57));  // CapsLock
+  put(2, 0, macToX11Keycode(59));  // Control_L
+  put(2, 1, macToX11Keycode(62));  // Control_R
+  put(3, 0, macToX11Keycode(58));  // Option_L -> Mod1 (Alt)
+  put(3, 1, macToX11Keycode(61));  // Option_R -> Mod1 (Alt)
+  if (cmdAsCtrl) {
+    // ⌘ joins the Control modifier; Mod4 (Super) is then empty.
+    put(2, 2, macToX11Keycode(55));  // Command_L -> Control
+    put(2, 3, macToX11Keycode(54));  // Command_R -> Control
+  } else {
+    put(6, 0, macToX11Keycode(55));  // Command_L -> Mod4 (Super)
+    put(6, 1, macToX11Keycode(54));  // Command_R -> Mod4 (Super)
+  }
 }
 
 const uint8_t* coreModifierMap(uint8_t& keysPerMod) {

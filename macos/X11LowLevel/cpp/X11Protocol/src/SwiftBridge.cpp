@@ -438,6 +438,22 @@ extern "C" int x11_get_xkb_advertised(void)
   return g_xkb_advertised.load(std::memory_order_relaxed);
 }
 
+// Command-as-Control: when on, the macOS ⌘ key acts as X11 Control (so ⌘C/⌘V
+// drive X11 copy/paste with Mac muscle memory) instead of Super/Mod4.  Read
+// live by toX11State (event state) and at keymap build time by CoreKeymap
+// (the ⌘ keysym + modifier map).  Default ON.
+static std::atomic<int> g_cmd_as_ctrl{1};
+
+extern "C" void x11_set_cmd_as_ctrl(int enabled)
+{
+  g_cmd_as_ctrl.store(enabled, std::memory_order_relaxed);
+}
+
+extern "C" int x11_get_cmd_as_ctrl(void)
+{
+  return g_cmd_as_ctrl.load(std::memory_order_relaxed);
+}
+
 // -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------
