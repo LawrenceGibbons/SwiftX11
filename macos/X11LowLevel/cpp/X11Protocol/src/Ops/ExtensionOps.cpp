@@ -103,13 +103,27 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
   if (major == ext::kXFIXES) {
     switch (minor) {
     case 0: {
-      // XFixesQueryVersion request: CARD32 client_major, CARD32 client_minor
+      // XFixesQueryVersion: CARD32 client_major, client_minor.  Negotiate
+      // min(client, server) exactly as xorg's ProcXFixesQueryVersion.  We
+      // report 1.0 — the version whose requests we actually implement
+      // (ChangeSaveSet, SelectSelectionInput + XFixesSelectionNotify, the Java
+      // clipboard FlavorListener path).  Regions (2.0), cursor image/name
+      // (2.0/4.0) and pointer barriers (5.0) are stubs, so advertising 5.0
+      // (as we used to) invited clients to rely on fakes; 1.0 makes them fall
+      // back to working core paths, and at 1.0 XFixes defines no errors, so no
+      // BadRegion base is needed (2026-09-08 review §8).
+      uint32_t cMajor = 0, cMinor = 0;
+      if (br.remaining() >= 8) { cMajor = br.readU32(); cMinor = br.readU32(); }
       br.skip(br.remaining());
-      // Reply: major=5, minor=0
-      (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 4, 0); // length
-        wire::wr32_le(rep.data() + 8, 5); // server major version
-        wire::wr32_le(rep.data() + 12, 0); // server minor version
+      static constexpr uint32_t kSrvMajor = 1, kSrvMinor = 0;
+      uint32_t oMajor, oMinor;
+      if (cMajor < kSrvMajor) { oMajor = cMajor; oMinor = cMinor; }
+      else { oMajor = kSrvMajor;
+             oMinor = (cMajor == kSrvMajor && cMinor < kSrvMinor) ? cMinor : kSrvMinor; }
+      (void)ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
+        wire::wr32_le(rep.data() + 4, 0);       // length
+        wire::wr32_le(rep.data() + 8, oMajor);  // negotiated major
+        wire::wr32_le(rep.data() + 12, oMinor); // negotiated minor
       });
       return;
     }
@@ -556,8 +570,71 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     }
 
     case 4: // RRSelectInput — void (event mask selection)
+      // NOTE: not tracked per client — RRScreenChangeNotify is broadcast to all
+      // clients (XProtoDaemon ScreenLayoutChanged).  Over-delivery is the safe
+      // direction here and is in fact relied on: the broadcast exists so Xlib's
+      // XRRUpdateConfiguration refreshes cached WidthOfScreen/HeightOfScreen for
+      // popup clipping.  Full per-window subscription tracking is deferred
+      // (2026-09-08 review §8, "Track RRSelectInput").
       br.skip(br.remaining());
       return;
+
+    case 2: {
+      // RRSetScreenConfig (RANDR 1.0) — JDK's display-mode path calls this.
+      // We advertise a single fixed configuration that tracks the real display,
+      // so there is nothing to change: acknowledge success with the current
+      // server timestamps and root, per xRRSetScreenConfigReply (32 bytes).
+      // (Previously fell through to BadRequest inside an advertised-1.3 server
+      //  — 2026-09-08 review §8.)
+      br.skip(br.remaining());
+      const uint32_t now = x11_now_ms_monotonic();
+      (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
+        rep[1] = 0;                                     // status = RRSetConfigSuccess
+        wire::wr32_le(rep.data() + 4, 0);               // length
+        wire::wr32_le(rep.data() + 8,  now);            // newTimestamp
+        wire::wr32_le(rep.data() + 12, now);            // newConfigTimestamp
+        wire::wr32_le(rep.data() + 16, x11::kRootWindowXid); // root
+        wire::wr16_le(rep.data() + 20, 0);              // subpixelOrder = Unknown
+      });
+      return;
+    }
+
+    case 5: {
+      // RRGetScreenInfo (RANDR 1.0) — JDK enumerates display modes with this.
+      // Report one screen size (the virtual desktop) at 60 Hz, Rotate_0.
+      // xRRGetScreenInfoReply header (32 B) + SCREEN_SIZES + REFRESH rates.
+      br.skip(br.remaining());
+      const auto layout = x11::getScreenLayout();
+      const uint16_t vw    = layout.virtual_w;
+      const uint16_t vh    = layout.virtual_h;
+      const uint16_t vw_mm = layout.virtual_w_mm;
+      const uint16_t vh_mm = layout.virtual_h_mm;
+      const uint32_t now   = x11_now_ms_monotonic();
+
+      // Extra data: one xScreenSizes (8 B) + refresh block (nRates=1, rate=60).
+      uint8_t extra[12] = {};
+      wire::wr16_le(extra + 0, vw);      // widthInPixels
+      wire::wr16_le(extra + 2, vh);      // heightInPixels
+      wire::wr16_le(extra + 4, vw_mm);   // widthInMillimeters
+      wire::wr16_le(extra + 6, vh_mm);   // heightInMillimeters
+      wire::wr16_le(extra + 8, 1);       // nRates for size 0
+      wire::wr16_le(extra + 10, 60);     // rate = 60 Hz
+
+      (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
+        rep[1] = 1;                                   // setOfRotations = Rotate_0
+        wire::wr32_le(rep.data() + 4, 3);             // length = 12 B / 4
+        wire::wr32_le(rep.data() + 8,  x11::kRootWindowXid); // root
+        wire::wr32_le(rep.data() + 12, now);          // timestamp
+        wire::wr32_le(rep.data() + 16, now);          // configTimestamp
+        wire::wr16_le(rep.data() + 20, 1);            // nSizes
+        wire::wr16_le(rep.data() + 22, 0);            // sizeID (current)
+        wire::wr16_le(rep.data() + 24, 1);            // rotation = Rotate_0
+        wire::wr16_le(rep.data() + 26, 60);           // rate
+        wire::wr16_le(rep.data() + 28, 2);            // nInfo = nSizes + nRates
+      });
+      ctx.reply().sendBytes(extra, sizeof(extra));
+      return;
+    }
 
     case 6: {
       // RRGetScreenSizeRange — reply min/max sizes
@@ -645,10 +722,15 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint16_t numC = static_cast<uint16_t>(N);
       const uint16_t numO = static_cast<uint16_t>(N);
       const uint16_t numM = static_cast<uint16_t>(N);
+      // Stamp with the server time (matching event timestamps).  A 0 here reads
+      // as epoch — "older" than any RRScreenChangeNotify — which confuses
+      // Xlib's config-timestamp cache and can make a later SetConfig look stale
+      // (2026-09-08 review §8).
+      const uint32_t now = x11_now_ms_monotonic();
       (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
         wire::wr32_le(rep.data() + 4, replyLength);
-        wire::wr32_le(rep.data() + 8,  0);  // timestamp
-        wire::wr32_le(rep.data() + 12, 0);  // configTimestamp
+        wire::wr32_le(rep.data() + 8,  now);  // timestamp
+        wire::wr32_le(rep.data() + 12, now);  // configTimestamp
         wire::wr16_le(rep.data() + 16, numC);
         wire::wr16_le(rep.data() + 18, numO);
         wire::wr16_le(rep.data() + 20, numM);
@@ -697,7 +779,7 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       rep[1] = 0;                                          // status = RRSetConfigSuccess
       wire::wr16_le(rep + 2, seq);                         // sequence
       wire::wr32_le(rep + 4, replyLen);                    // length
-      wire::wr32_le(rep + 8, 0);                           // timestamp
+      wire::wr32_le(rep + 8, x11_now_ms_monotonic());      // timestamp (§8)
       wire::wr32_le(rep + 12, mon.crtc_xid);              // crtc
       wire::wr32_le(rep + 16, mon.w_mm);                   // mm_width
       wire::wr32_le(rep + 20, mon.h_mm);                   // mm_height
@@ -766,10 +848,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       const uint16_t mw = mon.w;
       const uint16_t mh = mon.h;
       const uint32_t modeXid = mon.mode_xid;
+      const uint32_t now = x11_now_ms_monotonic();
       (void)ctx.reply().sendReply32(seq, [=](std::array<uint8_t, 32>& rep) {
         rep[1] = 0; // status
         wire::wr32_le(rep.data() + 4, 2);        // length = 8/4
-        wire::wr32_le(rep.data() + 8, 0);        // timestamp
+        wire::wr32_le(rep.data() + 8, now);      // timestamp (§8)
         wire::wr16_le(rep.data() + 12, mx);      // x
         wire::wr16_le(rep.data() + 14, my);      // y
         wire::wr16_le(rep.data() + 16, mw);      // width
@@ -2233,9 +2316,15 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // -------------------------------------------------------------------
   // Composite — major opcode 143
-  // GTK3 relies on Composite for proper widget compositing.  Without it,
-  // portal-GTK dialogs render with inverted colors (broken fallback path).
-  // Stub: advertise version 0.4, silently consume all sub-opcodes.
+  // DECISION (2026-09-08 review §8, "Composite decision"): keep it advertised.
+  // GTK3 relies on Composite for proper widget compositing; without it,
+  // portal-GTK dialogs (Vitis) render with inverted colors (broken fallback
+  // path).  Unadvertising — the other option the review raised — would regress
+  // a confirmed-working app, so we keep the stub honest instead: the
+  // redirect/unredirect ops are benign no-ops in a rootless self-WM server (no
+  // root compositor, each top-level is its own NSWindow surface),
+  // NameWindowPixmap answers BadMatch rather than leaking a phantom pixmap, and
+  // GetOverlayWindow returns the real root.  Version reported: 0.4.
   // -------------------------------------------------------------------
   if (major == ext::kCOMPOSITE) {
     switch (minor) {
@@ -2277,10 +2366,11 @@ void ExtensionOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     case 7: {
       // Request: CARD32 window
       // Reply: CARD32 overlay_window
-      // Return the root window as the overlay — matches typical WM behavior
+      // Return the root window as the overlay — matches typical WM behavior.
+      // (R1 stray: this returned the literal 1; root is 0x2 since v2.0.0.1.)
       br.skip(br.remaining());
       (void)ctx.reply().sendReply32(seq, [](std::array<uint8_t, 32>& rep) {
-        wire::wr32_le(rep.data() + 8, 1);  // overlay_win = root (XID 1)
+        wire::wr32_le(rep.data() + 8, x11::kRootWindowXid);  // overlay_win = root
       });
       return;
     }
