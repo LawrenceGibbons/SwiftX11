@@ -62,6 +62,13 @@ final class SettingsStore: ObservableObject {
     }
   }
 
+  // Diagnostic: log clear/fill/text/blit ops to window drawables ([DRAWSEQ]).
+  @Published var drawTrace: Bool = false {
+    didSet {
+      x11_set_draw_trace(drawTrace ? 1 : 0)
+    }
+  }
+
   // Advertise XInputExtension (XI2). Default ON since v1.20.0.22; OFF is the
   // escape hatch that keeps Electron/GTK clients on the core input path.
   @Published var xi2Advertised: Bool {

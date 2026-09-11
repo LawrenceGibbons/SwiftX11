@@ -13,6 +13,7 @@
 #include <climits>
 
 #include "Core/XProtoContext.hpp"
+#include "Utils/DrawTrace.hpp"
 #include "Utils/ByteReader.hpp"
 #include "Core/PixmapTable.hpp"
 #include "Core/GCTable.hpp"
@@ -610,6 +611,10 @@ void ShapeOps::handleFillPoly(XProtoContext& ctx, uint16_t seq, ByteReader& br) 
 #endif
     
     if (nRects == 0) { br.skip(br.remaining()); return; }
+    if (x11_get_draw_trace()) { const uint8_t* rp = br.ptr();
+      x11::drawTraceRect(ctx, "PolyFillRect", drawable,
+                         (int)(int16_t)(rp[0]|(rp[1]<<8)), (int)(int16_t)(rp[2]|(rp[3]<<8)),
+                         (int)(uint16_t)(rp[4]|(rp[5]<<8)), (int)(uint16_t)(rp[6]|(rp[7]<<8))); }
 
     // ---- Depth-1 pixmap path (SHAPE mask bitmaps) ----
     {

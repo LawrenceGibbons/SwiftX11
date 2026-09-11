@@ -127,6 +127,9 @@ struct ContentView: View {
         Toggle("Wire Trace", isOn: $settings.wireTrace)
           .toggleStyle(.switch)
           .help("Log every incoming request and outgoing packet ([WIRE]) to this log window and the Xcode console")
+        Toggle("Draw Trace", isOn: $settings.drawTrace)
+          .toggleStyle(.switch)
+          .help("Log clear/fill/text/blit ops issued to WINDOW drawables ([DRAWSEQ]) to this log window — for diagnosing stale-content redraw bugs. Windows only (pixmap backbuffers are too noisy).")
       }
 
       LogTextViewWithFind(text: $server.logText, holder: logHolder)

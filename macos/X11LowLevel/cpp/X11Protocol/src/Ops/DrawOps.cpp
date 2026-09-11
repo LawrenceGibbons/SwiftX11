@@ -15,6 +15,7 @@
 #include "Utils/ByteReader.hpp"
 #include "Ops/DrawOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include "Utils/DrawTrace.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Core/PixmapTable.hpp"   // adjust include path to your project
 #include "Core/WindowTable.hpp"
@@ -606,6 +607,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   int32_t wpx = (int32_t)br.readU16();
   int32_t hpx = (int32_t)br.readU16();
   br.skip(br.remaining());
+  x11::drawTraceRect(ctx, "CopyArea", dst, (int)dstX, (int)dstY, (int)wpx, (int)hpx);
 
   if (wpx <= 0 || hpx <= 0) return;
 
@@ -1145,6 +1147,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const uint16_t wpx = br.readU16();
     const uint16_t hpx = br.readU16();
     br.skip(br.remaining());
+    x11::drawTraceRect(ctx, "ClearArea", wid, (int)x, (int)y, (int)wpx, (int)hpx);
 
     ctx.tracef("[ClearArea] wid=0x%08X xy=(%d,%d) wh=(%u,%u) exp=%u\n",
               wid, (int)x, (int)y, (unsigned)wpx, (unsigned)hpx,
@@ -1269,6 +1272,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const uint32_t gcXid    = br.readU32();
     int32_t penX            = (int16_t)br.readU16();
     const int32_t baseY     = (int16_t)br.readU16();
+    x11::drawTraceText(ctx, "PolyText8", drawable, (int)penX, (int)baseY,
+                       (const char*)br.ptr(), (int)(br.remaining() < 48 ? br.remaining() : 48));
 
     // Verbose OR_TEXT trace removed (was diagnostic-only for v1.10.4–v1.10.7).
     // The trace checked every PolyText8 on OR windows for surface resolution status.
@@ -1483,6 +1488,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     std::vector<uint8_t> text(n);
     for (uint8_t i = 0; i < n; i++) text[i] = br.readU8();
     br.skip(br.remaining());
+    x11::drawTraceText(ctx, "ImageText8", drawable, (int)x, (int)y, (const char*)text.data(), (int)n);
 
     // Verbose OR_TEXT trace for ImageText8 removed (was diagnostic-only for v1.10.4–v1.10.7).
 #if X11_TRACE_FONT_ENABLED
@@ -1704,6 +1710,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     const uint32_t gcXid    = br.readU32();
     int32_t penX            = (int16_t)br.readU16();
     const int32_t baseY     = (int16_t)br.readU16();
+    x11::drawTraceText(ctx, "PolyText16", drawable, (int)penX, (int)baseY,
+                       (const char*)br.ptr(), (int)(br.remaining() < 48 ? br.remaining() : 48));
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {
@@ -1882,6 +1890,8 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       text[i] = ((int)byte1 << 8) | (int)byte2;
     }
     br.skip(br.remaining());
+    { char t8[80]; int m=(n<80?n:79); for(int i=0;i<m;i++) t8[i]=(char)(text[i]&0xFF); t8[m]=0;
+      x11::drawTraceText(ctx, "ImageText16", drawable, (int)x, (int)y, t8, (int)n); }
 
     x11::DrawableRW dst{};
     if (!x11::resolveDrawableRW(ctx, drawable, dst)) {

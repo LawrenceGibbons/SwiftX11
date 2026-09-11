@@ -454,6 +454,19 @@ extern "C" int x11_get_cmd_as_ctrl(void)
   return g_cmd_as_ctrl.load(std::memory_order_relaxed);
 }
 
+// Draw Trace: log clear/fill/text/blit ops to window drawables (diagnostic).
+static std::atomic<int> g_draw_trace{0};
+
+extern "C" void x11_set_draw_trace(int enabled)
+{
+  g_draw_trace.store(enabled, std::memory_order_relaxed);
+}
+
+extern "C" int x11_get_draw_trace(void)
+{
+  return g_draw_trace.load(std::memory_order_relaxed);
+}
+
 // -------------------------------------------------------------------------------------
 // Font antialiasing toggle
 // -------------------------------------------------------------------------------------

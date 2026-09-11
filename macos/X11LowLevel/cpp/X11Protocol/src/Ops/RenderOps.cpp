@@ -184,6 +184,11 @@ struct PictureState {
   std::vector<ClipRect> clipRects;
   // Gradient source (non-null when this picture is a gradient fill)
   std::shared_ptr<GradientData> gradient;
+  // R3 F1: SetPictureTransform 3x3 matrix (row-major, 16.16 fixed) applied to
+  // the source sample coordinate; SetPictureFilter (0 nearest, 1 bilinear).
+  bool     hasTransform = false;
+  int32_t  xform[9] = { 0x10000,0,0, 0,0x10000,0, 0,0,0x10000 };  // identity
+  uint8_t  filter = 0;   // 0 = nearest, 1 = bilinear
 };
 
 // Copy of a picture's clip state, usable outside sPicMtx.
@@ -759,6 +764,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     bool srcIsSolid = false;
     bool srcRepeat = false;
     uint8_t srcRepeatMode = 0;   // R3 F4
+    bool srcHasTransform = false;  // R3 F1
+    int32_t srcXform[9] = { 0x10000,0,0, 0,0x10000,0, 0,0,0x10000 };
+    uint8_t srcFilter = 0;         // 0 nearest, 1 bilinear
     uint32_t srcDrawable = 0;
     std::shared_ptr<GradientData> srcGrad;
     {
@@ -770,6 +778,9 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         srcDrawable  = sps->drawable;
         srcRepeat    = sps->repeat;
         srcRepeatMode = sps->repeatMode;
+        srcHasTransform = sps->hasTransform;
+        for (int i = 0; i < 9; i++) srcXform[i] = sps->xform[i];
+        srcFilter    = sps->filter;
         srcGrad      = sps->gradient;
       }
     }
@@ -919,6 +930,67 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (!resolveDrawableRW(ctx, srcDrawable, src)) return;
       if (!src.pixels32) return;
 
+      if (srcHasTransform) {
+        // R3 F1: sample the source through its SetPictureTransform matrix
+        // (xorg fbFetchTransformed) with the picture's filter.  The matrix is
+        // applied to the source-relative sample coordinate (xSrc+col, ySrc+row)
+        // in 16.16, homogeneous-divided, then sampled nearest or bilinear.
+        // This is Java2D's scaled drawImage and every Cairo pattern matrix.
+        const int32_t* M = srcXform;
+        auto pixelAt = [&](int32_t ix, int32_t iy) -> uint32_t {
+          if (srcRepeat) {
+            ix = repeatWrap(ix, (int32_t)src.w, srcRepeatMode);
+            iy = repeatWrap(iy, (int32_t)src.h, srcRepeatMode);
+          } else if (ix < 0 || ix >= (int32_t)src.w || iy < 0 || iy >= (int32_t)src.h) {
+            return 0u;   // outside a non-repeating source is transparent
+          }
+          return src.pixels32[(size_t)iy * (size_t)src.stridePixels + (size_t)ix];
+        };
+        auto lerp8 = [](uint32_t a, uint32_t b, uint32_t f /*0..65535*/) -> uint32_t {
+          return (a * (65536u - f) + b * f) >> 16;
+        };
+        auto sampleAt = [&](int64_t sx16, int64_t sy16) -> uint32_t {
+          if (srcFilter == 1) {  // bilinear
+            const int32_t x0 = (int32_t)(sx16 >> 16), y0 = (int32_t)(sy16 >> 16);
+            const uint32_t fx = (uint32_t)(sx16 & 0xFFFF), fy = (uint32_t)(sy16 & 0xFFFF);
+            const uint32_t p00 = pixelAt(x0, y0),     p10 = pixelAt(x0 + 1, y0);
+            const uint32_t p01 = pixelAt(x0, y0 + 1), p11 = pixelAt(x0 + 1, y0 + 1);
+            uint32_t out = 0;
+            for (int ch = 0; ch < 32; ch += 8) {
+              const uint32_t top = lerp8((p00 >> ch) & 0xFF, (p10 >> ch) & 0xFF, fx);
+              const uint32_t bot = lerp8((p01 >> ch) & 0xFF, (p11 >> ch) & 0xFF, fx);
+              out |= (lerp8(top, bot, fy) & 0xFF) << ch;
+            }
+            return out;
+          }
+          // nearest
+          return pixelAt((int32_t)((sx16 + 0x8000) >> 16), (int32_t)((sy16 + 0x8000) >> 16));
+        };
+        for (int32_t row = 0; row < (int32_t)height; row++) {
+          const int32_t dy = (int32_t)yDst + row;
+          if (dy < 0 || dy >= (int32_t)dst.h) continue;
+          uint32_t* drow = dst.pixels32 + (size_t)dy * (size_t)dst.stridePixels;
+          for (int32_t col = 0; col < (int32_t)width; col++) {
+            const int32_t dx = (int32_t)xDst + col;
+            if (dx < 0 || dx >= (int32_t)dst.w) continue;
+            if (!dstClip.allows(dx, dy)) continue;
+            const int64_t vx  = (int64_t)((int32_t)xSrc + col) << 16;
+            const int64_t vy  = (int64_t)((int32_t)ySrc + row) << 16;
+            const int64_t one = (int64_t)1 << 16;
+            const int64_t tx = ((int64_t)M[0]*vx + (int64_t)M[1]*vy + (int64_t)M[2]*one) >> 16;
+            const int64_t ty = ((int64_t)M[3]*vx + (int64_t)M[4]*vy + (int64_t)M[5]*one) >> 16;
+            const int64_t tw = ((int64_t)M[6]*vx + (int64_t)M[7]*vy + (int64_t)M[8]*one) >> 16;
+            if (tw == 0) continue;
+            const int64_t sx16 = (tx << 16) / tw;
+            const int64_t sy16 = (ty << 16) / tw;
+            const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
+            const uint32_t sc = modulateAlpha(sampleAt(sx16, sy16), ma);
+            uint32_t px = applyOp(op, drow[(size_t)dx], sc);
+            if (forceOpaque) px |= 0xFF000000u;
+            drow[(size_t)dx] = px;
+          }
+        }
+      } else {
       // ---- Self-overlap detection (Java XRender copyArea) ----
       // Java's XRender pipeline implements Graphics.copyArea() as
       // Composite(PictOpSrc, srcPict == dstPict, offset) — a self-copy on
@@ -1001,6 +1073,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           drow[(size_t)dx] = px;
         }
       }
+      } // end else (linear sampler; the transformed path is above)
     }
 
     if (dst.isWindow) {
@@ -2152,7 +2225,19 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // ---- 28: SetPictureTransform ----
   case 28: {
+    // CARD32 picture, then 9 FIXED (16.16) matrix entries (row-major).
+    if (br.remaining() < 4 + 36) { br.skip(br.remaining()); return; }
+    const uint32_t pid = br.readU32();
+    int32_t m[9];
+    for (int i = 0; i < 9; i++) m[i] = (int32_t)br.readU32();
     br.skip(br.remaining());
+    std::lock_guard<std::mutex> lk(sPicMtx);
+    PictureState* ps = findPicture(pid);
+    if (!ps) { renderErr(ctx, seq, minor, rerr::BadPicture, pid); return; }
+    for (int i = 0; i < 9; i++) ps->xform[i] = m[i];
+    // Identity → no transform (keep the fast linear sampler).
+    static const int32_t kId[9] = { 0x10000,0,0, 0,0x10000,0, 0,0,0x10000 };
+    ps->hasTransform = (std::memcmp(m, kId, sizeof kId) != 0);
     return;
   }
 
@@ -2186,7 +2271,20 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
 
   // ---- 30: SetPictureFilter ----
   case 30: {
+    // CARD32 picture, CARD16 nameLen, pad2, STRING8 name, pad, FIXED params[].
+    if (br.remaining() < 8) { br.skip(br.remaining()); return; }
+    const uint32_t pid = br.readU32();
+    const uint16_t nameLen = br.readU16();
+    (void)br.readU16(); // pad
+    std::string name;
+    for (uint16_t i = 0; i < nameLen && br.remaining() > 0; i++) name.push_back((char)br.readU8());
     br.skip(br.remaining());
+    std::lock_guard<std::mutex> lk(sPicMtx);
+    PictureState* ps = findPicture(pid);
+    if (!ps) { renderErr(ctx, seq, minor, rerr::BadPicture, pid); return; }
+    // We advertise "nearest" and "bilinear" (QueryFilters); "good"/"best"/
+    // "convolution" fall back to bilinear, "fast" to nearest.
+    ps->filter = (name == "nearest" || name == "fast") ? 0 : 1;
     return;
   }
 
