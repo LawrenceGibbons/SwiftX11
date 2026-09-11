@@ -15,6 +15,7 @@
 #include "Utils/ByteReader.hpp"
 #include "Ops/DrawOps.hpp"
 #include "Core/XProtoContext.hpp"
+#include <cstdio>
 #include "Utils/DrawTrace.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Core/PixmapTable.hpp"   // adjust include path to your project
@@ -181,6 +182,19 @@ void DrawOps::handlePutImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   br.skip(2); // pad0/pad1
 
   if (width == 0 || height == 0) { br.skip(br.remaining()); return; }
+
+  // Draw Trace: Vivado renders by PutImage-ing client-rendered images, so the
+  // tab-label blit shows here.  Small regions only — the full-window blits
+  // (tens of thousands of pixels) would flood the log; a tab label is tiny.
+  if (x11_get_draw_trace() && (int64_t)width * (int64_t)height <= 8192) {
+    const bool isWin = ctx.windows().exists(drawable);
+    char b[176];
+    std::snprintf(b, sizeof b,
+                  "[DRAWSEQ] PutImage        %s=0x%08X at (%d,%d) %ux%u depth=%u fmt=%u\n",
+                  isWin ? "win" : "pix", (unsigned)drawable, (int)dstX, (int)dstY,
+                  (unsigned)width, (unsigned)height, (unsigned)depth, (unsigned)format);
+    x11_ui_push_log(1, b);
+  }
 
   // Resolve GC for clip + ROP
   x11::GCState piGC{};
