@@ -169,7 +169,8 @@ struct ClipRect {
 struct PictureState {
   uint32_t drawable = 0;
   uint32_t format   = 0;
-  bool     repeat   = false;
+  bool     repeat   = false;   // "repeats at all" (mode != None) — existing gating
+  uint8_t  repeatMode = 0;     // R3 F4: render.h RepeatNone 0 / Normal 1 / Pad 2 / Reflect 3
   bool     isSolid  = false;
   // Solid fill color (premultiplied ARGB8888)
   uint32_t solidARGB = 0;
@@ -229,6 +230,20 @@ static inline void renderErr(x11::XProtoContext& ctx, uint16_t seq, uint8_t mino
                              uint8_t sub, uint32_t value) {
   ctx.transport().sendErrorExt((uint8_t)(x11::ext::kRENDER_FirstError + sub),
                                seq, value, minor, x11::ext::kRENDER);
+}
+
+// R3 F4: sample-coordinate wrap honouring the picture's repeat mode (render.h:
+// None 0, Normal 1, Pad 2, Reflect 3).  Pad clamps to the edge — GTK's
+// EXTEND_PAD, which the old bool-repeat treated as Normal, wrapped to the
+// opposite edge and produced a fringe of the far-side pixels; Reflect mirrors.
+static inline int32_t repeatWrap(int32_t v, int32_t e, uint8_t mode) {
+  if (e <= 0) return 0;
+  switch (mode) {
+    case 2: return v < 0 ? 0 : (v >= e ? e - 1 : v);                 // Pad
+    case 3: { int32_t p = ((v % (2 * e)) + 2 * e) % (2 * e);         // Reflect
+              return p < e ? p : (2 * e - 1 - p); }
+    default: return ((v % e) + e) % e;                              // Normal
+  }
 }
 
 // ============================================================================
@@ -602,7 +617,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (!(mask & (1u << bit))) continue;
       const uint32_t v = br.readU32();
       switch (bit) {
-        case 0: ps.repeat = (v != 0); break;
+        case 0: ps.repeat = (v != 0); ps.repeatMode = (uint8_t)(v & 0x3u); break;
         case 4: ps.clipXOrg = (int16_t)(v & 0xFFFF); break;
         case 5: ps.clipYOrg = (int16_t)(v & 0xFFFF); break;
         case 6:
@@ -644,7 +659,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           if (!(mask & (1u << bit))) continue;
           const uint32_t v = br.readU32();
           switch (bit) {
-            case 0: ps->repeat = (v != 0); break;
+            case 0: ps->repeat = (v != 0); ps->repeatMode = (uint8_t)(v & 0x3u); break;
             case 4: ps->clipXOrg = (int16_t)(v & 0xFFFF); break;
             case 5: ps->clipYOrg = (int16_t)(v & 0xFFFF); break;
             case 6:
@@ -743,6 +758,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     uint32_t srcColor = 0xFF000000u;
     bool srcIsSolid = false;
     bool srcRepeat = false;
+    uint8_t srcRepeatMode = 0;   // R3 F4
     uint32_t srcDrawable = 0;
     std::shared_ptr<GradientData> srcGrad;
     {
@@ -753,6 +769,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         srcColor     = sps->solidARGB;
         srcDrawable  = sps->drawable;
         srcRepeat    = sps->repeat;
+        srcRepeatMode = sps->repeatMode;
         srcGrad      = sps->gradient;
       }
     }
@@ -761,6 +778,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     bool hasMask = false;
     bool maskIsSolid = false;
     bool maskRepeat = false;
+    uint8_t maskRepeatMode = 0;   // R3 F4
     uint32_t maskSolidAlpha = 255;
     uint32_t maskDrawable = 0;
     if (mskPid != 0) {
@@ -770,6 +788,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         hasMask = true;
         maskIsSolid = mps->isSolid;
         maskRepeat  = mps->repeat;
+        maskRepeatMode = mps->repeatMode;
         if (maskIsSolid) {
           maskSolidAlpha = (mps->solidARGB >> 24) & 0xFF;
         }
@@ -789,8 +808,8 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
       if (maskIsSolid) return (uint8_t)maskSolidAlpha;
       if (!maskDrw.pixels32) return 255;
       if (maskRepeat && maskDrw.w > 0 && maskDrw.h > 0) {
-        mx = ((mx % (int32_t)maskDrw.w) + (int32_t)maskDrw.w) % (int32_t)maskDrw.w;
-        my = ((my % (int32_t)maskDrw.h) + (int32_t)maskDrw.h) % (int32_t)maskDrw.h;
+        mx = repeatWrap(mx, (int32_t)maskDrw.w, maskRepeatMode);
+        my = repeatWrap(my, (int32_t)maskDrw.h, maskRepeatMode);
       } else {
         if (mx < 0 || mx >= (int32_t)maskDrw.w || my < 0 || my >= (int32_t)maskDrw.h)
           return 0;
@@ -955,7 +974,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
         const int32_t dy = (int32_t)yDst + row;
         if (dy < 0 || dy >= (int32_t)dst.h) continue;
         if (srcRepeat && src.h > 0) {
-          sy = ((sy % (int32_t)src.h) + (int32_t)src.h) % (int32_t)src.h;
+          sy = repeatWrap(sy, (int32_t)src.h, srcRepeatMode);
         } else if (sy < 0 || sy >= (int32_t)src.h) continue;
 
         const uint32_t* srow = src.pixels32 + (size_t)sy * (size_t)src.stridePixels;
@@ -967,7 +986,7 @@ void RenderOps::handle(XProtoContext& ctx, DispatchContext& dc) {
           if (dx < 0 || dx >= (int32_t)dst.w) continue;
           if (!dstClip.allows(dx, dy)) continue;
           if (srcRepeat && src.w > 0) {
-            sx = ((sx % (int32_t)src.w) + (int32_t)src.w) % (int32_t)src.w;
+            sx = repeatWrap(sx, (int32_t)src.w, srcRepeatMode);
           } else if (sx < 0 || sx >= (int32_t)src.w) continue;
           const uint8_t ma = getMaskAlpha((int32_t)xMask + col, (int32_t)yMask + row);
           // In the useSnap case sx/sy are guaranteed inside the snapshot
