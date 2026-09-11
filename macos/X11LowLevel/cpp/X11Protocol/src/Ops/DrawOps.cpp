@@ -688,6 +688,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   uint32_t* dstPixels = nullptr;
   int dstW = 0, dstH = 0;
   uint32_t dstStride = 0;
+  uint8_t dstDepth = 24;   // windows are depth-24 (XRGB); pixmaps set below
 
   const bool dstIsWin = ctx.windows().exists(dst);
   const bool dstIsPix = ctx.pixmaps().exists(dst);
@@ -715,6 +716,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     uint16_t pw = 0, ph = 0;
     dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
     if (!dstPixels || pw == 0 || ph == 0) return;
+    { PixmapView dpv{}; if (ctx.pixmaps().snapshot(dst, dpv)) dstDepth = dpv.depth; }
 
     dstW = (int)pw;
     dstH = (int)ph;
@@ -825,17 +827,25 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // ------------------------------------------------------------
   const bool gcClipActive = gc.has_clip;
 
+  // R3 F6: force alpha opaque only when the destination can't carry alpha — a
+  // window (XRGB8888) or a depth-24 pixmap.  A depth-32 pixmap destination is
+  // ARGB32 (Cairo/Java2D "similar" surfaces); forcing 0xFF there flattened
+  // every ARGB32 surface copy to opaque.  CopyArea requires equal src/dst
+  // depth, so a depth-32 dst implies a depth-32 src whose alpha we preserve.
+  const bool forceOpaque = !(dstIsPix && dstDepth == 32);
+
   auto rowCopyFast = [&](int sy, int dy, bool rightToLeft) {
     const uint32_t* sp = srcPixels + (size_t)sy * (size_t)srcStride + (size_t)sx0;
     uint32_t*       dp = dstPixels + (size_t)dy * (size_t)dstStride + (size_t)dx0;
     if (!gcClipActive) {
-      // memmove is overlap-safe in both directions.
+      // memmove is overlap-safe in both directions (copies alpha verbatim).
       std::memmove(dp, sp, (size_t)cw * sizeof(uint32_t));
-      for (int i = 0; i < cw; i++) dp[i] = (dp[i] & 0x00FFFFFFu) | 0xFF000000u;
+      if (forceOpaque)
+        for (int i = 0; i < cw; i++) dp[i] = (dp[i] & 0x00FFFFFFu) | 0xFF000000u;
     } else if (!rightToLeft) {
       for (int i = 0; i < cw; i++) {
         if (!x11::gcPointVisible(gc, dx0 + i, dy)) continue;
-        dp[i] = (sp[i] & 0x00FFFFFFu) | 0xFF000000u;
+        dp[i] = forceOpaque ? ((sp[i] & 0x00FFFFFFu) | 0xFF000000u) : sp[i];
       }
     } else {
       // Same-row overlap with dst right of src (e.g. horizontal scroll-left
@@ -844,7 +854,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       // leftward horizontal scrolling (GC clip active => no memmove).
       for (int i = cw - 1; i >= 0; i--) {
         if (!x11::gcPointVisible(gc, dx0 + i, dy)) continue;
-        dp[i] = (sp[i] & 0x00FFFFFFu) | 0xFF000000u;
+        dp[i] = forceOpaque ? ((sp[i] & 0x00FFFFFFu) | 0xFF000000u) : sp[i];
       }
     }
   };
@@ -857,13 +867,13 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       for (int i = 0; i < cw; i++) {
         if (gcClipActive && !x11::gcPointVisible(gc, dx0 + i, dy)) continue;
         uint32_t out = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
-        dp[i] = (out & 0x00FFFFFFu) | 0xFF000000u;
+        dp[i] = forceOpaque ? ((out & 0x00FFFFFFu) | 0xFF000000u) : out;
       }
     } else {
       for (int i = cw - 1; i >= 0; i--) {
         if (gcClipActive && !x11::gcPointVisible(gc, dx0 + i, dy)) continue;
         uint32_t out = x11_apply_rop_argb(dp[i], sp[i], fn, gc.plane_mask);
-        dp[i] = (out & 0x00FFFFFFu) | 0xFF000000u;
+        dp[i] = forceOpaque ? ((out & 0x00FFFFFFu) | 0xFF000000u) : out;
       }
     }
   };
