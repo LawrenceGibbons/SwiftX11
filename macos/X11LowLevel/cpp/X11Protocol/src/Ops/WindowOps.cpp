@@ -427,7 +427,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
 
   const uint16_t borderWidth = br.readU16();
   const uint16_t wclass = br.readU16(); // 0=CopyFromParent, 1=InputOutput, 2=InputOnly (G4)
-  const uint32_t visual = br.readU32(); // 0=CopyFromParent
+  (void)br.readU32(); // visual (unused: we advertise one visual; InputOnly may specify a visual)
   const uint32_t vmask = br.readU32();
 
   uint32_t event_mask = 0;
@@ -551,13 +551,19 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     return;
   }
   if (resolvedClass == 2 /*InputOnly*/) {
-    // Forbidden value-mask bits: BackPixmap(0) BackPixel(1) BorderPixmap(2)
-    // BorderPixel(3) BitGravity(4) BackingStore(6) BackingPlanes(7)
-    // BackingPixel(8) Colormap(13).  Allowed: WinGravity(5) EventMask(11)
-    // DontPropagate(12) OverrideRedirect(9) Cursor(14).
+    // InputOnly: border width and depth must be 0, and none of the output/pixel
+    // value-mask bits may be set — BadMatch otherwise (xorg dix/window.c).
+    // The VISUAL is NOT constrained here: an InputOnly window may specify a
+    // visual (GDK3 passes the parent's real visual for its InputOnly event
+    // windows), and the old `visual != 0` check wrongly BadMatch'd every one of
+    // them, breaking GTK/Vitis (v2.0.0.24 hotfix).  Forbidden bits:
+    // BackPixmap(0) BackPixel(1) BorderPixmap(2) BorderPixel(3) BitGravity(4)
+    // BackingStore(6) BackingPlanes(7) BackingPixel(8) Colormap(13).
+    // Allowed: WinGravity(5) OverrideRedirect(9) EventMask(11) DontPropagate(12)
+    // Cursor(14).
     static constexpr uint32_t kInputOnlyForbidden =
         (1u<<0)|(1u<<1)|(1u<<2)|(1u<<3)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<8)|(1u<<13);
-    if (borderWidth != 0 || depth != 0 || visual != 0 || (vmask & kInputOnlyForbidden)) {
+    if (borderWidth != 0 || depth != 0 || (vmask & kInputOnlyForbidden)) {
       ctx.transport().sendErrorCore(x11::error::BadMatch, seq, wid, x11::opcode::CreateWindow);
       return;
     }
