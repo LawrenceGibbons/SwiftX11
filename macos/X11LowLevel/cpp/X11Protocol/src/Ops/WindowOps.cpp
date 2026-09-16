@@ -849,6 +849,19 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
   }
   const bool wasMapped = vw.mapped;
 
+  // G6 (R5): the new parent must be a real window (or the root) — xorg's
+  // dispatch VERIFY_WINDOWs both the window and the parent (→ BadWindow) before
+  // ProcReparentWindow's BadMatch checks, so this precedes the descendant test.
+  // Previously unvalidated: a bogus XID left the child pointing at a
+  // non-existent parent and corrupted the ancestor/host-surface walks.
+  if (newParent != x11::kRootWindowXid) {
+    WindowView npCheck{};
+    if (newParent == 0 || !ctx.windows().snapshot(newParent, npCheck)) {
+      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, newParent, x11::opcode::ReparentWindow);
+      return;
+    }
+  }
+
   // BadMatch if new parent is the window itself or a descendant of it
   if (newParent == wid) {
     ctx.transport().sendErrorCore(x11::error::BadMatch, seq, newParent, x11::opcode::ReparentWindow);
@@ -864,8 +877,27 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     }
   }
 
-  // If mapped, unmap first (X11 spec: ReparentWindow unmaps if mapped)
+  // If mapped, unmap first (X11 spec: ReparentWindow performs an automatic
+  // UnmapWindow if the window is mapped) — and, like UnmapWindow, deliver
+  // UnmapNotify to the window's StructureNotify selectors and the OLD parent's
+  // SubstructureNotify selectors (xorg dix/window.c:2545 UnmapWindow →
+  // DeliverUnmapNotify).  G6 (R5): this event was missing, desyncing XEmbed
+  // handshakes and any subtree observer.
   if (wasMapped) {
+    const uint16_t uSeq = ctx.transport().lastSeq();
+    const uint32_t oldParent = vw.parent_xid;
+    if (vw.event_mask & x11::mask::StructureNotify) {
+      auto ev = x11::wireev::buildUnmapNotify(uSeq, wid, wid, /*fromConfigure*/false);
+      (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
+    }
+    if (oldParent != 0) {
+      WindowView opv{};
+      if (ctx.windows().snapshot(oldParent, opv) &&
+          (opv.event_mask & x11::mask::SubstructureNotify)) {
+        auto ev = x11::wireev::buildUnmapNotify(uSeq, oldParent, wid, /*fromConfigure*/false);
+        (void)ctx.transport().sendEventToSelectors(oldParent, x11::mask::SubstructureNotify, ev.data());
+      }
+    }
     ctx.windows().setMapped(wid, false);
   }
 
@@ -916,9 +948,27 @@ void WindowOps::handleReparentWindow(XProtoContext& ctx, uint16_t seq, ByteReade
     }
   }
 
-  // If was mapped, remap
+  // If was mapped, remap (X11 spec: automatic MapWindow if originally mapped)
+  // — and, like MapWindow, deliver MapNotify to the window's StructureNotify
+  // selectors and the NEW parent's SubstructureNotify selectors ahead of the
+  // Expose (xorg dix/window.c:2586 MapWindow → DeliverMapNotify).  G6 (R5):
+  // this event was missing (the Expose fired with no MapNotify).
   if (wasMapped) {
     ctx.windows().setMapped(wid, true);
+    const uint16_t mSeq = ctx.transport().lastSeq();
+    const uint8_t  orFlag = vw.override_redirect ? 1 : 0;
+    if (vw.event_mask & x11::mask::StructureNotify) {
+      auto ev = x11::wireev::buildMapNotify(mSeq, wid, wid, orFlag);
+      (void)ctx.transport().sendEventToSelectors(wid, x11::mask::StructureNotify, ev.data());
+    }
+    if (newParent != 0) {
+      WindowView npv{};
+      if (ctx.windows().snapshot(newParent, npv) &&
+          (npv.event_mask & x11::mask::SubstructureNotify)) {
+        auto ev = x11::wireev::buildMapNotify(mSeq, newParent, wid, orFlag);
+        (void)ctx.transport().sendEventToSelectors(newParent, x11::mask::SubstructureNotify, ev.data());
+      }
+    }
     fillWindowBorder(ctx, wid);
     fillWindowBackground(ctx, wid);
     sendInitialExposeNow(ctx, wid);
