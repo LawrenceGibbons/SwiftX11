@@ -26,6 +26,9 @@ behaves like a real X server for everything that targets root:
   `_NET_WM_STATE` (maximize / fullscreen / modal / hidden) and `WM_CHANGE_STATE`
   (iconify) ClientMessages sent to root, and advertises `_NET_SUPPORTED` /
   `_NET_SUPPORTING_WM_CHECK` so clients recognise a compliant window manager.
+- **Root is protected** — `DestroyWindow(root)` and `UnmapWindow(root)` are
+  silent no-ops (as on a real X server), so a malformed request can't tear the
+  server down (R6.1, verified 2026-09-16).
 
 ### RENDER extension completeness (review R3) — verified 2026-09-11
 - Picture **transforms + filters** (SetPictureTransform / SetPictureFilter, with
@@ -65,11 +68,19 @@ behaves like a real X server for everything that targets root:
   provides.
 
 ## Status
-**Release-ready.** The entire 2026-09-08 protocol review (R0–R5) is complete and
-verified — root-as-a-real-window, RENDER completeness, protocol hygiene, and the
+The entire 2026-09-08 protocol review (R0–R5) is complete and verified —
+root-as-a-real-window, RENDER completeness, protocol hygiene, and the
 window-management / keyboard structural work. Sync-grab freeze / replay (C3) is
 deliberately deferred (near-zero value for this project's async-grab clients;
 documented in CLAUDE.md). Vivado and Vitis confirmed working throughout.
+
+A 2026-09-16 pre-release review then flagged a short "R6" list of sharp edges to
+clear before tagging. **R6.1** — the one critical item, a server-killing
+`DestroyWindow(root)` — is **fixed and verified** (see the root-window section).
+The remaining R6 items (a GetImage occlusion regression, three long-session
+resource-leak / hang protections, and minor hygiene) are tracked in
+`docs/CLAUDE.md`; clearing them or accepting them as documented known issues is
+the last step before the v2.0.0 tag.
 
 ## Install
 _(filled in at release: `SwiftX11-2.0.0.pkg`, unsigned — right-click → Open;
