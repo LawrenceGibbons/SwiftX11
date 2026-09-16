@@ -277,6 +277,7 @@ bool WindowTable::snapshot(uint32_t xid, WindowView& out) const {
   out.owner_fd = st->owner_fd;
   out.border_width = st->border_width;
   out.border_pixel = st->border_pixel;
+  out.window_class = st->window_class;
   out.override_redirect = st->override_redirect;
   out.win_gravity = st->win_gravity;
   out.bit_gravity = st->bit_gravity;
@@ -474,6 +475,15 @@ void WindowTable::setBackingStore(uint32_t xid, uint8_t v) {
   WindowState* st = findLocked(xid);
   if (!st) return;
   st->backing_store = v;
+  st->serial++;
+}
+
+void WindowTable::setWindowClass(uint32_t xid, uint8_t v) {
+  if (xid == 0) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  WindowState* st = findLocked(xid);
+  if (!st) return;
+  st->window_class = v;
   st->serial++;
 }
 

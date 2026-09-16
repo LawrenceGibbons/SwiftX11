@@ -426,8 +426,8 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   const uint16_t hpx    = br.readU16();
 
   const uint16_t borderWidth = br.readU16();
-  (void)br.readU16(); // class
-  (void)br.readU32(); // visual
+  const uint16_t wclass = br.readU16(); // 0=CopyFromParent, 1=InputOutput, 2=InputOnly (G4)
+  const uint32_t visual = br.readU32(); // 0=CopyFromParent
   const uint32_t vmask = br.readU32();
 
   uint32_t event_mask = 0;
@@ -521,15 +521,44 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
     return;
   }
 
-  // 3) parent must exist (the root window is always valid)
+  // 3) parent must exist (the root window is always valid).  G4 (R5):
+  // cross-client parents are ALLOWED — xorg's CreateWindow only requires the
+  // parent to be a valid window, and this is how XEmbed / systray / portal
+  // embedding parents a window under another client's window.  The old
+  // same-owner BadWindow rejection is removed.  `parentClass` feeds the
+  // CopyFromParent resolution and InputOnly checks below (root is InputOutput).
+  uint8_t parentClass = 1; // InputOutput (the root's class)
   if (parent != x11::kRootWindowXid) {
     if (!ctx.windows().snapshot(parent, tmp)) {
       ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CreateWindow);
       return;
     }
-    // optional: enforce same-owner parent (good idea once multi-client)
-    if (tmp.owner_fd != ctx.transport().clientFd()) {
-      ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::CreateWindow);
+    parentClass = tmp.window_class;
+  }
+
+  // ---- WINDOW CLASS (G4) ----
+  // xorg dix/window.c CreateWindow: resolve CopyFromParent, reject a bad class
+  // (BadValue), forbid an InputOutput child of an InputOnly parent (BadMatch),
+  // and constrain InputOnly windows (no border/depth/visual, no output/pixel
+  // attributes → BadMatch).  InputOnly windows have no surface but route input.
+  const uint8_t resolvedClass = (wclass == 0 /*CopyFromParent*/) ? parentClass : (uint8_t)wclass;
+  if (resolvedClass != 1 /*InputOutput*/ && resolvedClass != 2 /*InputOnly*/) {
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, wclass, x11::opcode::CreateWindow);
+    return;
+  }
+  if (resolvedClass != 2 && parentClass == 2) {   // InputOutput under InputOnly
+    ctx.transport().sendErrorCore(x11::error::BadMatch, seq, wid, x11::opcode::CreateWindow);
+    return;
+  }
+  if (resolvedClass == 2 /*InputOnly*/) {
+    // Forbidden value-mask bits: BackPixmap(0) BackPixel(1) BorderPixmap(2)
+    // BorderPixel(3) BitGravity(4) BackingStore(6) BackingPlanes(7)
+    // BackingPixel(8) Colormap(13).  Allowed: WinGravity(5) EventMask(11)
+    // DontPropagate(12) OverrideRedirect(9) Cursor(14).
+    static constexpr uint32_t kInputOnlyForbidden =
+        (1u<<0)|(1u<<1)|(1u<<2)|(1u<<3)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<8)|(1u<<13);
+    if (borderWidth != 0 || depth != 0 || visual != 0 || (vmask & kInputOnlyForbidden)) {
+      ctx.transport().sendErrorCore(x11::error::BadMatch, seq, wid, x11::opcode::CreateWindow);
       return;
     }
   }
@@ -550,6 +579,7 @@ void WindowOps::handleCreateWindow(XProtoContext& ctx, uint16_t seq, uint8_t dep
   }
 #endif
   ctx.windows().upsert(wid, parent, x, y, wpx, hpx, event_mask, owner_fd);
+  if (resolvedClass != 1) ctx.windows().setWindowClass(wid, resolvedClass); // G4: InputOnly
 #ifndef NDEBUG
   TS_FPRINTF("[GEOM] wid=0x%08X source=CREATE old=0x0 new=%ux%u xy=(%d,%d) parent=0x%08X or=%d\n",
           (unsigned)wid, (unsigned)wpx, (unsigned)hpx, (int)x, (int)y,

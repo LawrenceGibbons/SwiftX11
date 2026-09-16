@@ -635,6 +635,7 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     const uint8_t bitGravity       = wv ? wv->bit_gravity : 0;
     const uint8_t winGravity       = wv ? wv->win_gravity : 1;
     const bool    overrideRedirect = wv ? wv->override_redirect : false;
+    const uint8_t windowClass      = wv ? wv->window_class : 1;   // G4: 1=InputOutput, 2=InputOnly
 
     rep[0] = 1;               // Reply
     rep[1] = backingStore;    // backing-store (0=NotUseful, 1=WhenMapped, 2=Always)
@@ -645,11 +646,11 @@ void WindowAttrOps::handle(XProtoContext& ctx, DispatchContext& dc) {
     // length_words = (44-32)/4 = 3
     wire::wr32_le(rep.data() + 4, 3);
 
-    // visual
-    wire::wr32_le(rep.data() + 8, kRootVis);
+    // visual (G4: InputOnly windows have no visual → None/0, per xorg)
+    wire::wr32_le(rep.data() + 8, (windowClass == 2) ? 0u : kRootVis);
 
-    // class = InputOutput (CARD16)
-    wire::wr16_le(rep.data() + 12, 1);
+    // class (CARD16): 1=InputOutput, 2=InputOnly (G4 — was hardcoded 1)
+    wire::wr16_le(rep.data() + 12, windowClass);
 
     // bit-gravity / win-gravity
     rep[14] = bitGravity;

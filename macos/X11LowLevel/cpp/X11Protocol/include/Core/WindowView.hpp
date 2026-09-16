@@ -40,6 +40,9 @@ struct WindowView {
   uint16_t border_width = 0;
   uint32_t border_pixel = 0xFF000000u; // ARGB, default black
 
+  // Window class (G4): 1 = InputOutput, 2 = InputOnly.
+  uint8_t  window_class = 1;
+
   // Window manager attributes
   bool     override_redirect = false;  // CWOverrideRedirect (bit 9)
   uint8_t  win_gravity = 1;   // CWWinGravity (bit 5): default NorthWest=1

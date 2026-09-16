@@ -195,6 +195,7 @@ bool resolveDrawableRW(XProtoContext& ctx,
           WindowView sv{};
           if (!ctx.windows().snapshot(sib, sv)) continue;
           if (!sv.mapped) continue;
+          if (sv.window_class == 2) continue; // G4: InputOnly has no output → never occludes
 
           // Sibling's TOTAL rect (border + content + border) in parent coords.
           // sv.x/sv.y is the outer border corner; total footprint extends
@@ -266,6 +267,7 @@ bool resolveDrawableRW(XProtoContext& ctx,
             WindowView sv2{};
             if (!ctx.windows().snapshot(sib2, sv2)) continue;
             if (!sv2.mapped) continue;
+            if (sv2.window_class == 2) continue; // G4: InputOnly never occludes
 
             const int32_t sx0_2 = (int32_t)sv2.x;
             const int32_t sy0_2 = (int32_t)sv2.y;

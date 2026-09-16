@@ -196,6 +196,9 @@ public:
   void setCursor(uint32_t xid, uint32_t cursor_xid);
   uint32_t cursor(uint32_t xid) const; // optional
 
+  // Window class (G4): 1 = InputOutput, 2 = InputOnly.
+  void setWindowClass(uint32_t xid, uint8_t v);
+
   // Window manager attributes
   void setOverrideRedirect(uint32_t xid, bool v);
   void setWinGravity(uint32_t xid, uint8_t v);
@@ -260,6 +263,11 @@ private:
     // Window border (server-drawn around child windows)
     uint16_t border_width = 0;
     uint32_t border_pixel = 0xFF000000u; // ARGB, default black
+
+    // Window class (G4): 1 = InputOutput, 2 = InputOnly (CopyFromParent is
+    // resolved to the parent's class at CreateWindow time).  InputOnly windows
+    // have no output (no surface/background/border) but route input.
+    uint8_t  window_class = 1;  // InputOutput
 
     // Window manager attributes
     bool     override_redirect = false;  // CWOverrideRedirect (bit 9)
