@@ -10,6 +10,7 @@
 #pragma once
 #include <cstdint>
 #include <utility>
+#include <vector>
 #include <Transport/XProtoTransport.hpp>
 #include <Ops/ReplyWriter.hpp>
 
@@ -71,6 +72,22 @@ public:
   uint8_t closeDownMode() const { return close_down_mode_; }
   void setCloseDownMode(uint8_t v) { close_down_mode_ = v; }
 
+  // SaveSet (G7): ChangeSaveSet(mode, window) — the set of *other clients'*
+  // windows this client has taken responsibility for (typically embedded via
+  // ReparentWindow).  On this client's disconnect, saved windows whose parent
+  // is being destroyed are reparented up to root and remapped instead of dying
+  // with the tree.  See XProtoDaemon::removeClient.
+  void saveSetInsert(uint32_t xid) {
+    if (xid == 0) return;
+    for (uint32_t w : save_set_) if (w == xid) return;   // already present
+    save_set_.push_back(xid);
+  }
+  void saveSetDelete(uint32_t xid) {
+    for (size_t i = 0; i < save_set_.size(); i++)
+      if (save_set_[i] == xid) { save_set_.erase(save_set_.begin() + i); return; }
+  }
+  const std::vector<uint32_t>& saveSet() const { return save_set_; }
+
   // XC-MISC: allocate a range of XIDs from this client's ID space.
   // Xlib allocates from the bottom (1, 2, 3…); we allocate from the top
   // downward to avoid collision until the client exhausts ~8M XIDs.
@@ -101,6 +118,7 @@ private:
   ReplyWriter reply_;
   bool big_req_enabled_ = false;
   uint8_t close_down_mode_ = 0;  // 0=DestroyAll, 1=RetainPermanent, 2=RetainTemporary
+  std::vector<uint32_t> save_set_;  // G7: other clients' windows in this client's save-set
   // XC-MISC: cursor for XID allocation, starts at rid_mask/2 and grows upward
   uint32_t xid_alloc_cursor_ = 0;  // 0 = uninitialised
 };

@@ -760,6 +760,33 @@ void XProtoDaemon::removeClient(int fd) {
     // No matching x11_ui_push_destroy(): the NSWindow (if any) persists
     // alongside the X11 window.
   } else {
+    // G7 (R5): before this client's windows are torn down, rescue its save-set.
+    // For each saved window (owned by another, still-living client) whose parent
+    // belongs to THIS dying client — and so is about to be destroyed — reparent
+    // it up to root (the closest surviving ancestor), preserving its mapped
+    // state, so it is not orphaned under an erased parent (xorg HandleSaveSet,
+    // dix/window.c:2945).  eraseOwnedBy(fd) below never erases these windows
+    // (different owner); the only hazard is the dangling parent, which would
+    // corrupt the ancestor / host-surface walks.
+    if (cs.client) {
+      for (uint32_t saved : cs.client->saveSet()) {
+        x11::WindowView sv{};
+        if (!server_->ctx().windows().snapshot(saved, sv)) continue;   // already gone
+        if (sv.parent_xid == 0 || sv.parent_xid == kRootWindowXid) continue;
+        x11::WindowView pv{};
+        if (!server_->ctx().windows().snapshot(sv.parent_xid, pv)) continue;
+        if (pv.owner_fd != fd) continue;   // parent survives — nothing to rescue
+        const bool wasMapped = sv.mapped;
+        if (wasMapped) server_->ctx().windows().setMapped(saved, false);
+        server_->ctx().windows().reparent(saved, kRootWindowXid, sv.x, sv.y);
+        if (wasMapped) server_->ctx().windows().setMapped(saved, true);
+#ifndef NDEBUG
+        TS_FPRINTF("[X11] save-set rescue: reparented 0x%08X to root (embedder fd=%d died)\n",
+                   (unsigned)saved, fd);
+#endif
+      }
+    }
+
     // R1 Phase 2: tell the survivors first — UnmapNotify/DestroyNotify to the
     // windows' StructureNotify and their parents' SubstructureNotify
     // selectors, as xorg DeleteWindow does on resource free (root selectors

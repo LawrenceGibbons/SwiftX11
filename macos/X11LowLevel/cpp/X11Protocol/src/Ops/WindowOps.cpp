@@ -7,6 +7,7 @@
 #include "Ops/WindowOps.hpp"
 
 #include "Core/XProtoContext.hpp"
+#include "Core/XClient.hpp"   // G7: ctx.client()->saveSetInsert/Delete
 #include "Utils/ByteReader.hpp"
 #include "Transport/XProtoTransport.hpp"
 #include "Core/WindowTable.hpp"
@@ -1497,12 +1498,37 @@ void WindowOps::handleUnmapSubwindows(XProtoContext& ctx, uint16_t seq, ByteRead
   
   
 // -------------------- ChangeSaveSet (opcode 6) --------------------------
-// mode (dc.minor): 0=Insert, 1=Delete
-// Save-set is only meaningful for reparenting window managers.
-// In rootless mode, this is a safe no-op.
-void WindowOps::handleChangeSaveSet(XProtoContext& /*ctx*/, uint16_t /*seq*/,
-                                     uint8_t /*mode*/, ByteReader& br) {
+// mode (dc.minor): 0=Insert, 1=Delete.  G7 (R5): record the window on the
+// client's save-set so that, if this client dies while it is an embedder,
+// XProtoDaemon::removeClient reparents the saved (other-client) windows up to
+// root instead of orphaning them under an erased parent.  xorg
+// ProcChangeSaveSet (dix/window.c): BadValue for a bad mode, BadWindow for a
+// missing window, and BadMatch if the window was created by the calling client.
+void WindowOps::handleChangeSaveSet(XProtoContext& ctx, uint16_t seq,
+                                     uint8_t mode, ByteReader& br) {
+  if (br.remaining() < 4) { br.skip(br.remaining()); return; }
+  const uint32_t wid = br.readU32();
   br.skip(br.remaining());
+
+  if (mode != 0 /*Insert*/ && mode != 1 /*Delete*/) {
+    ctx.transport().sendErrorCore(x11::error::BadValue, seq, mode, x11::opcode::ChangeSaveSet);
+    return;
+  }
+  WindowView vw{};
+  if (!ctx.windows().snapshot(wid, vw)) {
+    ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::ChangeSaveSet);
+    return;
+  }
+  // The window must belong to ANOTHER client (a client cannot save-set its own
+  // window — the save-set only rescues windows this client did not create).
+  if (vw.owner_fd == ctx.transport().clientFd()) {
+    ctx.transport().sendErrorCore(x11::error::BadMatch, seq, wid, x11::opcode::ChangeSaveSet);
+    return;
+  }
+  if (ctx.hasClient() && ctx.client()) {
+    if (mode == 0) ctx.client()->saveSetInsert(wid);
+    else           ctx.client()->saveSetDelete(wid);
+  }
 }
 
 // -------------------- CirculateWindow (opcode 13)
