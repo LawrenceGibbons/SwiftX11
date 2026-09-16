@@ -135,6 +135,12 @@ public:
   // except the per-client sequence (restamped here).
   void sendXkbStateNotify(uint16_t changed, const uint8_t evTemplate[32]);
 
+  // E2: broadcast a pre-built 32-byte XkbMapNotify (event 111) to every client
+  // whose XKB mapNotifyMask intersects `changed` — xorg XkbSendMapNotify gates
+  // delivery on `interest->map_notify & changed`.  Sent after a core mapping
+  // change rebuilds the XKB model, so XKB-path clients re-query the fresh map.
+  void sendXkbMapNotify(uint16_t changed, const uint8_t evTemplate[32]);
+
   // C8: GrabServer/UngrabServer.  While a server grab is held, the poll loop
   // services ONLY the grabbing client's fd — every other client's fd is left
   // out of the poll set, so their requests stay buffered in the socket until

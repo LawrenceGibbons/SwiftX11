@@ -389,6 +389,19 @@ void XProtoDaemon::sendXkbStateNotify(uint16_t changed, const uint8_t evTemplate
   }
 }
 
+void XProtoDaemon::sendXkbMapNotify(uint16_t changed, const uint8_t evTemplate[32]) {
+  if (!server_ || changed == 0 || !evTemplate) return;
+  for (auto& [fd, cs] : clients_) {
+    (void)fd;
+    if (!cs.client || !cs.client->xkb().initialised) continue;
+    if ((cs.client->xkb().mapNotifyMask & changed) == 0) continue;
+    uint8_t fixed[32];
+    std::memcpy(fixed, evTemplate, 32);
+    restampForTarget(fixed, cs.client->transport().lastSeq());   // XKB event (111) is restamped
+    (void)cs.client->transport().sendAll(fixed, 32);
+  }
+}
+
 bool XProtoDaemon::sendEventCrossClientVariable(uint32_t targetWid, const uint8_t* ev, size_t len) {
   if (!server_ || !ev || len < 32) return false;
   const x11::WindowView* wv = server_->ctx().window(targetWid);

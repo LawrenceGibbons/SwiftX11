@@ -21,6 +21,7 @@
 #include "Core/X11CoreOpcodes.hpp"
 #include "Core/XConstants.hpp"         // x11::error::*
 #include "Core/CoreKeymap.hpp"         // modifier map storage (shared with XKB)
+#include "Core/XkbKeymap.hpp"          // Keymap::rebuild + XkbMapNotify (E2)
 #include "Transport/XProtoDaemon.hpp"  // sendMappingNotify (C9)
 
 extern "C" x11::XProtoDaemon* x11_proto_bridge_get_daemon(void);   // C9: MappingNotify
@@ -216,8 +217,21 @@ void PointerOps::handle(XProtoContext& ctx, DispatchContext& dc)
       // so it is a success no-op (no MappingNotify — nothing changed).
 
       sendReplyHeader(t, seq, status, 0);   // reply first, then broadcast the event
-      if (applied)
-        if (auto* d = x11_proto_bridge_get_daemon()) d->sendMappingNotify(kMappingModifier, 0, 0);
+      if (applied) {
+        // E2 (R5): re-derive the XKB model from the updated core modifier rows
+        // and tell XKB-path clients via XkbMapNotify(ModifierMap); core
+        // MappingNotify(MappingModifier) covers core-path clients.
+        x11::xkb::Keymap::rebuild();
+        if (auto* d = x11_proto_bridge_get_daemon()) {
+          uint8_t ev[32];
+          const uint8_t minKc = x11::xkb::Keymap::current().minKeyCode;
+          const uint8_t nKc   = x11::xkb::Keymap::current().numKeys() > 255
+                                  ? 255 : (uint8_t)x11::xkb::Keymap::current().numKeys();
+          x11::xkb::buildMapNotifyEvent(x11::xkb::kModifierMapMask, minKc, nKc, ev);
+          d->sendXkbMapNotify(x11::xkb::kModifierMapMask, ev);
+          d->sendMappingNotify(kMappingModifier, 0, 0);
+        }
+      }
       return;
     }
 

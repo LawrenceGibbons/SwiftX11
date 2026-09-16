@@ -11,6 +11,8 @@
 #include "Core/CoreKeymap.hpp"
 #include "Core/AtomTable.hpp"
 #include "Core/KeySyms.hpp"
+#include "Core/X11ExtOpcodes.hpp"   // kXKB_FirstEvent (XkbMapNotify)
+#include "Core/timestamp.hpp"       // x11_now_ms_monotonic
 
 #include <cstring>
 
@@ -319,9 +321,39 @@ Keymap buildFromCore() {
 // ---------------------------------------------------------------------------
 // Keymap
 // ---------------------------------------------------------------------------
-const Keymap& Keymap::current() {
-  static const Keymap km = buildFromCore();
+// The single server keyboard model.  Non-const so rebuild() can re-derive it
+// in place after a core mapping change; the returned reference stays valid
+// across rebuilds (same static object).  Function-local static: first use
+// builds it (thread-safe init), and every subsequent access + rebuild is on
+// the xproto thread, so no further synchronisation is needed.
+static Keymap& mutableCurrent() {
+  static Keymap km = buildFromCore();
   return km;
+}
+
+const Keymap& Keymap::current() { return mutableCurrent(); }
+
+void Keymap::rebuild() { mutableCurrent() = buildFromCore(); }
+
+// xkb/xkbEvents.c XkbSendMapNotify — 32-byte XkbMapNotify (xkbType = 1).
+void buildMapNotifyEvent(uint16_t changed, uint8_t firstKey, uint8_t nKeys,
+                         uint8_t ev[32]) {
+  const Keymap& km = Keymap::current();
+  std::memset(ev, 0, 32);
+  ev[0] = x11::ext::kXKB_FirstEvent;                 // 111
+  ev[1] = 1;                                          // xkbType = XkbMapNotify
+  const uint32_t t = x11_now_ms_monotonic();          // bytes 2-3 (seq) stamped by sender
+  ev[4] = (uint8_t)(t & 0xFF);        ev[5] = (uint8_t)((t >> 8) & 0xFF);
+  ev[6] = (uint8_t)((t >> 16) & 0xFF); ev[7] = (uint8_t)((t >> 24) & 0xFF);
+  ev[8]  = 3;                                          // deviceID = master keyboard
+  // ev[9] ptrBtnActions = 0
+  ev[10] = (uint8_t)(changed & 0xFF); ev[11] = (uint8_t)((changed >> 8) & 0xFF); // changedMap
+  ev[12] = km.minKeyCode;             ev[13] = km.maxKeyCode;
+  if (changed & kKeyTypesMask)    { ev[14] = 0;        ev[15] = (uint8_t)km.types.size(); } // firstType/nTypes
+  if (changed & kKeySymsMask)     { ev[16] = firstKey; ev[17] = nKeys; } // firstKeySym/nKeySyms
+  // firstKeyAct/nKeyActs (18/19), Behaviors (20/21), Explicit (22/23): unchanged
+  if (changed & kModifierMapMask) { ev[24] = firstKey; ev[25] = nKeys; } // firstModMapKey/nModMapKeys
+  // firstVModMapKey/nVModMapKeys (26/27), virtualMods (28/29): unchanged
 }
 
 int Keymap::indicatorIndexForAtom(uint32_t a) const {

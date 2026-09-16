@@ -295,10 +295,15 @@ struct Controls {
 class Keymap {
 public:
   // The server's keyboard description, built lazily from the core tables.
-  // Immutable after construction (the core tables are static too; a future
-  // SetModifierMapping-driven rebuild would also have to send MapNotify /
-  // core MappingNotify, see docs).
+  // `buildFromCore` reads the *live* core keysym/modifier tables, so after a
+  // mapping change (ChangeKeyboardMapping / SetModifierMapping write those
+  // tables) `rebuild()` re-derives the XKB model to match — otherwise XKB-path
+  // clients (GTK3) keep the boot keymap and permanently desync from core-path
+  // clients (E2 / R5).  All access is on the xproto (request-dispatch) thread.
   static const Keymap& current();
+  // Re-derive the model from the current core tables.  Call after a core
+  // mapping change; pair with an XkbMapNotify + core MappingNotify broadcast.
+  static void rebuild();
 
   uint8_t minKeyCode = 8;
   uint8_t maxKeyCode = 255;
@@ -365,5 +370,14 @@ void buildGetNamesReply(const Keymap& km, uint16_t seq, uint8_t deviceID,
 // xkbGetControlsReply (92 bytes, length = 15).
 void buildGetControlsReply(const Keymap& km, uint16_t seq, uint8_t deviceID,
                            std::vector<uint8_t>& out);
+
+// Build a 32-byte XkbMapNotify event (xkb/xkbEvents.c XkbSendMapNotify) for the
+// map components in `changed` (kKeyTypesMask/kKeySymsMask/kModifierMapMask …)
+// over the key range [firstKey, firstKey+nKeys).  The range fields the client
+// reads depend on `changed`; unaffected components are left zero.  The sequence
+// (bytes 2-3) is stamped per target by the sender.  Reads Keymap::current(), so
+// call it AFTER Keymap::rebuild().
+void buildMapNotifyEvent(uint16_t changed, uint8_t firstKey, uint8_t nKeys,
+                         uint8_t ev[32]);
 
 } // namespace x11::xkb

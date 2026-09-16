@@ -22,6 +22,7 @@ extern "C" {
 #include "Core/XConstants.hpp"          // x11::error::*
 #include "Core/XClient.hpp"
 #include "Core/CoreKeymap.hpp"          // setCoreKeyboardMap (C9)
+#include "Core/XkbKeymap.hpp"           // Keymap::rebuild + XkbMapNotify (E2)
 #include "Transport/XProtoDaemon.hpp"   // sendMappingNotify (C9)
 #include "Utils/MachTime.hpp"
 
@@ -113,8 +114,18 @@ void MiscOps::handleChangeKeyboardMapping(XProtoContext& ctx, uint16_t seq,
   br.skip(br.remaining());
 
   if (x11::setCoreKeyboardMap(firstKeycode, keysymsPerKeycode, keyCodeCount, syms.data())) {
-    if (auto* d = x11_proto_bridge_get_daemon())
+    // E2 (R5): re-derive the XKB model from the now-updated core table so
+    // XKB-path clients (GTK3) stay in sync, then tell them via XkbMapNotify
+    // (keysyms + the key-type binding a keysym change can flip); the core
+    // MappingNotify below covers core-path clients.
+    x11::xkb::Keymap::rebuild();
+    if (auto* d = x11_proto_bridge_get_daemon()) {
+      uint8_t ev[32];
+      x11::xkb::buildMapNotifyEvent((uint16_t)(x11::xkb::kKeyTypesMask | x11::xkb::kKeySymsMask),
+                                    firstKeycode, keyCodeCount, ev);
+      d->sendXkbMapNotify((uint16_t)(x11::xkb::kKeyTypesMask | x11::xkb::kKeySymsMask), ev);
       d->sendMappingNotify(/*MappingKeyboard*/1, firstKeycode, keyCodeCount);
+    }
   }
 }
 
