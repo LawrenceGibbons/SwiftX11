@@ -4,15 +4,15 @@ SwiftX11 is a native macOS X11 protocol server built with Swift and C++. It impl
 
 ## Why SwiftX11?
 
-macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fills this gap but uses XCB/Xlib internals originally designed for Unix. SwiftX11 takes a different approach — implementing the X11 protocol from scratch as a native macOS app, with Swift owning all UI surfaces and C++ handling protocol parsing and raster operations.
+macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fills this gap but uses XCB/Xlib internals originally designed for Unix. SwiftX11 takes a different approach — implementing the X11 protocol from scratch as a native macOS app, with Swift owning the UI (windows, input, Metal rendering) and C++ owning the protocol core and the host pixel buffers it rasterizes into.
 
-SwiftX11 is meant solely to provide workable rootless window support for unix tools that still use X11.  It does attempt at all to preserve the look of a traditional X11 server.  If that look is important to you, please look for an alternative implementation.
+SwiftX11 is meant solely to provide workable rootless window support for Unix tools that still use X11. It does **not** attempt to preserve the look of a traditional X11 server. If that look is important to you, please look for an alternative implementation.
 
 ## Features
 
 - **Native Metal rendering** — GPU-accelerated compositing, partial texture uploads, shaped window transparency
 - **Full X11 core protocol** — 100+ opcodes: window management, drawing operations, events, properties, selections, atoms, fonts, cursors, colormaps
-- **11 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XTEST, Composite, DAMAGE
+- **12 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, Generic Event, SHAPE, XC-MISC, XTEST, Composite, XI2 (XInput2), XKEYBOARD — XI2 and XKB are on by default (DAMAGE has handlers but is deliberately not advertised)
 - **ICCCM/EWMH compliance** — WM_NORMAL_HINTS, WM_HINTS, WM_TAKE_FOCUS, WM_DELETE_WINDOW, _NET_WM_WINDOW_TYPE, _NET_WM_STATE, _NET_FRAME_EXTENTS
 - **Font support** — PCF/BDF bitmap fonts, CoreText bridge for system fonts with antialiasing toggle
 - **Multi-monitor** — Dynamic RANDR/Xinerama with real display data, per-monitor DPI, hot-plug support
@@ -86,7 +86,7 @@ This builds a Release configuration, bundles X11 fonts from `/opt/X11/share/font
 ┌─────────────────────────────────────────────────┐
 │  Swift (macos/SwiftX11/)                        │
 │  AppKit windows, Metal rendering, input events, │
-│  surface allocation, networking                 │
+│  networking (owns UI, not pixel buffers)        │
 ├─────────────────────────────────────────────────┤
 │  extern "C" bridge (SwiftBridge.cpp)            │
 ├─────────────────────────────────────────────────┤
@@ -96,7 +96,7 @@ This builds a Release configuration, bundles X11 fonts from `/opt/X11/share/font
 └─────────────────────────────────────────────────┘
 ```
 
-Swift owns all window surfaces (CPU-backed Metal textures). C++ draws into them via `DrawableSurfaceRegistry`. Child windows draw into their host's surface at an offset — no per-child allocation.
+C++ owns all host window surfaces — CPU pixel buffers held in `DrawableSurfaceRegistry`. Swift requests sizes and uploads the buffers to Metal textures at present time; it never holds a reference to the live buffer. Child windows draw into their host's surface at an offset — no per-child allocation.
 
 See [CLAUDE.md](macos/CLAUDE.md) for detailed architecture documentation.
 
@@ -128,6 +128,10 @@ whole click-drag-release, so Ctrl+click drags deliver button-3 motion.
 ## Display Number
 
 SwiftX11 runs on **display :1** (TCP port 6001) to avoid conflict with XQuartz on :0. Set `DISPLAY=127.0.0.1:1` in your shell profile.
+
+## Known Issues
+
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for current limitations (e.g. synchronous grabs, no RGBA visual, `xinput` legacy device queries) and workarounds.
 
 ## License
 

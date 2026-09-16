@@ -4,7 +4,7 @@ SwiftX11 is a native macOS X11 protocol server built with Swift and C++. It impl
 
 ## Why SwiftX11?
 
-macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fills this gap but uses XCB/Xlib internals originally designed for Unix. SwiftX11 takes a different approach — implementing the X11 protocol from scratch as a native macOS app, with Swift owning all UI surfaces and C++ handling protocol parsing and raster operations.
+macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fills this gap but uses XCB/Xlib internals originally designed for Unix. SwiftX11 takes a different approach — implementing the X11 protocol from scratch as a native macOS app, with Swift owning the UI (windows, input, Metal rendering) and C++ owning the protocol core and the host pixel buffers it rasterizes into.
 
 **Primary use case**: Running [Xilinx Vivado](https://www.xilinx.com/products/design-tools/vivado.html) and [Vitis](https://www.xilinx.com/products/design-tools/vitis.html) from a Linux container on macOS, where XQuartz's SubstructureRedirect timing causes dialog sizing issues.
 
@@ -12,7 +12,7 @@ macOS no longer ships with an X11 server. [XQuartz](https://www.xquartz.org) fil
 
 - **Native Metal rendering** — GPU-accelerated compositing, partial texture uploads, shaped window transparency
 - **Full X11 core protocol** — 100+ opcodes: window management, drawing operations, events, properties, selections, atoms, fonts, cursors, colormaps
-- **10 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, GE, SHAPE, XC-MISC, XTEST, Composite (XInput2/XI2 handlers are implemented but not advertised, for Electron compatibility)
+- **12 X11 extensions** — BIG-REQUESTS, RENDER, XFIXES, RANDR, XINERAMA, Generic Event, SHAPE, XC-MISC, XTEST, Composite, XI2 (XInput2), XKEYBOARD — XI2 and XKB are on by default (DAMAGE has handlers but is deliberately not advertised)
 - **ICCCM/EWMH compliance** — WM_NORMAL_HINTS, WM_HINTS, WM_TAKE_FOCUS, WM_DELETE_WINDOW, _NET_WM_WINDOW_TYPE, _NET_WM_STATE, _NET_FRAME_EXTENTS
 - **Font support** — PCF/BDF bitmap fonts, CoreText bridge for system fonts with antialiasing toggle
 - **Multi-monitor** — Dynamic RANDR/Xinerama with real display data, per-monitor DPI, hot-plug support

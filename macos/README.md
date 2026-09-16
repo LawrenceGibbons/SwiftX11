@@ -4,11 +4,18 @@ A native macOS X11 protocol server. X11 clients render into native Cocoa/Metal w
 
 SwiftX11 implements the X11 wire protocol directly, enabling X11 applications — including Xilinx Vivado running in a Linux Docker container — to display on macOS with native window management, Metal-accelerated rendering, and macOS clipboard integration.
 
-**Current version:** v1.21.0
+**Current version:** v2.0.0
 
 ## Recent Changes
 
-Highlights since v1.20.0:
+**v2.0.0** makes the root a real window and completes the 2026-09-08 xorg-comparison review (R0–R5):
+
+- **The root window is now a real window (XID `0x2`).** This is a wire-visible change — the advertised root ID moved from `1` to `0x2` — which is why v2.0.0 is a major version bump. Root now reports geometry, delivers `SubstructureNotify` to observers (`xev -root`, `wmctrl`), is the last window on the input-delivery walk, accepts per-client XI2 selection, and interprets EWMH/ICCCM client messages (`_NET_ACTIVE_WINDOW`, `_NET_WM_STATE`, `WM_CHANGE_STATE`) as the rootless window manager.
+- **XKEYBOARD dynamic remap.** The served keymap now rebuilds when a client changes the core mapping (e.g. `xmodmap`), broadcasting `XkbMapNotify` — XKB-path clients no longer keep the boot keymap.
+- **Window management.** `ChangeSaveSet` (client embedding), cross-client window parents, and the `InputOnly` window class are now honoured; `ReparentWindow` emits the full Unmap → Reparent → Map choreography.
+- **Wire hygiene.** BIG-REQUESTS raised to ~16 MB, honest extension advertisement (XFIXES negotiated to 1.0), unknown opcodes answer `BadRequest`.
+
+Highlights carried over from v1.21.0 (since v1.20.0):
 
 - **XInput2 (XI2) — full Stage 2, on by default.** Per-client event selection and fan-out, raw events, active/passive grabs, and crossing/focus semantics verified against the xorg-server source (Phases A–G). Fixes Vitis menus and portal-GTK dialogs.
 - **XKEYBOARD (XKB) extension — on by default.** Byte-exact GetMap/GetNames/GetControls/GetCompatMap, per-client event selection, detectable autorepeat, and `_XKB_RULES_NAMES`. Required for GTK3 to receive keys over XI2; verified live against XQuartz's libX11 1.8.
@@ -23,7 +30,7 @@ See `docs/CLAUDE.md` for the detailed version log.
 ## Features
 
 - **100+ X11 core opcodes** — window management, drawing, events, properties, selections, fonts, keyboard/pointer mapping
-- **13 extensions** — SHAPE, RANDR, Xinerama, RENDER, XI2 (XInput2), XKEYBOARD, XTEST, XFIXES, Composite, DAMAGE, BIG-REQUESTS, XC-MISC, Generic Event
+- **12 extensions advertised** — SHAPE, RANDR, Xinerama, RENDER, XI2 (XInput2), XKEYBOARD, XTEST, XFIXES, Composite, BIG-REQUESTS, XC-MISC, Generic Event (DAMAGE has handlers but is deliberately not advertised — a rootless server generates no DamageNotify)
 - **Metal rendering** with partial texture uploads and 20ms damage coalescing
 - **macOS clipboard bridge** — bidirectional copy/paste via NSPasteboard, INCR protocol for large transfers
 - **Full keyboard support** — macOS virtual-keycode → X11 keysym mapping, XKEYBOARD, passive key grabs
@@ -105,12 +112,13 @@ Swift (AppKit/Metal)          C++ (X11 Protocol)
 
 ## Known Limitations
 
+The public-facing summary with workarounds is in [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md); the detail below is grouped by area.
+
 ### Protocol
 
 - **Little-endian only** — big-endian client connections are rejected at handshake. All practical X11 clients on modern hardware are little-endian.
 - **MULTIPLE selection target** — not implemented. Multi-target clipboard requests (e.g., `xsel -m`) fail.
 - **AllowEvents / Sync grabs** — all grabs behave as async. The sync/freeze event queue is not implemented. No known client depends on this.
-- **XKEYBOARD dynamic remap** — the served keymap is built once at startup. `xmodmap` changes are seen by core-protocol clients (a `MappingNotify` is broadcast) but XKB-path clients keep the boot keymap until a session restart.
 - **Xauth** — not implemented. Authentication is not required for local display `:1`.
 
 ### Rendering
@@ -135,12 +143,12 @@ Swift (AppKit/Metal)          C++ (X11 Protocol)
 | Xinerama | 1.1 | Full — per-monitor screen entries |
 | RENDER | 0.11 | Partial — PictFormats, Composite, Trapezoids/Triangles, gradients, component-alpha glyphs, picture clips |
 | XI2 (XInput2) | 2.2 | Full — per-client selection/fan-out, raw events, active/passive grabs, crossing/focus semantics (default on) |
-| XKEYBOARD | 1.0 | Full — GetMap/GetNames/GetControls/GetCompatMap, SelectEvents, StateNotify, detectable autorepeat (default on) |
+| XKEYBOARD | 1.0 | Full — GetMap/GetNames/GetControls/GetCompatMap, SelectEvents, StateNotify, MapNotify (dynamic remap), detectable autorepeat (default on) |
 | XTEST | 2.2 | Full — GetVersion, FakeInput, CompareCursor, GrabControl |
-| XFIXES | 5.0 | Partial — QueryVersion, SelectionNotify, ChangeSaveSet |
+| XFIXES | 1.0 | Partial — QueryVersion (negotiated to 1.0), SelectionNotify, ChangeSaveSet |
 | Composite | 0.4 | Minimal — advertised, redirect stubs |
-| DAMAGE | 1.1 | Minimal — advertised; internal damage tracking works, DamageNotify not sent |
-| BIG-REQUESTS | — | Full — max 4MB requests |
+| DAMAGE | 1.1 | Handlers present but **not advertised** — internal damage tracking works, no DamageNotify (rootless server has no compositor to feed) |
+| BIG-REQUESTS | — | Full — max ~16 MB requests (4,194,303 words) |
 | XC-MISC | — | Full — XID range recycling |
 | Generic Event | 1.0 | Full — GenericEvent (35) dispatch for XI2 cookies |
 
