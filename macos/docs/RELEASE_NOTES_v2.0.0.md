@@ -1,95 +1,24 @@
-# SwiftX11 v2.0.0 — release notes (running draft)
+# SwiftX11 v2.0.0 — release notes
 
-> **Draft.** Accumulated from the v2.0.0.x-dbg line and updated after each
-> *verified* step. Copy into the GitHub release when v2.0.0 ships (flip
-> `SWIFTX11_DEBUG_BUILD` to 0). The exhaustive per-build changelog lives in
-> `docs/CLAUDE.md`; this file is the user-facing highlights.
+Published to GitHub Releases on 2026-09-16:
+<https://github.com/LawrenceGibbons/SwiftX11/releases/tag/v2.0.0>. This file is
+the user-facing highlights (what was published); the exhaustive per-build
+changelog — with the internal review-batch labels (R0–R6, E1/E2, C3, …) — lives
+in `docs/CLAUDE.md`.
 
-The major architectural release: **the X11 root window is now a real window on
-the wire.** Its XID changes from `1` to `0x2` — that wire change is what makes
-this a major version bump. Built on v1.21.0; every item below is verified
-against the xorg-server source with automated protocol probes, plus Vivado and
-Vitis confirmed working.
+The major architectural release: **the X11 root window is now a real window on the wire** — its advertised ID changes from `1` to `0x2`, and that wire change is what makes this a major version bump. This release is the result of a broad protocol-conformance pass, verified against the xorg-server source and exercised with real X11 applications.
 
 ## Highlights
 
-### Root window as a real window (review Cluster A / R1) — verified 2026-09-10
-The root window is now a first-class window with its own XID (`0x2`), geometry,
-and per-client event masks instead of a bare sentinel value — so SwiftX11
-behaves like a real X server for everything that targets root:
-- **SubstructureNotify on root** — `xev -root`, `wmctrl`, and Java's XToolkit
-  now see Create / Map / Configure / Unmap / Destroy for every top-level window,
-  including xorg-style Unmap + Destroy teardown when a client disconnects.
-- **Events reach root** — the button / key / motion / crossing / focus delivery
-  walks climb through to root, so root-level selections (pagers, monitors) work.
-- **EWMH window management** — the server interprets `_NET_ACTIVE_WINDOW`,
-  `_NET_WM_STATE` (maximize / fullscreen / modal / hidden) and `WM_CHANGE_STATE`
-  (iconify) ClientMessages sent to root, and advertises `_NET_SUPPORTED` /
-  `_NET_SUPPORTING_WM_CHECK` so clients recognise a compliant window manager.
-- **Root is protected** — `DestroyWindow(root)` and `UnmapWindow(root)` are
-  silent no-ops (as on a real X server), so a malformed request can't tear the
-  server down (R6.1, verified 2026-09-16).
+- **The root window is a real window.** Root now has its own XID (`0x2`), geometry, and per-client event masks. It reports SubstructureNotify for every top-level window (so root-level tools like `xev -root` and `wmctrl` work), the input-delivery path reaches root-level event selections, and the server interprets and acts on the EWMH/ICCCM client messages sent to root — `_NET_ACTIVE_WINDOW`, `_NET_WM_STATE` (maximize / fullscreen / iconify), `WM_CHANGE_STATE` — while advertising `_NET_SUPPORTED` / `_NET_SUPPORTING_WM_CHECK`. `DestroyWindow(root)` and `UnmapWindow(root)` are silent no-ops, as on a real server.
+- **RENDER extension completeness.** Picture transforms and filters (nearest and bilinear sampling), Pad/Reflect repeat modes, depth-8 (A8) mask upload, a proper RENDER error base, NoExpose for pixmap-to-pixmap copies, and alpha-preserving CopyArea into 32-bit pixmaps.
+- **Protocol hygiene.** BIG-REQUESTS now advertises the full ~16 MB limit (a large PutImage no longer breaks the connection), XFIXES reports the version it actually implements (1.0), RANDR gains the 1.0 screen-configuration requests, and an unknown opcode correctly answers BadRequest.
+- **Dynamic keyboard mapping (XKEYBOARD).** The XKB keymap now rebuilds when a client changes the keyboard mapping (e.g. via `xmodmap`) and emits XkbMapNotify, so XKB-aware clients stay in sync with the core keymap instead of keeping the boot-time layout.
+- **Window management.** ReparentWindow emits the correct UnmapNotify/MapNotify sequence; InputOnly windows are fully supported (validated, and no longer obscure the window beneath them); a client may create a window under another client's window (XEmbed-style embedding); and ChangeSaveSet plus embedder-death rescue keep an embedded window alive when the client that embedded it exits.
+- **Robustness.** A single malformed request can no longer tear down the server; GetImage validates against the window's own geometry (fixing an image-capture regression on partially off-screen windows); resource cleanup on window destruction and on client disconnect is more complete; and a client waiting on graphics-exposure events no longer hangs on a degenerate copy.
 
-### RENDER extension completeness (review R3) — verified 2026-09-11
-- Picture **transforms + filters** (SetPictureTransform / SetPictureFilter, with
-  nearest and bilinear sampling), **RepeatPad / RepeatReflect** sampling modes,
-  **depth-8 A8 mask** upload via PutImage, a proper **RENDER error base**
-  (BadPicture / BadPictFormat / …), NoExpose delivery for pixmap CopyArea, and
-  alpha-preserving CopyArea into depth-32 pixmaps.
-
-### Protocol hygiene (review R4) — verified 2026-09-14
-- Removed the dead wire-sequence-floor rewrite machinery; tightened
-  **BadLength / BadRequest discipline** — a legitimately large PutImage no
-  longer kills the JVM connection (the BIG-REQUESTS limit now matches xorg's
-  ~16 MB), and an unknown opcode answers BadRequest.
-- **XFIXES reported as 1.0** (the version actually implemented), **RANDR 1.0
-  GetScreenInfo / SetScreenConfig** implemented (JDK display-mode path),
-  monotonic RANDR reply timestamps, and 7 dead extension-stub files removed.
-
-### Keyboard — XKB dynamic map (review R5) — verified 2026-09-16
-- **The XKB keymap rebuilds on a mapping change.** An `xmodmap`
-  (ChangeKeyboardMapping / SetModifierMapping) now re-derives the XKB model and
-  emits `XkbMapNotify`, so XKB-path clients (GTK3) no longer permanently desync
-  from core-path clients.
-
-### Window management (review R5) — verified 2026-09-16
-- **ReparentWindow now matches xorg.** Reparenting a mapped window emits the
-  UnmapNotify / MapNotify pair around the move (needed by XEmbed handshakes and
-  subtree observers, previously silent), and a bogus new parent is rejected with
-  BadWindow instead of corrupting the window tree.
-- **InputOnly windows are real.** The window class is stored, validated, and
-  reported (GetWindowAttributes was hardcoded to InputOutput); an InputOnly
-  overlay no longer blanks the window beneath it (GTK3/GDK create these
-  pervasively). Creating a window under another client's window is now allowed
-  (the XEmbed / portal embedding pattern).
-- **SaveSet.** ChangeSaveSet is implemented, and when a client that embedded
-  another client's window dies, that window is rescued (reparented to root)
-  instead of being orphaned — the embedder-crash robustness a real X server
-  provides.
-
-## Status
-The entire 2026-09-08 protocol review (R0–R5) is complete and verified —
-root-as-a-real-window, RENDER completeness, protocol hygiene, and the
-window-management / keyboard structural work. Sync-grab freeze / replay (C3) is
-deliberately deferred (near-zero value for this project's async-grab clients;
-documented in CLAUDE.md). Vivado and Vitis confirmed working throughout.
-
-A 2026-09-16 pre-release review flagged a short "R6" list of sharp edges to
-clear before tagging; **all of it (R6.1–R6.7) is now fixed and verified**: the
-server-killing `DestroyWindow(root)` (R6.1, see the root-window section), a
-GetImage occlusion regression (R6.2), a DestroySubwindows selection-owner sweep
-(R6.3), a RetainPermanent resource leak (R6.4), a foreign-child leak on client
-death (R6.5), NoExpose completeness on degenerate CopyArea/CopyPlane (R6.6), and
-a stray Release-build diagnostic (R6.7) — verified 2026-09-16 with automated
-protocol probes plus Vivado and Vitis smoke tests. The review's §3 documentation
-corrections are also applied (README, KNOWN_ISSUES, DEFERRED, TODO, stale
-comments). Per the review's own checklist ("fix §1, apply §3, ship"), the
-conformance work for v2.0.0 is complete; its §2 "should-fix-soon" items ride the
-v2.0.x train as documented known issues. Tagging is now a matter of flipping the
-debug build to 0 and cutting the installer.
+Synchronous grab freeze/replay is not implemented — asynchronous grabs, which modern toolkits use, work fully. See the bundled `KNOWN_ISSUES.md` for the full list of current limitations.
 
 ## Install
-Download **SwiftX11-2.0.0.dmg**, open it, and drag **SwiftX11** to Applications.
-X11 bitmap fonts are bundled inside the app — no XQuartz needed for the server.
-The app is unsigned — right-click → Open to bypass Gatekeeper on first launch.
-Requires macOS 14+.
+
+Download **SwiftX11-2.0.0.dmg**, open it, and drag **SwiftX11** to Applications. X11 bitmap fonts are bundled inside the app — no XQuartz needed for the server itself. The app is unsigned — right-click → **Open** to bypass Gatekeeper on first launch. Requires macOS 14+.
