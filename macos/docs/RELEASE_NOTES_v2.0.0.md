@@ -81,9 +81,12 @@ GetImage occlusion regression (R6.2), a DestroySubwindows selection-owner sweep
 (R6.3), a RetainPermanent resource leak (R6.4), a foreign-child leak on client
 death (R6.5), NoExpose completeness on degenerate CopyArea/CopyPlane (R6.6), and
 a stray Release-build diagnostic (R6.7) — verified 2026-09-16 with automated
-protocol probes plus Vivado and Vitis smoke tests. What remains before the
-v2.0.0 tag is the review's §2 "should-fix-soon" list — all shippable as
-documented known issues — and the §3 DEFERRED.md / KNOWN_ISSUES.md doc additions.
+protocol probes plus Vivado and Vitis smoke tests. The review's §3 documentation
+corrections are also applied (README, KNOWN_ISSUES, DEFERRED, TODO, stale
+comments). Per the review's own checklist ("fix §1, apply §3, ship"), the
+conformance work for v2.0.0 is complete; its §2 "should-fix-soon" items ride the
+v2.0.x train as documented known issues. Tagging is now a matter of flipping the
+debug build to 0 and cutting the installer.
 
 ## Install
 _(filled in at release: `SwiftX11-2.0.0.pkg`, unsigned — right-click → Open;
