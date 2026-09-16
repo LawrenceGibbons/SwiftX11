@@ -110,6 +110,10 @@ See [CLAUDE.md](macos/CLAUDE.md) for detailed architecture documentation.
 | Vivado | ✅ Working | Full GUI, menus, dialogs, banner, clipboard, hardware-manager drag |
 | Vitis | ✅ Working | Electron/Eclipse + GTK portal file dialogs, over TCP from a container |
 
+## Known Issues
+
+See [macos/docs/KNOWN_ISSUES.md](macos/docs/KNOWN_ISSUES.md) for current limitations (e.g. synchronous grabs, no RGBA visual, `xinput` legacy device queries) and workarounds.
+
 ## Display Number
 
 SwiftX11 runs on **display :1** (TCP port 6001) to avoid conflict with XQuartz on :0. Set `DISPLAY=127.0.0.1:1` in your shell profile.
