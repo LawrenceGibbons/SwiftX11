@@ -49,16 +49,20 @@ behaves like a real X server for everything that targets root:
   emits `XkbMapNotify`, so XKB-path clients (GTK3) no longer permanently desync
   from core-path clients.
 
-### Window management — Reparent choreography (review R5) — verified 2026-09-16
+### Window management (review R5) — verified 2026-09-16
 - **ReparentWindow now matches xorg.** Reparenting a mapped window emits the
   UnmapNotify / MapNotify pair around the move (needed by XEmbed handshakes and
   subtree observers, previously silent), and a bogus new parent is rejected with
   BadWindow instead of corrupting the window tree.
+- **InputOnly windows are real.** The window class is stored, validated, and
+  reported (GetWindowAttributes was hardcoded to InputOutput); an InputOnly
+  overlay no longer blanks the window beneath it (GTK3/GDK create these
+  pervasively). Creating a window under another client's window is now allowed
+  (the XEmbed / portal embedding pattern).
 
 ## Status
-Pre-release / in progress. Remaining R5 structural work still to land: the rest
-of the window-management G-cluster (CreateWindow cross-client parents +
-InputOnly class, SaveSet). Sync-grab freeze / replay (C3) is deferred by
+Pre-release / in progress. Remaining R5 structural work still to land: SaveSet
+(embedder-death window survival). Sync-grab freeze / replay (C3) is deferred by
 decision — near-zero value for this project's async-grab clients (documented in
 CLAUDE.md). All shipped items above are verified.
 
