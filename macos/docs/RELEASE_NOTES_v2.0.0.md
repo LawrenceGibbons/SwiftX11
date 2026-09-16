@@ -59,12 +59,17 @@ behaves like a real X server for everything that targets root:
   overlay no longer blanks the window beneath it (GTK3/GDK create these
   pervasively). Creating a window under another client's window is now allowed
   (the XEmbed / portal embedding pattern).
+- **SaveSet.** ChangeSaveSet is implemented, and when a client that embedded
+  another client's window dies, that window is rescued (reparented to root)
+  instead of being orphaned — the embedder-crash robustness a real X server
+  provides.
 
 ## Status
-Pre-release / in progress. Remaining R5 structural work still to land: SaveSet
-(embedder-death window survival). Sync-grab freeze / replay (C3) is deferred by
-decision — near-zero value for this project's async-grab clients (documented in
-CLAUDE.md). All shipped items above are verified.
+**Release-ready.** The entire 2026-09-08 protocol review (R0–R5) is complete and
+verified — root-as-a-real-window, RENDER completeness, protocol hygiene, and the
+window-management / keyboard structural work. Sync-grab freeze / replay (C3) is
+deliberately deferred (near-zero value for this project's async-grab clients;
+documented in CLAUDE.md). Vivado and Vitis confirmed working throughout.
 
 ## Install
 _(filled in at release: `SwiftX11-2.0.0.pkg`, unsigned — right-click → Open;
