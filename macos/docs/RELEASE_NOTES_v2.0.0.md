@@ -43,16 +43,24 @@ behaves like a real X server for everything that targets root:
   GetScreenInfo / SetScreenConfig** implemented (JDK display-mode path),
   monotonic RANDR reply timestamps, and 7 dead extension-stub files removed.
 
-### Keyboard — XKB dynamic map (review R5, in progress) — verified 2026-09-16
+### Keyboard — XKB dynamic map (review R5) — verified 2026-09-16
 - **The XKB keymap rebuilds on a mapping change.** An `xmodmap`
   (ChangeKeyboardMapping / SetModifierMapping) now re-derives the XKB model and
   emits `XkbMapNotify`, so XKB-path clients (GTK3) no longer permanently desync
   from core-path clients.
 
+### Window management — Reparent choreography (review R5) — verified 2026-09-16
+- **ReparentWindow now matches xorg.** Reparenting a mapped window emits the
+  UnmapNotify / MapNotify pair around the move (needed by XEmbed handshakes and
+  subtree observers, previously silent), and a bogus new parent is rejected with
+  BadWindow instead of corrupting the window tree.
+
 ## Status
-Pre-release / in progress. Remaining R5 structural work is still to land:
-SaveSet + cross-client parenting + Reparent choreography, and sync-grab
-freeze / replay. All shipped items above are verified.
+Pre-release / in progress. Remaining R5 structural work still to land: the rest
+of the window-management G-cluster (CreateWindow cross-client parents +
+InputOnly class, SaveSet). Sync-grab freeze / replay (C3) is deferred by
+decision — near-zero value for this project's async-grab clients (documented in
+CLAUDE.md). All shipped items above are verified.
 
 ## Install
 _(filled in at release: `SwiftX11-2.0.0.pkg`, unsigned — right-click → Open;
