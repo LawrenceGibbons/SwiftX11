@@ -89,5 +89,7 @@ v2.0.x train as documented known issues. Tagging is now a matter of flipping the
 debug build to 0 and cutting the installer.
 
 ## Install
-_(filled in at release: `SwiftX11-2.0.0.pkg`, unsigned — right-click → Open;
-requires macOS 14+.)_
+Download **SwiftX11-2.0.0.dmg**, open it, and drag **SwiftX11** to Applications.
+X11 bitmap fonts are bundled inside the app — no XQuartz needed for the server.
+The app is unsigned — right-click → Open to bypass Gatekeeper on first launch.
+Requires macOS 14+.
