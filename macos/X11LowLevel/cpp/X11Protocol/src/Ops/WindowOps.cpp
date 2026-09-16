@@ -865,7 +865,14 @@ void WindowOps::handleDestroySubwindows(XProtoContext& ctx, uint16_t seq, ByteRe
     }
 
     ctx.grabs().removeForWindows({child});
+    // R6.3: sweep selection owners + purge properties per child, exactly as
+    // handleDestroyWindow's inferior loop does.  DestroySubwindows was missing
+    // both, so a selection owner destroyed this way left a dangling owner (the
+    // ~10 s per-paste hang G2 fixed) and ghost properties survived for a
+    // recycled XID to inherit.
+    x11::SelectionOps::clearOwnerWindow(child);
     ctx.windows().erase(child);
+    x11::PropertyTable::instance().eraseWindow(child);
     x11_ui_push_destroy(child);
   }
 

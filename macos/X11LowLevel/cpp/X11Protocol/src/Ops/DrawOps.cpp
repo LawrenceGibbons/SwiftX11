@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>   // memmove
 #include <algorithm>
+#include <vector>    // GetImage row buffer (R6.2)
 
 
 #include "Utils/ByteReader.hpp"
@@ -550,39 +551,42 @@ void DrawOps::handleGetImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
     return;
   }
 
-  // R3 F5: the requested rectangle must lie entirely within the drawable
-  // (xorg ProcGetImage: BadMatch otherwise).  Silently clipping to bounds and
-  // returning fewer rows than requested made Xlib mis-stride every row of the
-  // returned image (it lays the data out at the requested width).
+  // R6.2: validate the requested rectangle against the DRAWABLE's own geometry,
+  // NOT the occlusion-clipped surface extent that resolveDrawableRW returns.
+  // For a window, `src.w`/`src.h` is the *materialised* extent — a child that is
+  // partially off its host (or whose backing surface is smaller than the window)
+  // has src.w/src.h < the window's real size, so validating the request against
+  // it wrongly BadMatch'd `XGetImage(win, 0,0, w,h)` where xorg succeeds
+  // (ProcGetImage, dix/dispatch.c: BadMatch only when the rect leaves the
+  // window itself).  Validate against the window's WindowView w/h; for a pixmap
+  // the resolved extent already IS its size.
+  int32_t drawW = (int32_t)src.w;
+  int32_t drawH = (int32_t)src.h;
+  if (ctx.windows().exists(drawable)) {
+    x11::WindowView wv{};
+    if (!ctx.windows().snapshot(drawable, wv)) {
+      ctx.transport().sendErrorCore(x11::error::BadDrawable, seq, drawable, x11::opcode::GetImage);
+      return;
+    }
+    drawW = (int32_t)wv.w;
+    drawH = (int32_t)wv.h;
+  }
+
   if ((int32_t)x < 0 || (int32_t)y < 0 ||
-      (int32_t)x + (int32_t)w > (int32_t)src.w ||
-      (int32_t)y + (int32_t)h > (int32_t)src.h) {
+      (int32_t)x + (int32_t)w > drawW ||
+      (int32_t)y + (int32_t)h > drawH) {
     ctx.transport().sendErrorCore(x11::error::BadMatch, seq, 0, x11::opcode::GetImage);
     return;
   }
 
-  // Clip request rect to drawable bounds
-  int32_t x0 = (int32_t)x;
-  int32_t y0 = (int32_t)y;
-  int32_t x1 = x0 + (int32_t)w;
-  int32_t y1 = y0 + (int32_t)h;
-  if (x0 < 0) x0 = 0;
-  if (y0 < 0) y0 = 0;
-  if (x1 > (int32_t)src.w) x1 = (int32_t)src.w;
-  if (y1 > (int32_t)src.h) y1 = (int32_t)src.h;
-
-  const int32_t cw = x1 - x0;
-  const int32_t ch = y1 - y0;
-  if (cw <= 0 || ch <= 0) return;
-
-  // Build pixel payload: ZPixmap depth=24 bpp=32
-  // Each row: cw * 4 bytes, padded to 4-byte boundary (already aligned since 4*cw is always multiple of 4)
-  const uint32_t rowBytes = (uint32_t)cw * 4u;
-  const uint32_t payloadBytes = rowBytes * (uint32_t)ch;
+  // Build the reply at the FULL requested w×h (Xlib lays the returned data out
+  // at the requested width, so we must never return a smaller rect).  ZPixmap
+  // depth=24, bpp=32; each row is w*4 bytes, already 4-byte aligned.
+  const uint32_t rowBytes     = (uint32_t)w * 4u;
+  const uint32_t payloadBytes = rowBytes * (uint32_t)h;
   const uint32_t payloadWords = (payloadBytes + 3u) / 4u;
 
-  // Build reply header
-  const uint8_t depth = 24;
+  const uint8_t  depth  = 24;
   const uint32_t visual = 0x21; // match our advertised TrueColor visual
 
   const bool ok = ctx.reply().sendReply32(seq, [&](std::array<uint8_t, 32>& rep) {
@@ -592,15 +596,28 @@ void DrawOps::handleGetImage(XProtoContext& ctx, uint16_t seq, uint8_t format, B
   });
   if (!ok) return;
 
-  // Send pixel rows
-  for (int32_t row = 0; row < ch; row++) {
-    const uint32_t* srcRow = src.pixels32 + (size_t)(y0 + row) * (size_t)src.stridePixels + (size_t)x0;
-    if (!ctx.reply().sendBytes(srcRow, rowBytes)) return;
+  // Send exactly w×h pixels.  Any part of the request outside the materialised
+  // surface extent [0,src.w)×[0,src.h) — a child region past the host edge, or
+  // a not-yet-painted area — is returned as undefined bits (xorg leaves
+  // obscured GetImage pixels undefined); we zero-fill.
+  std::vector<uint32_t> rowbuf((size_t)w);
+  for (uint32_t ry = 0; ry < (uint32_t)h; ry++) {
+    const int32_t sy = (int32_t)y + (int32_t)ry;
+    if (sy >= 0 && sy < (int32_t)src.h) {
+      const uint32_t* srcRow = src.pixels32 + (size_t)sy * (size_t)src.stridePixels;
+      for (uint32_t rx = 0; rx < (uint32_t)w; rx++) {
+        const int32_t sx = (int32_t)x + (int32_t)rx;
+        rowbuf[rx] = (sx >= 0 && sx < (int32_t)src.w) ? srcRow[(size_t)sx] : 0u;
+      }
+    } else {
+      std::fill(rowbuf.begin(), rowbuf.end(), 0u);
+    }
+    if (!ctx.reply().sendBytes(rowbuf.data(), rowBytes)) return;
   }
 
-  ctx.tracef("[GetImage] drawable=0x%08X x=%d y=%d w=%u h=%u -> %ux%u depth=%u\n",
+  ctx.tracef("[GetImage] drawable=0x%08X x=%d y=%d w=%u h=%u depth=%u\n",
              (unsigned)drawable, (int)x, (int)y, (unsigned)w, (unsigned)h,
-             (unsigned)cw, (unsigned)ch, (unsigned)depth);
+             (unsigned)depth);
 }
 
 // -----------------------------
@@ -623,15 +640,26 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   br.skip(br.remaining());
   x11::drawTraceRect(ctx, "CopyArea", dst, (int)dstX, (int)dstY, (int)wpx, (int)hpx);
 
-  if (wpx <= 0 || hpx <= 0) return;
-
   // ------------------------------------------------------------
-  // Resolve GC (function + plane mask)
+  // Resolve GC (function + plane mask).  R6.6: resolved before the first
+  // early return so every drop/clamp path can still honour graphics_exposures.
+  // xorg sends NoExpose (an empty exposed region) whenever graphics_exposures
+  // is set, even for a degenerate copy — a client blocking on the CopyArea
+  // reply event otherwise hangs (the F2 hang class, still reachable through
+  // zero-size / resolve-fail / depth-1-source / fully-clamped rects).
   // ------------------------------------------------------------
   x11::GCState gc{};
   if (!x11::GCTable::instance().find(gcXid, gc)) {
     gc = x11::GCTable::instance().getOrCreate(gcXid);
   }
+  auto emitNoExpose = [&]() {
+    if (gc.graphics_exposures) {
+      auto ev = x11::wireev::buildNoExpose(seq, dst, x11::opcode::CopyArea, 0);
+      (void)ctx.transport().sendAll(ev.data(), 32);
+    }
+  };
+
+  if (wpx <= 0 || hpx <= 0) { emitNoExpose(); return; }
 
   const uint8_t  fn   = gc.function;
   const uint32_t pm24 = (gc.plane_mask & 0x00FFFFFFu);
@@ -657,6 +685,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       TS_DBG("[BLIT] CopyArea DROP: src=0x%08X resolve failed (dst=0x%08X %dx%d)\n",
              (unsigned)src, (unsigned)dst, (int)wpx, (int)hpx);
 #endif
+      emitNoExpose();
       return;
     }
     srcPixels = srcRW.pixels32;
@@ -668,13 +697,14 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       TS_DBG("[BLIT] CopyArea DROP: src=0x%08X zero dims %dx%d stride=%u\n",
              (unsigned)src, srcW, srcH, (unsigned)srcStride);
 #endif
+      emitNoExpose();
       return;
     }
   } else if (srcIsPix) {
     PixmapView pv{};
-    if (!ctx.pixmaps().snapshot(src, pv)) return;
-    if (pv.depth == 1) return; // CopyArea not for depth-1 masks
-    if (!pv.pixels || pv.w == 0 || pv.h == 0) return;
+    if (!ctx.pixmaps().snapshot(src, pv)) { emitNoExpose(); return; }
+    if (pv.depth == 1) { emitNoExpose(); return; } // CopyArea not for depth-1 masks
+    if (!pv.pixels || pv.w == 0 || pv.h == 0) { emitNoExpose(); return; }
 
     srcPixels = pv.pixels;
     srcW = (int)pv.w;
@@ -715,6 +745,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       TS_DBG("[BLIT] CopyArea DROP: dst=0x%08X resolve failed (src=0x%08X %dx%d)\n",
              (unsigned)dst, (unsigned)src, (int)wpx, (int)hpx);
 #endif
+      emitNoExpose();
       return;
     }
     dstPixels = dstRW.pixels32;
@@ -726,12 +757,13 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       TS_DBG("[BLIT] CopyArea DROP: dst=0x%08X zero dims %dx%d stride=%u\n",
              (unsigned)dst, dstW, dstH, (unsigned)dstStride);
 #endif
+      emitNoExpose();
       return;
     }
   } else if (dstIsPix) {
     uint16_t pw = 0, ph = 0;
     dstPixels = ctx.pixmaps().mutablePixels(dst, &pw, &ph);
-    if (!dstPixels || pw == 0 || ph == 0) return;
+    if (!dstPixels || pw == 0 || ph == 0) { emitNoExpose(); return; }
     { PixmapView dpv{}; if (ctx.pixmaps().snapshot(dst, dpv)) dstDepth = dpv.depth; }
 
     dstW = (int)pw;
@@ -803,6 +835,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
              srcW, srcH, dstW, dstH);
     }
 #endif
+    emitNoExpose();
     return;
   }
 
@@ -932,13 +965,9 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
   // backing store the source is materialised for its whole extent, so a
   // window/pixmap source is always available and NoExpose is the correct
   // response here.)
-  if (gc.graphics_exposures) {
-    auto ev = x11::wireev::buildNoExpose(seq, dst,
-                                        x11::opcode::CopyArea, 0);
-    (void)ctx.transport().sendAll(ev.data(), 32);
-  }
+  emitNoExpose();
 }
-  
+
 // -----------------------------
 // CopyPlane (major 63)
 // -----------------------------
@@ -971,27 +1000,35 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     
     const uint32_t bitPlane = br.readU32();
     br.skip(br.remaining());
-    
-    if (wpx == 0 || hpx == 0) return;
-    
-    // For depth-1 sources the only meaningful plane is 1.
-    // Accept any single-bit plane to be permissive, but behavior is identical.
-    if ((bitPlane == 0) || (bitPlane & (bitPlane - 1)) != 0) return; // must be power of two
-    
-    // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
-    const bool BIT_ORDER_LSB_FIRST = true;
-    
+
     // ------------------------------------------------------------
-    // Resolve GC fg/bg
+    // Resolve GC fg/bg.  R6.6: resolved before the early returns so every drop
+    // path can still honour graphics_exposures — xorg sends NoExpose for a
+    // degenerate copy too, and a client blocking on the reply otherwise hangs.
     // ------------------------------------------------------------
     uint32_t fg = 0xFF000000u;
     uint32_t bg = 0xFFFFFFFFu;
-    
+
     GCState gst{};
     if (GCTable::instance().find(gc, gst)) {
       fg = gst.fg;
       bg = gst.bg;
     }
+    auto emitNoExpose = [&]() {
+      if (gst.graphics_exposures) {
+        auto ev = x11::wireev::buildNoExpose(seq, dst, x11::opcode::CopyPlane, 0);
+        (void)ctx.transport().sendAll(ev.data(), 32);
+      }
+    };
+
+    if (wpx == 0 || hpx == 0) { emitNoExpose(); return; }
+
+    // For depth-1 sources the only meaningful plane is 1.
+    // Accept any single-bit plane to be permissive, but behavior is identical.
+    if ((bitPlane == 0) || (bitPlane & (bitPlane - 1)) != 0) { emitNoExpose(); return; } // must be power of two
+
+    // We advertise bitmapBitOrder = LSBFirst in SetupSuccess.
+    const bool BIT_ORDER_LSB_FIRST = true;
     const uint8_t  cpFn   = (uint8_t)(gst.function & 0x0Fu);
     const uint32_t cpPm   = gst.plane_mask;
     const bool     cpFast = (cpFn == 3) && ((cpPm & 0x00FFFFFFu) == 0x00FFFFFFu);
@@ -1013,23 +1050,23 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     if (srcIsWin) {
       DrawableRW srcRW{};
-      if (!resolveDrawableRW(ctx, src, srcRW) || !srcRW.pixels32) return;
+      if (!resolveDrawableRW(ctx, src, srcRW) || !srcRW.pixels32) { emitNoExpose(); return; }
       srcW = (int)srcRW.w;
       srcH = (int)srcRW.h;
       srcDepth1 = false;
     } else if (srcIsPix) {
       PixmapView pv{};
-      if (!ctx.pixmaps().snapshot(src, pv)) return;
+      if (!ctx.pixmaps().snapshot(src, pv)) { emitNoExpose(); return; }
       srcW = (int)pv.w;
       srcH = (int)pv.h;
 
       if (pv.depth == 1) {
-        if (!pv.bits || pv.stride_bytes == 0) return;
+        if (!pv.bits || pv.stride_bytes == 0) { emitNoExpose(); return; }
         srcBits = pv.bits;
         srcStrideBytes = pv.stride_bytes;
         srcDepth1 = true;
       } else {
-        if (!pv.pixels) return;
+        if (!pv.pixels) { emitNoExpose(); return; }
         srcDepth1 = false;
       }
     } else {
@@ -1039,7 +1076,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
 
     // Bring-up correctness: CopyPlane is expected from depth-1 pixmaps.
     // If the source isn't depth-1, do nothing (better than wrong masks).
-    if (!srcDepth1) return;
+    if (!srcDepth1) { emitNoExpose(); return; }
     
     
     // ------------------------------------------------------------
@@ -1059,7 +1096,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       // Use resolveDrawableRW so CopyPlane writes to the Swift-owned surface,
       // not the old C framebuffer.  This mirrors every other drawing op.
       x11::DrawableRW dstRW{};
-      if (!x11::resolveDrawableRW(ctx, dst, dstRW) || !dstRW.pixels32) return;
+      if (!x11::resolveDrawableRW(ctx, dst, dstRW) || !dstRW.pixels32) { emitNoExpose(); return; }
       dstPixels   = dstRW.pixels32;
       dstW        = (int)dstRW.w;
       dstH        = (int)dstRW.h;
@@ -1081,7 +1118,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
       } else {
         uint16_t pw2 = 0, ph2 = 0;
         uint32_t* pix = ctx.pixmaps().mutablePixels(dst, &pw2, &ph2);
-        if (!pix) return;
+        if (!pix) { emitNoExpose(); return; }
         dstPixels   = pix;
         dstW        = (int)pw2;
         dstH        = (int)ph2;
@@ -1143,11 +1180,7 @@ void DrawOps::handleCopyArea(XProtoContext& ctx, uint16_t seq, ByteReader& br) {
     // X11 spec: NoExposure sent when graphics_exposures is True in the GC.
     // R3 F2: to the requesting client (sendAll), so a pixmap destination is
     // not dropped by sendEvent32's owner routing.
-    if (gst.graphics_exposures) {
-      auto noExpEv = x11::wireev::buildNoExpose(seq, dst,
-                                                x11::opcode::CopyPlane, 0);
-      (void)ctx.transport().sendAll(noExpEv.data(), 32);
-    }
+    emitNoExpose();
   }
 
 

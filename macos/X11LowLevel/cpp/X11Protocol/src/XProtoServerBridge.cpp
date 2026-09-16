@@ -1035,10 +1035,12 @@ static void processOneHostCmd(x11::XProtoServer* srv,
             viaGrab = d.viaGrab;
             if (viaGrab) toFd = routeGrab.owner_fd;
           } else if (!normalWants) {
-            // Diagnostic: log why the click was dropped
+            // Diagnostic: log why the click was dropped.  R6.7: TS_DBG (not
+            // TS_FPRINTF) so it compiles out in Release — otherwise it spams
+            // stderr on every click whose target tree selects no ButtonPress.
             const x11::WindowView* dbgUnder = ctx.window(under);
             const x11::WindowView* dbgHost  = ctx.window(effectiveHost);
-            TS_FPRINTF("[BTN_DROP] host=0x%08X under=0x%08X "
+            TS_DBG("[BTN_DROP] host=0x%08X under=0x%08X "
                        "host_mask=0x%08X host_fd=%d "
                        "under_mask=0x%08X under_fd=%d "
                        "pos=(%d,%d) btn=%d %s\n",

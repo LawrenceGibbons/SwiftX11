@@ -24,6 +24,7 @@
 #include <mutex>
 #include <algorithm>
 #include <vector>
+#include <unordered_set>   // R6.5: foreign-inferior dedup on client death
 
 #include "XProtoServerBridge.h"
 #include "Core/XProtoServer.hpp"
@@ -296,8 +297,10 @@ bool XProtoDaemon::sendEventToSelectors(uint32_t wid, uint32_t bit,
 // to the window's StructureNotify selectors and its parent's
 // SubstructureNotify selectors (DeliverEvents, dix/events.c:2969-2972).
 // Only the roots of the client's subtrees are unmapped (xorg unrealizes
-// their inferiors without UnmapNotify); inferiors owned by another client
-// survive eraseOwnedBy here and so are not announced as destroyed.
+// their inferiors without UnmapNotify).  R6.5: inferiors owned by ANOTHER
+// client (possible since G4 allowed cross-client parents) are announced as
+// destroyed too — xorg CrushTree destroys every inferior with DestroyNotify;
+// the caller rescues any save-set members up to root first and erases the rest.
 // The caller purged the dying client's own selections first.
 void XProtoDaemon::emitDisconnectDestroyNotifies(int fd) {
   if (!server_) return;
@@ -341,7 +344,10 @@ void XProtoDaemon::emitDisconnectDestroyNotifies(int fd) {
     const std::vector<uint32_t> desc = wt.descendantsOf(top);   // shallow → deep
     for (auto it = desc.rbegin(); it != desc.rend(); ++it) {
       x11::WindowView cv{};
-      if (wt.snapshot(*it, cv) && cv.owner_fd == fd) notifyDestroy(*it, cv.parent_xid);
+      // R6.5: announce every inferior, including foreign ones (owner_fd != fd),
+      // as xorg CrushTree does.  Save-set members were already rescued up to
+      // root by the caller, so whatever remains here dies with its container.
+      if (wt.snapshot(*it, cv)) notifyDestroy(*it, cv.parent_xid);
     }
     notifyDestroy(top, tv.parent_xid);
   }
@@ -759,6 +765,22 @@ void XProtoDaemon::removeClient(int fd) {
     // `owned` left empty so we skip the destroy push + grab removal below.
     // No matching x11_ui_push_destroy(): the NSWindow (if any) persists
     // alongside the X11 window.
+
+    // R6.4: RetainPermanent keeps the client's WINDOWS (the AWT XDND proxy) and
+    // their PROPERTIES (XdndAware, which the main JVM connection still reads),
+    // but its pixmaps, GCs, fonts and cursors are never referenced again — the
+    // resource-free block used to live only in the non-retain branch, so a
+    // drag-heavy session (Vivado hw_ila opens a RetainPermanent helper on every
+    // drag) leaked them.  Free them by rid range here too; leave windows and
+    // properties intact.
+    if (cs.client) {
+      const uint32_t base = cs.client->ridBase();
+      const uint32_t mask = cs.client->ridMask();
+      server_->ctx().pixmaps().eraseOwnedBy(base, mask);
+      x11::GCTable::instance().eraseOwnedBy(base, mask);
+      server_->ctx().cursors().eraseOwnedBy(base, mask);
+      server_->ctx().fonts().eraseOwnedBy(base, mask);
+    }
   } else {
     // G7 (R5): before this client's windows are torn down, rescue its save-set.
     // For each saved window (owned by another, still-living client) whose parent
@@ -787,11 +809,33 @@ void XProtoDaemon::removeClient(int fd) {
       }
     }
 
+    // R6.5: after the save-set rescue, gather any FOREIGN inferiors still
+    // hanging under this dying client's windows — a surviving client's window
+    // parented here (possible since G4 allowed cross-client parents) that was
+    // NOT opted out via the save-set.  xorg CrushTree destroys every inferior
+    // with DestroyNotify; eraseOwnedBy below only erases windows owned by fd, so
+    // these would otherwise be left with a dangling parent (unreachable from
+    // root, corrupting the ancestor / host-surface walks).  Collect now, while
+    // the tree is still intact.
+    std::vector<uint32_t> foreignInferiors;
+    {
+      auto& wt = server_->ctx().windows();
+      std::unordered_set<uint32_t> seen;
+      for (uint32_t top : wt.ownedBy(fd)) {
+        for (uint32_t d : wt.descendantsOf(top)) {   // shallow → deep
+          x11::WindowView dv{};
+          if (wt.snapshot(d, dv) && dv.owner_fd != fd && seen.insert(d).second)
+            foreignInferiors.push_back(d);
+        }
+      }
+    }
+
     // R1 Phase 2: tell the survivors first — UnmapNotify/DestroyNotify to the
     // windows' StructureNotify and their parents' SubstructureNotify
     // selectors, as xorg DeleteWindow does on resource free (root selectors
     // are how a WM learns a client died).  The dying client's own selections
-    // are purged beforehand so it is never a target.
+    // are purged beforehand so it is never a target.  (R6.5: this also
+    // announces the foreignInferiors gathered above.)
     server_->ctx().windows().removeClientMasks(fd);
     emitDisconnectDestroyNotifies(fd);
 
@@ -803,6 +847,17 @@ void XProtoDaemon::removeClient(int fd) {
     }
     // Remove grabs for destroyed windows
     server_->ctx().grabs().removeForWindows(owned);
+
+    // R6.5: erase the foreign inferiors too (their owners already got the
+    // DestroyNotify above), deepest-first — descendantsOf is shallow→deep, so
+    // iterate in reverse to tear a child down before its parent.
+    for (auto it = foreignInferiors.rbegin(); it != foreignInferiors.rend(); ++it) {
+      server_->ctx().windows().erase(*it);
+      x11::PropertyTable::instance().eraseWindow(*it);
+      x11_ui_push_destroy(*it);
+    }
+    if (!foreignInferiors.empty())
+      server_->ctx().grabs().removeForWindows(foreignInferiors);
 
     // Free the client's non-window resources too (review §6.4 — these
     // were leaked on every disconnect; pixmaps are large and Java
@@ -874,10 +929,13 @@ void XProtoDaemon::removeClient(int fd) {
   deactivateClient();
 
   // Return this client's ID-space slot to the free pool so it can be
-  // reused by a future connection (§6.1).  Freed even on the
-  // RetainPermanent path: retained windows are reassigned to owner_fd=-1
-  // and cleaned by normal destruction; keeping the slot reserved forever
-  // would re-introduce the counter-walk exhaustion this fix removes.
+  // reused by a future connection (§6.1).  Freed even on the RetainPermanent
+  // path: not recycling would exhaust the 255-slot pool over a drag-heavy
+  // session (every hw_ila drag opens a RetainPermanent helper).  R6.4: the
+  // helper's non-window resources are now freed above, so what remains in this
+  // rid range is only the retained proxy WINDOWS — a recycled slot could in
+  // principle collide with one, but only with a stale proxy whose drag is long
+  // over; a full fix would need an allocator that skips still-live XIDs.
   if (cs.client) freeClientSlot(cs.client->ridBase() >> 24);
 
   // Destroy client and close socket
