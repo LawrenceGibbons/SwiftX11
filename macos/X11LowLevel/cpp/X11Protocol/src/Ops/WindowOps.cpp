@@ -682,6 +682,13 @@ void WindowOps::handleDestroyWindow(XProtoContext& ctx, uint16_t seq, ByteReader
 
   if (wid == 0) return;
 
+  // The root window cannot be destroyed — xorg silently no-ops it (ProcDestroyWindow
+  // only frees a window that has a parent; root has none, dix/dispatch.c:812-831).
+  // Since R1 made root a real WindowTable entry (0x2), without this guard
+  // DestroyWindow(root) would erase root, every top-level, and root's EWMH/XKB
+  // properties — one request wipes the whole server.
+  if (wid == x11::kRootWindowXid) return;
+
   // BadWindow if wid is not a known window
   if (!ctx.windows().exists(wid)) {
     ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::DestroyWindow);
@@ -1367,6 +1374,13 @@ void WindowOps::handleUnmapWindow(XProtoContext& ctx, uint16_t seq, ByteReader& 
   const uint32_t wid = br.readU32();
   br.skip(br.remaining());
   if (wid == 0) return;
+
+  // The root window cannot be unmapped — xorg no-ops it (UnmapWindow returns
+  // Success immediately for a parentless window, dix/window.c:2844-2853).  Since
+  // R1 made root a real window, without this guard UnmapWindow(root) would leave
+  // root permanently unmapped (GetWindowAttributes reports Unmapped forever, and
+  // Swift receives a spurious unmap of the desktop).
+  if (wid == x11::kRootWindowXid) return;
 
   if (!ctx.windows().exists(wid)) {
     ctx.transport().sendErrorCore(x11::error::BadWindow, seq, wid, x11::opcode::UnmapWindow);
