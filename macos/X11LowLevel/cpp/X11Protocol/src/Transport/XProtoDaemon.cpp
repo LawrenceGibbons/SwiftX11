@@ -236,7 +236,7 @@ ClientSession* XProtoDaemon::findClient(int fd) {
 // KeymapNotify (type 11) is the only core event with NO sequence field — its
 // bytes 2-3 are part of the key-down bitmap (keycodes 16-31, xorg
 // WriteEventsToClient skips it, dix/events.c:6083).  Every other event is
-// stamped with the target client's last sequence so its monotonic wire floor
+// stamped with the target client's last sequence so its wire-sequence stream
 // isn't poisoned by a foreign sequence (review 2026-09-08 §B2 — restamping a
 // KeymapNotify clobbered the letter-row bitmap).
 static inline void restampForTarget(uint8_t* ev, uint16_t targetSeq) {
@@ -358,7 +358,7 @@ bool XProtoDaemon::sendEventToFd(int fd, const uint8_t* ev, size_t len) {
   ClientSession* cs = findClient(fd);
   if (!cs || !cs->client) return false;   // stale fd (disconnected)
   // Same per-target sequence restamp as sendEventCrossClient: a foreign
-  // sequence would poison the target's monotonic wire floor.
+  // sequence would poison the target's wire-sequence tracking.
   std::vector<uint8_t> fixed(ev, ev + len);
   restampForTarget(fixed.data(), cs->client->transport().lastSeq());
   return cs->client->transport().sendAll(fixed.data(), fixed.size());
@@ -1315,7 +1315,7 @@ void XProtoDaemon::drainHostCommands() {
         // UnmapNotify (type 18)
         // Stamp lastSeq(): these were the last zero-seq emitters (found in
         // the 2026-08-31 review §1.3) — a raw seq=0 event poisons the
-        // client's 16-bit widening and arms the SEQ_WRAP misfire.
+        // client's 16-bit-to-32-bit sequence widening in Xlib.
         {
           std::array<uint8_t, 32> ev{};
           ev[0] = 18; // UnmapNotify

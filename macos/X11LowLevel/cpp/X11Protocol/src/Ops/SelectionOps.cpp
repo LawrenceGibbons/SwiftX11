@@ -107,7 +107,7 @@ static void incrNotifyOwner(XProtoContext& ctx, uint32_t wid, uint32_t prop,
 // FocusIn hook: claim PRIMARY + CLIPBOARD when macOS clipboard changed.
 // Called from XProtoServerBridge Focus handler when a window gains focus.
 // If the user Cmd+C'd on macOS while in another app, the macOS clipboard
-// is newer than any X11 selection.  By claiming ownership to root (XID 1),
+// is newer than any X11 selection.  By claiming ownership to root (XID 0x2),
 // the next ConvertSelection goes through the server and serves macOS content.
 // Without this, Xlib short-circuits ConvertSelection when the requestor
 // is also the owner (e.g., xterm owns PRIMARY from a previous select).
@@ -360,7 +360,7 @@ void SelectionOps::handleSetSelectionOwner(XProtoContext& ctx, uint16_t seq, Byt
     sSelPushedCC[selection] = cc;
   }
 
-  // Proactive clipboard capture: send SelectionRequest from root (XID 1)
+  // Proactive clipboard capture: send SelectionRequest from root (XID 0x2)
   // to the new owner asking for UTF8_STRING.  The owner responds with
   // ChangeProperty + SendEvent(SelectionNotify), which our handleSendEvent
   // intercepts and pushes to NSPasteboard.
@@ -799,10 +799,11 @@ void SelectionOps::handleSendEvent(XProtoContext& ctx, uint16_t /*seq*/, uint8_t
   if (evType == 31) { // SelectionNotify
     const uint32_t selAtom = wire::rd32_le(event + 12);
     const uint32_t propAtom = wire::rd32_le(event + 20);
-    // Use the requestor from the event (bytes 8-11), NOT resolvedDest.
-    // When our proactive capture uses root (XID 1) as requestor, Java sends
-    // SendEvent(destination=1), which gets resolved as InputFocus.  But the
-    // property was set on root (1), so we must read from the event's requestor.
+    // Use the requestor from the event (bytes 8-11), NOT resolvedDest.  Our
+    // proactive capture sets the requestor to root (XID 0x2), so the owner's
+    // SelectionNotify comes back addressed to root and the captured property
+    // lives on root — the event's own requestor field is authoritative.  (Pre-R1
+    // root was XID 1, which collided with the InputFocus sentinel; R1 split them.)
     const uint32_t evRequestor = wire::rd32_le(event + 8);
     if ((selAtom == atom::kCLIPBOARD || selAtom == atom::kPRIMARY) &&
         propAtom == 0)

@@ -37,16 +37,24 @@ yet, so nothing is silently lost before the next release + second review.
   choice instead of a crutch. Needs a Vitis reproduction to isolate; cut a probe
   build (unadvertise Composite + observe) when time allows.
 
-### M3 — Wire integrity endgame (fully deferred, gated)
+### M3 — Wire integrity endgame (mostly superseded by R4)
 
-Blocked on field evidence per the plan's "floor stays until its feeders are fixed"
-rule. Do NOT delete the sequence floor without a post-sleep crash repro.
-- §1.7 extend reply safety net to extension opcodes; §1.5 single
-  `writeReply(header,payload)` entry point owning lenw; §1.4 fix
-  `[SEQ_REGRESS]`/ring-buffer instrumentation; **then** §1.1/§1.2 delete floor +
-  SEQ_WRAP + payload heuristics. §1.8 head-of-line/EAGAIN backpressure.
-- Diagnostic to add first: log `max_wire_seq_` vs `last_request_seq_` at SEQ_WRAP
-  to gather evidence before the deletion.
+The plan gated deleting the sequence floor on a post-sleep crash repro. **R4/B1
+(v2.0.0.19) deleted the floor + SEQ_WRAP + payload heuristics anyway**, on a
+different rationale — the review confirmed the feeders are now correct (no
+zero-seq emitters remain; cross-client sequences are restamped per target), so
+the floor was a steady-state no-op. Caveats carried forward: the planned
+pre-deletion diagnostic (`max_wire_seq_` vs `last_request_seq_` at SEQ_WRAP) was
+never captured, and the post-sleep crash is **not** confirmed fixed (tracked in
+`KNOWN_ISSUES.md`). Remaining, none floor-gated any more:
+- §1.7 extend the reply safety net to extension opcodes — a truncated
+  reply-bearing *extension* request currently hangs its client (review §2.4 /
+  DEFERRED B4-tail).
+- §1.5 a single `writeReply(header,payload)` entry point owning the length word.
+- §1.4 fix the `[SEQ_REGRESS]` / wire-ring instrumentation, which the review
+  found still misclassifies (headers skipped, final payload chunks logged as
+  packets — review §2.11).
+- §1.8 head-of-line / EAGAIN backpressure.
 
 ### M4 — Extension honesty (remaining, Tier 3)
 

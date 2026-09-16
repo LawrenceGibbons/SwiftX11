@@ -193,10 +193,11 @@ const KeySyms4* coreKeyboardMap() {
 // starting at `firstKeycode` with the client's keysyms.  Our table has a fixed
 // 4 columns (normal/shift/mode/mode+shift); a client sending more is truncated
 // to 4, fewer is padded with NoSymbol.  Returns false (→ BadValue) for a range
-// outside [min,max].  NOTE: the XKB model (Core/XkbKeymap.cpp) is built once
-// and is NOT rebuilt here, so XKB-path clients keep the old keysyms until the
-// dynamic rebuild (E2 / R5); core-path clients (GetKeyboardMapping) see this
-// immediately.
+// outside [min,max].  NOTE: this writes only the CORE tables; the XKB model
+// (Core/XkbKeymap.cpp) is NOT rebuilt here.  The caller (ChangeKeyboardMapping
+// / SetModifierMapping) calls Keymap::rebuild() right after (E2, v2.0.0.21), so
+// XKB-path clients pick up the change too; core-path clients
+// (GetKeyboardMapping) see it immediately.
 bool setCoreKeyboardMap(uint8_t firstKeycode, uint8_t keysymsPerKeycode,
                         uint8_t keycodeCount, const uint32_t* syms) {
   (void)coreKeyboardMap();   // ensure the table is seeded

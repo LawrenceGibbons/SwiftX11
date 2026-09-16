@@ -15,7 +15,7 @@ None of the currently-deferred items are *blocked/sequenced* on other work. (The
 one item that genuinely waited on sequencing was E2 — it needed C9's
 mapping-change infrastructure — and it is now done, v2.0.0.21.)
 
-Last reviewed: 2026-09-16 (after R5 complete, v2.0.0.25-dbg).
+Last reviewed: 2026-09-16 (after R6 complete, v2.0.0.27-dbg).
 
 ---
 
@@ -32,12 +32,17 @@ Last reviewed: 2026-09-16 (after R5 complete, v2.0.0.25-dbg).
   is worse than the no-op (a half-done ReplayPointer can hang a client). Revisit
   only if a real sync-grab client appears. Also listed in `KNOWN_ISSUES.md`.
 
-- **B4 tail — full per-handler BadLength** — *decision*. `REQUEST_SIZE_MATCH`
-  BadLength across ~100 request handlers, plus trailing-byte BadLength. Big
-  mechanical surface, real regression risk, and no client depends on it (a short
-  request is silently dropped / BadImplementation today, which is benign). The
+- **B4 tail — full per-handler BadLength** — *decision (with one carve-out)*.
+  `REQUEST_SIZE_MATCH` BadLength across ~100 request handlers, plus trailing-byte
+  BadLength. Big mechanical surface, real regression risk, and no client depends
+  on the general case (a short *core* request is caught by the reply-bearing
+  safety net / BadImplementation today, which is benign). **Not** benign for
+  reply-bearing *extension* requests: a truncated one whose `ByteReader` throws
+  gets neither a reply nor an error, so that client hangs (review §2.4). The
+  targeted fix is a ~20-line "any escaping extension major with no reply sent →
+  BadImplementation" net — worth doing on its own; keep the rest deferred. The
   landed part of B4 — unknown-major → BadRequest, and len==0 / oversize →
-  BadLength — is in v2.0.0.19. Doable as a dedicated careful pass anytime.
+  BadLength — is in v2.0.0.19.
 
 - **RRSelectInput per-client tracking** — *by-design*. `RRScreenChangeNotify` is
   broadcast to all clients rather than tracked per subscriber. Over-delivery is
@@ -63,8 +68,13 @@ Last reviewed: 2026-09-16 (after R5 complete, v2.0.0.25-dbg).
 
 - **G7 — embedder-death rescue is tree-integrity only** — *follow-up*. On rescue
   we reparent the survivor's window to root but do not emit ReparentNotify /
-  MapNotify to the survivor's connection, and the rescued window has no NSWindow
-  (won't render as a top-level) until it is remapped.
+  MapNotify to the survivor's connection, and the rescued window has no NSWindow.
+  Remapping does **not** recover it (an earlier note here wrongly said "until
+  remapped"): there is no Reparent UI command, so the Swift-layer `WindowRegistry`
+  parent tracking goes stale and a later map consults the wrong parent — the
+  window stays invisible. The real fix is the Reparent/SaveSet Swift-layer
+  integration (review §2.1; also in `KNOWN_ISSUES.md`), which covers
+  cross-top-level `ReparentWindow` generally, not just the rescue.
 
 - **GetImage depth/visual for non-24 pixmaps** (F5-era) — *follow-up*. GetImage on
   a pixmap reports depth-24, masking the alpha byte (surfaced during F5/F6).
@@ -98,6 +108,13 @@ R0–R5's targeted set:
 - **G13** same-connection ConvertSelection refusal (single-client PRIMARY
   self-paste).
 - **G14** ConvertSelection MULTIPLE target unimplemented while acting as owner.
+- **XC-MISC XID reclamation (midpoint allocator)** — freed XIDs are never
+  returned to a client's range, so a resource-churning client burns its ~8M-XID
+  allotment over a long session (within an order of magnitude of a week-long JVM
+  that creates/destroys many pixmaps) and must reconnect to get a fresh range.
+  `GetXIDRange` hands out a range; `GetXIDList` (reclamation) is unimplemented. A
+  reclaiming allocator would lift the ceiling. Related to the RetainPermanent
+  slot-recycle residual (R6.4).
 
 ## Acceptable rootless deviations (documented; not planned)
 
