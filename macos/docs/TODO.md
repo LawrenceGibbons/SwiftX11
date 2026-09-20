@@ -1,6 +1,20 @@
 # SwiftX11 TODO
 
-Last updated: 2026-09-02 (v1.19.36.31-dbg — M0–M2 complete, M4/M5/M7 high-value items landed; deferred work consolidated below)
+Last updated: 2026-09-20.
+
+> **STATUS (2026-09-20): v2.0.0 shipped 2026-09-16.** Most of this file is now a
+> **historical roadmap.** The "Deferred / Decided-Against Work — M0–M7" section
+> below is a **2026-09-02 snapshot** that predates the 2026-09-08 (R0–R5) and
+> 2026-09-16 (R6) adversarial-review campaign shipped in v2.0.0 — so it lists a
+> lot of work that is now **done**: XI2 (XInput2) Stage 2 complete and **default
+> ON**, XKEYBOARD **default ON**, root-as-a-real-window, and the RENDER /
+> wire-hygiene / structural batches. The "Known Issues / Bugs" section further
+> down likewise still describes XI2 as *hidden* (`present=0`) and Ctrl+click as
+> broken — both no longer true. **For the authoritative current state use:**
+> `docs/DEFERRED.md` (live backlog), `docs/KNOWN_ISSUES.md` (current limitations),
+> `docs/HANDOFF.md` (maintainer handoff), and `docs/CLAUDE.md` (per-build
+> changelog). Everything below is kept for historical context and for its `§N.M`
+> references into the 2026-08-31 review.
 
 Target: Full support for Xilinx Vivado and Vitis (Java Swing + Eclipse SWT/GTK running from a Linux container).
 
@@ -14,6 +28,10 @@ The 2026-08-31 adversarial review drove milestones M0–M7 (see
 their high-value items. This section tracks everything intentionally **not** done
 yet, so nothing is silently lost before the next release + second review.
 
+> **Superseded (2026-09-20):** most of the M4/M5/M6/M7 items below shipped in the
+> R0–R6 campaign (v2.0.0) — M6 (per-client masks + XI2) in particular is done and
+> default ON. Kept as a record; the live backlog is `docs/DEFERRED.md`.
+
 ### Decided against (verified wrong for this codebase — not merely skipped)
 
 - **Do NOT unadvertise Composite (§5, M4).** The xorg reference confirms Composite
@@ -21,10 +39,12 @@ yet, so nothing is silently lost before the next release + second review.
   redirect/overlay no-ops are harmless. But the stub is load-bearing: removing it
   regresses Vitis portal-GTK dialogs to inverted colors. Kept advertised; only
   `NameWindowPixmap` was made honest (→ BadMatch, v1.19.36.30).
-- **Do NOT drop XFIXES to v1.0 (§5, M4).** Clients negotiated 5.0 and work today;
-  lowering it is cosmetic honesty with real regression risk (feature gating) and no
-  upside. Left at 5.0; the real gap — SelectionNotify delivery — was implemented
-  instead (v1.19.36.31).
+- **XFIXES version — REVERSED in R4 (v2.0.0.20): now negotiates 1.0.** The
+  2026-09-02 decision was to leave XFIXES at 5.0 ("real regression risk"); that did
+  not bear out. Advertising 5.0 invited clients to rely on stubs (regions, cursor
+  image, barriers), so it was lowered to 1.0 — the version whose requests are
+  actually implemented. SelectionNotify delivery (the real gap) was also
+  implemented (v1.19.36.31 / R0).
 - **Do NOT implement DamageNotify; unadvertised DAMAGE instead (§5, M4).** No
   rootless consumer exists (compositors can't run rootless; Vivado/Vitis don't use
   it). Unadvertised in v1.19.36.30; `[EXT_PROBE]` logs any future demand.
@@ -82,8 +102,10 @@ Done: §4.1 PutImage ZPixmap→pixmap (v1.19.36.22), §4.6 Trapezoid non-solid s
   in Vitis.
 - §4.10–4.12 cleanup pass.
 
-### M6 — Per-(window,client) event masks + XI2 (NEXT UP — not deferred)
+### M6 — Per-(window,client) event masks + XI2 — ✅ DONE (XI2 Stage 2, v1.20.0.23+, default ON v1.20.0.22)
 
+Done: the per-(window,client) selection table (Phase C, v1.20.0.23) and XI2
+re-enabled + default ON. The original framing is kept below for context.
 The architectural keystone. Replaces the single `event_mask`/`owner_fd` delivery
 with a per-(window,client) selection table consulted by all senders, then re-enables
 XI2 on top. Unblocks: XI2 (xeyes pupil tracking + the `XInputExtension` probe),
@@ -844,8 +866,11 @@ Java Swing JidePopup windows now appear as borderless floating popups (not decor
 ### XTEST v2.2 GrabControl Crash — ✅ RESOLVED (v1.19.15)
 Root cause: GTK2/GTK3 library conflict from `LD_PRELOAD=libgdk-x11-2.0.so.0` in Docker container. When XTEST v2.2 triggered AT-SPI initialization, GTK3's GDK loaded and tried to register `GdkDisplayManager` which GTK2 had already registered → duplicate type → segfault. Fix: remove GTK2 from `LD_PRELOAD`, fix dbus-launch ordering (DISPLAY must be set first). XTEST v2.2 now works correctly.
 
-### Ctrl+Click → Right-Click Regression (MEDIUM — usability)
-Ctrl+click no longer triggers context menus in Vivado (button 3 / right-click). Two-finger trackpad click works as a workaround. Need to identify which change in the v1.17→v1.19 range broke this. Ctrl+click still needs to work for xterm menus (Ctrl+Button1 = font menu, Ctrl+Button2 = VT options).
+### Ctrl+Click → Right-Click Regression — ✅ FIXED (v1.19.36.16)
+Ctrl+click again triggers button 3 (right-click / context menus) in Vivado. Button
+identity is decided once per physical press (Ctrl→3, Option→2, else 1) with
+symmetric down/up, and the AppKit-synthesized rightMouse for a Ctrl+click is
+suppressed only within that press so its one-shot flag can't latch.
 
 ### Pointer Coordinate Offset After Left-Edge Resize — ✅ FIXED (v1.19.25)
 Sync window position in `windowDidResize` before C++ resize path. Fixes stale origin in coordinate transform after left/top edge resize.
@@ -1022,26 +1047,36 @@ Audit: RENDER, SHAPE, and RANDR are fully implemented. XFIXES is minimal (QueryV
 - [x] **SHAPE InputShape** (pre-existing): ShapeRectangles/ShapeOffset/ShapeQueryExtents all handle kind=2 (Input). Input routing respects shape regions.
 - [x] **RANDR reply sizes** (pre-existing): All v1.3 replies (GetScreenResources, GetOutputInfo, GetCrtcInfo, etc.) have correct variable-length padding. 36-byte RRGetOutputInfo reply verified.
 - [ ] **XFIXES region ops**: Mostly stubs — QueryVersion + cursor image stubs only. Region operations (Create/Destroy/Union/Intersect/etc.) consume silently. LOW — no known client depends on XFIXES regions for our use case.
-- [ ] **XInput2 wire corruption with Electron** (LOW — workaround in place): Enabling XI2 causes Vitis/Electron to crash during startup. Wire ring buffer shows sequence regression (seq=16 after seq=187) indicating protocol corruption in variable-length GenericEvent delivery path or cross-client routing. **Workaround**: XInputExtension hidden (`present=0`, 11 extensions). Vitis works perfectly without XI2.
-  - **Event format fixed** (v1.19.35.28): sourceid corrected to slave device IDs (kXTESTPointer=4, kXTESTKeyboard=5 instead of master 2/3). event_x/event_y now use `computeEventXYFromHostLocal`/`computeEventXYFromRoot` hierarchy walk (was broken `root_x - wv->x` for child windows). Keyboard XI2 events no longer include button mask. Fixes retained but dormant since XI2 is hidden.
-  - **Global xi2_root_mask issue**: `InputState.xi2_root_mask` is global across all clients. If client A calls XISelectEvents on root, ALL clients receive XI2 events (even non-XI2 clients). Should be per-client. This may be the root cause of the wire corruption.
-  - **Next steps**: Add per-client XI2 root mask tracking. Enable wire trace (`x11_set_wire_trace`) during Vitis startup to capture exact corrupt packet. Read Chromium's `device_data_manager_x11.cc` for post-XIQueryDevice validation.
+- [x] **XInput2 "wire corruption" — RESOLVED, and the diagnosis was wrong.** The
+  Electron failures were `sourceid`=XTEST, core+XI2 double delivery, and core-only
+  deliverability — *not* wire corruption (v1.20.0.9–.11). XI2 (XInput2) Stage 2 is
+  now complete (Phases A–G) and **default ON** since v1.20.0.22; the per-client XI2
+  selection this item asked for (the "global `xi2_root_mask`" gap) landed in Phase C
+  (v1.20.0.23). Vitis menus and portal-GTK dialogs work **over** XI2. Full history:
+  `docs/CLAUDE.md` "XInput2 Re-enable" + `docs/XI2_XORG_COMPARISON.md`.
 
 ---
 
 ## Known Issues / Bugs
 
-### Vitis Menu Dropdowns — ✅ FIXED (v1.19.35.29, XI2 hidden)
-Root cause: XI2 wire corruption. When XInputExtension was advertised (`present=1`), Electron registered for XI2 events via XISelectEvents. The variable-length GenericEvent delivery caused wire protocol corruption (sequence regression), breaking Electron's internal input handling. Hiding XI2 (`present=0`) restores full menu functionality. Menus highlight on hover AND fire dropdowns correctly.
+### Vitis Menu Dropdowns — ✅ WORKING over XI2 (v1.20.0.11)
+The earlier "XI2 wire corruption → hide XI2" note here was a wrong diagnosis (see
+"XInput2 …RESOLVED" above). With XI2 delivery corrected (v1.20.0.9–.11) and default
+ON (v1.20.0.22), Electron menus highlight on hover and fire dropdowns correctly with
+XI2 advertised.
 
-### Portal-GTK Dialog Interaction — ✅ FIXED (v1.19.35.29, XI2 hidden)
-Same root cause as Vitis menus: XI2 wire corruption. With XI2 hidden, portal-GTK file dialogs are fully interactive (sidebar, file list, Cancel/Open buttons all work). Rendering: mostly correct colors after Composite/DAMAGE stubs (v1.19.35.25). Some button rendering looks slightly inverted — may be an ARGB32 alpha channel issue or intended GTK3 theme appearance.
+### Portal-GTK Dialog Interaction — ✅ WORKING over XI2 (v1.20.0.11–.20)
+Fully interactive over XI2 — clicks (v1.20.0.11), keys (v1.20.0.20, via XKB). The
+old "hide XI2" workaround is gone. A faint button colour-tint remains under
+investigation (see `docs/KNOWN_ISSUES.md`).
 
 ### Docker dbus Fails on Second Container Launch — ✅ FIXED (v1.19.35.29)
 Root cause: `dbus-launch` checks the X11 root window for a `_DBUS_SESSION_BUS_*` property. That property persists in SwiftX11's property table across container restarts, pointing to a dead socket from the first container. Fix: replaced `dbus-launch --sh-syntax` with `dbus-daemon --session --fork --print-address` in start scripts (no X11 autolaunch lookup). Also added system bus cleanup (`/run/dbus/pid`, stale dbus-daemon kill) to `docker-entrypoint.sh`.
 
-### Ctrl+Click Regression (MEDIUM)
-Ctrl+click no longer triggers button 3 in Vivado. Two-finger trackpad works. Regression in v1.17→v1.19.
+### Ctrl+Click Regression — ✅ FIXED (v1.19.36.16)
+Button identity is now decided once per physical press (Ctrl→3, Option→2, else 1)
+with symmetric down/up; the one-shot right-suppression flag no longer latches to
+swallow the next genuine right-click.
 
 ### hw_ila_x Drag-and-Drop — ✅ FIXED (v1.19.36)
 The bug had three layers, all closed in this release:
@@ -1050,7 +1085,7 @@ The bug had three layers, all closed in this release:
 2. **`SetCloseDownMode(RetainPermanent)` stubbed out** (`.58`) — AWT's helper connection sets `RetainPermanent` then closes; the proxy window must outlive the disconnect. Our handler was a no-op consumer. Fix: store the mode on `XClient`, call `WindowTable::reassignOwner(fd, -1)` in `removeClient` instead of `eraseOwnedBy(fd)` when retention is requested.
 3. **`postMotion` grab routing only honoured `PointerMotionMask`** (`.62`) — the actual smoking gun. AWT installs `XGrabPointer(grab_window=root, owner_events=False, mask=ButtonPress|ButtonRelease|ButtonMotion = 0x200C)`. Our routing only checked bit 6 (`PointerMotionMask`); the spec requires accepting any of `PointerMotionMask`, `ButtonMotionMask` (bit 13), or `Button1-5MotionMask` (bits 8-12) per held button. New `grabWantsMotion(mask, heldButtons)` helper covers all three families. Also added a root-grab → `drag_xid` target fallback because we don't yet track the grabbing client's fd on `PointerGrab`.
 
-Open follow-up: add `PointerGrab::owner_fd` so the root-grab case can route to the grabbing client directly instead of via `drag_xid`. Logged under "Next Major Tasks" in CLAUDE.md.
+Follow-up: `PointerGrab::owner_fd` (route root-grab motion to the grabbing client directly instead of via `drag_xid`) — ✅ done in v1.19.36.17 (B2 grab routing).
 
 ### Vivado Crashes After Laptop Sleep (MEDIUM)
 After leaving SwiftX11 + Vivado running overnight and sleeping the laptop (several hours), clicking into the Vivado window on wake causes Vivado to crash. SwiftX11 log signature:
