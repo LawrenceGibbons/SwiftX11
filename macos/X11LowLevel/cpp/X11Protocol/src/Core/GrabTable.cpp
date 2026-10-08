@@ -116,9 +116,8 @@ bool GrabTable::matchKey(uint32_t grabWindow, uint8_t key, uint16_t modifiers, P
 uint8_t GrabTable::tryPointerGrab(const PointerGrab& req) {
   std::lock_guard<std::mutex> lock(mu_);
   if (pointer_.active) {
-    // xorg GrabDevice (dix/events.c:5253-5256): a grab of the other level
-    // (CORE vs XI2) or held by another client → AlreadyGrabbed.
-    if (pointer_.is_xi2 != req.is_xi2) return kAlreadyGrabbed;
+
+    // xorg ProcGrabPointer (dix/events.c): AlreadyGrabbed only if held by a different client.
     if (pointer_.owner_fd >= 0 && pointer_.owner_fd != req.owner_fd) return kAlreadyGrabbed;
   }
   pointer_ = req;
@@ -171,7 +170,6 @@ void GrabTable::updatePointerGrabCursor(uint32_t cursor) {
 uint8_t GrabTable::tryKeyboardGrab(const KeyboardGrab& req) {
   std::lock_guard<std::mutex> lock(mu_);
   if (keyboard_.active) {
-    if (keyboard_.is_xi2 != req.is_xi2) return kAlreadyGrabbed;
     if (keyboard_.owner_fd >= 0 && keyboard_.owner_fd != req.owner_fd) return kAlreadyGrabbed;
   }
   keyboard_ = req;

@@ -567,3 +567,22 @@ limitations: **`docs/KNOWN_ISSUES.md`**. Long-range roadmap: **`docs/TODO.md`**.
 The only XI2/XKB items left are acceptable deviations for a rootless self-WM (L3
 valid as-is; the XI1 `OpenDevice` family returns BadRequest by design) — see
 `docs/DEFERRED.md`.
+
+### Vivado popup menu item selection fix (v2.0.0.1-dbg)
+**Symptom**: Some Vivado popup menus (e.g. right-click context menus, combo-box dropdowns) could be opened but clicking an item had no effect — the item was never selected.
+
+**Root cause**: `handleGrabPointer` (GrabOps.cpp) and `tryPointerGrab`/`tryKeyboardGrab` (GrabTable.cpp) incorrectly returned `AlreadyGrabbed` when a client tried to replace its own implicit XI2 grab with a core explicit `GrabPointer`/`GrabKeyboard` call. Per xorg `ProcGrabPointer` (dix/events.c), the sole condition for `AlreadyGrabbed` is that a **different** client holds the grab; the same client can always replace its own grab regardless of XI2 level.
+
+**Trace**:
+1. User clicks a Vivado window that has XI2 event selection.
+2. Button press delivered via XI2 → `deliveredXI2 = true`.
+3. `ActivateImplicitGrab` records `ig.is_xi2 = true` (XI2 implicit grab).
+4. Java AWT shows popup and calls `XGrabPointer(popup_window, ...)` (a **core** explicit grab request).
+5. BUG: `handleGrabPointer`: `haveHeld && held.is_xi2` → immediate `AlreadyGrabbed` response.
+6. Java receives `AlreadyGrabbed` → does not establish the grab → popup menu item selection fails.
+
+**Why only some menus**: only menus triggered by clicking a window with XI2 event selection (`XI_ButtonPress` in its `xi2_mask`) hit this path. Menus triggered from windows with no XI2 selection → core-only implicit grab → `is_xi2 = false` → `GrabPointer` succeeds.
+
+**Fix** (`fix-menu-grab` branch):
+- `GrabOps.cpp` line 134 (pointer) and line 330 (keyboard): removed `held.is_xi2 ||` from the `AlreadyGrabbed` condition, so same-client grabs always replace regardless of XI2 level.
+- `GrabTable.cpp` `tryPointerGrab` and `tryKeyboardGrab`: removed `if (*.is_xi2 != req.is_xi2) return kAlreadyGrabbed;` for the same reason.

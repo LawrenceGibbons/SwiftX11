@@ -131,7 +131,7 @@ void GrabOps::handleGrabPointer(XProtoContext& ctx, uint16_t seq, uint8_t ownerE
   const bool haveHeld = ctx.grabs().getPointerGrab(held) && held.active;
 
   uint8_t status = x11::kGrabSuccess;
-  if (haveHeld && (held.is_xi2 || (held.owner_fd >= 0 && held.owner_fd != fd))) {
+  if (haveHeld && held.owner_fd >= 0 && held.owner_fd != fd) {
     status = x11::kAlreadyGrabbed;
   } else if (grabWindow != 0 && !grabchoreo::isViewable(ctx, grabWindow)) {
     status = x11::kGrabNotViewable;
@@ -327,7 +327,7 @@ void GrabOps::handleGrabKeyboard(XProtoContext& ctx, uint16_t seq, uint8_t owner
   const bool haveHeld = ctx.grabs().getKeyboardGrabInfo(held) && held.active;
 
   uint8_t status = x11::kGrabSuccess;
-  if (haveHeld && (held.is_xi2 || (held.owner_fd >= 0 && held.owner_fd != fd))) {
+  if (haveHeld && held.owner_fd >= 0 && held.owner_fd != fd) {
     status = x11::kAlreadyGrabbed;
   } else if (grabWindow != 0 && !grabchoreo::isViewable(ctx, grabWindow)) {
     status = x11::kGrabNotViewable;
