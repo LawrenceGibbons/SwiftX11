@@ -568,7 +568,7 @@ The only XI2/XKB items left are acceptable deviations for a rootless self-WM (L3
 valid as-is; the XI1 `OpenDevice` family returns BadRequest by design) — see
 `docs/DEFERRED.md`.
 
-### Vivado popup menu item selection fix (v2.0.0.1-dbg)
+### Vivado popup menu item selection fix (v2.0.0.1-dbg → on the v2.0.1 train)
 **Symptom**: Some Vivado popup menus (e.g. right-click context menus, combo-box dropdowns) could be opened but clicking an item had no effect — the item was never selected.
 
 **Root cause**: `handleGrabPointer` (GrabOps.cpp) and `tryPointerGrab`/`tryKeyboardGrab` (GrabTable.cpp) incorrectly returned `AlreadyGrabbed` when a client tried to replace its own implicit XI2 grab with a core explicit `GrabPointer`/`GrabKeyboard` call. Per xorg `ProcGrabPointer` (dix/events.c), the sole condition for `AlreadyGrabbed` is that a **different** client holds the grab; the same client can always replace its own grab regardless of XI2 level.
@@ -587,7 +587,7 @@ valid as-is; the XI1 `OpenDevice` family returns BadRequest by design) — see
 - `GrabOps.cpp` line 134 (pointer) and line 330 (keyboard): removed `held.is_xi2 ||` from the `AlreadyGrabbed` condition, so same-client grabs always replace regardless of XI2 level.
 - `GrabTable.cpp` `tryPointerGrab` and `tryKeyboardGrab`: removed `if (*.is_xi2 != req.is_xi2) return kAlreadyGrabbed;` for the same reason.
 
-### Tcl console shift-click anchor lost after trackpad scroll (v2.0.0.2-dbg)
+### Tcl console shift-click anchor lost after trackpad scroll (v2.0.0.2-dbg → on the v2.0.1 train)
 **Symptom**: click in the Tcl console, scroll with the trackpad, Shift+click — the selection started somewhere *between* the two points instead of at the first click. Java's caret had been re-positioned mid-scroll.
 
 **Root cause** (wire trace 2026-10-20, Tcl Console 0x010001E4): a vertical trackpad swipe drifts a few points horizontally; once the X accumulator crossed the 12-pt tick, `ScrollTicks` emitted **buttons 6/7** between the 4/5 ticks. Horizontal ticks have been delivered (not dropped) since Phase G L8 (v1.20.0.36). Java's XToolkit only treats buttons 4/5 as a wheel; 6/7 become `MOUSE_PRESSED` with extra button numbers (the trace shows the tell-tale `GetInputFocus`/`SetInputFocus` focus-request pair after every button-6 press, which never follows a 4/5). The console positions its caret on any press → anchor moved to the pointer.
@@ -595,3 +595,6 @@ valid as-is; the XI1 `OpenDevice` family returns BadRequest by design) — see
 **Fix** (`fix-scroll-axis-lock`, `X11WindowHost.scrollWheel`): gesture-scoped axis lock, as `NSScrollView` does — on `phase.began` the lock resets; the first event with ≥2 pt of travel picks the dominant axis and the other axis is zeroed for the rest of the gesture including momentum. Mouse wheels (no phase) are untouched, so Shift+wheel → horizontal still works. Deliberate horizontal swipes still produce 6/7.
 
 **Note**: xorg delivers 6/7 the same way and Java has the same caret problem on Linux touchpads; this is a host-side input shaping choice, not a protocol deviation. Alternative for a Java-only workaround: `JAVA_TOOL_OPTIONS=-Dsun.awt.enableExtraMouseButtons=false` makes AWT drop buttons >5.
+
+### v2.0.1 train opened (v2.0.1.1-dbg)
+`SWIFTX11_VERSION_BASE` → 2.0.1 (patch release for the two Vivado input fixes above: same-client grab replacement, trackpad scroll axis lock). `SWIFTX11_DEBUG_BUILD` reset to 1 so dev builds read `2.0.1.1-dbg`. Release commit (`DEBUG_BUILD` → 0, `RELEASE_NOTES_v2.0.1.md`, tag `v2.0.1`, `main` fast-forward, DMG via `build-dmg.sh`) follows once the scroll fix is verified in Vivado.
