@@ -103,6 +103,15 @@ final class X11View: NSView {
   private var suppressRightDownUntil: TimeInterval = 0
   private var scrollAccumX: CGFloat = 0
   private var scrollAccumY: CGFloat = 0
+  // Trackpad gesture axis lock (v2.0.0.2-dbg).  NSScrollView locks a
+  // trackpad scroll to its dominant axis for the whole gesture; without
+  // that, finger drift on a vertical swipe leaks horizontal ticks, which go
+  // out as buttons 6/7.  Java's XToolkit treats 6/7 as *extra mouse buttons*
+  // (MOUSE_PRESSED, not a wheel event), so each leaked tick re-positioned the
+  // Tcl console caret under the pointer mid-scroll — shift-click then
+  // extended from the wrong anchor.  nil = undecided; reset on gesture begin.
+  private enum ScrollAxisLock { case vertical, horizontal }
+  private var scrollAxisLock: ScrollAxisLock? = nil
   private var lastModifierFlags: NSEvent.ModifierFlags = []
   
   // MARK: -- SHAPE extension
@@ -1183,8 +1192,26 @@ final class X11View: NSView {
   }
   
   override func scrollWheel(with event: NSEvent) {
-    let dy = event.scrollingDeltaY
-    let dx = event.scrollingDeltaX
+    var dy = event.scrollingDeltaY
+    var dx = event.scrollingDeltaX
+    
+    // Gesture-scoped axis lock, trackpad only (a mouse wheel has no phase;
+    // its Shift+wheel horizontal mapping is deliberate and passes through).
+    let isGesture = !event.phase.isEmpty || !event.momentumPhase.isEmpty
+    if isGesture {
+      if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+        scrollAxisLock = nil
+        scrollAccumX = 0; scrollAccumY = 0
+      }
+      if scrollAxisLock == nil, abs(dx) + abs(dy) >= 2 {
+        scrollAxisLock = abs(dx) > abs(dy) ? .horizontal : .vertical
+      }
+      switch scrollAxisLock {
+      case .vertical?:   dx = 0
+      case .horizontal?: dy = 0
+      case nil:          break
+      }
+    }
     
     // Trackpads are often “precise”; accumulate until we cross a tick threshold.
     // Tune: 8–20 feels reasonable. Start at 12.

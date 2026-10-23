@@ -586,3 +586,12 @@ valid as-is; the XI1 `OpenDevice` family returns BadRequest by design) — see
 **Fix** (`fix-menu-grab` branch):
 - `GrabOps.cpp` line 134 (pointer) and line 330 (keyboard): removed `held.is_xi2 ||` from the `AlreadyGrabbed` condition, so same-client grabs always replace regardless of XI2 level.
 - `GrabTable.cpp` `tryPointerGrab` and `tryKeyboardGrab`: removed `if (*.is_xi2 != req.is_xi2) return kAlreadyGrabbed;` for the same reason.
+
+### Tcl console shift-click anchor lost after trackpad scroll (v2.0.0.2-dbg)
+**Symptom**: click in the Tcl console, scroll with the trackpad, Shift+click — the selection started somewhere *between* the two points instead of at the first click. Java's caret had been re-positioned mid-scroll.
+
+**Root cause** (wire trace 2026-10-20, Tcl Console 0x010001E4): a vertical trackpad swipe drifts a few points horizontally; once the X accumulator crossed the 12-pt tick, `ScrollTicks` emitted **buttons 6/7** between the 4/5 ticks. Horizontal ticks have been delivered (not dropped) since Phase G L8 (v1.20.0.36). Java's XToolkit only treats buttons 4/5 as a wheel; 6/7 become `MOUSE_PRESSED` with extra button numbers (the trace shows the tell-tale `GetInputFocus`/`SetInputFocus` focus-request pair after every button-6 press, which never follows a 4/5). The console positions its caret on any press → anchor moved to the pointer.
+
+**Fix** (`fix-scroll-axis-lock`, `X11WindowHost.scrollWheel`): gesture-scoped axis lock, as `NSScrollView` does — on `phase.began` the lock resets; the first event with ≥2 pt of travel picks the dominant axis and the other axis is zeroed for the rest of the gesture including momentum. Mouse wheels (no phase) are untouched, so Shift+wheel → horizontal still works. Deliberate horizontal swipes still produce 6/7.
+
+**Note**: xorg delivers 6/7 the same way and Java has the same caret problem on Linux touchpads; this is a host-side input shaping choice, not a protocol deviation. Alternative for a Java-only workaround: `JAVA_TOOL_OPTIONS=-Dsun.awt.enableExtraMouseButtons=false` makes AWT drop buttons >5.
