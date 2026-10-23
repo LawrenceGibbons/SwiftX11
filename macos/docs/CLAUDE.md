@@ -598,3 +598,6 @@ valid as-is; the XI1 `OpenDevice` family returns BadRequest by design) — see
 
 ### v2.0.1 train opened (v2.0.1.1-dbg)
 `SWIFTX11_VERSION_BASE` → 2.0.1 (patch release for the two Vivado input fixes above: same-client grab replacement, trackpad scroll axis lock). `SWIFTX11_DEBUG_BUILD` reset to 1 so dev builds read `2.0.1.1-dbg`. Release commit (`DEBUG_BUILD` → 0, `RELEASE_NOTES_v2.0.1.md`, tag `v2.0.1`, `main` fast-forward, DMG via `build-dmg.sh`) follows once the scroll fix is verified in Vivado.
+
+### v2.0.1 — RELEASE (2026-10-23)
+Patch release: the Vivado popup-menu/menubar grab fix and the trackpad scroll axis lock (both above). Release commit `release: v2.0.1`: `SWIFTX11_DEBUG_BUILD` → 0, `docs/RELEASE_NOTES_v2.0.1.md`; annotated tag `v2.0.1`, `main` fast-forwarded. DMG via `macos/scripts/build-dmg.sh` (Release build on the Mac), published to GitHub Releases as Latest. Post-release: bump `DEBUG_BUILD` back to 1 on the first dev change.
